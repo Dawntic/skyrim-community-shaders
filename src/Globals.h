@@ -9,6 +9,7 @@ struct HairSpecular;
 struct IBL;
 struct LightLimitFix;
 struct LODBlending;
+struct LensEffects;
 struct InteriorSunShadows;
 struct InverseSquareLighting;
 struct ScreenSpaceGI;
@@ -82,6 +83,7 @@ namespace globals
 		extern PerformanceOverlay performanceOverlay;
 		extern WetnessEffects wetnessEffects;
 		extern ExtendedTranslucency extendedTranslucency;
+		extern LensEffects lensEffects;
 
 		namespace llf
 		{
