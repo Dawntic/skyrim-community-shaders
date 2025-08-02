@@ -13,6 +13,7 @@
 #include "Features/InteriorSun.h"
 #include "Features/InverseSquareLighting.h"
 #include "Features/LODBlending.h"
+#include "Features/LensEffects.h"
 #include "Features/LightLimitFix.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/RenderDoc.h"
