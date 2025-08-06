@@ -1,17 +1,14 @@
-
+#include "Common/Math.hlsli"
 //// Defines //////////////////////////////////////////////////////////////////////////////////////
 
 #define LUM 0.333333
 #define LUM_601 float3(0.299, 0.587, 0.114)
 #define LUM_709 float3(0.212, 0.715, 0.072)
 #define LUM_202 float3(0.262, 0.678, 0.059)
-#define EPSIL	1e-6
-#define PI		3.14159265358
-#define TPI	    6.28318530718
 
 // Macros //
 #define inv(x) (1.0 - (x))
-#define delta(x) max(x, EPSIL)
+#define delta(x) max(x, EPSILON_DIVISION)
 
 // Debug //
 #define CLEAR float3(0.0, 0.0, 0.0)
@@ -173,12 +170,12 @@ static const float2 BF4_Coords[4] = {
 
 //// Lighting /////////////////////////////////////////////////////////////////////////////////////
 
-float Diffraction(float x, float freq, float phase, float ampli){
-	float  sinc = PI * (x * freq + phase) + EPSIL;
+float Diffraction(float x, float Frequency, float Phase, float Amplitude){
+	float  sinc = Math::PI * (x * Frequency + Phase) + EPSILON_DIVISION;
 	sinc = sin(sinc) / sinc;
-    return sinc * sinc * ampli;}
+    return sinc * sinc * Amplitude;}
 
-float3 DiffractionF3(float3 x, float freq, float phase, float ampli){
-	float3 sinc = PI * (x * freq + phase) + EPSIL;
+float3 DiffractionF3(float3 x, float Frequency, float Phase, float Amplitude){
+	float3 sinc = Math::PI * (x * Frequency + Phase) + EPSILON_DIVISION;
 	sinc = sin(sinc) / sinc;
-    return sinc * sinc * ampli;}
+    return sinc * sinc * Amplitude;}
