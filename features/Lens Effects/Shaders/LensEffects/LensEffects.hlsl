@@ -186,6 +186,59 @@ SamplerComparisonState Depth_Sampler : register(s13);
 
 ///// Occlusion Shader //////////////////////////////////////////////////////////////////
 
+#define InvSrcSize float2(1.0/4096.0, 1.0/4096.0)
+#define InvInterSize float2(1/128,1/4096)
+#define KernelWidth 32
+
+#ifdef Horizontal_Downsample
+
+Texture2D ShadowMap : register(t0);
+
+float4 main(VertexShaderOutput input) : SV_Target
+{
+    float4 accum = 0;
+    uint halfK = KernelWidth >> 1;
+
+    [unroll] for (uint i = 0; i < KernelWidth; ++i){
+        float x = (int(i) - int(halfK) + 0.5);
+        float2 offset = float2(x * InvSrcSize.x, 0);
+        accum += ShadowMap.Sample(Point_Sampler, input.TexCoord + offset);
+    }
+    return dot(accum, 1.0/KernelWidth);
+}
+#endif
+
+
+#ifdef Vertical_Downsample
+
+Texture2D Horizontal : register(t1);
+
+float4 main(VertexShaderOutput input) : SV_Target
+{
+    float4 accum = 0;
+    uint halfK = KernelWidth >> 1;
+
+    [unroll] for (uint j = 0; j < KernelWidth; ++j){
+        float y = (int(j) - int(halfK) + 0.5);
+        float2 offset = float2(0, y * InvInterSize.y);
+        accum += Horizontal.Sample(Point_Sampler, input.TexCoord + offset);
+    }
+    return dot(accum, 1.0/KernelWidth);
+}
+#endif
+
+
+
+
+
+
+
+
+
+
+
+///// Occlusion Shader //////////////////////////////////////////////////////////////////
+
 #ifdef MASK_PSSHADER
 
 cbuffer CB2 : register(b2){

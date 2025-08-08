@@ -60,6 +60,9 @@ void LensEffects::CompileShaders()
 
 	IceVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\LensEffects\\LensEffects.hlsl", { { "ICE_VSSHADER", "" } }, "vs_5_0");
 	IcePixelShader = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\LensEffects\\LensEffects.hlsl", { { "ICE_PSSHADER", "" } }, "ps_5_0");
+
+	Horizontal_DownsamplePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\LensEffects\\LensEffects.hlsl", { { "Horizontal_Downsample", "" } }, "ps_5_0");
+	Vertical_DownsamplePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\LensEffects\\LensEffects.hlsl", { { "Vertical_Downsample", "" } }, "ps_5_0");
 }
 
 void LensEffects::SetupResources()
@@ -140,7 +143,8 @@ void LensEffects::SetupResources()
 	renderdata = new Setup::LF_RenderData;
 
 	renderdata->SetupPass(Shaders::LensCA, settings->EnableCA, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::LensIce, settings->EnableIce, 1, { .weather_pass = true });
+	renderdata->SetupPass(Shaders::LensIce, settings->EnableIce, 1, { .uncond_pass = true });
+
 	renderdata->SetupPass(Shaders::LensBurst, settings->EnableStarburst, 1);
 	renderdata->SetupPass(Shaders::LensSunGlare, settings->EnableSunGlare, 1);
 	renderdata->SetupPass(Shaders::LensGlare, settings->EnableLensGlare, 1);
@@ -150,6 +154,73 @@ void LensEffects::SetupResources()
 	renderdata->SetupRenderData();
 
 	CompileShaders();
+
+	viewPort.TopLeftX = 0.0f;
+	viewPort.TopLeftY = 0.0f;
+	viewPort.Width = 0;
+	viewPort.Height = 0;
+	viewPort.MinDepth = 0.0f;
+	viewPort.MaxDepth = 1.0f;
+
+	D3D11_TEXTURE2D_DESC DownSampleTexDesc{};
+	DownSampleTexDesc.Width = 128;
+	DownSampleTexDesc.Height = 4096;
+	DownSampleTexDesc.MipLevels = 1;
+	DownSampleTexDesc.ArraySize = 1;
+	DownSampleTexDesc.Format = DXGI_FORMAT_R32_FLOAT;
+	DownSampleTexDesc.Usage = D3D11_USAGE_DEFAULT;
+	DownSampleTexDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+	DownSampleTexDesc.SampleDesc.Count = 1;
+	DownSampleTexDesc.SampleDesc.Quality = 0;
+	DownSampleTexDesc.CPUAccessFlags = 0;
+	DownSampleTexDesc.MiscFlags = 0;
+
+	D3D11_TEXTURE2D_DESC DownSampleTexDesc2{ DownSampleTexDesc };
+	DownSampleTexDesc2.Width = 128;
+	DownSampleTexDesc2.Height = 128;
+
+	DX::ThrowIfFailed(device->CreateTexture2D(&DownSampleTexDesc, nullptr, &HorizontalTex));
+	DX::ThrowIfFailed(device->CreateTexture2D(&DownSampleTexDesc2, nullptr, &VerticalTex));
+
+	DX::ThrowIfFailed(device->CreateRenderTargetView(HorizontalTex, nullptr, &HorizontalRTV));
+	DX::ThrowIfFailed(device->CreateRenderTargetView(VerticalTex, nullptr, &VerticalRTV));
+
+	DX::ThrowIfFailed(device->CreateShaderResourceView(HorizontalTex, nullptr, &HorizontalSRV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(VerticalTex, nullptr, &VerticalSRV));
+}
+
+void LensEffects::SetupHorizontal_Downsample()
+{
+	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
+
+	viewPort.Width = 128;
+	viewPort.Height = 4096;
+	context->RSSetViewports(1, &viewPort);
+	context->OMSetRenderTargets(1, &HorizontalRTV, nullptr);
+
+	context->VSSetShader(BypassVertexShader, NULL, NULL);
+	context->PSSetShader(Horizontal_DownsamplePS, NULL, NULL);
+
+	auto& shadowMap = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].SRV;
+	context->PSSetShaderResources(0, 1, &shadowMap);
+}
+
+void LensEffects::SetupVertical_Downsample()
+{
+	auto context = globals::d3d::context;
+
+	viewPort.Width = 128;
+	viewPort.Height = 128;
+	context->RSSetViewports(1, &viewPort);
+	context->OMSetRenderTargets(1, &VerticalRTV, nullptr);
+
+	context->VSSetShader(BypassVertexShader, NULL, NULL);
+	context->PSSetShader(Vertical_DownsamplePS, NULL, NULL);
+
+	context->PSSetShaderResources(1, 1, &HorizontalSRV);
+
+	//set dirty render target
 }
 
 void LensEffects::CheckOverride()
@@ -173,13 +244,15 @@ void LensEffects::LookupShader(int desc)
 		{ Shaders::Bypass, &LensEffects::BypassShader },
 		{ Shaders::AttachLUT, &LensEffects::AppendOcclusionLUT },
 		{ Shaders::OcculsionMask, &LensEffects::SetupOcclusionMask },
-		{ Shaders::LensIce, &LensEffects::SetupIceEffect },
 		{ Shaders::LensBurst, &LensEffects::SetupBurstEffect },
 		{ Shaders::LensSunGlare, &LensEffects::SetupSunGlareEffect },
 		{ Shaders::LensGlare, &LensEffects::SetupLensGlareEffect },
 		{ Shaders::LensHalo, &LensEffects::SetupHaloEffect },
 		{ Shaders::LensGhosts, &LensEffects::SetupGhostEffect },
-		{ Shaders::LensCA, &LensEffects::SetupCAEffect },
+
+		{ Shaders::LensCA, &LensEffects::SetupHorizontal_Downsample },
+		{ Shaders::LensIce, &LensEffects::SetupVertical_Downsample }
+
 	};
 	auto it = effects.find(desc);
 	if (it != effects.cend())
@@ -646,6 +719,8 @@ void LensEffects::DrawSettings()
 		SunGlarePixelShader = nullptr;
 		HaloVertexShader = nullptr;
 		HaloPixelShader = nullptr;
+		Vertical_DownsamplePS = nullptr;
+		Horizontal_DownsamplePS = nullptr;
 
 		CompileShaders();
 	}

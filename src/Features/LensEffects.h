@@ -35,6 +35,22 @@ struct LensEffects : Feature
 	virtual void BypassShader();
 	virtual void SetupCAEffect();
 
+	virtual void SetupHorizontal_Downsample();
+	virtual void SetupVertical_Downsample();
+
+	D3D11_VIEWPORT viewPort{};
+	ID3D11PixelShader* Vertical_DownsamplePS = nullptr;
+	ID3D11PixelShader* Horizontal_DownsamplePS = nullptr;
+
+	ID3D11Texture2D* VerticalTex = nullptr;
+	ID3D11Texture2D* HorizontalTex = nullptr;
+
+	ID3D11ShaderResourceView* VerticalSRV = nullptr;
+	ID3D11ShaderResourceView* HorizontalSRV = nullptr;
+
+	ID3D11RenderTargetView* VerticalRTV = nullptr;
+	ID3D11RenderTargetView* HorizontalRTV = nullptr;
+
 	ConstantBuffer* SettingsCB = nullptr;
 	ID3D11BlendState* BlendState[2] = {};
 
