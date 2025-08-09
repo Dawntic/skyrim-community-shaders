@@ -35,21 +35,42 @@ struct LensEffects : Feature
 	virtual void BypassShader();
 	virtual void SetupCAEffect();
 
-	virtual void SetupHorizontal_Downsample();
-	virtual void SetupVertical_Downsample();
+	virtual void SetupDownSample();
+	virtual void SetupDownSampleOutput();
+	virtual void SetupHorizontalFilter();
+	virtual void SetupVerticalFilter();
 
 	D3D11_VIEWPORT viewPort{};
-	ID3D11PixelShader* Vertical_DownsamplePS = nullptr;
-	ID3D11PixelShader* Horizontal_DownsamplePS = nullptr;
+	ID3D11PixelShader* DownSamplePS = nullptr;
+	ID3D11PixelShader* FilterPS = nullptr;
+	ID3D11PixelShader* MinifyPS = nullptr;
 
+	ID3D11Texture2D* DownSampleTex = nullptr;
+	ID3D11Texture2D* DownSampleTex2 = nullptr;
 	ID3D11Texture2D* VerticalTex = nullptr;
 	ID3D11Texture2D* HorizontalTex = nullptr;
+
+	ID3D11ShaderResourceView* DownSampleSRV = nullptr;
+	ID3D11ShaderResourceView* DownSampleOutputSRV = nullptr;
 
 	ID3D11ShaderResourceView* VerticalSRV = nullptr;
 	ID3D11ShaderResourceView* HorizontalSRV = nullptr;
 
-	ID3D11RenderTargetView* VerticalRTV = nullptr;
-	ID3D11RenderTargetView* HorizontalRTV = nullptr;
+	ID3D11RenderTargetView* DownSampleRTV[2] = {};
+	ID3D11RenderTargetView* DownSampleOutputRTV[2] = {};
+
+	ID3D11RenderTargetView* VerticalRTV[2] = {};
+	ID3D11RenderTargetView* HorizontalRTV[2] = {};
+
+	float2 CSMSize = float2(4096.0f, 4096.0f);
+	float2 DownSamplePass1 = float2(1024.0f, 1024.0f);
+	float2 DownSampleOutput = float2(256.0f, 256.0f);
+
+	int slice = 0;
+	float kernalWidth = 0.0f;
+	float2 srcSize = float2(0.0f, 0.0f);
+	float2 invSrcSize = float2(0.0f, 0.0f);
+	float2 filterDir = float2(0.0f, 0.0f);
 
 	ConstantBuffer* SettingsCB = nullptr;
 	ID3D11BlendState* BlendState[2] = {};
@@ -330,6 +351,11 @@ struct LensEffects : Feature
 		uint frame;
 		float precip;
 		float sunFXFade;
+		int slice;
+		float KernalWidth;
+		float2 srcSize;
+		float2 InvSrcSize;
+		float2 filterDir;
 		float _pad[1];
 		DirectX::XMFLOAT4A SunParams;
 		DirectX::XMFLOAT4A suncolor;
