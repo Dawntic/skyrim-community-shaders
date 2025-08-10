@@ -143,22 +143,10 @@ void LensEffects::SetupResources()
 
 	renderdata = new Setup::LF_RenderData;
 
-	renderdata->SetupPass(Shaders::LensBurst, settings->EnableStarburst, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::LensSunGlare, settings->EnableSunGlare, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::LensBurst, settings->EnableStarburst, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::LensSunGlare, settings->EnableSunGlare, 1, { .uncond_pass = true });
-
-	renderdata->SetupPass(Shaders::LensCA, settings->EnableCA, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::LensIce, settings->EnableIce, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::LensCA, settings->EnableCA, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::LensIce, settings->EnableIce, 1, { .uncond_pass = true });
-
-	renderdata->SetupPass(Shaders::LensSunGlare, settings->EnableSunGlare, 1);
-	renderdata->SetupPass(Shaders::LensGlare, settings->EnableLensGlare, 1);
-	renderdata->SetupPass(Shaders::LensHalo, settings->EnableHalo, 1);
-	renderdata->SetupPass(Shaders::LensGhosts, settings->EnableGhosts, ghostpasses);
-
-	renderdata->SetupRenderData();
+	//renderdata->SetupPass(Shaders::Minify, settings->EnableSunGlare, 1);
+	//renderdata->SetupPass(Shaders::LensGlare, settings->EnableLensGlare, 1);
+	//renderdata->SetupPass(Shaders::LensHalo, settings->EnableHalo, 1);
+	//renderdata->SetupPass(Shaders::LensGhosts, settings->EnableGhosts, ghostpasses);
 
 	CompileShaders();
 
@@ -169,76 +157,59 @@ void LensEffects::SetupResources()
 	viewPort.MinDepth = 0.0f;
 	viewPort.MaxDepth = 1.0f;
 
-	D3D11_TEXTURE2D_DESC DownSampleTexDesc{};
-	DownSampleTexDesc.Width = (UINT)DownSamplePass1.x;
-	DownSampleTexDesc.Height = (UINT)DownSamplePass1.y;
-	DownSampleTexDesc.MipLevels = 1;
-	DownSampleTexDesc.ArraySize = 2;
-	DownSampleTexDesc.Format = DXGI_FORMAT_R32_FLOAT;
-	DownSampleTexDesc.Usage = D3D11_USAGE_DEFAULT;
-	DownSampleTexDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-	DownSampleTexDesc.SampleDesc.Count = 1;
-	DownSampleTexDesc.SampleDesc.Quality = 0;
-	DownSampleTexDesc.CPUAccessFlags = 0;
-	DownSampleTexDesc.MiscFlags = 0;
+	D3D11_TEXTURE2D_DESC ExponentiateDesc{};
+	ExponentiateDesc.Width = (UINT)DownSampleExpo_AtlasSize.x;
+	ExponentiateDesc.Height = (UINT)DownSampleExpo_AtlasSize.y;
+	ExponentiateDesc.MipLevels = 1;
+	ExponentiateDesc.ArraySize = 1;
+	ExponentiateDesc.Format = DXGI_FORMAT_R32_FLOAT;
+	ExponentiateDesc.Usage = D3D11_USAGE_DEFAULT;
+	ExponentiateDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+	ExponentiateDesc.SampleDesc.Count = 1;
+	ExponentiateDesc.SampleDesc.Quality = 0;
+	ExponentiateDesc.CPUAccessFlags = 0;
+	ExponentiateDesc.MiscFlags = 0;
 
-	D3D11_TEXTURE2D_DESC DownSampleTexDesc2{ DownSampleTexDesc };
-	DownSampleTexDesc2.Width = (UINT)DownSampleOutput.x;
-	DownSampleTexDesc2.Height = (UINT)DownSampleOutput.y;
+	D3D11_TEXTURE2D_DESC MinifyDesc{ ExponentiateDesc };
+	MinifyDesc.Width = (UINT)ESM_AtlasSize.x;
+	MinifyDesc.Height = (UINT)ESM_AtlasSize.y;
 
-	DX::ThrowIfFailed(device->CreateTexture2D(&DownSampleTexDesc, nullptr, &DownSampleTex));
-	DX::ThrowIfFailed(device->CreateTexture2D(&DownSampleTexDesc2, nullptr, &DownSampleTex2));
+	DX::ThrowIfFailed(device->CreateTexture2D(&ExponentiateDesc, nullptr, &ExponentiateTex));
+	DX::ThrowIfFailed(device->CreateTexture2D(&MinifyDesc, nullptr, &MinifyTex));
 
-	D3D11_TEXTURE2D_DESC FilterTexDesc{ DownSampleTexDesc };
-	FilterTexDesc.Width = (UINT)DownSampleOutput.x;
-	FilterTexDesc.Height = (UINT)DownSampleOutput.y;
+	DX::ThrowIfFailed(device->CreateRenderTargetView(ExponentiateTex, nullptr, &ExponentiateRTV));
+	DX::ThrowIfFailed(device->CreateRenderTargetView(MinifyTex, nullptr, &MinifyRTV));
+
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ExponentiateTex, nullptr, &ExponentiateSRV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(MinifyTex, nullptr, &MinifySRV));
+
+	D3D11_TEXTURE2D_DESC FilterTexDesc{ ExponentiateDesc };
+	FilterTexDesc.Width = (UINT)ESM_AtlasSize.x;
+	FilterTexDesc.Height = (UINT)ESM_AtlasSize.y;
+
+	D3D11_TEXTURE2D_DESC ESMTextureDesc{ FilterTexDesc };
 
 	DX::ThrowIfFailed(device->CreateTexture2D(&FilterTexDesc, nullptr, &HorizontalTex));
-	DX::ThrowIfFailed(device->CreateTexture2D(&FilterTexDesc, nullptr, &VerticalTex));
+	DX::ThrowIfFailed(device->CreateTexture2D(&ESMTextureDesc, nullptr, &ESMTexture));
 
-	D3D11_RENDER_TARGET_VIEW_DESC HFilter{};
-	HFilter.Format = FilterTexDesc.Format;
-	HFilter.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-	HFilter.Texture2DArray.MipSlice = 0;
-	HFilter.Texture2DArray.FirstArraySlice = 0;
-	HFilter.Texture2DArray.ArraySize = 1;
-
-	D3D11_RENDER_TARGET_VIEW_DESC HFilter2{ HFilter };
-	HFilter2.Texture2DArray.FirstArraySlice = 1;
-	HFilter2.Texture2DArray.ArraySize = 1;
-
-	D3D11_RENDER_TARGET_VIEW_DESC VFilter{ HFilter };
-	VFilter.Format = FilterTexDesc.Format;
-
-	D3D11_RENDER_TARGET_VIEW_DESC VFilter2{ VFilter };
-	VFilter2.Texture2DArray.FirstArraySlice = 1;
-	VFilter2.Texture2DArray.ArraySize = 1;
-
-	DX::ThrowIfFailed(device->CreateRenderTargetView(HorizontalTex, &HFilter, &HorizontalRTV[0]));
-	DX::ThrowIfFailed(device->CreateRenderTargetView(HorizontalTex, &HFilter2, &HorizontalRTV[1]));
-	DX::ThrowIfFailed(device->CreateRenderTargetView(VerticalTex, &VFilter, &VerticalRTV[0]));
-	DX::ThrowIfFailed(device->CreateRenderTargetView(VerticalTex, &VFilter2, &VerticalRTV[1]));
+	DX::ThrowIfFailed(device->CreateRenderTargetView(HorizontalTex, nullptr, &HorizontalRTV));
+	DX::ThrowIfFailed(device->CreateRenderTargetView(ESMTexture, nullptr, &ESM_RTV));
 
 	DX::ThrowIfFailed(device->CreateShaderResourceView(HorizontalTex, nullptr, &HorizontalSRV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(VerticalTex, nullptr, &VerticalSRV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ESMTexture, nullptr, &ESM_SRV));
 
-	D3D11_RENDER_TARGET_VIEW_DESC DownSample{ HFilter };
-	DownSample.Format = DownSampleTexDesc.Format;
+	renderdata->SetupPass(Shaders::ExpDownSample, settings->EnableStarburst, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::ExpDownSample, settings->EnableStarburst, 1, { .uncond_pass = true });
 
-	D3D11_RENDER_TARGET_VIEW_DESC DownSample2{ DownSample };
-	DownSample2.Texture2DArray.FirstArraySlice = 1;
-	DownSample2.Texture2DArray.ArraySize = 1;
+	renderdata->SetupPass(Shaders::Minify, settings->EnableSunGlare, 1, { .uncond_pass = true });
 
-	DX::ThrowIfFailed(device->CreateRenderTargetView(DownSampleTex, &DownSample, &DownSampleRTV[0]));
-	DX::ThrowIfFailed(device->CreateRenderTargetView(DownSampleTex, &DownSample, &DownSampleRTV[1]));
-	DX::ThrowIfFailed(device->CreateRenderTargetView(DownSampleTex2, &DownSample2, &DownSampleOutputRTV[0]));
-	DX::ThrowIfFailed(device->CreateRenderTargetView(DownSampleTex2, &DownSample2, &DownSampleOutputRTV[1]));
+	//renderdata->SetupPass(Shaders::HorFilter, settings->EnableCA, 1, { .uncond_pass = true });
+	//renderdata->SetupPass(Shaders::VerFilter, settings->EnableIce, 1, { .uncond_pass = true });
 
-	DX::ThrowIfFailed(device->CreateShaderResourceView(DownSampleTex, nullptr, &DownSampleSRV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(DownSampleTex2, nullptr, &DownSampleOutputSRV));
+	renderdata->SetupRenderData();
 }
 
-void LensEffects::SetupDownSample()
+void LensEffects::SetupDownSampleExpo()
 {
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
@@ -246,15 +217,19 @@ void LensEffects::SetupDownSample()
 	ConstBuffer data = UpdateBufferValues();
 	data.slice = slice;
 	data.KernalWidth = 4;
-	data.srcSize = CSMSize;
-	data.InvSrcSize = float2(1.0f, 1.0f) / CSMSize;
+	data.srcSize = CSM_Size;
+	data.InvSrcSize = float2(1.0f / CSM_Size.x, 1.0f / CSM_Size.y);
+	data.dstSize = float2(DownSampleExpo_TileSize, DownSampleExpo_TileSize);
 	data.filterDir = float2(0.0f, 0.0f);
 	SettingsCB->Update(data);
 
-	viewPort.Width = DownSamplePass1.x;
-	viewPort.Height = DownSamplePass1.y;
+	viewPort.TopLeftX = 0.0f;
+	viewPort.TopLeftY = float(slice * DownSampleExpo_TileSize);
+	viewPort.Width = DownSampleExpo_TileSize;
+	viewPort.Height = DownSampleExpo_TileSize;
 	context->RSSetViewports(1, &viewPort);
-	context->OMSetRenderTargets(1, &DownSampleRTV[slice], nullptr);
+
+	context->OMSetRenderTargets(1, &ExponentiateRTV, nullptr);
 	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
 
 	context->VSSetShader(BypassVertexShader, NULL, NULL);
@@ -263,35 +238,39 @@ void LensEffects::SetupDownSample()
 	auto shadowMap = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
 	context->PSSetShaderResources(0, 1, &shadowMap);
 
+	slice++;
+	if (slice == 2)
+		slice = 0;
+
 	overrideShader = false;
 }
 
-void LensEffects::SetupDownSampleOutput()
+void LensEffects::SetupMinify()
 {
 	auto context = globals::d3d::context;
 
 	ConstBuffer data = UpdateBufferValues();
 	data.slice = slice;
 	data.KernalWidth = 4;
-	data.srcSize = DownSamplePass1;
-	data.InvSrcSize = float2(1.0f, 1.0f) / DownSamplePass1;
+	data.srcSize = DownSampleExpo_AtlasSize;
+	data.InvSrcSize = float2(1.0f / DownSampleExpo_AtlasSize.x, 1.0f / DownSampleExpo_AtlasSize.y);
+	data.dstSize = float2(ESM_AtlasSize.x, ESM_AtlasSize.y);
 	data.filterDir = float2(0.0f, 0.0f);
 	SettingsCB->Update(data);
 
-	viewPort.Width = DownSampleOutput.x;
-	viewPort.Height = DownSampleOutput.y;
+	viewPort.TopLeftX = 0.0f;
+	viewPort.TopLeftY = 0.0f;
+	viewPort.Width = ESM_AtlasSize.x;
+	viewPort.Height = ESM_AtlasSize.y;
 	context->RSSetViewports(1, &viewPort);
-	context->OMSetRenderTargets(1, &DownSampleOutputRTV[slice], nullptr);
+
+	context->OMSetRenderTargets(1, &MinifyRTV, nullptr);
 	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
 
 	context->VSSetShader(BypassVertexShader, NULL, NULL);
 	context->PSSetShader(MinifyPS, NULL, NULL);
 
-	context->PSSetShaderResources(0, 1, &DownSampleSRV);
-
-	slice++;
-	if (slice == 2)
-		slice = 0;
+	context->PSSetShaderResources(0, 1, &ExponentiateSRV);
 
 	overrideShader = false;
 }
@@ -300,26 +279,28 @@ void LensEffects::SetupHorizontalFilter()
 {
 	auto context = globals::d3d::context;
 
-	slice = 0;
-
 	ConstBuffer data = UpdateBufferValues();
 	data.slice = slice;
 	data.KernalWidth = 11;
-	data.srcSize = DownSampleOutput;
-	data.InvSrcSize = float2(1.0f, 1.0f) / DownSampleOutput;
+	data.srcSize = ESM_AtlasSize;
+	data.InvSrcSize = float2(1.0f / ESM_AtlasSize.x, 1.0f / ESM_AtlasSize.y);
+	data.dstSize = float2(ESM_AtlasSize.x, ESM_AtlasSize.y);
 	data.filterDir = float2(1.0f, 0.0f);
 	SettingsCB->Update(data);
 
-	viewPort.Width = DownSampleOutput.x;
-	viewPort.Height = DownSampleOutput.y;
+	viewPort.TopLeftX = 0.0f;
+	viewPort.TopLeftY = 0.0f;
+	viewPort.Width = ESM_AtlasSize.x;
+	viewPort.Height = ESM_AtlasSize.y;
 	context->RSSetViewports(1, &viewPort);
-	context->OMSetRenderTargets(1, &HorizontalRTV[slice], nullptr);
+
+	context->OMSetRenderTargets(1, &HorizontalRTV, nullptr);
 	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
 
 	context->VSSetShader(BypassVertexShader, NULL, NULL);
 	context->PSSetShader(FilterPS, NULL, NULL);
 
-	context->PSSetShaderResources(0, 1, &DownSampleOutputSRV);
+	context->PSSetShaderResources(0, 1, &MinifySRV);
 
 	overrideShader = false;
 }
@@ -328,18 +309,26 @@ void LensEffects::SetupVerticalFilter()
 {
 	auto context = globals::d3d::context;
 
+	slice++;
+	if (slice == 2)
+		slice = 0;
+
 	ConstBuffer data = UpdateBufferValues();
 	data.slice = slice;
 	data.KernalWidth = 11;
-	data.srcSize = DownSampleOutput;
-	data.InvSrcSize = float2(1.0f, 1.0f) / DownSampleOutput;
+	data.srcSize = ESM_AtlasSize;
+	data.InvSrcSize = float2(1.0f / ESM_AtlasSize.x, 1.0f / ESM_AtlasSize.y);
+	data.dstSize = float2(ESM_AtlasSize.x, ESM_AtlasSize.y);
 	data.filterDir = float2(0.0f, 1.0f);
 	SettingsCB->Update(data);
 
-	viewPort.Width = DownSampleOutput.x;
-	viewPort.Height = DownSampleOutput.y;
+	viewPort.TopLeftX = 0.0f;
+	viewPort.TopLeftY = 0.0f;
+	viewPort.Width = ESM_AtlasSize.x;
+	viewPort.Height = ESM_AtlasSize.y;
 	context->RSSetViewports(1, &viewPort);
-	context->OMSetRenderTargets(1, &VerticalRTV[slice], nullptr);
+
+	context->OMSetRenderTargets(1, &ESM_RTV, nullptr);
 	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
 
 	context->VSSetShader(BypassVertexShader, NULL, NULL);
@@ -350,10 +339,6 @@ void LensEffects::SetupVerticalFilter()
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_VIEWPORT);
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
-
-	slice++;
-	if (slice == 2)
-		slice = 0;
 
 	overrideShader = false;
 }
@@ -368,6 +353,9 @@ void LensEffects::CheckOverride()
 			UpdateWeatherBasedDisable();
 			UpdateFrameGenBasedDisable();
 			frameIdx = (frameIdx < 16) ? ++frameIdx : 5;
+			slice = 0;
+			float clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+			globals::d3d::context->ClearRenderTargetView(ExponentiateRTV, clear);
 		}
 		LookupShader(shaderdesc);
 	}
@@ -379,15 +367,14 @@ void LensEffects::LookupShader(int desc)
 		{ Shaders::Bypass, &LensEffects::BypassShader },
 		{ Shaders::AttachLUT, &LensEffects::AppendOcclusionLUT },
 		{ Shaders::OcculsionMask, &LensEffects::SetupOcclusionMask },
-		{ Shaders::LensSunGlare, &LensEffects::SetupSunGlareEffect },
 		{ Shaders::LensGlare, &LensEffects::SetupLensGlareEffect },
 		{ Shaders::LensHalo, &LensEffects::SetupHaloEffect },
 		{ Shaders::LensGhosts, &LensEffects::SetupGhostEffect },
 
-		{ Shaders::LensBurst, &LensEffects::SetupDownSample },
-		{ Shaders::LensSunGlare, &LensEffects::SetupDownSampleOutput },
-		{ Shaders::LensCA, &LensEffects::SetupHorizontalFilter },
-		{ Shaders::LensIce, &LensEffects::SetupVerticalFilter }
+		{ Shaders::ExpDownSample, &LensEffects::SetupDownSampleExpo },
+		{ Shaders::Minify, &LensEffects::SetupMinify },
+		{ Shaders::HorFilter, &LensEffects::SetupHorizontalFilter },
+		{ Shaders::VerFilter, &LensEffects::SetupVerticalFilter }
 
 	};
 	auto it = effects.find(desc);
@@ -397,18 +384,7 @@ void LensEffects::LookupShader(int desc)
 
 LensEffects::ConstBuffer LensEffects::UpdateBufferValues()
 {
-	float2 screenSize = Util::ConvertToDynamic(globals::state->screenSize);
-	float4 screenParams = { screenSize.x, screenSize.y, screenSize.x / screenSize.y, 0.0f };
 	ConstBuffer data{};
-	data.screensize = VectorToXMFloat(screenParams);
-	data.frame = frameIdx;
-	data.slice = 0;
-	data.precip = GetWeatherPrecip();
-	data.sunFXFade = weatherFadeout;
-	data.SunParams = GetSunPosition();
-	data.suncolor = GetSunColor();
-	data.shadersettings = UpdateSettings();
-
 	return data;
 }
 
@@ -511,25 +487,6 @@ void LensEffects::SetupGhostEffect()
 {
 	auto context = globals::d3d::context;
 
-	auto it = renderdata->GetCurrentEffect().passesdone - 1;
-	float4& params = settings->coldsettings.GH_Params[it];
-	float4& params_2 = settings->coldsettings.GH_Params_2[it];
-
-	ConstBuffer data = UpdateBufferValues();
-	data.shadersettings.GH_Size = params.x;
-	data.shadersettings.GH_Offset = params.y;
-	data.shadersettings.GH_Shape = params.z;
-	data.shadersettings.GH_Roundness = params.w;
-	data.shadersettings.GH_Rotation = params_2.x;
-	data.shadersettings.GH_Feather = params_2.y;
-	data.shadersettings.GH_CAScale = params_2.z;
-	data.shadersettings.GH_MoveCurve = params_2.w;
-	data.shadersettings.GH_InnerInt = settings->coldsettings.GH_InInt[it];
-	data.shadersettings.GH_Color = VectorToXMFloat(settings->coldsettings.GH_Color[it]);
-	data.shadersettings.GH_Atlas = VectorToXMFloat(settings->coldsettings.GH_Atlas[it]);
-
-	SettingsCB->Update(data);
-
 	context->VSSetShader(GhostVertexShader, NULL, NULL);
 	context->PSSetShader(GhostPixelShader, NULL, NULL);
 
@@ -613,7 +570,7 @@ void LensEffects::BypassShader()
 
 void LensEffects::GetWeatherShader()
 {
-	if (shaderdesc == Shaders::LensIce) {
+	if (shaderdesc == Shaders::VerFilter) {
 		if (auto sky = globals::game::sky) {
 			float lastUpdate = sky->lastWeatherUpdate / 24.0f;
 			static float transEpoch = lastUpdate;
@@ -720,10 +677,10 @@ void LensEffects::UpdateFrameGenBasedDisable()
 	if (auto upscaling = globals::upscaling) {
 		auto method = globals::upscaling->GetUpscaleMethod();
 		if (upscaling->IsFrameGenerationActive() || method == Upscaling::UpscaleMethod::kDLSS || method == Upscaling::UpscaleMethod::kFSR) {
-			renderdata->GetEffect(Shaders::LensIce).Toggle(false);
+			renderdata->GetEffect(Shaders::VerFilter).Toggle(false);
 			upscalingActive = true;
 		} else if (upscalingActive) {
-			renderdata->GetEffect(Shaders::LensIce).Toggle(settings->EnableIce);
+			renderdata->GetEffect(Shaders::VerFilter).Toggle(settings->EnableIce);
 			upscalingActive = false;
 		}
 	}
@@ -892,10 +849,10 @@ void LensEffects::DrawSettings()
 	ImGui::SeparatorText("Enable Effects");
 
 	if (ImGui::Checkbox("Enable Sun Glare", &settings->EnableSunGlare))
-		renderdata->GetEffect(Shaders::LensSunGlare).Toggle(settings->EnableSunGlare);
+		renderdata->GetEffect(Shaders::Minify).Toggle(settings->EnableSunGlare);
 
 	if (ImGui::Checkbox("Enable Starburst", &settings->EnableStarburst))
-		renderdata->GetEffect(Shaders::LensBurst).Toggle(settings->EnableStarburst);
+		renderdata->GetEffect(Shaders::ExpDownSample).Toggle(settings->EnableStarburst);
 
 	if (ImGui::Checkbox("Enable Ghosts", &settings->EnableGhosts))
 		renderdata->GetEffect(Shaders::LensGhosts).Toggle(settings->EnableGhosts);
@@ -907,7 +864,7 @@ void LensEffects::DrawSettings()
 		renderdata->GetEffect(Shaders::LensHalo).Toggle(settings->EnableHalo);
 
 	if (ImGui::Checkbox("Enable Chromatic Aberration", &settings->EnableCA))
-		renderdata->GetEffect(Shaders::LensCA).Toggle(settings->EnableCA);
+		renderdata->GetEffect(Shaders::HorFilter).Toggle(settings->EnableCA);
 
 	if (upscalingActive) {
 		ImGui::BeginDisabled();
@@ -922,7 +879,7 @@ void LensEffects::DrawSettings()
 	}
 
 	if (!upscalingActive && ImGui::IsItemEdited())
-		renderdata->GetEffect(Shaders::LensIce).Toggle(settings->EnableIce);
+		renderdata->GetEffect(Shaders::VerFilter).Toggle(settings->EnableIce);
 	ImGui::Spacing();
 	ImGui::Spacing();
 
@@ -1194,10 +1151,10 @@ void LensEffects::DrawSettings()
 void LensEffects::RefreshToggles()
 {
 	if (renderdata) {
-		renderdata->GetEffect(Shaders::LensIce).Toggle(settings->EnableIce);
-		renderdata->GetEffect(Shaders::LensCA).Toggle(settings->EnableCA);
-		renderdata->GetEffect(Shaders::LensBurst).Toggle(settings->EnableStarburst);
-		renderdata->GetEffect(Shaders::LensSunGlare).Toggle(settings->EnableSunGlare);
+		renderdata->GetEffect(Shaders::VerFilter).Toggle(settings->EnableIce);
+		renderdata->GetEffect(Shaders::HorFilter).Toggle(settings->EnableCA);
+		renderdata->GetEffect(Shaders::ExpDownSample).Toggle(settings->EnableStarburst);
+		renderdata->GetEffect(Shaders::Minify).Toggle(settings->EnableSunGlare);
 		renderdata->GetEffect(Shaders::LensGlare).Toggle(settings->EnableLensGlare);
 		renderdata->GetEffect(Shaders::LensHalo).Toggle(settings->EnableHalo);
 		renderdata->GetEffect(Shaders::LensGhosts).Toggle(settings->EnableGhosts);
