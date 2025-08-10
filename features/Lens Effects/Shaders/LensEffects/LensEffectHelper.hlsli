@@ -153,6 +153,12 @@ float2 AtlasFetch4(float2 coords, uint texNum){
     static const float2 pos[4] = {0.0,0.0, 0.5,0.0, 0.0,0.5, 0.5,0.5};
     return mad(coords, 0.5, pos[texNum - 1]);}
 
+float2 VAtlasFetch4(float2 uv, uint texNum){
+    static const float2 pos[4] = {
+        float2(0.0, 0.00), float2(0.0, 0.25),
+        float2(0.0, 0.50), float2(0.0, 0.75) };
+    return mad(uv, float2(1.0, 0.25), pos[texNum - 1]);
+}
 float2 AtlasFetch16(float2 coords, uint texNum){
     static const float2 pos[16] ={
     float2(0.00, 0.00), float2(0.25, 0.00), float2(0.50, 0.00), float2(0.75, 0.00),

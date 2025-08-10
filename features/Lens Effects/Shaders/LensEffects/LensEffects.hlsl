@@ -83,100 +83,13 @@ struct IceVertexOutput
 //// Resources //////////////////////////////////////////////////////////////////////////
 
 cbuffer Settings : register(b1){
-    float4 ScreenSize;
-    uint  Frame;
-    float Precip;
-    float WeatherBasedFadeout;
-    int slice;
-    float KernalWidth;
     float2 SrcSize;
     float2 InvSrcSize;
+    float2 DstSize;
     float2 FilterDir;
-
-    float4 SunParams;
-    float4 SunBlendColor;
-
-    float UIBurstScale;
-    float UIBurstInt;
-
-    uint  UIEnableBlades;
-    float UIBladeInt;
-    float UIBladeVerts;
-    float UIBladeSplay;
-    float UIBladeRotation;
-    float UIBladeLength;
-    float UIBladeBaseWidth;
-    float UIBladeWidth;
-    float UIBladeTaper;
-    float UIBladeFeather;
-    float UIBladeFadePow;
-    float UIBladeFadeDist;
-    float BladeSplayLen;
-
-    uint  UIEnableRays;
-    float UIRaysInt;
-    float UIRaysVolume;
-    float UIRaysLength;
-    float UIRaysWidth;
-
-    float UIGhostScale;
-    float UIGhostInt;
-    float UIGhostSat;
-    uint  UIGhostClampEnable;
-    float UIGhostClampOffset;
-
-    float UIGhostSize;
-    float UIGhostOffset;
-    float UIGhostShape;
-    float UIGhostRoundness;
-    float UIGhostRotation;
-	float UIGhostFeather;
-	float UIGhostCAFactor;
-	float UIGhostMoveCurve;
-    float UIGhostInsideInt;
-
-    float UIGlareScale;
-    float UIGlareInt;
-    float UIGlareXOffset;
-    float UIGlareYOffset;
-    float UIGlareMaxRot;
-    float UIGlareCutDepth;
-    float UIGlareRadius;
-    float UIGlareTipFade;
-
-    float UIHaloScale;
-    float UIHaloInt;
-    uint  UIHaloEnableExp;
-    uint  UIHaloFlipExpOffset;
-    float UIHaloExpMinSize;
-    float UIHaloExpMaxSize;
-    float UIHaloRotationSpeed;
-    float UIHaloIncr;
-    float UIHaloLength;
-    float UIHaloWidth;
-    float UIHaloTaper;
-    float UIHaloCrShift;
-
-    float UISunGlareScale;
-    float UISunGlareInt;
-    float UISunGlareOuterInt;
-    float UISunGlareFade;
-
-    float UICAIntensity;
-    float UICAThreshold;
-    float UICAMaxOffset;
-
-    float UIFrostInt;
-    float SnowPrecipValue;
-
-    float4 UIBurstColor;
-    float4 UISunGlareColor;
-    float4 UIHaloColor;
-    float4 UIColor;
-    float4 UIGhostAtlas;
-    float4 UIFrostColor;
+    float KernalWidth;
+    uint slice;
 };
-
 SamplerState Linear_Sampler : register(s10);
 SamplerState Point_Sampler : register(s11);
 SamplerState PointMirror_Sampler : register(s12);
@@ -192,7 +105,7 @@ SamplerComparisonState Depth_Sampler : register(s13);
 
 ///// Occlusion Shader //////////////////////////////////////////////////////////////////
 
-#define EXP 0.1
+#define EXP 60
 
 
 #ifdef DownSample
@@ -202,18 +115,30 @@ Texture2DArray ShadowMap : register(t0);
 float main(VertexShaderOutput input) : SV_Target
 {
     float4 accum = 0.0;
+    float4 Sample = 0.0;
 
-    float3 samplingPos = float3(((float2(input.Position.xy) * 4.0 + 1.0) / SrcSize), slice);
+    float ESM_SCALE = 65000;
+    float ESM_EPS = 1e-6;
 
-    accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(0, 0)) * EXP);
-    accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(2, 0)) * EXP);
-    accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(0, 2)) * EXP);
-    accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(2, 2)) * EXP);
+    float3 samplingPos = float3(((input.TexCoord.xy * DstSize * 4.0 + 1.0) / SrcSize), slice);
 
-    float output = dot(accum, 1 / (KernalWidth * KernalWidth));
+    //accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(0, 0)) * EXP);
+    //accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(2, 0)) * EXP);
+    //accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(0, 2)) * EXP);
+    //accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(2, 2)) * EXP);
 
-    if(output == 1.0)
-        output = 0.0;
+    Sample = ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(0, 0));
+    accum += clamp(exp(EXP * (Sample - 1.0)), ESM_EPS, 1.0);
+    Sample = ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(2, 0));
+    accum += clamp(exp(EXP * (Sample - 1.0)), ESM_EPS, 1.0);
+    Sample = ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(0, 2));
+    accum += clamp(exp(EXP * (Sample - 1.0)), ESM_EPS, 1.0);
+    Sample = ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(2, 2));
+    accum += clamp(exp(EXP * (Sample - 1.0)), ESM_EPS, 1.0);
+
+    float output = sum4(accum) * (1 / (KernalWidth * KernalWidth)) * ESM_SCALE;
+
+    //float output = dot(accum, 1 / (KernalWidth * KernalWidth));
 
     return output;
 }
@@ -222,45 +147,52 @@ float main(VertexShaderOutput input) : SV_Target
 
 #ifdef Minify
 
-Texture2DArray DownSampled : register(t0);
+Texture2D DownSampled : register(t0);
 
 float main(VertexShaderOutput input) : SV_Target
 {
     float4 accum = 0.0;
 
-    float3 samplingPos = float3(((float2(input.Position.xy) * 4.0 + 1.0) / SrcSize), slice);
+   // float2 samplingPos = (input.TexCoord.xy * DstSize * 4.0 + 1.0) / SrcSize;
+    //float2 samplingPos = (float2((uint2)input.Position.xy * (uint)KernalWidth) + 0.5) / SrcSize;
+
+    float2 samplingPos = (input.Position.xy * 4.0 + 1.0) / SrcSize;
 
     accum += DownSampled.GatherRed(Point_Sampler, samplingPos, int2(0, 0));
     accum += DownSampled.GatherRed(Point_Sampler, samplingPos, int2(2, 0));
     accum += DownSampled.GatherRed(Point_Sampler, samplingPos, int2(0, 2));
     accum += DownSampled.GatherRed(Point_Sampler, samplingPos, int2(2, 2));
 
-    float output = sum4(accum) * (1 / (KernalWidth * KernalWidth));
-
-    if(output == 1.0)
-        output = 0.0;
+    float output = sum4(accum) * (1.0 / (KernalWidth * KernalWidth));
 
     return output;
 }
 #endif
 
+
+
+
+
+
 #ifdef Filter
 
-Texture2DArray ESM : register(t0);
+Texture2D ESM : register(t0);
 
 float main(VertexShaderOutput input) : SV_Target
 {
     float accum = 0.0;
     float Radius = (KernalWidth - 1) / 2;
 
-    [unroll] for (int i = -Radius; i <= Radius; ++i){
-        float2 Offset = (i * InvSrcSize.x) * FilterDir;
-        float2 Coords = input.TexCoord + Offset;
-        accum += ESM.SampleLevel(Point_Sampler, float3(Coords, slice), 0.0);
+    [loop] for (int i = -Radius; i <= Radius; ++i){
+        float2 Offset = i * (InvSrcSize * FilterDir);
+        accum += ESM.Sample(Point_Sampler, input.TexCoord + Offset);
     }
     float output = accum * (1.0 / KernalWidth);
 
-    return output
+    if(output == 1.0 && FilterDir.x == 0.0)
+        output = 0.0;
+
+    return output;
 }
 #endif
 

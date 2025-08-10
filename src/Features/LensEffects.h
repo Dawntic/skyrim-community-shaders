@@ -35,42 +35,40 @@ struct LensEffects : Feature
 	virtual void BypassShader();
 	virtual void SetupCAEffect();
 
-	virtual void SetupDownSample();
-	virtual void SetupDownSampleOutput();
+	virtual void SetupDownSampleExpo();
+	virtual void SetupMinify();
 	virtual void SetupHorizontalFilter();
 	virtual void SetupVerticalFilter();
 
 	D3D11_VIEWPORT viewPort{};
 	ID3D11PixelShader* DownSamplePS = nullptr;
-	ID3D11PixelShader* FilterPS = nullptr;
 	ID3D11PixelShader* MinifyPS = nullptr;
+	ID3D11PixelShader* FilterPS = nullptr;
 
-	ID3D11Texture2D* DownSampleTex = nullptr;
-	ID3D11Texture2D* DownSampleTex2 = nullptr;
-	ID3D11Texture2D* VerticalTex = nullptr;
+	ID3D11Texture2D* ExponentiateTex = nullptr;
+	ID3D11Texture2D* MinifyTex = nullptr;
 	ID3D11Texture2D* HorizontalTex = nullptr;
+	ID3D11Texture2D* ESMTexture = nullptr;
 
-	ID3D11ShaderResourceView* DownSampleSRV = nullptr;
-	ID3D11ShaderResourceView* DownSampleOutputSRV = nullptr;
-
-	ID3D11ShaderResourceView* VerticalSRV = nullptr;
+	ID3D11ShaderResourceView* ExponentiateSRV = nullptr;
+	ID3D11ShaderResourceView* MinifySRV = nullptr;
 	ID3D11ShaderResourceView* HorizontalSRV = nullptr;
+	ID3D11ShaderResourceView* ESM_SRV = nullptr;
 
-	ID3D11RenderTargetView* DownSampleRTV[2] = {};
-	ID3D11RenderTargetView* DownSampleOutputRTV[2] = {};
+	ID3D11RenderTargetView* ExponentiateRTV;
+	ID3D11RenderTargetView* MinifyRTV;
+	ID3D11RenderTargetView* HorizontalRTV = nullptr;
+	ID3D11RenderTargetView* ESM_RTV = nullptr;
 
-	ID3D11RenderTargetView* VerticalRTV[2] = {};
-	ID3D11RenderTargetView* HorizontalRTV[2] = {};
+	float2 CSM_Size = float2(4096.0f, 4096.0f);
 
-	float2 CSMSize = float2(4096.0f, 4096.0f);
-	float2 DownSamplePass1 = float2(1024.0f, 1024.0f);
-	float2 DownSampleOutput = float2(256.0f, 256.0f);
+	float2 DownSampleExpo_AtlasSize = float2(1024.0f, 2048.0f);
+	float DownSampleExpo_TileSize = 1024.0f;
+
+	float2 ESM_AtlasSize = float2(256.0f, 512.0f);
+	float ESM_TileSize = 256.0f;
 
 	int slice = 0;
-	float kernalWidth = 0.0f;
-	float2 srcSize = float2(0.0f, 0.0f);
-	float2 invSrcSize = float2(0.0f, 0.0f);
-	float2 filterDir = float2(0.0f, 0.0f);
 
 	ConstantBuffer* SettingsCB = nullptr;
 	ID3D11BlendState* BlendState[2] = {};
@@ -347,19 +345,13 @@ struct LensEffects : Feature
 
 	struct alignas(16) ConstBuffer
 	{
-		DirectX::XMFLOAT4A screensize;
-		uint frame;
-		float precip;
-		float sunFXFade;
-		int slice;
-		float KernalWidth;
 		float2 srcSize;
 		float2 InvSrcSize;
+		float2 dstSize;
 		float2 filterDir;
-		float _pad[1];
-		DirectX::XMFLOAT4A SunParams;
-		DirectX::XMFLOAT4A suncolor;
-		MainSettings shadersettings;
+		float KernalWidth;
+		uint slice;
+		float _pad[2];
 	};
 	virtual ConstBuffer UpdateBufferValues();
 
@@ -394,13 +386,13 @@ struct LensEffects : Feature
 			AttachLUT = 1,
 			OcculsionMask = 2,
 
-			LensIce = 3,
-			LensCA = 4,
-			LensBurst = 5,
+			VerFilter = 3,
+			HorFilter = 4,
+			ExpDownSample = 5,
 			LensGlare = 6,
 			LensHalo = 7,
 			LensGhosts = 8,
-			LensSunGlare = 9
+			Minify = 9
 		};
 	};
 	Shaders::Enum shaderdesc;
