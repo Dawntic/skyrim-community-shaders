@@ -28,9 +28,12 @@ struct LensEffects : Feature
 	virtual void SetupMinify();
 	virtual void SetupHorizontalFilter();
 	virtual void SetupVerticalFilter();
+	virtual void GetLightMatrix();
+	virtual int UpdateMatrixCache();
+	virtual void Override();
 
 	D3D11_VIEWPORT viewPort{};
-	ConstantBuffer* SettingsCB = nullptr;
+	ConstantBuffer* ESMCBuffer = nullptr;
 	ID3D11SamplerState* LinearSampler = nullptr;
 	ID3D11SamplerState* PointSampler = nullptr;
 	ID3D11SamplerState* DepthSampler = nullptr;
@@ -45,23 +48,36 @@ struct LensEffects : Feature
 	ID3D11Texture2D* HorizontalTex = nullptr;
 	ID3D11Texture2D* ESMTexture = nullptr;
 
-	ID3D11Texture2D* STBNoiseTexture = nullptr;
-
 	ID3D11ShaderResourceView* ExponentiateSRV = nullptr;
 	ID3D11ShaderResourceView* MinifySRV = nullptr;
 	ID3D11ShaderResourceView* HorizontalSRV = nullptr;
 	ID3D11ShaderResourceView* ESM_SRV = nullptr;
-	ID3D11ShaderResourceView* STBNoiseSRV = nullptr;
 
 	ID3D11RenderTargetView* ExponentiateRTV;
 	ID3D11RenderTargetView* MinifyRTV;
 	ID3D11RenderTargetView* HorizontalRTV = nullptr;
 	ID3D11RenderTargetView* ESM_RTV = nullptr;
 
-	uintptr_t* skyrim_FlareData = nullptr;
-	uint32_t* skyrim_RunFlarePtr = nullptr;
+	Microsoft::WRL::ComPtr<ID3D11Buffer> PrevFrameBuffer[2];
+	//ID3D11Buffer* PrevFrameBuffer ;
+	//ConstantBuffer* PrevFrameBuffer = nullptr;
+	ConstantBuffer* ShadowVolBuffer = nullptr;
 
-	bool overrideShader = false;
+	ID3D11ComputeShader* GenerateShadowVolume = nullptr;
+
+	ID3D11Texture3D* ShadowVolume = nullptr;
+	ID3D11Texture3D* ShadowVolumePrev = nullptr;
+
+	ID3D11UnorderedAccessView* ShadowVolumeUAV = nullptr;
+	ID3D11UnorderedAccessView* ShadowVolumePrevUAV = nullptr;
+
+	ID3D11ShaderResourceView* ShadowVolumeSRV = nullptr;
+	ID3D11ShaderResourceView* ShadowVolumePrevSRV = nullptr;
+
+	ID3D11ShaderResourceView* STBNoiseSRV = nullptr;
+
+	float3 volumeDimensions = float3(160, 88, 64);
+	float3 NoiseDimensions = float3(64, 64, 32);
 
 	float2 CSM_Size = float2(4096.0f, 4096.0f);
 
@@ -70,8 +86,31 @@ struct LensEffects : Feature
 
 	float2 ESM_AtlasSize = float2(256.0f, 512.0f);
 	float ESM_TileSize = 256.0f;
-
 	int slice = 0;
+
+	uint AtlasBorderPx = 2;  //
+	uint ESM_EXP = 60;
+	uint ESM_Scale = 65000;
+
+	uint FrameIdx = 0;  // max?
+	//float AmbientTerm = 1.0; //
+	float CellJitterValue = 0;  //
+	float RayJitterValue = 0;   //
+
+	REX::W32::XMFLOAT4X4 lightMatrix[2];
+
+	int PrevMatrixIdx;
+
+	uintptr_t* skyrim_FlareData = nullptr;
+	uint32_t* skyrim_RunFlarePtr = nullptr;
+
+	void(__fastcall* LFApply_func)(RE::NiCamera*, void*, uint64_t) = nullptr;
+
+	RE::NiCamera* BGSCamera = nullptr;
+	void* BGSShader = nullptr;
+
+	bool overrideCalled = false;
+	bool overrideShader = false;
 
 	virtual void RestoreDefaultSettings() override;
 	virtual void DrawSettings() override;
@@ -84,7 +123,7 @@ struct LensEffects : Feature
 	};
 	Settings settings;
 
-	struct alignas(16) ConstBuffer
+	struct alignas(16) ESMBuffer
 	{
 		float2 srcSize;
 		float2 InvSrcSize;
@@ -92,9 +131,25 @@ struct LensEffects : Feature
 		float2 filterDir;
 		float KernalWidth;
 		uint slice;
-		float _pad[2];
+		uint ESM_EXP;
+		uint ESM_Scale;
 	};
-	virtual ConstBuffer UpdateBufferValues();
+	virtual ESMBuffer UpdateESMBuffer();
+
+	struct alignas(16) ShadowVolumeBuffer
+	{
+		REX::W32::XMFLOAT4X4 lightMat[2];
+		float2 ShadowAtlasSize;
+		uint ShadowAtlasBorderPx;
+		//float AmbientTerm;
+		float CellJitterValue;
+		float RayJitterValue;
+		uint Frame;
+		uint ESM_Scale;
+		uint ESM_EXP;
+		//float pad[2];
+	};
+	virtual ShadowVolumeBuffer UpdateShadowBuffer();
 
 	virtual inline DirectX::XMFLOAT4A VectorToXMFloat(float4& value) { return DirectX::XMFLOAT4A(value.x, value.y, value.z, value.w); }
 	virtual inline float LinearStep(float edge0, float edge1, float x) { return std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f); }

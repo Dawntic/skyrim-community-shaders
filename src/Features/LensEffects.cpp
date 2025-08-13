@@ -41,7 +41,7 @@ void LensEffects::SetupResources()
 	DX::ThrowIfFailed(device->CreateSamplerState(&pointSamplerDesc, &PointSampler));
 	DX::ThrowIfFailed(device->CreateSamplerState(&depthSamplerDesc, &DepthSampler));
 
-	SettingsCB = new ConstantBuffer(ConstantBufferDesc<ConstBuffer>());
+	ESMCBuffer = new ConstantBuffer(ConstantBufferDesc<ESMBuffer>());
 
 	CompileShaders();
 
@@ -95,8 +95,41 @@ void LensEffects::SetupResources()
 
 	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\LensEffects\\Textures\\STBN.dds", nullptr, &STBNoiseSRV));
 
+	D3D11_TEXTURE3D_DESC volumeDesc{};
+	volumeDesc.Width = (UINT)volumeDimensions.x;
+	volumeDesc.Height = (UINT)volumeDimensions.y;
+	volumeDesc.Depth = (UINT)volumeDimensions.z;
+	volumeDesc.MipLevels = 1;
+	volumeDesc.Format = DXGI_FORMAT_R16_FLOAT;
+	volumeDesc.Usage = D3D11_USAGE_DEFAULT;
+	volumeDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+	volumeDesc.CPUAccessFlags = 0;
+	volumeDesc.MiscFlags = 0;
+
+	D3D11_UNORDERED_ACCESS_VIEW_DESC volumeUAVdesc{};
+	volumeUAVdesc.Format = volumeDesc.Format;
+	volumeUAVdesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D;
+	volumeUAVdesc.Texture3D.MipSlice = 0;
+	volumeUAVdesc.Texture3D.FirstWSlice = 0;
+	volumeUAVdesc.Texture3D.WSize = volumeDesc.Depth;
+
+	D3D11_TEXTURE3D_DESC volumePrevDesc{ volumeDesc };
+	D3D11_UNORDERED_ACCESS_VIEW_DESC volumePrevUAVdesc{ volumeUAVdesc };
+
+	DX::ThrowIfFailed(device->CreateTexture3D(&volumeDesc, nullptr, &ShadowVolume));
+	DX::ThrowIfFailed(device->CreateTexture3D(&volumePrevDesc, nullptr, &ShadowVolumePrev));
+
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ShadowVolume, &volumeUAVdesc, &ShadowVolumeUAV));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ShadowVolumePrev, &volumePrevUAVdesc, &ShadowVolumePrevUAV));
+
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ShadowVolume, nullptr, &ShadowVolumeSRV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ShadowVolumePrev, nullptr, &ShadowVolumePrevSRV));
+
+	ShadowVolBuffer = new ConstantBuffer(ConstantBufferDesc<ShadowVolumeBuffer>());
+
 	skyrim_FlareData = reinterpret_cast<uintptr_t*>(REL::RelocationID(527915, 414867).address());
 	skyrim_RunFlarePtr = reinterpret_cast<uint32_t*>(REL::RelocationID(527916, 414862).address());
+	LFApply_func = reinterpret_cast<decltype(LFApply_func)>(REL::RelocationID(106995, 106995).address());
 
 	renderdata = new Setup::LF_RenderData;
 
@@ -115,16 +148,18 @@ void LensEffects::SetupDownSampleExpo()
 {
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
-	auto buffer = SettingsCB->CB();
+	auto buffer = ESMCBuffer->CB();
 
-	ConstBuffer data = UpdateBufferValues();
+	ESMBuffer data = UpdateESMBuffer();  //better way to update
 	data.slice = slice;
 	data.KernalWidth = 4;
 	data.srcSize = CSM_Size;
 	data.InvSrcSize = float2(1.0f / CSM_Size.x, 1.0f / CSM_Size.y);
 	data.dstSize = float2(DownSampleExpo_TileSize, DownSampleExpo_TileSize);
 	data.filterDir = float2(0.0f, 0.0f);
-	SettingsCB->Update(data);
+	data.ESM_EXP = ESM_EXP;
+	data.ESM_Scale = ESM_Scale;  //missing
+	ESMCBuffer->Update(data);
 
 	viewPort.TopLeftX = 0.0f;
 	viewPort.TopLeftY = float(slice * DownSampleExpo_TileSize);
@@ -137,6 +172,10 @@ void LensEffects::SetupDownSampleExpo()
 
 	context->PSSetConstantBuffers(1, 1, &buffer);
 	context->VSSetConstantBuffers(1, 1, &buffer);
+
+	ID3D11Buffer* buffer2 = PrevFrameBuffer[PrevMatrixIdx].Get();
+	context->PSSetConstantBuffers(2, 1, &buffer2);
+	context->VSSetConstantBuffers(2, 1, &buffer2);
 
 	context->PSSetSamplers(10, 1, &LinearSampler);
 	context->PSSetSamplers(11, 1, &PointSampler);
@@ -159,14 +198,14 @@ void LensEffects::SetupMinify()
 {
 	auto context = globals::d3d::context;
 
-	ConstBuffer data = UpdateBufferValues();
+	ESMBuffer data = UpdateESMBuffer();
 	data.slice = slice;
 	data.KernalWidth = 4;
 	data.srcSize = DownSampleExpo_AtlasSize;
 	data.InvSrcSize = float2(1.0f / DownSampleExpo_AtlasSize.x, 1.0f / DownSampleExpo_AtlasSize.y);
 	data.dstSize = float2(ESM_AtlasSize.x, ESM_AtlasSize.y);
 	data.filterDir = float2(0.0f, 0.0f);
-	SettingsCB->Update(data);
+	ESMCBuffer->Update(data);
 
 	viewPort.TopLeftX = 0.0f;
 	viewPort.TopLeftY = 0.0f;
@@ -182,21 +221,160 @@ void LensEffects::SetupMinify()
 
 	context->PSSetShaderResources(0, 1, &ExponentiateSRV);
 
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_VIEWPORT);
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
+
 	overrideShader = false;
+}
+
+void LensEffects::GetLightMatrix()
+{
+	auto shaderManager = globals::game::smState;
+
+	if (shaderManager && shaderManager->shadowSceneNode[0]) {
+		logger::info("Scene node");
+		if (auto runtime = &shaderManager->shadowSceneNode[0]->GetRuntimeData()) {
+			logger::info("Runtime");
+			if (auto bsLight = runtime->sunLight) {
+				logger::info("Got Light");
+				if (bsLight->IsShadowLight()) {
+					logger::info("Is Shadow Light");
+					if (auto* shadowLight = static_cast<RE::BSShadowLight*>(bsLight)) {
+						logger::info("Got Shadow Light");
+						lightMatrix[0] = shadowLight->GetRuntimeData().shadowmapDescriptors[0].lightTransform;
+						lightMatrix[1] = shadowLight->GetRuntimeData().shadowmapDescriptors[1].lightTransform;
+					}
+				}
+			}
+		}
+	}
+}
+
+int LensEffects::UpdateMatrixCache()
+{
+	int outValue;
+	if (!PrevFrameBuffer[0] || !PrevFrameBuffer[1]) {
+		if (ID3D11Buffer* buffer = *globals::game::perFrame.get()) {
+			logger::info("Buffer");
+			D3D11_BUFFER_DESC srcDesc{};
+			buffer->GetDesc(&srcDesc);
+
+			D3D11_BUFFER_DESC dstDesc = srcDesc;
+			dstDesc.Usage = D3D11_USAGE_DEFAULT;
+			dstDesc.CPUAccessFlags = 0;
+			dstDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+
+			DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&dstDesc, nullptr, PrevFrameBuffer[0].GetAddressOf()));
+			DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&dstDesc, nullptr, PrevFrameBuffer[1].GetAddressOf()));
+		} else {
+			logger::info("No Buffer");
+			return;
+		}
+	}
+
+	if (ID3D11Buffer* buffer = *globals::game::perFrame.get()) {
+		if (!PrevFrameBuffer[0] || !PrevFrameBuffer[1]) {
+			logger::info("Buffer Error");
+			return;
+		}
+
+		static int PrevFrameWrite = 0;
+
+		static bool PrevFrameValid = false;
+		if (!PrevFrameValid) {
+			globals::d3d::context->CopyResource(PrevFrameBuffer[0].Get(), buffer);
+			globals::d3d::context->CopyResource(PrevFrameBuffer[1].Get(), buffer);
+			PrevFrameValid = true;
+			PrevFrameWrite = 0;
+		}
+
+		outValue = PrevFrameWrite ^ 1;
+
+		globals::d3d::context->CopyResource(PrevFrameBuffer[PrevFrameWrite].Get(), buffer);
+		PrevFrameWrite ^= 1;
+		logger::info("Copy Buffer");
+	}
+	return outValue;
+}
+
+void LensEffects::CheckOverride()
+{
+	static Util::FrameChecker frame_checker;
+
+	if (overrideShader) {
+		if (frame_checker.IsNewFrame()) {
+			PrevMatrixIdx = UpdateMatrixCache();
+			GetLightMatrix();
+
+			//ESMCBuffer->Update(UpdateESMBuffer());
+			//ShadowVolBuffer->Update(UpdateShadowBuffer());
+
+			FrameIdx++;
+			slice = 0;
+			float clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+			globals::d3d::context->ClearRenderTargetView(ExponentiateRTV, clear);
+		}
+		LookupShader(shaderdesc);
+	}
+}
+
+void LensEffects::LookupShader(int desc)
+{
+	static const std::unordered_map<int, void (LensEffects::*)()> effects{
+		{ Shaders::ExpDownSample, &LensEffects::SetupDownSampleExpo },
+		{ Shaders::Minify, &LensEffects::SetupMinify },
+		{ Shaders::HorFilter, &LensEffects::SetupHorizontalFilter },
+		{ Shaders::VerFilter, &LensEffects::SetupVerticalFilter }
+
+	};
+	auto it = effects.find(desc);
+	if (it != effects.cend())
+		(this->*(it->second))();
+}
+
+LensEffects::ESMBuffer LensEffects::UpdateESMBuffer()
+{
+	ESMBuffer data{};
+	return data;
+}
+
+LensEffects::ShadowVolumeBuffer LensEffects::UpdateShadowBuffer()
+{
+	ShadowVolumeBuffer data{};
+	data.lightMat[0] = lightMatrix[0];
+	data.lightMat[1] = lightMatrix[1];
+	data.ShadowAtlasSize = ESM_AtlasSize;
+	data.ShadowAtlasBorderPx;
+	//data.AmbientTerm;
+	data.CellJitterValue;
+	data.RayJitterValue;
+	data.Frame = FrameIdx;
+	data.ESM_Scale = ESM_Scale;
+	data.ESM_EXP = ESM_EXP;
+	return data;
+}
+
+void LensEffects::Override()
+{
+	if (renderdata && LFApply_func && BGSCamera && BGSShader) {
+		logger::info("Call flare func");
+		LFApply_func(BGSCamera, BGSShader, (uint64_t)0);
+	}
 }
 
 void LensEffects::SetupHorizontalFilter()
 {
 	auto context = globals::d3d::context;
 
-	ConstBuffer data = UpdateBufferValues();
+	ESMBuffer data = UpdateESMBuffer();
 	data.slice = slice;
 	data.KernalWidth = 11;
 	data.srcSize = ESM_AtlasSize;
 	data.InvSrcSize = float2(1.0f / ESM_AtlasSize.x, 1.0f / ESM_AtlasSize.y);
 	data.dstSize = float2(ESM_AtlasSize.x, ESM_AtlasSize.y);
 	data.filterDir = float2(1.0f, 0.0f);
-	SettingsCB->Update(data);
+	ESMCBuffer->Update(data);
 
 	viewPort.TopLeftX = 0.0f;
 	viewPort.TopLeftY = 0.0f;
@@ -223,14 +401,14 @@ void LensEffects::SetupVerticalFilter()
 	if (slice == 2)
 		slice = 0;
 
-	ConstBuffer data = UpdateBufferValues();
+	ESMBuffer data = UpdateESMBuffer();
 	data.slice = slice;
 	data.KernalWidth = 11;
 	data.srcSize = ESM_AtlasSize;
 	data.InvSrcSize = float2(1.0f / ESM_AtlasSize.x, 1.0f / ESM_AtlasSize.y);
 	data.dstSize = float2(ESM_AtlasSize.x, ESM_AtlasSize.y);
 	data.filterDir = float2(0.0f, 1.0f);
-	SettingsCB->Update(data);
+	ESMCBuffer->Update(data);
 
 	viewPort.TopLeftX = 0.0f;
 	viewPort.TopLeftY = 0.0f;
@@ -246,46 +424,7 @@ void LensEffects::SetupVerticalFilter()
 
 	context->PSSetShaderResources(0, 1, &HorizontalSRV);
 
-	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
-	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_VIEWPORT);
-	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
-
 	overrideShader = false;
-}
-
-void LensEffects::CheckOverride()
-{
-	static Util::FrameChecker frame_checker;
-
-	if (overrideShader) {
-		if (frame_checker.IsNewFrame()) {
-			SettingsCB->Update(UpdateBufferValues());
-			slice = 0;
-			float clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-			globals::d3d::context->ClearRenderTargetView(ExponentiateRTV, clear);
-		}
-		LookupShader(shaderdesc);
-	}
-}
-
-void LensEffects::LookupShader(int desc)
-{
-	static const std::unordered_map<int, void (LensEffects::*)()> effects{
-		{ Shaders::ExpDownSample, &LensEffects::SetupDownSampleExpo },
-		{ Shaders::Minify, &LensEffects::SetupMinify },
-		{ Shaders::HorFilter, &LensEffects::SetupHorizontalFilter },
-		{ Shaders::VerFilter, &LensEffects::SetupVerticalFilter }
-
-	};
-	auto it = effects.find(desc);
-	if (it != effects.cend())
-		(this->*(it->second))();
-}
-
-LensEffects::ConstBuffer LensEffects::UpdateBufferValues()
-{
-	ConstBuffer data{};
-	return data;
 }
 
 void LensEffects::Hooks::LensFlare_CheckResources::thunk()
@@ -302,6 +441,11 @@ void LensEffects::Hooks::LensFlareVisibility_CheckRenderCondition::thunk(RE::NiC
 {
 	auto& lens = globals::features::lensEffects;
 
+	if (!lens.BGSCamera || !lens.BGSShader) {
+		lens.BGSCamera = camera;
+		lens.BGSShader = shader;
+	}
+
 	func(camera, shader);  //set skyrim_RunFlarePtr
 
 	bool sunVisble = static_cast<bool>(*lens.skyrim_RunFlarePtr);
@@ -311,6 +455,8 @@ void LensEffects::Hooks::LensFlareVisibility_CheckRenderCondition::thunk(RE::NiC
 		*lens.skyrim_RunFlarePtr = 1;
 	} else
 		*lens.skyrim_RunFlarePtr = 0;
+
+	//*lens.skyrim_RunFlarePtr = 0; ////////
 }
 
 void LensEffects::Hooks::BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>::thunk(void* shader, RE::BSTriShape* shape, RE::ImageSpaceEffectParam* param)
