@@ -30,17 +30,36 @@ cbuffer Settings : register(b1){
     float2 FilterDir;
     float KernalWidth;
     uint slice;
+    uint EXP;
+    uint ESM_SCALE;
 };
+
+cbuffer PrevPerFrame : register(b2)
+{
+    row_major float4x4 PrevCameraView[1] : packoffset(c0);
+    row_major float4x4 PrevCameraProj[1] : packoffset(c4);
+    row_major float4x4 PrevCameraViewProj[1] : packoffset(c8);
+    row_major float4x4 PrevCameraViewProjUnjittered[1] : packoffset(c12);
+    row_major float4x4 PrevCameraPreviousViewProjUnjittered[1] : packoffset(c16);
+    row_major float4x4 PrevCameraProjUnjittered[1] : packoffset(c20);
+    row_major float4x4 PrevCameraProjUnjitteredInverse[1] : packoffset(c24);
+    row_major float4x4 PrevCameraViewInverse[1] : packoffset(c28);
+    row_major float4x4 PrevCameraViewProjInverse[1] : packoffset(c32);
+    row_major float4x4 PrevCameraProjInverse[1] : packoffset(c36);
+    float4 PrevCameraPosAdjust[1] : packoffset(c40);
+    float4 PrevCameraPreviousPosAdjust[1] : packoffset(c41);
+    float4 PrevFrameParams : packoffset(c42);
+    float4 PrevDynamicResolutionParams1 : packoffset(c43);
+    float4 PrevDynamicResolutionParams2 : packoffset(c44);
+};
+
 SamplerState Linear_Sampler : register(s10);
 SamplerState Point_Sampler : register(s11);
 SamplerComparisonState Depth_Sampler : register(s13);
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-
-
-#define EXP 60
-
+#define EPSILON 1e-6
 
 //// Create ESM /////////////////////////////////////////////////////////////////////////
 
@@ -54,26 +73,20 @@ float main(VertexShaderOutput input) : SV_Target
     float4 accum = 0.0;
     float4 Sample = 0.0;
 
-    float ESM_SCALE = 65000;
-    float ESM_EPS = 1e-6;
-
     float3 samplingPos = float3(((input.TexCoord.xy * DstSize * 4.0 + 1.0) / SrcSize), slice);
 
-    //accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(0, 0)) * EXP);
-    //accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(2, 0)) * EXP);
-    //accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(0, 2)) * EXP);
-    //accum += exp(ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(2, 2)) * EXP);
-
     Sample = ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(0, 0));
-    accum += clamp(exp(EXP * (Sample - 1.0)), ESM_EPS, 1.0);
+    accum += clamp(exp(EXP * (Sample - 1.0)), EPSILON, 1.0);
     Sample = ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(2, 0));
-    accum += clamp(exp(EXP * (Sample - 1.0)), ESM_EPS, 1.0);
+    accum += clamp(exp(EXP * (Sample - 1.0)), EPSILON, 1.0);
     Sample = ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(0, 2));
-    accum += clamp(exp(EXP * (Sample - 1.0)), ESM_EPS, 1.0);
+    accum += clamp(exp(EXP * (Sample - 1.0)), EPSILON, 1.0);
     Sample = ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(2, 2));
-    accum += clamp(exp(EXP * (Sample - 1.0)), ESM_EPS, 1.0);
+    accum += clamp(exp(EXP * (Sample - 1.0)), EPSILON, 1.0);
 
     float output = sum4(accum) * (1 / (KernalWidth * KernalWidth)) * ESM_SCALE;
+
+    output *= DynamicResolutionParams2.x;
 
     return output;
 }
