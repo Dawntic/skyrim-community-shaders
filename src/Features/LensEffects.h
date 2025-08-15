@@ -26,13 +26,18 @@ struct LensEffects : Feature
 
 	virtual void SetupDownSampleExpo();
 	virtual void SetupMinify();
-	virtual void SetupHorizontalFilter();
-	virtual void SetupVerticalFilter();
-	virtual void GetLightMatrix();
+	virtual void SetupShadowVolume();
+	virtual void SetupApplyVolume();
+
 	virtual int UpdateMatrixCache();
 	virtual void Override();
 
-	D3D11_VIEWPORT viewPort{};
+	virtual bool CheckFrameBuffer();
+
+	virtual void SetupHorizontalFilter();
+	virtual void SetupVerticalFilter();
+
+	D3D11_VIEWPORT viewPort[4];
 	ConstantBuffer* ESMCBuffer = nullptr;
 	ID3D11SamplerState* LinearSampler = nullptr;
 	ID3D11SamplerState* PointSampler = nullptr;
@@ -59,25 +64,25 @@ struct LensEffects : Feature
 	ID3D11RenderTargetView* ESM_RTV = nullptr;
 
 	Microsoft::WRL::ComPtr<ID3D11Buffer> PrevFrameBuffer[2];
-	//ID3D11Buffer* PrevFrameBuffer ;
-	//ConstantBuffer* PrevFrameBuffer = nullptr;
-	ConstantBuffer* ShadowVolBuffer = nullptr;
+	ConstantBuffer* ShadowVolumeBuffer = nullptr;
+	ID3D11BlendState* AddBlend = nullptr;
 
-	ID3D11ComputeShader* GenerateShadowVolume = nullptr;
+	ID3D11ComputeShader* GenerateShadowVolumeCS = nullptr;
+	ID3D11PixelShader* ApplyVolumePS = nullptr;
 
 	ID3D11Texture3D* ShadowVolume = nullptr;
-	ID3D11Texture3D* ShadowVolumePrev = nullptr;
+	ID3D11Texture3D* PrevShadowVolume = nullptr;
 
 	ID3D11UnorderedAccessView* ShadowVolumeUAV = nullptr;
-	ID3D11UnorderedAccessView* ShadowVolumePrevUAV = nullptr;
+	ID3D11UnorderedAccessView* PrevShadowVolumeUAV = nullptr;
 
 	ID3D11ShaderResourceView* ShadowVolumeSRV = nullptr;
-	ID3D11ShaderResourceView* ShadowVolumePrevSRV = nullptr;
+	ID3D11ShaderResourceView* PrevShadowVolumeSRV = nullptr;
 
 	ID3D11ShaderResourceView* STBNoiseSRV = nullptr;
 
-	float3 volumeDimensions = float3(160, 88, 64);
-	float3 NoiseDimensions = float3(64, 64, 32);
+	float4 volumeDimensions = float4(160, 88, 64, 0);
+	float4 noiseDimensions = float4(64, 64, 32, 0);
 
 	float2 CSM_Size = float2(4096.0f, 4096.0f);
 
@@ -86,19 +91,19 @@ struct LensEffects : Feature
 
 	float2 ESM_AtlasSize = float2(256.0f, 512.0f);
 	float ESM_TileSize = 256.0f;
-	int slice = 0;
+
+	uint pass = 1;
+	uint FrameIdx = 0;  // max?
 
 	uint AtlasBorderPx = 2;  //
 	uint ESM_EXP = 60;
 	uint ESM_Scale = 65000;
 
-	uint FrameIdx = 0;  // max?
 	//float AmbientTerm = 1.0; //
-	float CellJitterValue = 0;  //
-	float RayJitterValue = 0;   //
+	float CellJitterValue = 0.55;  //
+	float RayJitterValue = 0.28;   //
 
-	REX::W32::XMFLOAT4X4 lightMatrix[2];
-
+	float4 PrevCameraData[2];
 	int PrevMatrixIdx;
 
 	uintptr_t* skyrim_FlareData = nullptr;
@@ -111,6 +116,8 @@ struct LensEffects : Feature
 
 	bool overrideCalled = false;
 	bool overrideShader = false;
+
+	float2 screenSize;
 
 	virtual void RestoreDefaultSettings() override;
 	virtual void DrawSettings() override;
@@ -125,31 +132,34 @@ struct LensEffects : Feature
 
 	struct alignas(16) ESMBuffer
 	{
+		uint slice;
+		uint KernalWidth;
+		uint ESM_EXP;
+		uint ESM_Scale;
 		float2 srcSize;
 		float2 InvSrcSize;
 		float2 dstSize;
-		float2 filterDir;
-		float KernalWidth;
-		uint slice;
-		uint ESM_EXP;
-		uint ESM_Scale;
+		float _pad[2];
+		//float2 filterDir;
 	};
-	virtual ESMBuffer UpdateESMBuffer();
+	virtual ESMBuffer UpdateESMBuffer(uint slice);
 
-	struct alignas(16) ShadowVolumeBuffer
+	struct alignas(16) ShadowVolBuffer
 	{
-		REX::W32::XMFLOAT4X4 lightMat[2];
+		float4 VolumeSize;
+		float4 NoiseSize;
+		float4 PrevCameraData;
 		float2 ShadowAtlasSize;
-		uint ShadowAtlasBorderPx;
-		//float AmbientTerm;
 		float CellJitterValue;
 		float RayJitterValue;
 		uint Frame;
 		uint ESM_Scale;
 		uint ESM_EXP;
-		//float pad[2];
+		float _pad[1];
+		//uint ShadowAtlasBorderPx;
+		//float AmbientTerm;
 	};
-	virtual ShadowVolumeBuffer UpdateShadowBuffer();
+	virtual ShadowVolBuffer UpdateShadowBuffer();
 
 	virtual inline DirectX::XMFLOAT4A VectorToXMFloat(float4& value) { return DirectX::XMFLOAT4A(value.x, value.y, value.z, value.w); }
 	virtual inline float LinearStep(float edge0, float edge1, float x) { return std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f); }
@@ -162,7 +172,9 @@ struct LensEffects : Feature
 			ExpDownSample = 1,
 			Minify = 2,
 			VerFilter = 3,
-			HorFilter = 4
+			HorFilter = 4,
+			Volume = 5,
+			Apply = 6
 		};
 	};
 	Shaders::Enum shaderdesc;
@@ -262,16 +274,16 @@ struct LensEffects : Feature
 			void ResetEffects(bool sunVisible)
 			{
 				currentEffect = 0;
-				for (auto& pass : Passes) pass->passesdone = 0;
+				for (auto& passn : Passes) passn->passesdone = 0;
 				passarray_ptr = (sunVisible) ? PassList.data() : NoSunPassList.data();
 				passcount = (sunVisible) ? PassList.size() : NoSunPassList.size();
 			}
 
 			LF_PassData& GetEffect(int desc)
 			{
-				for (auto& pass : Passes) {
-					if (pass->GetDesc() == desc)
-						return *pass.get();
+				for (auto& passn : Passes) {
+					if (passn->GetDesc() == desc)
+						return *passn.get();
 				}
 				throw std::out_of_range("");
 			}
@@ -283,8 +295,8 @@ struct LensEffects : Feature
 
 			void CheckRefData()
 			{
-				for (auto& pass : PassList) {
-					pass->CheckRefs();
+				for (auto& passn : PassList) {
+					passn->CheckRefs();
 				}
 			}
 		};

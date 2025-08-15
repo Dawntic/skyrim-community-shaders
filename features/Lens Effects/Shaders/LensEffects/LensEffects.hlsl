@@ -23,34 +23,16 @@ struct VertexShaderOutput
 
 //// Resources //////////////////////////////////////////////////////////////////////////
 
-cbuffer Settings : register(b1){
+cbuffer Settings : register(b1)
+{
+    uint slice;
+    uint KernalWidth;
+    uint EXP;
+    uint ESM_SCALE;
     float2 SrcSize;
     float2 InvSrcSize;
     float2 DstSize;
-    float2 FilterDir;
-    float KernalWidth;
-    uint slice;
-    uint EXP;
-    uint ESM_SCALE;
-};
-
-cbuffer PrevPerFrame : register(b2)
-{
-    row_major float4x4 PrevCameraView[1] : packoffset(c0);
-    row_major float4x4 PrevCameraProj[1] : packoffset(c4);
-    row_major float4x4 PrevCameraViewProj[1] : packoffset(c8);
-    row_major float4x4 PrevCameraViewProjUnjittered[1] : packoffset(c12);
-    row_major float4x4 PrevCameraPreviousViewProjUnjittered[1] : packoffset(c16);
-    row_major float4x4 PrevCameraProjUnjittered[1] : packoffset(c20);
-    row_major float4x4 PrevCameraProjUnjitteredInverse[1] : packoffset(c24);
-    row_major float4x4 PrevCameraViewInverse[1] : packoffset(c28);
-    row_major float4x4 PrevCameraViewProjInverse[1] : packoffset(c32);
-    row_major float4x4 PrevCameraProjInverse[1] : packoffset(c36);
-    float4 PrevCameraPosAdjust[1] : packoffset(c40);
-    float4 PrevCameraPreviousPosAdjust[1] : packoffset(c41);
-    float4 PrevFrameParams : packoffset(c42);
-    float4 PrevDynamicResolutionParams1 : packoffset(c43);
-    float4 PrevDynamicResolutionParams2 : packoffset(c44);
+    //float2 FilterDir;
 };
 
 SamplerState Linear_Sampler : register(s10);
@@ -66,7 +48,6 @@ SamplerComparisonState Depth_Sampler : register(s13);
 #ifdef DownSample
 
 Texture2DArray ShadowMap : register(t0);
-Texture2DArray Noise : register(t1);
 
 float main(VertexShaderOutput input) : SV_Target
 {
@@ -84,9 +65,7 @@ float main(VertexShaderOutput input) : SV_Target
     Sample = ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(2, 2));
     accum += clamp(exp(EXP * (Sample - 1.0)), EPSILON, 1.0);
 
-    float output = sum4(accum) * (1 / (KernalWidth * KernalWidth)) * ESM_SCALE;
-
-    output *= DynamicResolutionParams2.x;
+    float output = sum4(accum) * (1 / (float(KernalWidth) * float(KernalWidth))) * ESM_SCALE;
 
     return output;
 }
@@ -115,7 +94,7 @@ float main(VertexShaderOutput input) : SV_Target
     accum += DownSampled.GatherRed(Point_Sampler, samplingPos, int2(0, 2));
     accum += DownSampled.GatherRed(Point_Sampler, samplingPos, int2(2, 2));
 
-    float output = sum4(accum) * (1.0 / (KernalWidth * KernalWidth));
+    float output = sum4(accum) *  (1 / (float(KernalWidth) * float(KernalWidth)));
 
     return output;
 }
@@ -132,6 +111,7 @@ Texture2D ESM : register(t0);
 
 float main(VertexShaderOutput input) : SV_Target
 {
+    /*
     float accum = 0.0;
     float Radius = (KernalWidth - 1) / 2;
 
@@ -145,6 +125,8 @@ float main(VertexShaderOutput input) : SV_Target
         output = 0.0;
 
     return output;
+*/
+    return 1;
 }
 #endif
 //// Blur ///////////////////////////////////////////////////////////////////////////////
