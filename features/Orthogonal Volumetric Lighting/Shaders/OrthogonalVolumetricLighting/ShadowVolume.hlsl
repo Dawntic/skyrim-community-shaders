@@ -213,6 +213,10 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 		float Visibility = ShadowMap.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, cascadeIndex), 0).x;
 		noShadow = Visibility >= CoordsLS.z;
 	}
+    //noShadow = 0;
+
+    if(Froxel.z < 3)
+        noShadow = false;
 
     ShadowVolume[Froxel] = float(noShadow);
 }
