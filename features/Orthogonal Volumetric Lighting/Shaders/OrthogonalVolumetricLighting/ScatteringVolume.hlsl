@@ -122,22 +122,22 @@ void main(uint3 Froxel : SV_DispatchThreadID)
     float Anisotropy = 0.5; //higher = thicker media
     int Lobes = 2;
 
-    float Extinction = 0.001; //0.006
+    float Extinction = 0.003; //0.001
 
     float3 NormCoords = float3(Froxel.xyz + 0.5) / VolumeSize.xyz;
     float Shadow = ShadowVolume.SampleLevel(Linear_Sampler, NormCoords, 0.0).x;
 
     //float3 CoordsWS = FroxelWorldPosition(CoordsUV).xyz;
-    //float4 CoordsWS = GetWorldCoords(Froxel);
+    float4 CoordsWS = GetWorldCoords(Froxel);
 
-    //float3 IncomingDir = SharedData::DirLightDirection.xyz; //normalize(-SharedData::DirLightDirection.xyz);
+    float3 IncomingDir = SharedData::DirLightDirection.xyz; //normalize(-SharedData::DirLightDirection.xyz);
     //float3 OutgoingDir = normalize(CameraPosition.xyz - CoordsWS.xyz);
-    //float3 OutgoingDir = normalize(CameraPosAdjust[0].xyz - CoordsWS.xyz);
+    float3 OutgoingDir = normalize(CameraPosAdjust[0].xyz - CoordsWS.xyz);
 
     //float3 viewDirection = -normalize(input.WorldPosition.xyz);
 
-    //float3 ScatteringResult = SharedData::DirLightColor.xyz * MLobePhaseFunction(IncomingDir, OutgoingDir, Anisotropy, Extinction, Weight1, Weight2, Lobes);
-    float3 ScatteringResult = SharedData::DirLightColor.xyz * (1.0 / (4.0 * Math::PI));
+    float3 ScatteringResult = SharedData::DirLightColor.xyz * MLobePhaseFunction(IncomingDir, OutgoingDir, Anisotropy, Extinction, Weight1, Weight2, Lobes);
+    //float3 ScatteringResult = SharedData::DirLightColor.xyz * (1.0 / (4.0 * Math::PI));
     ScatteringResult = ScatteringResult * Shadow;// * Extinction;
 
     //if(Froxel.z < 20)
