@@ -22,8 +22,8 @@
 #include "Features/InteriorSunShadows.h"
 #include "Features/InverseSquareLighting.h"
 #include "Features/LODBlending.h"
-#include "Features/LensEffects.h"
 #include "Features/LightLimitFix.h"
+#include "Features/OrthogonalVolumetricLighting.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/ScreenSpaceShadows.h"
@@ -82,7 +82,7 @@ namespace globals
 		PerformanceOverlay performanceOverlay{};
 		WetnessEffects wetnessEffects{};
 		ExtendedTranslucency extendedTranslucency{};
-		LensEffects lensEffects{};
+		OrthogonalVolumetricLighting orthogonalVolumetricLighting{};
 
 		namespace llf
 		{

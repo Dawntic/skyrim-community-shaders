@@ -11,6 +11,7 @@
 
 #include "Features/InteriorSunShadows.h"
 #include "Features/LightLimitFix.h"
+#include "Features/OrthogonalVolumetricLighting.h"
 #include "Features/TerrainHelper.h"
 #include "Features/VR.h"
 #include "Features/VolumetricLighting.h"
@@ -135,6 +136,11 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 
 	// Only check against non-shader bits
 	state->permutationData.PixelShaderDescriptor &= ~state->modifiedPixelDescriptor;
+
+	if (shader->fxpFilename == "ISApplyVolumetricLighting"sv) {
+		globals::features::orthogonalVolumetricLighting.overrideCalled = true;
+		globals::features::orthogonalVolumetricLighting.overrideNum = 1;
+	}
 
 	bool shaderFound = func(shader, vertexDescriptor, pixelDescriptor, skipPixelShader);
 
@@ -963,6 +969,11 @@ namespace Hooks
 				if (state->enabledClasses[RE::BSShader::Type::ImageSpace]) {
 					RE::BSImagespaceShader* isShader = CurrentlyDispatchedShader;
 					uint32_t techniqueId = CurrentComputeShaderTechniqueId;
+
+					if (CurrentlyDispatchedComputeShader->name == "ISVolumetricLightingGenerateCS"sv) {
+						globals::features::orthogonalVolumetricLighting.overrideCalled = true;
+					}
+
 					if (vl.loaded) {
 						if (CurrentlyDispatchedShader == nullptr) {
 							techniqueId = 0;
