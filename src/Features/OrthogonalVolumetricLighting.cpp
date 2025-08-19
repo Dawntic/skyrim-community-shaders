@@ -1,4 +1,4 @@
-#include "LensEffects.h"
+#include "OrthogonalVolumetricLighting.h"
 #include "../Deferred.h"
 #include "../Upscaling.h"
 #include "State.h"
@@ -9,19 +9,23 @@
 #include <REX/W32/COMPTR.h>
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
-	LensEffects::Settings, test)
+	OrthogonalVolumetricLighting::Settings, test)
 
-void LensEffects::CompileShaders()
+void OrthogonalVolumetricLighting::CompileShaders()
 {
-	BypassVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\LensEffects\\LensEffects.hlsl", { { "BYPASS_VSSHADER", "" } }, "vs_5_0");
-	DownSamplePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\LensEffects\\LensEffects.hlsl", { { "DownSample", "" } }, "ps_5_0");
-	MinifyPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\LensEffects\\LensEffects.hlsl", { { "Minify", "" } }, "ps_5_0");
-	FilterPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\LensEffects\\LensEffects.hlsl", { { "Filter", "" } }, "ps_5_0");
-	GenerateShadowVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\LensEffects\\ShadowVolume.hlsl", { { "ShadowVolumeCompute", "" } }, "cs_5_0");
-	ApplyVolumePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\LensEffects\\VolumetricApply.hlsl", { { "ApplyVolume", "" } }, "ps_5_0");
+	BypassVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\DownSample.hlsl", { { "BYPASS_VSSHADER", "" } }, "vs_5_0");
+	DownSamplePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\DownSample.hlsl", { { "DownSample", "" } }, "ps_5_0");
+	MinifyPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\DownSample.hlsl", { { "Minify", "" } }, "ps_5_0");
+	GenerateShadowVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ShadowVolume.hlsl", { { "ShadowVolumeCompute", "" } }, "cs_5_0");
+	GenerateScatteringVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "ScatterVolumeCompute", "" } }, "cs_5_0");
+	SliceMarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\MarchAndApply.hlsl", { { "MarchVolumeCompute", "" } }, "cs_5_0");
+	ApplyVolumePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\MarchAndApply.hlsl", { { "ApplyVolume", "" } }, "ps_5_0");
+	OutputPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\MarchAndApply.hlsl", { { "OutputPixel", "" } }, "ps_5_0");
+
+	FilterPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\DownSample.hlsl", { { "Filter", "" } }, "ps_5_0");
 }
 
-void LensEffects::SetupResources()
+void OrthogonalVolumetricLighting::SetupResources()
 {
 	auto device = globals::d3d::device;
 
@@ -125,37 +129,69 @@ void LensEffects::SetupResources()
 	DX::ThrowIfFailed(device->CreateShaderResourceView(HorizontalTex, nullptr, &HorizontalSRV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(ESMTexture, nullptr, &ESM_SRV));
 
-	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\LensEffects\\Textures\\STBN.dds", nullptr, &STBNoiseSRV));
+	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\STBN.dds", nullptr, &STBNoiseSRV));
 
-	D3D11_TEXTURE3D_DESC volumeDesc{};
-	volumeDesc.Width = (UINT)volumeDimensions.x;
-	volumeDesc.Height = (UINT)volumeDimensions.y;
-	volumeDesc.Depth = (UINT)volumeDimensions.z;
-	volumeDesc.MipLevels = 1;
-	volumeDesc.Format = DXGI_FORMAT_R16_FLOAT;
-	volumeDesc.Usage = D3D11_USAGE_DEFAULT;
-	volumeDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-	volumeDesc.CPUAccessFlags = 0;
-	volumeDesc.MiscFlags = 0;
+	D3D11_TEXTURE3D_DESC shadowVolumeDesc{};
+	shadowVolumeDesc.Width = (UINT)volumeDimensions.x;
+	shadowVolumeDesc.Height = (UINT)volumeDimensions.y;
+	shadowVolumeDesc.Depth = (UINT)volumeDimensions.z;
+	shadowVolumeDesc.MipLevels = 1;
+	shadowVolumeDesc.Format = DXGI_FORMAT_R16_FLOAT;
+	shadowVolumeDesc.Usage = D3D11_USAGE_DEFAULT;
+	shadowVolumeDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+	shadowVolumeDesc.CPUAccessFlags = 0;
+	shadowVolumeDesc.MiscFlags = 0;
 
-	D3D11_UNORDERED_ACCESS_VIEW_DESC volumeUAVdesc{};
-	volumeUAVdesc.Format = volumeDesc.Format;
-	volumeUAVdesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D;
-	volumeUAVdesc.Texture3D.MipSlice = 0;
-	volumeUAVdesc.Texture3D.FirstWSlice = 0;
-	volumeUAVdesc.Texture3D.WSize = volumeDesc.Depth;
+	D3D11_UNORDERED_ACCESS_VIEW_DESC shadowVolumeUAVdesc{};
+	shadowVolumeUAVdesc.Format = shadowVolumeDesc.Format;
+	shadowVolumeUAVdesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D;
+	shadowVolumeUAVdesc.Texture3D.MipSlice = 0;
+	shadowVolumeUAVdesc.Texture3D.FirstWSlice = 0;
+	shadowVolumeUAVdesc.Texture3D.WSize = shadowVolumeDesc.Depth;
 
-	D3D11_TEXTURE3D_DESC volumePrevDesc{ volumeDesc };
-	D3D11_UNORDERED_ACCESS_VIEW_DESC volumePrevUAVdesc{ volumeUAVdesc };
+	D3D11_TEXTURE3D_DESC prevShadowVolumeDesc{ shadowVolumeDesc };
+	D3D11_UNORDERED_ACCESS_VIEW_DESC prevShadowVolumeUAV{ shadowVolumeUAVdesc };
 
-	DX::ThrowIfFailed(device->CreateTexture3D(&volumeDesc, nullptr, &ShadowVolume));
-	DX::ThrowIfFailed(device->CreateTexture3D(&volumePrevDesc, nullptr, &PrevShadowVolume));
+	D3D11_TEXTURE3D_DESC scatteringVolumeDesc{ shadowVolumeDesc };
+	scatteringVolumeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ShadowVolume, &volumeUAVdesc, &ShadowVolumeUAV));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(PrevShadowVolume, &volumePrevUAVdesc, &PrevShadowVolumeUAV));
+	D3D11_UNORDERED_ACCESS_VIEW_DESC scatteringVolumeUAVDesc{ shadowVolumeUAVdesc };
+	scatteringVolumeUAVDesc.Format = scatteringVolumeDesc.Format;
+
+	D3D11_TEXTURE3D_DESC intergrationVolumeDesc{ scatteringVolumeDesc };
+	D3D11_UNORDERED_ACCESS_VIEW_DESC intergrationVolumeUAVDesc{ scatteringVolumeUAVDesc };
+
+	DX::ThrowIfFailed(device->CreateTexture3D(&shadowVolumeDesc, nullptr, &ShadowVolume));
+	DX::ThrowIfFailed(device->CreateTexture3D(&prevShadowVolumeDesc, nullptr, &PrevShadowVolume));
+	DX::ThrowIfFailed(device->CreateTexture3D(&scatteringVolumeDesc, nullptr, &ScatteringVolume));
+	DX::ThrowIfFailed(device->CreateTexture3D(&intergrationVolumeDesc, nullptr, &IntergrationVolume));
+
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ShadowVolume, &shadowVolumeUAVdesc, &ShadowVolumeUAV));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(PrevShadowVolume, &prevShadowVolumeUAV, &PrevShadowVolumeUAV));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ScatteringVolume, &scatteringVolumeUAVDesc, &ScatteringVolumeUAV));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(IntergrationVolume, &intergrationVolumeUAVDesc, &IntergrationVolumeUAV));
 
 	DX::ThrowIfFailed(device->CreateShaderResourceView(ShadowVolume, nullptr, &ShadowVolumeSRV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(PrevShadowVolume, nullptr, &PrevShadowVolumeSRV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ScatteringVolume, nullptr, &ScatteringVolumeSRV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(IntergrationVolume, nullptr, &IntergrationVolumeSRV));
+
+	D3D11_TEXTURE2D_DESC outputDesc{};
+	outputDesc.Width = (UINT)screenSize.x;
+	outputDesc.Height = (UINT)screenSize.y;
+	outputDesc.MipLevels = 1;
+	outputDesc.ArraySize = 1;
+	outputDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	outputDesc.Usage = D3D11_USAGE_DEFAULT;
+	outputDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+	outputDesc.SampleDesc.Count = 1;
+	outputDesc.SampleDesc.Quality = 0;
+	outputDesc.CPUAccessFlags = 0;
+	outputDesc.MiscFlags = 0;
+
+	DX::ThrowIfFailed(device->CreateTexture2D(&outputDesc, nullptr, &OutputTexture));
+	DX::ThrowIfFailed(device->CreateRenderTargetView(OutputTexture, nullptr, &OutputRTV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(OutputTexture, nullptr, &OutputSRV));
 
 	ShadowVolumeBuffer = new ConstantBuffer(ConstantBufferDesc<ShadowVolBuffer>());
 
@@ -168,21 +204,22 @@ void LensEffects::SetupResources()
 	renderdata->SetupPass(Shaders::ExpDownSample, true, 1, { .uncond_pass = true });
 	renderdata->SetupPass(Shaders::ExpDownSample, true, 1, { .uncond_pass = true });
 
-	renderdata->SetupPass(Shaders::Minify, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::Volume, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
+	//renderdata->SetupPass(Shaders::Minify,		 true, 1, { .uncond_pass = true });
 
-	//renderdata->SetupPass(Shaders::HorFilter, settings->EnableCA, 1, { .uncond_pass = true });
-	//renderdata->SetupPass(Shaders::VerFilter, settings->EnableIce, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::ShadowVolume, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::ScatterVolume, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::IntergrationVolume, true, 1, { .uncond_pass = true });
+
+	renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::Output, true, 1, { .uncond_pass = true });
 
 	renderdata->SetupRenderData();
 }
 
-void LensEffects::SetupDownSampleExpo()
+void OrthogonalVolumetricLighting::SetupDownSampleExpo()
 {
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
-	//logger::info("pass: {}", pass);
 
 	ESMCBuffer->Update(UpdateESMBuffer(pass));
 
@@ -209,7 +246,7 @@ void LensEffects::SetupDownSampleExpo()
 	overrideShader = false;
 }
 
-void LensEffects::SetupMinify()
+void OrthogonalVolumetricLighting::SetupMinify()
 {
 	auto context = globals::d3d::context;
 
@@ -229,7 +266,7 @@ void LensEffects::SetupMinify()
 	overrideShader = false;
 }
 
-void LensEffects::SetupShadowVolume()
+void OrthogonalVolumetricLighting::SetupShadowVolume()
 {
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
@@ -253,17 +290,19 @@ void LensEffects::SetupShadowVolume()
 	auto shadowBuff = globals::deferred->perShadow->srv.get();
 	context->CSSetShaderResources(0, 1, &PrevShadowVolumeSRV);
 	context->CSSetShaderResources(1, 1, &STBNoiseSRV);
-	context->CSSetShaderResources(2, 1, &MinifySRV);
+	//context->CSSetShaderResources(2, 1, &MinifySRV);
+	context->CSSetShaderResources(2, 1, &ExponentiateSRV);  //////////
 	context->CSSetShaderResources(3, 1, &TerrainHeightSRV);
 	context->CSSetShaderResources(4, 1, &TerrainShadowSRV);
 	context->CSSetShaderResources(5, 1, &shadowBuff);
+	context->CSSetShaderResources(8, 1, &InvRepartitionSRV);
 
 	auto shadowMap = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
 	auto shadowMapVL = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
 	context->CSSetShaderResources(6, 1, &shadowMap);
 	context->CSSetShaderResources(7, 1, &shadowMapVL);
 
-	context->Dispatch(20, 11, 16);
+	context->Dispatch(40, 24, 23);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
@@ -271,33 +310,92 @@ void LensEffects::SetupShadowVolume()
 	overrideShader = false;
 }
 
-void LensEffects::SetupApplyVolume()
+void OrthogonalVolumetricLighting::SetupScatteringVolume()
+{
+	auto context = globals::d3d::context;
+
+	context->CSSetUnorderedAccessViews(0, 1, &ScatteringVolumeUAV, nullptr);
+
+	context->CSSetShader(GenerateScatteringVolumeCS, nullptr, 0);
+
+	auto buffer = ShadowVolumeBuffer->CB();
+	ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
+	context->CSSetConstantBuffers(0, 1, &buffer);
+	context->CSSetConstantBuffers(1, 1, &FrameBuff);
+
+	context->CSSetShaderResources(0, 1, &ShadowVolumeSRV);
+	context->CSSetShaderResources(1, 1, &InvRepartitionSRV);
+
+	context->Dispatch(40, 24, 23);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	overrideShader = false;
+}
+
+void OrthogonalVolumetricLighting::SetupSliceMarch()
+{
+	auto context = globals::d3d::context;
+
+	context->CSSetUnorderedAccessViews(0, 1, &IntergrationVolumeUAV, nullptr);
+
+	context->CSSetShader(SliceMarchCS, nullptr, 0);
+
+	auto buffer = ShadowVolumeBuffer->CB();
+	ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
+	context->CSSetConstantBuffers(0, 1, &buffer);
+	context->CSSetConstantBuffers(1, 1, &FrameBuff);
+
+	context->CSSetShaderResources(0, 1, &ScatteringVolumeSRV);
+	context->CSSetShaderResources(1, 1, &InvRepartitionSRV);
+
+	context->Dispatch(40, 24, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	overrideShader = false;
+}
+
+void OrthogonalVolumetricLighting::SetupApplyVolume()
 {
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
-	auto buffer = ShadowVolumeBuffer->CB();
 
-	auto& mainTex = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-	//auto& mainTexCopy = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-	//context->CopyResource(mainTexCopy.textureCopy, mainTex.texture);
+	context->OMSetRenderTargets(1, &OutputRTV, nullptr);
 
-	auto& mainDepthSRV = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN_COPY].depthSRV;
-
-	context->RSSetViewports(1, &viewPort[3]);
-	context->OMSetRenderTargets(1, &mainTex.RTV, nullptr);
-
-	float blendFactor[4] = { 0, 0, 0, 0 };
-	context->OMSetBlendState(AddBlend, blendFactor, 0xFFFFFFFF);
+	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
 
 	context->VSSetShader(BypassVertexShader, NULL, NULL);
 	context->PSSetShader(ApplyVolumePS, NULL, NULL);
 
+	auto buffer = ShadowVolumeBuffer->CB();
+	ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
 	context->PSSetConstantBuffers(0, 1, &buffer);
+	context->PSSetConstantBuffers(1, 1, &FrameBuff);
 
-	//auto& mainTexCopySRV = mainTexCopy.SRV;
-	context->PSSetShaderResources(0, 1, &ShadowVolumeSRV);
-	//context->PSSetShaderResources(1, 1, &mainTexCopySRV);
-	context->PSSetShaderResources(2, 1, &mainDepthSRV);
+	auto& mainDepthSRV = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN].depthSRV;
+	context->PSSetShaderResources(0, 1, &IntergrationVolumeSRV);
+	context->PSSetShaderResources(1, 1, &mainDepthSRV);
+	context->PSSetShaderResources(2, 1, &RepartitionSRV);
+
+	overrideShader = false;
+}
+
+void OrthogonalVolumetricLighting::SetupOutput()
+{
+	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
+
+	auto& mainRTV = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].RTV;
+
+	context->OMSetRenderTargets(1, &mainRTV, nullptr);
+
+	context->VSSetShader(BypassVertexShader, NULL, NULL);
+	context->PSSetShader(OutputPS, NULL, NULL);
+
+	context->PSSetShaderResources(0, 1, &OutputSRV);
 
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_VIEWPORT);
@@ -306,39 +404,80 @@ void LensEffects::SetupApplyVolume()
 	overrideShader = false;
 }
 
-void LensEffects::CheckOverride()
+void OrthogonalVolumetricLighting::CheckOverride()
 {
 	static Util::FrameChecker frame_checker;
 
+	if (overrideCalled) {
+		if (overrideNum == 1) {
+			globals::d3d::context->PSGetShaderResources(3, 1, &RepartitionSRV);
+			overrideNum = 0;
+		} else {
+			globals::d3d::context->CSGetShaderResources(2, 1, &InvRepartitionSRV);
+		}
+		overrideCalled = false;
+	}
+
 	if (overrideShader) {
 		if (frame_checker.IsNewFrame()) {
+			UpdateFrustum();
+
 			pass = 1;
 			FrameIdx++;
 
-			float clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+			float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 			globals::d3d::context->ClearRenderTargetView(ExponentiateRTV, clear);
+			globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
 		}
 		LookupShader(shaderdesc);
 	}
 }
 
-void LensEffects::LookupShader(int desc)
+void OrthogonalVolumetricLighting::LookupShader(int desc)
 {
-	static const std::unordered_map<int, void (LensEffects::*)()> effects{
-		{ Shaders::ExpDownSample, &LensEffects::SetupDownSampleExpo },
-		{ Shaders::Minify, &LensEffects::SetupMinify },
-		{ Shaders::HorFilter, &LensEffects::SetupHorizontalFilter },
-		{ Shaders::VerFilter, &LensEffects::SetupVerticalFilter },
-		{ Shaders::Volume, &LensEffects::SetupShadowVolume },
-		{ Shaders::Apply, &LensEffects::SetupApplyVolume }
+	static const std::unordered_map<int, void (OrthogonalVolumetricLighting::*)()> effects{
+		{ Shaders::ExpDownSample, &OrthogonalVolumetricLighting::SetupDownSampleExpo },
+		{ Shaders::Minify, &OrthogonalVolumetricLighting::SetupMinify },
+		{ Shaders::ShadowVolume, &OrthogonalVolumetricLighting::SetupShadowVolume },
+		{ Shaders::ScatterVolume, &OrthogonalVolumetricLighting::SetupScatteringVolume },
+		{ Shaders::IntergrationVolume, &OrthogonalVolumetricLighting::SetupSliceMarch },
+		{ Shaders::Apply, &OrthogonalVolumetricLighting::SetupApplyVolume },
+		{ Shaders::Output, &OrthogonalVolumetricLighting::SetupOutput },
 
+		{ Shaders::HorFilter, &OrthogonalVolumetricLighting::SetupHorizontalFilter },
+		{ Shaders::VerFilter, &OrthogonalVolumetricLighting::SetupVerticalFilter },
 	};
 	auto it = effects.find(desc);
 	if (it != effects.cend())
 		(this->*(it->second))();
 }
 
-int LensEffects::UpdateMatrixCache()
+void OrthogonalVolumetricLighting::UpdateFrustum()
+{
+	auto tmp = Util::GetAverageEyePosition();
+	cameraPosition = float4(tmp.x, tmp.y, tmp.z, 1.0f);
+
+	float FOVy = Util::GetVerticalFOVRad();
+	float aspect = screenSize.x / screenSize.y;
+
+	Matrix projMat = Matrix(DirectX::XMMatrixPerspectiveFovLH(FOVy, aspect, FrustumNearFar.x, FrustumNearFar.y));
+	float invPx = 1.0f / projMat.m[0][0];
+	float invPy = 1.0f / projMat.m[1][1];
+
+	Matrix invViewMat = Util::GetCameraData(0).viewMat.Invert();
+
+	Matrix ViewFromUVZ(
+		2 * invPx, 0, 0, 0,
+		0, -2 * invPy, 0, 0,
+		-invPx, +invPy, 1, 0,
+		0, 0, 0, 1);
+
+	WorldFromUVZ = ViewFromUVZ * invViewMat;
+
+	//Matrix WorldFromUVZ_GPU = WorldFromUVZ.Transpose();
+}
+
+int OrthogonalVolumetricLighting::UpdateMatrixCache()
 {
 	int outValue = 0;
 	if (CheckFrameBuffer()) {
@@ -362,7 +501,7 @@ int LensEffects::UpdateMatrixCache()
 	return outValue;
 }
 
-bool LensEffects::CheckFrameBuffer()
+bool OrthogonalVolumetricLighting::CheckFrameBuffer()
 {
 	if (ID3D11Buffer* buffer = *globals::game::perFrame.get()) {
 		if (!PrevFrameBuffer[0] || !PrevFrameBuffer[1]) {
@@ -386,14 +525,13 @@ bool LensEffects::CheckFrameBuffer()
 	}
 }
 
-LensEffects::ESMBuffer LensEffects::UpdateESMBuffer(uint passn)
+OrthogonalVolumetricLighting::ESMBuffer OrthogonalVolumetricLighting::UpdateESMBuffer(uint passn)
 {
 	ESMBuffer data{};
 	data.slice = passn - 1;
 	data.KernalWidth = 4;
 	data.ESM_EXP = ESM_EXP;
 	data.ESM_Scale = ESM_Scale;
-	//data.filterDir = float2(0.0f, 0.0f);
 
 	if (passn < 3) {
 		data.srcSize = CSM_Size;
@@ -408,9 +546,12 @@ LensEffects::ESMBuffer LensEffects::UpdateESMBuffer(uint passn)
 	return data;
 }
 
-LensEffects::ShadowVolBuffer LensEffects::UpdateShadowBuffer()
+OrthogonalVolumetricLighting::ShadowVolBuffer OrthogonalVolumetricLighting::UpdateShadowBuffer()
 {
 	ShadowVolBuffer data{};
+	data.frustum = WorldFromUVZ.Transpose();
+	data.FrustumNearFar = FrustumNearFar;
+	data.CameraPosition = cameraPosition;
 	data.VolumeSize = volumeDimensions;
 	data.NoiseSize = noiseDimensions;
 	data.PrevCameraData = PrevCameraData[PrevMatrixIdx];
@@ -420,12 +561,10 @@ LensEffects::ShadowVolBuffer LensEffects::UpdateShadowBuffer()
 	data.Frame = FrameIdx;
 	data.ESM_Scale = ESM_Scale;
 	data.ESM_EXP = ESM_EXP;
-	//data.ShadowAtlasBorderPx;
-	//data.AmbientTerm;
 	return data;
 }
 
-void LensEffects::Override()
+void OrthogonalVolumetricLighting::Override()
 {
 	if (renderdata && LFApply_func && BGSCamera && BGSShader) {
 		logger::info("Call flare func");
@@ -433,17 +572,17 @@ void LensEffects::Override()
 	}
 }
 
-void LensEffects::SetupVerticalFilter()
+void OrthogonalVolumetricLighting::SetupVerticalFilter()
 {
 }
 
-void LensEffects::SetupHorizontalFilter()
+void OrthogonalVolumetricLighting::SetupHorizontalFilter()
 {
 }
 
-void LensEffects::Hooks::LensFlare_CheckResources::thunk()
+void OrthogonalVolumetricLighting::Hooks::LensFlare_CheckResources::thunk()
 {
-	auto& lens = globals::features::lensEffects;
+	auto& lens = globals::features::orthogonalVolumetricLighting;
 
 	lens.renderdata->CheckRefData();
 
@@ -451,9 +590,9 @@ void LensEffects::Hooks::LensFlare_CheckResources::thunk()
 		*lens.skyrim_FlareData = reinterpret_cast<uintptr_t>(lens.renderdata);
 }
 
-void LensEffects::Hooks::LensFlareVisibility_CheckRenderCondition::thunk(RE::NiCamera* camera, void* shader)
+void OrthogonalVolumetricLighting::Hooks::LensFlareVisibility_CheckRenderCondition::thunk(RE::NiCamera* camera, void* shader)
 {
-	auto& lens = globals::features::lensEffects;
+	auto& lens = globals::features::orthogonalVolumetricLighting;
 
 	if (!lens.BGSCamera || !lens.BGSShader) {
 		lens.BGSCamera = camera;
@@ -473,9 +612,9 @@ void LensEffects::Hooks::LensFlareVisibility_CheckRenderCondition::thunk(RE::NiC
 	//*lens.skyrim_RunFlarePtr = 0; ////////
 }
 
-void LensEffects::Hooks::BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>::thunk(void* shader, RE::BSTriShape* shape, RE::ImageSpaceEffectParam* param)
+void OrthogonalVolumetricLighting::Hooks::BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>::thunk(void* shader, RE::BSTriShape* shape, RE::ImageSpaceEffectParam* param)
 {
-	auto& lens = globals::features::lensEffects;
+	auto& lens = globals::features::orthogonalVolumetricLighting;
 
 	lens.overrideShader = true;
 	lens.shaderdesc = lens.renderdata->UpdateCurrentEffect();
@@ -483,7 +622,7 @@ void LensEffects::Hooks::BSImagespaceShader_Render<RE::ImageSpaceManager::ISLens
 	func(shader, shape, param);
 }
 
-void LensEffects::DrawSettings()
+void OrthogonalVolumetricLighting::DrawSettings()
 {
 	ImGui::SeparatorText("Reload");  ///////////////
 	ImGui::Button("Reload Flare");
@@ -492,23 +631,26 @@ void LensEffects::DrawSettings()
 		MinifyPS = nullptr;
 		FilterPS = nullptr;
 		GenerateShadowVolumeCS = nullptr;
+		GenerateScatteringVolumeCS = nullptr;
+		SliceMarchCS = nullptr;
 		ApplyVolumePS = nullptr;
+		OutputPS = nullptr;
 
 		CompileShaders();
 	}
 }
 
-void LensEffects::LoadSettings(json& o_json)
+void OrthogonalVolumetricLighting::LoadSettings(json& o_json)
 {
 	settings = o_json;
 }
 
-void LensEffects::SaveSettings(json& o_json)
+void OrthogonalVolumetricLighting::SaveSettings(json& o_json)
 {
 	o_json = settings;
 }
 
-void LensEffects::RestoreDefaultSettings()
+void OrthogonalVolumetricLighting::RestoreDefaultSettings()
 {
 	settings = {};
 }

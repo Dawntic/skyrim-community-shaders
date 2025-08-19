@@ -2,19 +2,19 @@
 #include "Feature.h"
 #include <vector>
 
-struct LensEffects : Feature
+struct OrthogonalVolumetricLighting : Feature
 {
-	static LensEffects* GetSingleton()
+	static OrthogonalVolumetricLighting* GetSingleton()
 	{
-		static LensEffects singleton;
+		static OrthogonalVolumetricLighting singleton;
 		return &singleton;
 	}
 
-	virtual inline std::string GetName() override { return "Lens Effects"; }
-	virtual inline std::string GetShortName() override { return "LensEffects"; }
+	virtual inline std::string GetName() override { return "Orthogonal Volumetric Lighting"; }
+	virtual inline std::string GetShortName() override { return "OrthogonalVolumetricLighting"; }
 	virtual inline bool HasShaderDefine(RE::BSShader::Type) override { return true; }
-	virtual inline std::string_view GetShaderDefineName() override { return "LENS_EFFECTS"; }
-	virtual std::string_view GetCategory() const override { return "Post Process"; }
+	//virtual inline std::string_view GetShaderDefineName() override { return "LENS_EFFECTS"; }
+	//virtual std::string_view GetCategory() const override { return "Post Process"; }
 	virtual inline bool SupportsVR() override { return false; };  //
 
 	virtual inline void PostPostLoad() override { Hooks::Install(); }
@@ -27,8 +27,12 @@ struct LensEffects : Feature
 	virtual void SetupDownSampleExpo();
 	virtual void SetupMinify();
 	virtual void SetupShadowVolume();
+	virtual void SetupScatteringVolume();
+	virtual void SetupSliceMarch();
 	virtual void SetupApplyVolume();
+	virtual void SetupOutput();
 
+	virtual void UpdateFrustum();
 	virtual int UpdateMatrixCache();
 	virtual void Override();
 
@@ -58,53 +62,77 @@ struct LensEffects : Feature
 	ID3D11ShaderResourceView* HorizontalSRV = nullptr;
 	ID3D11ShaderResourceView* ESM_SRV = nullptr;
 
-	ID3D11RenderTargetView* ExponentiateRTV;
-	ID3D11RenderTargetView* MinifyRTV;
+	ID3D11RenderTargetView* ExponentiateRTV = nullptr;
+	ID3D11RenderTargetView* MinifyRTV = nullptr;
 	ID3D11RenderTargetView* HorizontalRTV = nullptr;
 	ID3D11RenderTargetView* ESM_RTV = nullptr;
+
+	float2 CSM_Size = float2(4096.0f, 4096.0f);
+	float2 DownSampleExpo_AtlasSize = float2(1024.0f, 2048.0f);
+	float DownSampleExpo_TileSize = 1024.0f;
+	float2 ESM_AtlasSize = DownSampleExpo_AtlasSize;  //float2(256.0f, 512.0f); ///////////
+	float ESM_TileSize = 256.0f;
+
+	uint AtlasBorderPx = 2;  //
+	uint ESM_EXP = 60;
+	uint ESM_Scale = 65000;
 
 	Microsoft::WRL::ComPtr<ID3D11Buffer> PrevFrameBuffer[2];
 	ConstantBuffer* ShadowVolumeBuffer = nullptr;
 	ID3D11BlendState* AddBlend = nullptr;
 
 	ID3D11ComputeShader* GenerateShadowVolumeCS = nullptr;
+	ID3D11ComputeShader* GenerateScatteringVolumeCS = nullptr;
+	ID3D11ComputeShader* SliceMarchCS = nullptr;
 	ID3D11PixelShader* ApplyVolumePS = nullptr;
+	ID3D11PixelShader* OutputPS = nullptr;
 
 	ID3D11Texture3D* ShadowVolume = nullptr;
 	ID3D11Texture3D* PrevShadowVolume = nullptr;
+	ID3D11Texture3D* ScatteringVolume = nullptr;
+	ID3D11Texture3D* IntergrationVolume = nullptr;
 
 	ID3D11UnorderedAccessView* ShadowVolumeUAV = nullptr;
 	ID3D11UnorderedAccessView* PrevShadowVolumeUAV = nullptr;
-
-	ID3D11ShaderResourceView* ShadowVolumeSRV = nullptr;
-	ID3D11ShaderResourceView* PrevShadowVolumeSRV = nullptr;
+	ID3D11UnorderedAccessView* ScatteringVolumeUAV = nullptr;
+	ID3D11UnorderedAccessView* IntergrationVolumeUAV = nullptr;
 
 	ID3D11ShaderResourceView* STBNoiseSRV = nullptr;
+	ID3D11ShaderResourceView* ShadowVolumeSRV = nullptr;
+	ID3D11ShaderResourceView* PrevShadowVolumeSRV = nullptr;
+	ID3D11ShaderResourceView* ScatteringVolumeSRV = nullptr;
+	ID3D11ShaderResourceView* IntergrationVolumeSRV = nullptr;
 
-	float4 volumeDimensions = float4(160, 88, 64, 0);
+	ID3D11ShaderResourceView* InvRepartitionSRV = nullptr;
+	ID3D11ShaderResourceView* RepartitionSRV = nullptr;
+
+	ID3D11Texture2D* OutputTexture = nullptr;
+	ID3D11ShaderResourceView* OutputSRV = nullptr;
+	ID3D11RenderTargetView* OutputRTV = nullptr;
+
+	//float4 volumeDimensions = float4(160, 88, 64, 0);
+	float4 volumeDimensions = float4(320, 192, 90, 0);
 	float4 noiseDimensions = float4(64, 64, 32, 0);
 
-	float2 CSM_Size = float2(4096.0f, 4096.0f);
+	float4 FrustumNearFar = float4(0.1f, 200.0f, 1.0f / 0.1f, volumeDimensions.z / std::log2(200.0f / 0.1f));
+	float4 frustum[4];
+	float4 cameraPosition;
+	Matrix WorldFromUVZ;
 
-	float2 DownSampleExpo_AtlasSize = float2(1024.0f, 2048.0f);
-	float DownSampleExpo_TileSize = 1024.0f;
-
-	float2 ESM_AtlasSize = float2(256.0f, 512.0f);
-	float ESM_TileSize = 256.0f;
-
-	uint pass = 1;
-	uint FrameIdx = 0;  // max?
-
-	uint AtlasBorderPx = 2;  //
-	uint ESM_EXP = 60;
-	uint ESM_Scale = 65000;
+	float4 PrevCameraData[2];
+	int PrevMatrixIdx;
 
 	//float AmbientTerm = 1.0; //
 	float CellJitterValue = 0.55;  //
 	float RayJitterValue = 0.28;   //
 
-	float4 PrevCameraData[2];
-	int PrevMatrixIdx;
+	bool overrideCalled = false;
+	bool overrideShader = false;
+	uint pass = 1;
+	uint FrameIdx = 0;  //max?
+	float2 screenSize;
+
+	int overrideNum = 0;
 
 	uintptr_t* skyrim_FlareData = nullptr;
 	uint32_t* skyrim_RunFlarePtr = nullptr;
@@ -113,11 +141,6 @@ struct LensEffects : Feature
 
 	RE::NiCamera* BGSCamera = nullptr;
 	void* BGSShader = nullptr;
-
-	bool overrideCalled = false;
-	bool overrideShader = false;
-
-	float2 screenSize;
 
 	virtual void RestoreDefaultSettings() override;
 	virtual void DrawSettings() override;
@@ -140,12 +163,14 @@ struct LensEffects : Feature
 		float2 InvSrcSize;
 		float2 dstSize;
 		float _pad[2];
-		//float2 filterDir;
 	};
 	virtual ESMBuffer UpdateESMBuffer(uint slice);
 
 	struct alignas(16) ShadowVolBuffer
 	{
+		Matrix frustum;
+		float4 FrustumNearFar;
+		float4 CameraPosition;
 		float4 VolumeSize;
 		float4 NoiseSize;
 		float4 PrevCameraData;
@@ -156,8 +181,6 @@ struct LensEffects : Feature
 		uint ESM_Scale;
 		uint ESM_EXP;
 		float _pad[1];
-		//uint ShadowAtlasBorderPx;
-		//float AmbientTerm;
 	};
 	virtual ShadowVolBuffer UpdateShadowBuffer();
 
@@ -173,8 +196,11 @@ struct LensEffects : Feature
 			Minify = 2,
 			VerFilter = 3,
 			HorFilter = 4,
-			Volume = 5,
-			Apply = 6
+			ShadowVolume = 5,
+			ScatterVolume = 6,
+			IntergrationVolume = 7,
+			Apply = 8,
+			Output = 9
 		};
 	};
 	Shaders::Enum shaderdesc;
