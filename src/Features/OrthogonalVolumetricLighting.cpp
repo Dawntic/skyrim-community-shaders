@@ -90,7 +90,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	D3D11_TEXTURE2D_DESC ExponentiateDesc{};
 	ExponentiateDesc.Width = (UINT)DownSampleExpo_AtlasSize.x;
-	ExponentiateDesc.Height = (UINT)DownSampleExpo_AtlasSize.y;
+	ExponentiateDesc.Height = (UINT)DownSampleExpo_AtlasSize.x;
 	ExponentiateDesc.MipLevels = 1;
 	ExponentiateDesc.ArraySize = 1;
 	ExponentiateDesc.Format = DXGI_FORMAT_R32_FLOAT;
@@ -105,13 +105,16 @@ void OrthogonalVolumetricLighting::SetupResources()
 	MinifyDesc.Width = (UINT)ESM_AtlasSize.x;
 	MinifyDesc.Height = (UINT)ESM_AtlasSize.y;
 
-	DX::ThrowIfFailed(device->CreateTexture2D(&ExponentiateDesc, nullptr, &ExponentiateTex));
+	DX::ThrowIfFailed(device->CreateTexture2D(&ExponentiateDesc, nullptr, &ExponentiateTex[0]));
+	DX::ThrowIfFailed(device->CreateRenderTargetView(ExponentiateTex[0], nullptr, &ExponentiateRTV[0]));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ExponentiateTex[0], nullptr, &ExponentiateSRV[0]));
+
+	DX::ThrowIfFailed(device->CreateTexture2D(&ExponentiateDesc, nullptr, &ExponentiateTex[1]));
+	DX::ThrowIfFailed(device->CreateRenderTargetView(ExponentiateTex[1], nullptr, &ExponentiateRTV[1]));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ExponentiateTex[1], nullptr, &ExponentiateSRV[1]));
+
 	DX::ThrowIfFailed(device->CreateTexture2D(&MinifyDesc, nullptr, &MinifyTex));
-
-	DX::ThrowIfFailed(device->CreateRenderTargetView(ExponentiateTex, nullptr, &ExponentiateRTV));
 	DX::ThrowIfFailed(device->CreateRenderTargetView(MinifyTex, nullptr, &MinifyRTV));
-
-	DX::ThrowIfFailed(device->CreateShaderResourceView(ExponentiateTex, nullptr, &ExponentiateSRV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(MinifyTex, nullptr, &MinifySRV));
 
 	D3D11_TEXTURE2D_DESC FilterTexDesc{ ExponentiateDesc };
@@ -149,8 +152,8 @@ void OrthogonalVolumetricLighting::SetupResources()
 	shadowVolumeUAVdesc.Texture3D.FirstWSlice = 0;
 	shadowVolumeUAVdesc.Texture3D.WSize = shadowVolumeDesc.Depth;
 
-	D3D11_TEXTURE3D_DESC prevShadowVolumeDesc{ shadowVolumeDesc };
-	D3D11_UNORDERED_ACCESS_VIEW_DESC prevShadowVolumeUAV{ shadowVolumeUAVdesc };
+	//D3D11_TEXTURE3D_DESC prevShadowVolumeDesc{ shadowVolumeDesc };
+	//D3D11_UNORDERED_ACCESS_VIEW_DESC prevShadowVolumeUAV{ shadowVolumeUAVdesc };
 
 	D3D11_TEXTURE3D_DESC scatteringVolumeDesc{ shadowVolumeDesc };
 	scatteringVolumeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -161,18 +164,21 @@ void OrthogonalVolumetricLighting::SetupResources()
 	D3D11_TEXTURE3D_DESC intergrationVolumeDesc{ scatteringVolumeDesc };
 	D3D11_UNORDERED_ACCESS_VIEW_DESC intergrationVolumeUAVDesc{ scatteringVolumeUAVDesc };
 
-	DX::ThrowIfFailed(device->CreateTexture3D(&shadowVolumeDesc, nullptr, &ShadowVolume));
-	DX::ThrowIfFailed(device->CreateTexture3D(&prevShadowVolumeDesc, nullptr, &PrevShadowVolume));
+	DX::ThrowIfFailed(device->CreateTexture3D(&shadowVolumeDesc, nullptr, &ShadowVolume[0]));
+	DX::ThrowIfFailed(device->CreateTexture3D(&shadowVolumeDesc, nullptr, &ShadowVolume[1]));
+	//DX::ThrowIfFailed(device->CreateTexture3D(&prevShadowVolumeDesc, nullptr, &PrevShadowVolume));
 	DX::ThrowIfFailed(device->CreateTexture3D(&scatteringVolumeDesc, nullptr, &ScatteringVolume));
 	DX::ThrowIfFailed(device->CreateTexture3D(&intergrationVolumeDesc, nullptr, &IntergrationVolume));
 
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ShadowVolume, &shadowVolumeUAVdesc, &ShadowVolumeUAV));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(PrevShadowVolume, &prevShadowVolumeUAV, &PrevShadowVolumeUAV));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ShadowVolume[0], &shadowVolumeUAVdesc, &ShadowVolumeUAV[0]));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ShadowVolume[1], &shadowVolumeUAVdesc, &ShadowVolumeUAV[1]));
+	//DX::ThrowIfFailed(device->CreateUnorderedAccessView(PrevShadowVolume, &prevShadowVolumeUAV, &PrevShadowVolumeUAV));
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ScatteringVolume, &scatteringVolumeUAVDesc, &ScatteringVolumeUAV));
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(IntergrationVolume, &intergrationVolumeUAVDesc, &IntergrationVolumeUAV));
 
-	DX::ThrowIfFailed(device->CreateShaderResourceView(ShadowVolume, nullptr, &ShadowVolumeSRV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(PrevShadowVolume, nullptr, &PrevShadowVolumeSRV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ShadowVolume[0], nullptr, &ShadowVolumeSRV[0]));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ShadowVolume[1], nullptr, &ShadowVolumeSRV[1]));
+	//DX::ThrowIfFailed(device->CreateShaderResourceView(PrevShadowVolume, nullptr, &PrevShadowVolumeSRV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(ScatteringVolume, nullptr, &ScatteringVolumeSRV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(IntergrationVolume, nullptr, &IntergrationVolumeSRV));
 
@@ -223,13 +229,17 @@ void OrthogonalVolumetricLighting::SetupDownSampleExpo()
 
 	ESMCBuffer->Update(UpdateESMBuffer(pass));
 
-	context->RSSetViewports(1, &viewPort[pass - 1]);
-	context->OMSetRenderTargets(1, &ExponentiateRTV, nullptr);
+	static bool Parity = pass & 1;
+	auto ExpoRTV = ExponentiateRTV[!Parity];
+
+	//context->RSSetViewports(1, &viewPort[pass - 1]);
+	context->RSSetViewports(1, &viewPort[0]);
+	context->OMSetRenderTargets(1, &ExpoRTV, nullptr);
 	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
 
 	auto buffer = ESMCBuffer->CB();
 	context->PSSetConstantBuffers(1, 1, &buffer);
-	context->VSSetConstantBuffers(1, 1, &buffer);
+	//context->VSSetConstantBuffers(1, 1, &buffer);
 
 	context->PSSetSamplers(10, 1, &LinearSampler);
 	context->PSSetSamplers(11, 1, &PointSampler);
@@ -259,7 +269,7 @@ void OrthogonalVolumetricLighting::SetupMinify()
 	context->VSSetShader(BypassVertexShader, NULL, NULL);
 	context->PSSetShader(MinifyPS, NULL, NULL);
 
-	context->PSSetShaderResources(0, 1, &ExponentiateSRV);
+	//context->PSSetShaderResources(0, 1, &ExponentiateSRV);
 
 	pass++;
 
@@ -271,11 +281,16 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
 	auto& terrain = globals::features::terrainShadows;
+	static int passCount = 1;
 
 	PrevMatrixIdx = UpdateMatrixCache();
 	ShadowVolumeBuffer->Update(UpdateShadowBuffer());
 
-	context->CSSetUnorderedAccessViews(0, 1, &ShadowVolumeUAV, nullptr);
+	shadowVolParity = passCount & 1;
+	auto volumeUAV = ShadowVolumeUAV[!shadowVolParity];
+	auto prevVolumeSRV = ShadowVolumeSRV[shadowVolParity];
+
+	context->CSSetUnorderedAccessViews(0, 1, &volumeUAV, nullptr);
 
 	context->CSSetShader(GenerateShadowVolumeCS, nullptr, 0);
 	auto buffer = ShadowVolumeBuffer->CB();
@@ -288,14 +303,15 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	auto TerrainHeightSRV = terrain.texHeightMap->srv.get();
 	auto TerrainShadowSRV = terrain.texShadowHeight->srv.get();
 	auto shadowBuff = globals::deferred->perShadow->srv.get();
-	context->CSSetShaderResources(0, 1, &PrevShadowVolumeSRV);
+	context->CSSetShaderResources(0, 1, &prevVolumeSRV);
 	context->CSSetShaderResources(1, 1, &STBNoiseSRV);
 	//context->CSSetShaderResources(2, 1, &MinifySRV);
-	context->CSSetShaderResources(2, 1, &ExponentiateSRV);  //////////
+	context->CSSetShaderResources(2, 2, ExponentiateSRV);  //////////
 	context->CSSetShaderResources(3, 1, &TerrainHeightSRV);
 	context->CSSetShaderResources(4, 1, &TerrainShadowSRV);
 	context->CSSetShaderResources(5, 1, &shadowBuff);
 	context->CSSetShaderResources(8, 1, &InvRepartitionSRV);
+	context->CSSetShaderResources(9, 1, &RepartitionSRV);
 
 	auto shadowMap = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
 	auto shadowMapVL = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
@@ -307,6 +323,7 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
 
+	passCount++;
 	overrideShader = false;
 }
 
@@ -323,8 +340,9 @@ void OrthogonalVolumetricLighting::SetupScatteringVolume()
 	context->CSSetConstantBuffers(0, 1, &buffer);
 	context->CSSetConstantBuffers(1, 1, &FrameBuff);
 
-	context->CSSetShaderResources(0, 1, &ShadowVolumeSRV);
+	context->CSSetShaderResources(0, 1, &ShadowVolumeSRV[!shadowVolParity]);
 	context->CSSetShaderResources(1, 1, &InvRepartitionSRV);
+	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
 
 	context->Dispatch(40, 24, 23);
 
@@ -423,11 +441,9 @@ void OrthogonalVolumetricLighting::CheckOverride()
 			UpdateFrustum();
 
 			pass = 1;
-			FrameIdx++;
-
 			float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			globals::d3d::context->ClearRenderTargetView(ExponentiateRTV, clear);
-			globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
+			//globals::d3d::context->ClearRenderTargetView(ExponentiateRTV, clear);
+			//globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
 		}
 		LookupShader(shaderdesc);
 	}
@@ -558,7 +574,6 @@ OrthogonalVolumetricLighting::ShadowVolBuffer OrthogonalVolumetricLighting::Upda
 	data.ShadowAtlasSize = ESM_AtlasSize;
 	data.CellJitterValue = CellJitterValue;
 	data.RayJitterValue = RayJitterValue;
-	data.Frame = FrameIdx;
 	data.ESM_Scale = ESM_Scale;
 	data.ESM_EXP = ESM_EXP;
 	return data;
@@ -638,6 +653,8 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 		CompileShaders();
 	}
+
+	ImGui::SliderInt("ESM Exponent: ", (int*)&ESM_EXP, 20, 250);
 }
 
 void OrthogonalVolumetricLighting::LoadSettings(json& o_json)

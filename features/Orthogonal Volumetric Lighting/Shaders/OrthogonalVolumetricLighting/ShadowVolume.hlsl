@@ -16,7 +16,6 @@ cbuffer ShadowVolumeBuffer : register(b0)
 	float2 ShadowAtlasSize;
 	float CellJitterValue;
 	float RayJitterValue;
-	uint FrameIdx;
 	uint ESM_Scale;
 	uint ESM_EXP;
 };
@@ -40,6 +39,25 @@ cbuffer PerFrame : register(b1)
     float4 DynamicResolutionParams2 : packoffset(c44);
 };
 
+cbuffer PrevPerFrame : register(b2)
+{
+    row_major float4x4 PrevCameraView[1] : packoffset(c0);
+    row_major float4x4 PrevCameraProj[1] : packoffset(c4);
+    row_major float4x4 PrevCameraViewProj[1] : packoffset(c8);
+    row_major float4x4 PrevCameraViewProjUnjittered[1] : packoffset(c12);
+    row_major float4x4 PrevCameraPreviousViewProjUnjittered[1] : packoffset(c16);
+    row_major float4x4 PrevCameraProjUnjittered[1] : packoffset(c20);
+    row_major float4x4 PrevCameraProjUnjitteredInverse[1] : packoffset(c24);
+    row_major float4x4 PrevCameraViewInverse[1] : packoffset(c28);
+    row_major float4x4 PrevCameraViewProjInverse[1] : packoffset(c32);
+    row_major float4x4 PrevCameraProjInverse[1] : packoffset(c36);
+    float4 PrevCameraPosAdjust[1] : packoffset(c40);
+    float4 PrevCameraPreviousPosAdjust[1] : packoffset(c41);
+    float4 PrevFrameParams : packoffset(c42);
+    float4 PrevDynamicResolutionParams1 : packoffset(c43);
+    float4 PrevDynamicResolutionParams2 : packoffset(c44);
+};
+
 struct ShadowDataStruct
 {
     float4 VPOSOffset;
@@ -58,15 +76,16 @@ struct ShadowDataStruct
 };
 
 RWTexture3D<float> ShadowVolume : register(u0);
-Texture3D<float> ShadowVolumePrevious : register(t0);
-Texture2DArray Noise : register(t1);
-Texture2D ShadowAtlas : register(t2);
+Texture3D<float> PrevShadowVolume : register(t0);
+Texture2DArray NoiseTex : register(t1);
+Texture2DArray ShadowAtlas : register(t2);
 Texture2D TerrainHeight : register(t3);
 Texture2D TerrainShadow : register(t4);
 StructuredBuffer<ShadowDataStruct> ShadowDataSB : register(t5);
 Texture2DArray ShadowMap : register(t6);
 Texture2DArray ShadowMapVL : register(t7);
 Texture1D InvRepartition : register(t8);
+Texture1D Repartition : register(t9);
 
 SamplerState Linear_Sampler : register(s10);
 SamplerState Point_Sampler : register(s11);
@@ -78,23 +97,43 @@ SamplerComparisonState Depth_Sampler : register(s13);
 #	include "Common/ShadowSampling.hlsli"
 
 
-// Stable 3D phase so each Froxel (and cascade) starts at a different point in the sequence.
-uint STBNPhase3D(uint3 pos, uint CascadeIdx){
-    uint h = (pos.x * 1973u) ^ (pos.y * 9277u) ^ (pos.z * 2663u) ^ (CascadeIdx * 811u);
+uint STBNPhase3D(uint3 pos){
+    uint h = (pos.x * 1973u) ^ (pos.y * 9277u) ^ (pos.z * 2663u) ^ 0x9E3779B9u;
     return h % max(1u, NoiseSize.z);
 }
 
-// Return two decorrelated scalars in [0,1) for XY jitter/etc.
-float2 SampleNoise(uint3 Froxel, uint CascadeIdx){
-    uint2 Coord1 = uint2(Froxel.xy) % NoiseSize.xy;
-    uint2 Coord2 = uint2((Coord1.x + 37u) % NoiseSize.x, (Coord1.y + 17u) % NoiseSize.y);
-    uint layer = (FrameIdx + STBNPhase3D(Froxel, CascadeIdx)) % NoiseSize.z;
+float2 SampleNoise(uint3 Froxel){
+    uint layer = (SharedData::FrameCountAlwaysActive + STBNPhase3D(Froxel)) % NoiseSize.z;
 
-    float2 Sample;
-    Sample.x = Noise.Load(int4(Coord1.xy, layer, 0)).x;
-    Sample.y = Noise.Load(int4(Coord2.xy, layer, 0)).x;
+    uint2 coord1 = uint2(Froxel.xy) % NoiseSize.xy;
+    uint2 coord2 = uint2((coord1.x + 37u) % NoiseSize.x, (coord1.y + 17u) % NoiseSize.y);
 
-    return Sample;
+    float NoiseX = NoiseTex.Load(int4(coord1.xy, layer, 0)).x;
+    float NoiseY = NoiseTex.Load(int4(coord2.xy, layer, 0)).x;
+
+    return float2(NoiseX, NoiseY);
+}
+
+float SliceThicknessViewZ(float FroxelZ){
+    float ZCoordUV = FroxelZ * rcp(VolumeSize.z);
+    float ZCoordUV2 = (FroxelZ + 1) * rcp(VolumeSize.z);
+    float depth = InvRepartition.SampleLevel(Linear_Sampler, ZCoordUV, 0).x;
+    float depth2 = InvRepartition.SampleLevel(Linear_Sampler, ZCoordUV2, 0).x;
+
+    return max(depth2 - depth, EPSILON);
+}
+
+float GetRayJitter(uint3 Froxel)
+{
+    float ZThickness = SliceThicknessViewZ((float)Froxel.z);
+    float Limit = 0.45 * ZThickness;
+    float Noise = SampleNoise(Froxel).x * 2.0 - 1.0;
+          Noise = clamp(Noise * RayJitterValue * ZThickness, -Limit, +Limit);
+
+    float ZCoordUVCenter = float(Froxel.z + 0.5) * rcp(VolumeSize.z);
+    float ZCenter = InvRepartition.SampleLevel(Linear_Sampler, ZCoordUVCenter, 0).x;
+
+    return ZCenter + Noise;
 }
 
 uint ChooseCascade(float viewZ){
@@ -107,45 +146,18 @@ float2 AtlasFetch1x2(float2 uv, uint texNum){
     return mad(uv, float2(1.0, 0.50), pos[texNum - 1]);
 }
 
-float2 GetAtlasUV(float2 CoordsUV, uint CascadeIdx){
-    float  Height = 1.0 / ShadowDataSB[0].EndSplitDistances.w;
-    float2 Base = float2(0.0, CascadeIdx * Height);
-    float2 Scale = float2(1.0, Height) - 2.0;
-
-    return CoordsUV * Scale + Base;
-}
-
 float ESM_Reconstruct(float SampleValue, float ReceiverDepth){
-    return saturate((SampleValue * (1.0 / ESM_Scale)) * exp(40 * (1.0 - ReceiverDepth))); /////////
+    return saturate((SampleValue * (1.0 / ESM_Scale)) * exp(ESM_EXP * (1.0 - ReceiverDepth)));
 }
 
 float SampleESMShadow(float3 CoordsLS, uint CascadeIdx)
 {
     //float2 AtlasUV = GetAtlasUV(CoordsLS.xy, CascadeIdx);
-    float2 AtlasUV = AtlasFetch1x2(CoordsLS.xy, CascadeIdx);
+    //float2 AtlasUV = AtlasFetch1x2(CoordsLS.xy, CascadeIdx);
+    //float SampleValue = ShadowAtlas.SampleLevel(Linear_Sampler, AtlasUV, 0).x;
 
-    float SampleValue = ShadowAtlas.SampleLevel(Linear_Sampler, AtlasUV, 0.0).x;
-
-    return ESM_Reconstruct(SampleValue, CoordsLS.z);
+    return 0.0;//ESM_Reconstruct(SampleValue, CoordsLS.z);
 }
-
-/*
-float GetRayJitter(uint3 Froxel, FroxelViewZ){
-    float NoiseValueZ = SampleNoise(Froxel + uint3(7,5,0), CascadeIdx).x;
-    float JitterRay = (NoiseValueZ - 0.5) * RayJitterValue; //
-
-    float ViewZNear = CameraNearZ * pow(CameraRatioZ, (Froxel.z + 0.0) / VolumeSize.z);
-    float ViewZFar = CameraNearZ * pow(CameraRatioZ, (Froxel.z + 1.0) / VolumeSize.z);
-    float ViewSliceThickness = max(EPSILON, ViewZFar - ViewZNear);
-
-    float SplitDist = 1e9;
-    [unroll] for (uint i = 0; i < Cascades-1; ++i)
-        SplitDist = min(SplitDist, abs(FroxelViewZ - EndSplitDistances[i]));
-
-    Jitter.z = clamp(JitterRay * ViewSliceThickness, -0.45 * ViewSliceThickness, +0.45 * ViewSliceThickness);
-    Jitter.z *= saturate((SplitDist - 0.5 * ViewSliceThickness) / (0.5 * ViewSliceThickness));
-}
-*/
 
 float4 FroxelWorldPosition(float3 Froxel)
 {
@@ -157,23 +169,15 @@ float4 FroxelWorldPosition(float3 Froxel)
 }
 
 float3 FroxelLightPosition(float3 CoordsWS, uint CascadeIndex){
-    ShadowDataStruct ShadowData = ShadowDataSB[0]; //non VR structured buffer
-    float4x3 LightWorldShadowUV = ShadowData.ShadowMapProj[0][CascadeIndex]; // world to shadow UV //don't use VR
+    ShadowDataStruct ShadowData = ShadowDataSB[0];
+    float4x3 LightWorldShadowUV = ShadowData.ShadowMapProj[0][CascadeIndex];
 
-    float3 CoordsLS = mul(transpose(LightWorldShadowUV), float4(CoordsWS, 1.0)).xyz; //this probably assumes default map size?
+    float3 CoordsLS = mul(transpose(LightWorldShadowUV), float4(CoordsWS, 1.0)).xyz;
 
     return CoordsLS;
 }
 
-float SampleShadow(float3 CoordsLS, uint cascadeIndex)
-{
-	float Visibility = ShadowMap.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, cascadeIndex), 0).x;
-	Visibility = Visibility >= CoordsLS.z;
-
-    return Visibility;
-}
-
-float4 GetWorldCoords(uint3 Froxel)
+float4 GetWorldCoords(float3 Froxel)
 {
     float3 CoordsUV = Froxel.xyz * (1.0 / VolumeSize.xyz);
 
@@ -191,35 +195,91 @@ float4 GetWorldCoords(uint3 Froxel)
     return float4(CoordsWS.xyz, CoordsCS.z);
 }
 
+float3 GetPrevWorldCoords(float3 CoordsWS)
+{
+    float4 PrevCS = mul(PrevCameraViewProj[0], float4(CoordsWS, 1.0));
+
+    if (PrevCS.w <= 0.0)
+        return float3(-1.0, -1.0, -1.0); //behind camera
+
+    float2 PrevNDC = PrevCS.xy / PrevCS.w;
+    float2 PrevUV = float2(PrevNDC.x, -PrevNDC.y) * 0.5 + 0.5;
+
+    float PrevZ = PrevCS.z / PrevCS.w;
+
+    float PrevDepth = Repartition.SampleLevel(Linear_Sampler, PrevZ, 0).x;
+
+    float3 PrevTexCoord = float3(PrevUV, PrevDepth);
+
+    if(all(PrevTexCoord >= 0.0 && PrevTexCoord <= 1.0))
+        return PrevTexCoord;
+
+    return float3(-1.0, -1.0, -1.0);
+}
+
+
+
+
+
 [numthreads(8, 8, 4)]
 void main(uint3 Froxel : SV_DispatchThreadID)
 {
     if (any(Froxel >= (uint3)VolumeSize.xyz))
         return;
 
-    float4 CoordsWS = GetWorldCoords(Froxel);
+    float3 Jitter = float3(0,0,0);
+    Jitter.xy = (SampleNoise(Froxel) - 0.5) * CellJitterValue;
+    Jitter.z = GetRayJitter(Froxel);
+
+    float4 CoordsWS = GetWorldCoords(float3(Froxel.xy + 0.5 + Jitter.xy, Froxel.z + Jitter.z));
 	float shadowMapDepth = CoordsWS.w;
 
-     ShadowDataStruct ShadowData = ShadowDataSB[0];
-
-	bool noShadow = true;
+	float Visibility = 0.0;
+    ShadowDataStruct ShadowData = ShadowDataSB[0];
 	if (ShadowData.EndSplitDistances.z >= shadowMapDepth) {
 		uint cascadeIndex = (shadowMapDepth > ShadowData.EndSplitDistances.x) ? 1 : 0;
 
-		float4x3 lightProjectionMatrix = ShadowData.ShadowMapProj[0][cascadeIndex];
+        float3 CoordsLS = FroxelLightPosition(CoordsWS.xyz, cascadeIndex);
 
-		float3 CoordsLS = mul(transpose(lightProjectionMatrix), float4(CoordsWS.xyz, 1)).xyz;
+		float Sample = ShadowMap.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, cascadeIndex), 0).x;
+        //float Sample = ShadowAtlas.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, cascadeIndex), 0).x;
+        //Sample = ESM_Reconstruct(Sample, CoordsLS.z);
 
-		float Visibility = ShadowMap.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, cascadeIndex), 0).x;
-		noShadow = Visibility >= CoordsLS.z;
+		Visibility = Sample >= CoordsLS.z;
 	}
-    //noShadow = 0;
 
-    if(Froxel.z < 3)
-        noShadow = false;
+    float3 PrevUVZ = GetPrevWorldCoords(CoordsWS.xyz);
 
-    ShadowVolume[Froxel] = float(noShadow);
+    float PrevVisibility = PrevShadowVolume.SampleLevel(Linear_Sampler, PrevUVZ, 0);
+    float Factor = 0.3 * (PrevUVZ.x >= 0.0);
+    //Visibility = lerp(Visibility, PrevVisibility, Factor);
+
+    if(Froxel.z < 1)
+        Visibility = 0.0;
+
+    ShadowVolume[Froxel] = Visibility;
 }
+
+
+//Visibility = lerp(CurrentShadow, PrevShadow, _347 * (1.0 - saturate((abs(CurrentShadow - PrevShadow) - SomeVar.y) / (1.0 - SomeVar.y))));
+
+
+// Usage in your inject pass (after choosing cascade from *centerZ*):
+//   SliceBounds b = GetSliceBounds(Froxel.z);
+//   float zJit    = b.centerZ + JitterAlongRay(Froxel, RayJitterValue);
+
+
+/*
+float2 GetAtlasUV(float2 CoordsUV, uint CascadeIdx){
+    float  Height = 1.0 / ShadowDataSB[0].EndSplitDistances.w;
+    float2 Base = float2(0.0, CascadeIdx * Height);
+    float2 Scale = float2(1.0, Height) - 2.0;
+
+    return CoordsUV * Scale + Base;
+}
+*/
+
+
 
     //LH camera
 

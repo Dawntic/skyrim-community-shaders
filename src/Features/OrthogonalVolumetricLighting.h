@@ -52,17 +52,17 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11PixelShader* MinifyPS = nullptr;
 	ID3D11PixelShader* FilterPS = nullptr;
 
-	ID3D11Texture2D* ExponentiateTex = nullptr;
+	ID3D11Texture2D* ExponentiateTex[2] = {};
 	ID3D11Texture2D* MinifyTex = nullptr;
 	ID3D11Texture2D* HorizontalTex = nullptr;
 	ID3D11Texture2D* ESMTexture = nullptr;
 
-	ID3D11ShaderResourceView* ExponentiateSRV = nullptr;
+	ID3D11ShaderResourceView* ExponentiateSRV[2] = {};
 	ID3D11ShaderResourceView* MinifySRV = nullptr;
 	ID3D11ShaderResourceView* HorizontalSRV = nullptr;
 	ID3D11ShaderResourceView* ESM_SRV = nullptr;
 
-	ID3D11RenderTargetView* ExponentiateRTV = nullptr;
+	ID3D11RenderTargetView* ExponentiateRTV[2] = {};
 	ID3D11RenderTargetView* MinifyRTV = nullptr;
 	ID3D11RenderTargetView* HorizontalRTV = nullptr;
 	ID3D11RenderTargetView* ESM_RTV = nullptr;
@@ -87,19 +87,19 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11PixelShader* ApplyVolumePS = nullptr;
 	ID3D11PixelShader* OutputPS = nullptr;
 
-	ID3D11Texture3D* ShadowVolume = nullptr;
-	ID3D11Texture3D* PrevShadowVolume = nullptr;
+	ID3D11Texture3D* ShadowVolume[2] = {};
+	//ID3D11Texture3D* PrevShadowVolume = nullptr;
 	ID3D11Texture3D* ScatteringVolume = nullptr;
 	ID3D11Texture3D* IntergrationVolume = nullptr;
 
-	ID3D11UnorderedAccessView* ShadowVolumeUAV = nullptr;
-	ID3D11UnorderedAccessView* PrevShadowVolumeUAV = nullptr;
+	ID3D11UnorderedAccessView* ShadowVolumeUAV[2] = {};
+	//ID3D11UnorderedAccessView* PrevShadowVolumeUAV = nullptr;
 	ID3D11UnorderedAccessView* ScatteringVolumeUAV = nullptr;
 	ID3D11UnorderedAccessView* IntergrationVolumeUAV = nullptr;
 
 	ID3D11ShaderResourceView* STBNoiseSRV = nullptr;
-	ID3D11ShaderResourceView* ShadowVolumeSRV = nullptr;
-	ID3D11ShaderResourceView* PrevShadowVolumeSRV = nullptr;
+	ID3D11ShaderResourceView* ShadowVolumeSRV[2] = {};
+	//ID3D11ShaderResourceView* PrevShadowVolumeSRV = nullptr;
 	ID3D11ShaderResourceView* ScatteringVolumeSRV = nullptr;
 	ID3D11ShaderResourceView* IntergrationVolumeSRV = nullptr;
 
@@ -123,14 +123,14 @@ struct OrthogonalVolumetricLighting : Feature
 	int PrevMatrixIdx;
 
 	//float AmbientTerm = 1.0; //
-	float CellJitterValue = 0.55;  //
-	float RayJitterValue = 0.28;   //
+	float CellJitterValue = 0.4;  //
+	float RayJitterValue = 0.3;   //
 
 	bool overrideCalled = false;
 	bool overrideShader = false;
 	uint pass = 1;
-	uint FrameIdx = 0;  //max?
 	float2 screenSize;
+	bool shadowVolParity;
 
 	int overrideNum = 0;
 
@@ -177,10 +177,9 @@ struct OrthogonalVolumetricLighting : Feature
 		float2 ShadowAtlasSize;
 		float CellJitterValue;
 		float RayJitterValue;
-		uint Frame;
 		uint ESM_Scale;
 		uint ESM_EXP;
-		float _pad[1];
+		float _pad[2];
 	};
 	virtual ShadowVolBuffer UpdateShadowBuffer();
 

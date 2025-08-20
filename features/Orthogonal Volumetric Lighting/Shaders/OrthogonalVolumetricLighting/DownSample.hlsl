@@ -55,7 +55,6 @@ float main(VertexShaderOutput input) : SV_Target
     float2 SrcSizeA = float2(1024.0, 1024.0);
     //float3 samplingPos = float3(((input.TexCoord.xy * DstSize * 4.0 + 1.0) / SrcSizeA), slice);
     float3 samplingPos = float3(input.TexCoord.xy, slice);
-    //float EXP = 40;
 
     Sample = ShadowMap.GatherRed(Point_Sampler, samplingPos, int2(0, 0));
     accum += clamp(exp(EXP * (Sample - 1.0)), EPSILON, 1.0);

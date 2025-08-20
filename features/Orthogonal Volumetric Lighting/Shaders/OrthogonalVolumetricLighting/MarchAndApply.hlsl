@@ -18,7 +18,6 @@ cbuffer ShadowVolumeBuffer : register(b0)
 	float2 ShadowAtlasSize;
 	float CellJitterValue;
 	float RayJitterValue;
-	uint FrameIdx;
 	uint ESM_Scale;
 	uint ESM_EXP;
 };
@@ -100,7 +99,6 @@ void main(uint3 Froxel : SV_DispatchThreadID)
         return;
 
     float4 Accumulation = float4(0.0, 0.0, 0.0, 1.0);
-
     float3 PrevCoordsWS = GetWorldCoords(float3(Froxel.xy + 0.5, 0.0)).xyz;
 
     for(int Slice=0; Slice < VolumeSize.z; Slice++){
@@ -122,7 +120,7 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 
 #ifdef ApplyVolume
 
-Texture3D Volume : register(t0);
+Texture3D IntergrationVolume : register(t0);
 Texture2D DepthTex : register(t1);
 Texture1D Repartition : register(t2);
 
@@ -140,20 +138,9 @@ float4 main(VertexShaderOutput input) : SV_Target
 {
     float DepthSample = DepthTex.Sample(Linear_Sampler, input.TexCoord.xy).x;
 
-    //float2 CameraNearFar = float2(SharedData::CameraData.y, SharedData::CameraData.x);
+    float depth = clamp(Repartition.SampleLevel(Linear_Sampler, DepthSample, 0).x, 0.0, 0.99999);
 
-    float depth = clamp(Repartition.SampleLevel(Linear_Sampler, DepthSample, 0).x, 0.0, 0.999999);
-
-    float3 Output = Volume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, depth), 0).xyz;
-
-    //float LinDepth = LinearDepth(DepthSample, CameraNearFar.x, CameraNearFar.y);
-    //float FroxelSlice = GetFroxelSlice(LinDepth);
-
-	//float TexelSize = 1.0 / VolumeSize.z;
-	//FroxelSlice = max(0.0, FroxelSlice - TexelSize * 1.5);
-
-	//float3 Output = Volume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, FroxelSlice), 0.0).xyz;
-	//Output = min(Output, float3(0.5, 0.5, 0.5));
+    float3 Output = IntergrationVolume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, depth), 0).xyz;
 
     return float4(Output, 1.0);
 }
@@ -164,11 +151,11 @@ float4 main(VertexShaderOutput input) : SV_Target
 
 #ifdef OutputPixel
 
-Texture2D OutputTex : register(t0);
+Texture2D VLResult : register(t0);
 
 
 float4 main(VertexShaderOutput input) : SV_Target
 {
-    return OutputTex.Sample(Linear_Sampler, input.TexCoord.xy);
+    return VLResult.Sample(Linear_Sampler, input.TexCoord.xy);
 }
 #endif

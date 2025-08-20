@@ -16,7 +16,6 @@ cbuffer ShadowVolumeBuffer : register(b0)
 	float2 ShadowAtlasSize;
 	float CellJitterValue;
 	float RayJitterValue;
-	uint FrameIdx;
 	uint ESM_Scale;
 	uint ESM_EXP;
 };
@@ -40,8 +39,29 @@ cbuffer PerFrame : register(b1)
     float4 DynamicResolutionParams2 : packoffset(c44);
 };
 
+struct ShadowDataStruct
+{
+    float4 VPOSOffset;
+    float4 ShadowSampleParam;    // fPoissonRadiusScale / iShadowMapResolution in z and w
+    float4 EndSplitDistances;    // cascade end distances int xyz, cascade count int z
+    float4 StartSplitDistances;  // cascade start ditances int xyz, 4 int z
+    float4 FocusShadowFadeParam;
+    float4 DebugColor;
+    float4 PropertyColor;
+    float4 AlphaTestRef;
+    float4 ShadowLightParam;  // Falloff in x, ShadowDistance squared in z
+    float4x3 FocusShadowMapProj[4];
+    // Since ShadowData is passed between c++ and hlsl, can't have different defines due to strong typing
+    float4x3 ShadowMapProj[2][3];
+    float4x4 CameraViewProjInverse[2];
+};
+
 Texture3D ShadowVolume : register(t0);
 Texture1D InvRepartition : register(t1);
+Texture2DArray NoiseTex : register(t2);
+
+StructuredBuffer<ShadowDataStruct> ShadowDataSB : register(t5);
+Texture2DArray ShadowMap : register(t6);
 
 RWTexture3D<float4> ScatteringVolume : register(u0);
 
@@ -89,10 +109,10 @@ float MLobePhaseFunction(float3 IncidentDir, float3 CameraDir, float Anisotropy,
         SecondaryLobe += HenyeyGreensteinPhase(ScatteringAngle, secondAnisotropy);
     SecondaryLobe = (Weight2 * Extinction / float(MLobes - 1)) * SecondaryLobe;
 
-    return PrimaryLobe;// + SecondaryLobe;
+    return PrimaryLobe + SecondaryLobe;
 }
 
-float4 GetWorldCoords(uint3 Froxel)
+float4 GetWorldCoords(float3 Froxel)
 {
     float3 CoordsUV = Froxel.xyz * (1.0 / VolumeSize.xyz);
 
@@ -111,43 +131,100 @@ float4 GetWorldCoords(uint3 Froxel)
 }
 
 
+uint STBNPhase3D(uint3 pos){
+    uint h = (pos.x * 1973u) ^ (pos.y * 9277u) ^ (pos.z * 2663u) ^ 0x9E3779B9u;
+    return h % max(1u, NoiseSize.z);
+}
+
+float2 SampleNoise(uint3 Froxel){
+    uint layer = (SharedData::FrameCountAlwaysActive + STBNPhase3D(Froxel)) % NoiseSize.z;
+
+    uint2 coord1 = uint2(Froxel.xy) % NoiseSize.xy;
+    uint2 coord2 = uint2((coord1.x + 37u) % NoiseSize.x, (coord1.y + 17u) % NoiseSize.y);
+
+    float NoiseX = NoiseTex.Load(int4(coord1.xy, layer, 0)).x;
+    float NoiseY = NoiseTex.Load(int4(coord2.xy, layer, 0)).x;
+
+    return float2(NoiseX, NoiseY);
+}
+
+float SliceThicknessViewZ(float FroxelZ){
+    float ZCoordUV = FroxelZ * rcp(VolumeSize.z);
+    float ZCoordUV2 = (FroxelZ + 1) * rcp(VolumeSize.z);
+    float depth = InvRepartition.SampleLevel(Linear_Sampler, ZCoordUV, 0).x;
+    float depth2 = InvRepartition.SampleLevel(Linear_Sampler, ZCoordUV2, 0).x;
+
+    return max(depth2 - depth, EPSILON);
+}
+
+float GetRayJitter(uint3 Froxel)
+{
+    float ZThickness = SliceThicknessViewZ((float)Froxel.z);
+    float Limit = 0.45 * ZThickness;
+    float Noise = SampleNoise(Froxel).x * 2.0 - 1.0;
+          Noise = clamp(Noise * RayJitterValue * ZThickness, -Limit, +Limit);
+
+    float ZCoordUVCenter = float(Froxel.z + 0.5) * rcp(VolumeSize.z);
+    float ZCenter = InvRepartition.SampleLevel(Linear_Sampler, ZCoordUVCenter, 0).x;
+
+    return ZCenter + Noise;
+}
+
+float GetDirectionalShadow(float4 CoordsWS)
+{
+    float shadowMapDepth = CoordsWS.w;
+	float Visibility = 0.0;
+    ShadowDataStruct ShadowData = ShadowDataSB[0];
+	if (ShadowData.EndSplitDistances.z >= shadowMapDepth) {
+		uint cascadeIndex = (shadowMapDepth > ShadowData.EndSplitDistances.x) ? 1 : 0;
+        float4x3 LightWorldShadowUV = ShadowData.ShadowMapProj[0][cascadeIndex];
+
+        float3 CoordsLS = mul(transpose(LightWorldShadowUV), float4(CoordsWS.xyz, 1.0)).xyz;
+		float Sample = ShadowMap.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, cascadeIndex), 0).x;
+		Visibility = Sample >= CoordsLS.z;
+	}
+
+    return Visibility;
+}
+
 [numthreads(8, 8, 4)]
 void main(uint3 Froxel : SV_DispatchThreadID)
 {
     if (any(Froxel >= (uint3)VolumeSize.xyz))
         return;
 
+    float3 Jitter = float3(0,0,0);
+    Jitter.xy = (SampleNoise(Froxel) - 0.5) * CellJitterValue;
+    Jitter.z = GetRayJitter(Froxel);
+
+    float3 TexCoord = Froxel;
+    TexCoord.z *= 2.0;
+	TexCoord.z += (((Froxel.x + Froxel.y) & 1) == (SharedData::FrameCountAlwaysActive & 1)) ? 1.0 : 0.0;
+	TexCoord += Jitter.xyz;
+
     float Weight1 = 0.1;
     float Weight2 = 1.0;
-    float Anisotropy = 0.5; //higher = thicker media
+    float Anisotropy = 0.5;
+    float Extinction = 0.002; //0.001
     int Lobes = 2;
 
-    float Extinction = 0.003; //0.001
+    //float3 NormCoords = float3(Froxel.xyz + 0.5) / VolumeSize.xyz;
+    //float Shadow = ShadowVolume.SampleLevel(Linear_Sampler, NormCoords, 0.0).x;
 
-    float3 NormCoords = float3(Froxel.xyz + 0.5) / VolumeSize.xyz;
-    float Shadow = ShadowVolume.SampleLevel(Linear_Sampler, NormCoords, 0.0).x;
+    float4 CoordsWS = GetWorldCoords(TexCoord);
 
-    //float3 CoordsWS = FroxelWorldPosition(CoordsUV).xyz;
-    float4 CoordsWS = GetWorldCoords(Froxel);
+    float3 IncomingDir = SharedData::DirLightDirection.xyz;
+    float3 OutgoingDir = normalize(CameraPosition.xyz - CoordsWS.xyz);
 
-    float3 IncomingDir = SharedData::DirLightDirection.xyz; //normalize(-SharedData::DirLightDirection.xyz);
-    //float3 OutgoingDir = normalize(CameraPosition.xyz - CoordsWS.xyz);
-    float3 OutgoingDir = normalize(CameraPosAdjust[0].xyz - CoordsWS.xyz);
+    float3 Scattering = SharedData::DirLightColor.xyz * MLobePhaseFunction(IncomingDir, OutgoingDir, Anisotropy, Extinction, Weight1, Weight2, Lobes);
 
-    //float3 viewDirection = -normalize(input.WorldPosition.xyz);
+    float Shadow = GetDirectionalShadow(CoordsWS);
+    Scattering = Scattering * Shadow;
 
-    float3 ScatteringResult = SharedData::DirLightColor.xyz * MLobePhaseFunction(IncomingDir, OutgoingDir, Anisotropy, Extinction, Weight1, Weight2, Lobes);
-    //float3 ScatteringResult = SharedData::DirLightColor.xyz * (1.0 / (4.0 * Math::PI));
-    ScatteringResult = ScatteringResult * Shadow;// * Extinction;
+    if(Froxel.z < 1)
+        Scattering = float3(0, 0, 0);
 
-    //if(Froxel.z < 20)
-    //    ScatteringResult = float3(0,0,0);
-   // else
-       //ScatteringResult = float3(0.3, 0.3, 0.3);
-
-    //ScatteringResult *= Shadow;
-    //ScatteringResult = float3(0.01, 0.01, 0.01);
-
-    ScatteringVolume[Froxel] = float4(ScatteringResult, Extinction);
+    ScatteringVolume[Froxel] = float4(Scattering, Extinction);
 }
 #endif
+
