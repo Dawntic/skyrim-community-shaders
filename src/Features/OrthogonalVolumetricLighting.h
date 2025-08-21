@@ -28,6 +28,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupMinify();
 	virtual void SetupShadowVolume();
 	virtual void SetupScatteringVolume();
+	virtual void SetupFilterPass();
 	virtual void SetupSliceMarch();
 	virtual void SetupApplyVolume();
 	virtual void SetupOutput();
@@ -83,25 +84,29 @@ struct OrthogonalVolumetricLighting : Feature
 
 	ID3D11ComputeShader* GenerateShadowVolumeCS = nullptr;
 	ID3D11ComputeShader* GenerateScatteringVolumeCS = nullptr;
+	ID3D11ComputeShader* FilterVolumeCS = nullptr;
 	ID3D11ComputeShader* SliceMarchCS = nullptr;
 	ID3D11PixelShader* ApplyVolumePS = nullptr;
 	ID3D11PixelShader* OutputPS = nullptr;
 
 	ID3D11Texture3D* ShadowVolume[2] = {};
-	//ID3D11Texture3D* PrevShadowVolume = nullptr;
-	ID3D11Texture3D* ScatteringVolume = nullptr;
-	ID3D11Texture3D* IntergrationVolume = nullptr;
-
 	ID3D11UnorderedAccessView* ShadowVolumeUAV[2] = {};
-	//ID3D11UnorderedAccessView* PrevShadowVolumeUAV = nullptr;
+	ID3D11ShaderResourceView* ShadowVolumeSRV[2] = {};
+
+	ID3D11Texture3D* ScatteringVolume = nullptr;
 	ID3D11UnorderedAccessView* ScatteringVolumeUAV = nullptr;
+	ID3D11ShaderResourceView* ScatteringVolumeSRV = nullptr;
+
+	ID3D11Texture3D* FilteringVolume[2] = {};
+	ID3D11UnorderedAccessView* FilterVolumeUAV[2] = {};
+	ID3D11ShaderResourceView* FilterVolumeSRV[2] = {};
+
+	ID3D11Texture3D* IntergrationVolume = nullptr;
 	ID3D11UnorderedAccessView* IntergrationVolumeUAV = nullptr;
+	ID3D11ShaderResourceView* IntergrationVolumeSRV = nullptr;
 
 	ID3D11ShaderResourceView* STBNoiseSRV = nullptr;
-	ID3D11ShaderResourceView* ShadowVolumeSRV[2] = {};
-	//ID3D11ShaderResourceView* PrevShadowVolumeSRV = nullptr;
-	ID3D11ShaderResourceView* ScatteringVolumeSRV = nullptr;
-	ID3D11ShaderResourceView* IntergrationVolumeSRV = nullptr;
+	ID3D11ShaderResourceView* STBNoiseFloat3SRV = nullptr;
 
 	ID3D11ShaderResourceView* InvRepartitionSRV = nullptr;
 	ID3D11ShaderResourceView* RepartitionSRV = nullptr;
@@ -110,9 +115,13 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11ShaderResourceView* OutputSRV = nullptr;
 	ID3D11RenderTargetView* OutputRTV = nullptr;
 
-	//float4 volumeDimensions = float4(160, 88, 64, 0);
-	float4 volumeDimensions = float4(320, 192, 90, 0);
+	float4 volumeDimensions = float4(160, 88, 64, 0);
+	//float4 volumeDimensions = float4(320, 192, 90, 0);
 	float4 noiseDimensions = float4(64, 64, 32, 0);
+
+	uint dispatchNormal[3] = { (UINT)std::ceil(volumeDimensions.x / 8), (UINT)std::ceil(volumeDimensions.y / 8), (UINT)std::ceil(volumeDimensions.z / 4) };
+	uint dispatchScatter[3] = { dispatchNormal[0], dispatchNormal[1], (UINT)std::ceil(volumeDimensions.z / 2 / 4) };
+	uint dispatchMarch[3] = { dispatchNormal[0], dispatchNormal[1], 1 };
 
 	float4 FrustumNearFar = float4(0.1f, 200.0f, 1.0f / 0.1f, volumeDimensions.z / std::log2(200.0f / 0.1f));
 	float4 frustum[4];
@@ -131,6 +140,7 @@ struct OrthogonalVolumetricLighting : Feature
 	uint pass = 1;
 	float2 screenSize;
 	bool shadowVolParity;
+	bool FilterVolParity;
 
 	int overrideNum = 0;
 
@@ -198,8 +208,9 @@ struct OrthogonalVolumetricLighting : Feature
 			ShadowVolume = 5,
 			ScatterVolume = 6,
 			IntergrationVolume = 7,
-			Apply = 8,
-			Output = 9
+			FilterVolume = 8,
+			Apply = 9,
+			Output = 10
 		};
 	};
 	Shaders::Enum shaderdesc;

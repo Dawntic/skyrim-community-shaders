@@ -102,7 +102,7 @@ void main(uint3 Froxel : SV_DispatchThreadID)
     float3 PrevCoordsWS = GetWorldCoords(float3(Froxel.xy + 0.5, 0.0)).xyz;
 
     for(int Slice=0; Slice < VolumeSize.z; Slice++){
-        float3 CoordsWS = GetWorldCoords(float3(Froxel.xy + 0.5, Slice + 1)).xyz;
+        float3 CoordsWS = GetWorldCoords(float3(Froxel.xy + 0.5, Slice + 1.0)).xyz;
         float StepLength = distance(PrevCoordsWS, CoordsWS);
 
         float4 ScatteredSlice = ScatteringVolume.Load(int4(Froxel.xy, Slice, 0));
@@ -123,26 +123,42 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 Texture3D IntergrationVolume : register(t0);
 Texture2D DepthTex : register(t1);
 Texture1D Repartition : register(t2);
-
-float LinearDepth(float Depth, float Near, float Far){
-    return (Near * Far) / (Far - Depth * (Far - Near));
-}
-
-float GetFroxelSlice(float LinDepth){ ////////////////
-    float FroxelSlice = log(LinDepth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x);
-    return FroxelSlice;
-}
+Texture2DArray NoiseTex : register(t3);
+Texture2DArray Float3NoiseTex : register(t4);
 
 
 float4 main(VertexShaderOutput input) : SV_Target
 {
-    float DepthSample = DepthTex.Sample(Linear_Sampler, input.TexCoord.xy).x;
+    float3 TexelSize = rcp(VolumeSize.xyz);
 
-    float depth = clamp(Repartition.SampleLevel(Linear_Sampler, DepthSample, 0).x, 0.0, 0.99999);
+ //   float4 Noise;
+//    Noise.xyz = Float3NoiseTex.Load(int4(int2(input.Position.xy) % 64, SharedData::FrameCountAlwaysActive % 64, 0));
+//    Noise.w = NoiseTex.Load(int4(int2(input.Position.xy) % 64, SharedData::FrameCountAlwaysActive % 32, 0));
+//    Noise = (Noise * 2.0 - 1.0) * 1.5;
+//
+    uint2 pixelXY = uint2(input.Position.xy);
+    uint baseLayer = SharedData::FrameCountAlwaysActive & 31;
+    float4 Noise;
+    Noise.x = NoiseTex.Load(int4(int2((pixelXY + uint2( 0,  0)) & 63), (baseLayer +  0) & 31, 0)).x;
+    Noise.y = NoiseTex.Load(int4(int2((pixelXY + uint2(37, 17)) & 63), (baseLayer +  7) & 31, 0)).x;
+    Noise.z = NoiseTex.Load(int4(int2((pixelXY + uint2(11, 29)) & 63), (baseLayer + 13) & 31, 0)).x;
+    Noise.w = NoiseTex.Load(int4(int2((pixelXY + uint2(53,  7)) & 63), (baseLayer + 19) & 31, 0)).x;
+    Noise = (Noise * 2.0 - 1.0) * 1.5;
 
-    float3 Output = IntergrationVolume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, depth), 0).xyz;
+    //Noise = float4(0,0,0,0);
 
-    return float4(Output, 1.0);
+    float Depth = DepthTex.Sample(Linear_Sampler, input.TexCoord.xy).x;
+    Depth = clamp(Repartition.SampleLevel(Linear_Sampler, Depth, 0).x, 0.0, 0.99999);
+    Depth = max(0.0, Depth - TexelSize.z * 1.5);
+
+    float4 Output;
+    for (int i=0; i<4; ++i){
+        float3 TexCoord = float3(input.TexCoord.xy, Depth) + Noise.xyz * float3(1.0, 1.0, 0.5) * TexelSize;
+        Output += IntergrationVolume.SampleLevel(Linear_Sampler, TexCoord.xyz, 0.0) / 4.0;
+        Noise = Noise.yzwx;
+    }
+
+    return float4(Output.xyz, 1.0);
 }
 #endif
 
@@ -152,10 +168,21 @@ float4 main(VertexShaderOutput input) : SV_Target
 #ifdef OutputPixel
 
 Texture2D VLResult : register(t0);
+Texture3D Scattering : register(t1);
+Texture3D Filtering : register(t2);
+Texture3D SliceMarch : register(t3);
 
 
 float4 main(VertexShaderOutput input) : SV_Target
 {
-    return VLResult.Sample(Linear_Sampler, input.TexCoord.xy);
+    float4 Output = VLResult.Sample(Linear_Sampler, input.TexCoord.xy);
+
+    //Output = Scattering.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, 0.2), 0) * 10;
+    //Output = Filtering.Sample(Linear_Sampler, float3(input.TexCoord.xy, 0.5));
+    //Output = SliceMarch.Sample(Linear_Sampler, float3(input.TexCoord.xy, 0.5));
+
+
+
+    return Output;
 }
 #endif
