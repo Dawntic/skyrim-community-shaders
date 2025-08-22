@@ -177,7 +177,7 @@ float4 main(VertexShaderOutput input) : SV_Target
 {
     float4 Output = VLResult.Sample(Linear_Sampler, input.TexCoord.xy);
 
-    //Output = Scattering.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, 0.2), 0) * 10;
+    Output = Scattering.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, 0.2), 0) * 10;
     //Output = Filtering.Sample(Linear_Sampler, float3(input.TexCoord.xy, 0.5));
     //Output = SliceMarch.Sample(Linear_Sampler, float3(input.TexCoord.xy, 0.5));
 
