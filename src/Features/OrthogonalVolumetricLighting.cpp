@@ -446,12 +446,15 @@ void OrthogonalVolumetricLighting::SetupApplyVolume()
 	context->PSSetConstantBuffers(0, 1, &buffer);
 	context->PSSetConstantBuffers(1, 1, &FrameBuff);
 
+	auto& noise = globals::features::skylighting.stbn_vec3_2Dx1D_128x128x64.get();
+
 	auto& mainDepthSRV = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN].depthSRV;
 	context->PSSetShaderResources(0, 1, &IntergrationVolumeSRV);
 	context->PSSetShaderResources(1, 1, &mainDepthSRV);
 	context->PSSetShaderResources(2, 1, &RepartitionSRV);
 	context->PSSetShaderResources(3, 1, &STBNoiseSRV);
 	context->CSSetShaderResources(4, 1, &STBNoiseFloat3SRV);
+	context->CSSetShaderResources(5, 1, &noise);
 
 	overrideShader = false;
 }
@@ -501,7 +504,7 @@ void OrthogonalVolumetricLighting::CheckOverride()
 			pass = 1;
 			float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 			//globals::d3d::context->ClearRenderTargetView(ExponentiateRTV, clear);
-			//globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
+			globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
 		}
 		LookupShader(shaderdesc);
 	}

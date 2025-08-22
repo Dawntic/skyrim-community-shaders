@@ -95,9 +95,6 @@ float4 GetWorldCoords(float3 Froxel)
 [numthreads(8, 8, 1)]
 void main(uint3 Froxel : SV_DispatchThreadID)
 {
-    if (any(Froxel >= (uint3)VolumeSize.xyz))
-        return;
-
     float4 Accumulation = float4(0.0, 0.0, 0.0, 1.0);
     float3 PrevCoordsWS = GetWorldCoords(float3(Froxel.xy + 0.5, 0.0)).xyz;
 
@@ -139,7 +136,7 @@ float4 main(VertexShaderOutput input) : SV_Target
     uint2 pixelXY = uint2(input.Position.xy);
     uint baseLayer = SharedData::FrameCountAlwaysActive & 31;
     float4 Noise;
-    Noise.x = NoiseTex.Load(int4(int2((pixelXY + uint2( 0,  0)) & 63), (baseLayer +  0) & 31, 0)).x;
+    Noise.x = Float3NoiseTex.Load(int4(int2((pixelXY + uint2( 0,  0)) & 63), (baseLayer +  0) & 31, 0)).x;
     Noise.y = NoiseTex.Load(int4(int2((pixelXY + uint2(37, 17)) & 63), (baseLayer +  7) & 31, 0)).x;
     Noise.z = NoiseTex.Load(int4(int2((pixelXY + uint2(11, 29)) & 63), (baseLayer + 13) & 31, 0)).x;
     Noise.w = NoiseTex.Load(int4(int2((pixelXY + uint2(53,  7)) & 63), (baseLayer + 19) & 31, 0)).x;
@@ -177,7 +174,7 @@ float4 main(VertexShaderOutput input) : SV_Target
 {
     float4 Output = VLResult.Sample(Linear_Sampler, input.TexCoord.xy);
 
-    Output = Scattering.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, 0.2), 0) * 10;
+    //Output = Scattering.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, 0.2), 0) * 10;
     //Output = Filtering.Sample(Linear_Sampler, float3(input.TexCoord.xy, 0.5));
     //Output = SliceMarch.Sample(Linear_Sampler, float3(input.TexCoord.xy, 0.5));
 
