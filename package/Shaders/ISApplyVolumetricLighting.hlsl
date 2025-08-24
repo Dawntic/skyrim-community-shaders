@@ -87,6 +87,8 @@ PS_OUTPUT main(PS_INPUT input)
 		psout.VL = adjustedVl;
 	}
 
+	psout.VL = 0.0;
+
 	return psout;
 }
 #endif

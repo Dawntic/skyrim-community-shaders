@@ -78,6 +78,10 @@ struct OrthogonalVolumetricLighting : Feature
 	uint ESM_EXP = 60;
 	uint ESM_Scale = 65000;
 
+	Matrix cameraview;
+	Matrix invcameraview;
+	Matrix frustuminvviewproj;
+
 	Microsoft::WRL::ComPtr<ID3D11Buffer> PrevFrameBuffer[2];
 	ConstantBuffer* ShadowVolumeBuffer = nullptr;
 	ID3D11BlendState* AddBlend = nullptr;
@@ -110,26 +114,29 @@ struct OrthogonalVolumetricLighting : Feature
 
 	ID3D11ShaderResourceView* InvRepartitionSRV = nullptr;
 	ID3D11ShaderResourceView* RepartitionSRV = nullptr;
+	ID3D11ShaderResourceView* GameVolumeSRV = nullptr;
 
 	ID3D11Texture2D* OutputTexture = nullptr;
 	ID3D11ShaderResourceView* OutputSRV = nullptr;
 	ID3D11RenderTargetView* OutputRTV = nullptr;
 
-	float4 volumeDimensions = float4(160, 88, 64, 0);
-	//float4 volumeDimensions = float4(320, 192, 90, 0);
+	//float4 volumeDimensions = float4(160, 88, 64, 0);
+	//float4 volumeDimensions = float4(160, 90, 64, 0);
+	float4 volumeDimensions = float4(320, 192, 90, 0);
 	float4 noiseDimensions = float4(64, 64, 32, 0);
 
 	uint dispatchNormal[3] = { (UINT)std::ceil(volumeDimensions.x / 8), (UINT)std::ceil(volumeDimensions.y / 8), (UINT)std::ceil(volumeDimensions.z / 4) };
 	uint dispatchScatter[3] = { dispatchNormal[0], dispatchNormal[1], (UINT)std::ceil(volumeDimensions.z / 2 / 4) };
 	uint dispatchMarch[3] = { dispatchNormal[0], dispatchNormal[1], 1 };
 
-	float4 FrustumNearFar = float4(0.1f, 200.0f, 1.0f / 0.1f, volumeDimensions.z / std::log2(200.0f / 0.1f));
-	float4 frustum[4];
+	float4 FrustumNearFar;  // = float4(0.1f, 200.0f, 1.0f / 0.1f, volumeDimensions.z / std::log2(200.0f / 0.1f));
+	float4 frustumCorners[4];
 	float4 cameraPosition;
 	Matrix WorldFromUVZ;
 
 	float4 PrevCameraData[2];
 	int PrevMatrixIdx;
+	float3 cameraPositionTest;
 
 	//float AmbientTerm = 1.0; //
 	float CellJitterValue = 0.4;  //
@@ -143,7 +150,7 @@ struct OrthogonalVolumetricLighting : Feature
 	bool FilterVolParity;
 
 	int overrideNum = 0;
-
+	uint frameCounter = 0;
 	uintptr_t* skyrim_FlareData = nullptr;
 	uint32_t* skyrim_RunFlarePtr = nullptr;
 
@@ -178,18 +185,26 @@ struct OrthogonalVolumetricLighting : Feature
 
 	struct alignas(16) ShadowVolBuffer
 	{
-		Matrix frustum;
+		DirectX::XMFLOAT4X4 Frustum;
+		//DirectX::XMFLOAT4X4 CameraView;
+		DirectX::XMFLOAT4X4 InvCameraView;
+		//DirectX::XMFLOAT4X4 FrustumInvViewProj;
 		float4 FrustumNearFar;
+		float4 frustumTL;
+		float4 frustumTR;
+		float4 frustumBL;
+		float4 frustumBR;
 		float4 CameraPosition;
+		float4 CameraPositionTest;
 		float4 VolumeSize;
 		float4 NoiseSize;
-		float4 PrevCameraData;
 		float2 ShadowAtlasSize;
 		float CellJitterValue;
 		float RayJitterValue;
 		uint ESM_Scale;
 		uint ESM_EXP;
-		float _pad[2];
+		uint frameCounter;
+		float _pad[1];
 	};
 	virtual ShadowVolBuffer UpdateShadowBuffer();
 

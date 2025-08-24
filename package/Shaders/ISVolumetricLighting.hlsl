@@ -27,7 +27,7 @@ PS_OUTPUT main(PS_INPUT input)
 {
 	PS_OUTPUT psout;
 
-	psout.Color = float4(LightColor_Intensity.w * LightColor_Intensity.xyz, LightColor_Intensity.w);
+	//psout.Color = float4(LightColor_Intensity.w * LightColor_Intensity.xyz, LightColor_Intensity.w);
 
 	return psout;
 }

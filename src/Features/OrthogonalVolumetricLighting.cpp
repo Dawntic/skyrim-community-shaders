@@ -1,6 +1,7 @@
 #include "OrthogonalVolumetricLighting.h"
 #include "../Deferred.h"
 #include "../Upscaling.h"
+#include "Skylighting.h"
 #include "State.h"
 #include "TerrainShadows.h"
 #include "Util.h"
@@ -162,7 +163,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	D3D11_TEXTURE3D_DESC ScatterVolumeDesc{ R16VolumeDesc };
 	ScatterVolumeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-	ScatterVolumeDesc.Depth = (UINT)std::ceil(volumeDimensions.z / 2);
+	//ScatterVolumeDesc.Depth = (UINT)std::ceil(volumeDimensions.z / 2);
 
 	D3D11_UNORDERED_ACCESS_VIEW_DESC ScatterVolumeUAVDesc{ R16VolumeUAVdesc };
 	ScatterVolumeUAVDesc.Format = ScatterVolumeDesc.Format;
@@ -217,12 +218,11 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	//renderdata->SetupPass(Shaders::ExpDownSample, true, 1, { .uncond_pass = true });
 	//renderdata->SetupPass(Shaders::ExpDownSample, true, 1, { .uncond_pass = true });
-
 	//renderdata->SetupPass(Shaders::Minify,		 true, 1, { .uncond_pass = true });
 
 	renderdata->SetupPass(Shaders::ShadowVolume, true, 1, { .uncond_pass = true });
 	renderdata->SetupPass(Shaders::ScatterVolume, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::FilterVolume, true, 1, { .uncond_pass = true });
+	//renderdata->SetupPass(Shaders::FilterVolume, true, 1, { .uncond_pass = true });
 	renderdata->SetupPass(Shaders::IntergrationVolume, true, 1, { .uncond_pass = true });
 
 	renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
@@ -234,60 +234,6 @@ void OrthogonalVolumetricLighting::SetupResources()
 //skyrim_SunPosition = reinterpret_cast<RE::NiPoint3*>(REL::RelocationID(527924, 414871).address());
 //auto sunWSPos = *skyrim_SunPosition;
 //float4 sunPosition = { sunWSPos.x, sunWSPos.y, sunWSPos.z, 1.0f };
-
-void OrthogonalVolumetricLighting::SetupDownSampleExpo()
-{
-	auto context = globals::d3d::context;
-	auto renderer = globals::game::renderer;
-
-	ESMCBuffer->Update(UpdateESMBuffer(pass));
-
-	static bool Parity = pass & 1;
-	auto ExpoRTV = ExponentiateRTV[!Parity];
-
-	//context->RSSetViewports(1, &viewPort[pass - 1]);
-	context->RSSetViewports(1, &viewPort[0]);
-	context->OMSetRenderTargets(1, &ExpoRTV, nullptr);
-	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-
-	auto buffer = ESMCBuffer->CB();
-	context->PSSetConstantBuffers(1, 1, &buffer);
-	//context->VSSetConstantBuffers(1, 1, &buffer);
-
-	context->PSSetSamplers(10, 1, &LinearSampler);
-	context->PSSetSamplers(11, 1, &PointSampler);
-	context->PSSetSamplers(12, 1, &DepthSampler);
-
-	context->VSSetShader(BypassVertexShader, NULL, NULL);
-	context->PSSetShader(DownSamplePS, NULL, NULL);
-
-	auto shadowMap = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
-	context->PSSetShaderResources(0, 1, &shadowMap);
-
-	pass++;
-
-	overrideShader = false;
-}
-
-void OrthogonalVolumetricLighting::SetupMinify()
-{
-	auto context = globals::d3d::context;
-
-	ESMCBuffer->Update(UpdateESMBuffer(pass));
-
-	context->RSSetViewports(1, &viewPort[pass - 1]);
-	context->OMSetRenderTargets(1, &MinifyRTV, nullptr);
-	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-
-	context->VSSetShader(BypassVertexShader, NULL, NULL);
-	context->PSSetShader(MinifyPS, NULL, NULL);
-
-	//context->PSSetShaderResources(0, 1, &ExponentiateSRV);
-
-	pass++;
-
-	overrideShader = false;
-}
 
 void OrthogonalVolumetricLighting::SetupShadowVolume()
 {
@@ -326,6 +272,10 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	context->CSSetShaderResources(8, 1, &InvRepartitionSRV);
 	context->CSSetShaderResources(9, 1, &RepartitionSRV);
 
+	context->CSSetSamplers(10, 1, &LinearSampler);
+	context->CSSetSamplers(11, 1, &PointSampler);
+	context->CSSetSamplers(12, 1, &DepthSampler);
+
 	auto shadowMap = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
 	auto shadowMapVL = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
 	context->CSSetShaderResources(6, 1, &shadowMap);
@@ -357,9 +307,11 @@ void OrthogonalVolumetricLighting::SetupScatteringVolume()
 	context->CSSetShaderResources(0, 1, &ShadowVolumeSRV[!shadowVolParity]);
 	context->CSSetShaderResources(1, 1, &InvRepartitionSRV);
 	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
+	context->CSSetShaderResources(3, 1, &GameVolumeSRV);
 
-	//context->Dispatch(40, 24, 23);
-	context->Dispatch(dispatchScatter[0], dispatchScatter[1], dispatchScatter[2]);
+	//context->Dispatch(40, 23, 8);
+	context->Dispatch(80, 48, 23);
+	//context->Dispatch(dispatchScatter[0], dispatchScatter[1], dispatchScatter[2]);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
@@ -393,8 +345,8 @@ void OrthogonalVolumetricLighting::SetupFilterPass()
 	context->CSSetShaderResources(3, 1, &STBNoiseSRV);
 	context->CSSetShaderResources(4, 1, &ScatteringVolumeSRV);
 
-	//context->Dispatch(40, 24, 23);
-	context->Dispatch(dispatchNormal[0], dispatchNormal[1], dispatchNormal[2]);
+	context->Dispatch(40, 23, 16);
+	//context->Dispatch(dispatchNormal[0], dispatchNormal[1], dispatchNormal[2]);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
@@ -416,12 +368,13 @@ void OrthogonalVolumetricLighting::SetupSliceMarch()
 	context->CSSetConstantBuffers(0, 1, &buffer);
 	context->CSSetConstantBuffers(1, 1, &FrameBuff);
 
-	//context->CSSetShaderResources(0, 1, &ScatteringVolumeSRV);
-	context->CSSetShaderResources(0, 1, &FilterVolumeSRV[!FilterVolParity]);
+	context->CSSetShaderResources(0, 1, &ScatteringVolumeSRV);
+	//context->CSSetShaderResources(0, 1, &FilterVolumeSRV[!FilterVolParity]);
 	context->CSSetShaderResources(1, 1, &InvRepartitionSRV);
 
-	//context->Dispatch(40, 24, 1);
-	context->Dispatch(dispatchMarch[0], dispatchMarch[1], dispatchMarch[2]);
+	context->Dispatch(40, 24, 1);
+	//context->Dispatch(20, 12, 1);
+	//context->Dispatch(dispatchMarch[0], dispatchMarch[1], dispatchMarch[2]);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
@@ -446,15 +399,20 @@ void OrthogonalVolumetricLighting::SetupApplyVolume()
 	context->PSSetConstantBuffers(0, 1, &buffer);
 	context->PSSetConstantBuffers(1, 1, &FrameBuff);
 
-	auto& noise = globals::features::skylighting.stbn_vec3_2Dx1D_128x128x64.get();
+	//auto& noise = globals::features::skyLighting.stbn_vec3_2Dx1D_128x128x64.get();
+	//ID3D11ShaderResourceView* noise = globals::features::skylighting.stbn_vec3_2Dx1D_128x128x64.get();
 
 	auto& mainDepthSRV = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN].depthSRV;
 	context->PSSetShaderResources(0, 1, &IntergrationVolumeSRV);
 	context->PSSetShaderResources(1, 1, &mainDepthSRV);
 	context->PSSetShaderResources(2, 1, &RepartitionSRV);
 	context->PSSetShaderResources(3, 1, &STBNoiseSRV);
-	context->CSSetShaderResources(4, 1, &STBNoiseFloat3SRV);
-	context->CSSetShaderResources(5, 1, &noise);
+	//context->CSSetShaderResources(4, 1, &STBNoiseFloat3SRV);
+	//context->PSSetShaderResources(4, 1, &noise);
+
+	context->PSSetSamplers(10, 1, &LinearSampler);
+	context->PSSetSamplers(11, 1, &PointSampler);
+	context->PSSetSamplers(12, 1, &DepthSampler);
 
 	overrideShader = false;
 }
@@ -489,6 +447,7 @@ void OrthogonalVolumetricLighting::CheckOverride()
 
 	if (overrideCalled) {
 		if (overrideNum == 1) {
+			globals::d3d::context->PSGetShaderResources(2, 1, &GameVolumeSRV);
 			globals::d3d::context->PSGetShaderResources(3, 1, &RepartitionSRV);
 			overrideNum = 0;
 		} else {
@@ -500,7 +459,7 @@ void OrthogonalVolumetricLighting::CheckOverride()
 	if (overrideShader) {
 		if (frame_checker.IsNewFrame()) {
 			UpdateFrustum();
-
+			frameCounter++;
 			pass = 1;
 			float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 			//globals::d3d::context->ClearRenderTargetView(ExponentiateRTV, clear);
@@ -530,29 +489,49 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 		(this->*(it->second))();
 }
 
+//Matrix invCameraView = cameraView.Invert();
+
+//	float invPx = 1.0f / frustumProj.m[0][0];
+//	float invPy = 1.0f / frustumProj.m[1][1];
+
+//	Matrix ViewFromUVZ(
+//	2 * invPx, 0, -invPx, 0,
+//		0, -2 * invPy, invPy, 0,
+//	0, 0, 1, 0,
+//	0, 0, 0, 1);
+
+//WorldFromUVZ = (invCameraView * ViewFromUVZ); //should this be (ViewFromUVZ * invViewMat) ??
+//invcameraview = invCameraView;
+
 void OrthogonalVolumetricLighting::UpdateFrustum()
 {
-	auto tmp = Util::GetAverageEyePosition();
-	cameraPosition = float4(tmp.x, tmp.y, tmp.z, 1.0f);
+	float nearPlane = Util::GetCameraData().y;  //games camera nearPlane
+	float farPlane = 11198.0f;                  //frustum farPlane in game WS units
 
-	float FOVy = Util::GetVerticalFOVRad();
 	float aspect = screenSize.x / screenSize.y;
+	float FOVy = Util::GetVerticalFOVRad();  //games vertical FOV
 
-	Matrix projMat = Matrix(DirectX::XMMatrixPerspectiveFovLH(FOVy, aspect, FrustumNearFar.x, FrustumNearFar.y));
-	float invPx = 1.0f / projMat.m[0][0];
-	float invPy = 1.0f / projMat.m[1][1];
+	Matrix frustumProj = Matrix(DirectX::XMMatrixPerspectiveFovLH(FOVy, aspect, nearPlane, farPlane));
 
-	Matrix invViewMat = Util::GetCameraData(0).viewMat.Invert();
+	Matrix cameraView = Util::GetCameraData(0).viewMat;
+	cameraView = cameraView.Transpose();  //GetCameraData() returns column major so we need to transpose
 
-	Matrix ViewFromUVZ(
-		2 * invPx, 0, 0, 0,
-		0, -2 * invPy, 0, 0,
-		-invPx, +invPy, 1, 0,
-		0, 0, 0, 1);
+	Matrix frustInvViewProj = (cameraView * frustumProj).Invert();
 
-	WorldFromUVZ = ViewFromUVZ * invViewMat;
+	frustumCorners[0] = float4::Transform(float4(-1.0f, 1.0f, 1.0f, 1.0f), frustInvViewProj);   // top left
+	frustumCorners[1] = float4::Transform(float4(1.0f, 1.0f, 1.0f, 1.0f), frustInvViewProj);    // top right
+	frustumCorners[2] = float4::Transform(float4(-1.0f, -1.0f, 1.0f, 1.0f), frustInvViewProj);  // bottom left
+	frustumCorners[3] = float4::Transform(float4(1.0f, -1.0f, 1.0f, 1.0f), frustInvViewProj);   // bottom right
 
-	//Matrix WorldFromUVZ_GPU = WorldFromUVZ.Transpose();
+	auto eyePos = Util::GetEyePosition(0);  // camera WS pos in game units
+	cameraPosition = float4(eyePos.x, eyePos.y, eyePos.z, 0.0f);
+
+	for (auto& corner : frustumCorners) {
+		corner /= corner.w;
+		corner -= cameraPosition;
+	}
+
+	FrustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
 }
 
 int OrthogonalVolumetricLighting::UpdateMatrixCache()
@@ -627,17 +606,25 @@ OrthogonalVolumetricLighting::ESMBuffer OrthogonalVolumetricLighting::UpdateESMB
 OrthogonalVolumetricLighting::ShadowVolBuffer OrthogonalVolumetricLighting::UpdateShadowBuffer()
 {
 	ShadowVolBuffer data{};
-	data.frustum = WorldFromUVZ.Transpose();
+	XMStoreFloat4x4(&data.Frustum, WorldFromUVZ);
+	//XMStoreFloat4x4(&data.CameraView, cameraview);
+	XMStoreFloat4x4(&data.InvCameraView, invcameraview);
+	//XMStoreFloat4x4(&data.FrustumInvViewProj, frustuminvviewproj);
 	data.FrustumNearFar = FrustumNearFar;
+	data.frustumTL = float4(frustumCorners[0].x, frustumCorners[0].y, frustumCorners[0].z, 0.0f);
+	data.frustumTR = float4(frustumCorners[1].x, frustumCorners[1].y, frustumCorners[1].z, 0.0f);
+	data.frustumBL = float4(frustumCorners[2].x, frustumCorners[2].y, frustumCorners[2].z, 0.0f);
+	data.frustumBR = float4(frustumCorners[3].x, frustumCorners[3].y, frustumCorners[3].z, 0.0f);
 	data.CameraPosition = cameraPosition;
+	data.CameraPositionTest = float4(cameraPositionTest.x, cameraPositionTest.y, cameraPositionTest.z, 1.0f);
 	data.VolumeSize = volumeDimensions;
 	data.NoiseSize = noiseDimensions;
-	data.PrevCameraData = PrevCameraData[PrevMatrixIdx];
 	data.ShadowAtlasSize = ESM_AtlasSize;
 	data.CellJitterValue = CellJitterValue;
 	data.RayJitterValue = RayJitterValue;
 	data.ESM_Scale = ESM_Scale;
 	data.ESM_EXP = ESM_EXP;
+	data.frameCounter = frameCounter;
 	return data;
 }
 
@@ -648,7 +635,59 @@ void OrthogonalVolumetricLighting::Override()
 		LFApply_func(BGSCamera, BGSShader, (uint64_t)0);
 	}
 }
+void OrthogonalVolumetricLighting::SetupDownSampleExpo()
+{
+	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
 
+	ESMCBuffer->Update(UpdateESMBuffer(pass));
+
+	static bool Parity = pass & 1;
+	auto ExpoRTV = ExponentiateRTV[!Parity];
+
+	//context->RSSetViewports(1, &viewPort[pass - 1]);
+	context->RSSetViewports(1, &viewPort[0]);
+	context->OMSetRenderTargets(1, &ExpoRTV, nullptr);
+	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+
+	auto buffer = ESMCBuffer->CB();
+	context->PSSetConstantBuffers(1, 1, &buffer);
+	//context->VSSetConstantBuffers(1, 1, &buffer);
+
+	context->PSSetSamplers(10, 1, &LinearSampler);
+	context->PSSetSamplers(11, 1, &PointSampler);
+	context->PSSetSamplers(12, 1, &DepthSampler);
+
+	context->VSSetShader(BypassVertexShader, NULL, NULL);
+	context->PSSetShader(DownSamplePS, NULL, NULL);
+
+	auto shadowMap = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
+	context->PSSetShaderResources(0, 1, &shadowMap);
+
+	pass++;
+
+	overrideShader = false;
+}
+
+void OrthogonalVolumetricLighting::SetupMinify()
+{
+	auto context = globals::d3d::context;
+
+	ESMCBuffer->Update(UpdateESMBuffer(pass));
+
+	context->RSSetViewports(1, &viewPort[pass - 1]);
+	context->OMSetRenderTargets(1, &MinifyRTV, nullptr);
+	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+
+	context->VSSetShader(BypassVertexShader, NULL, NULL);
+	context->PSSetShader(MinifyPS, NULL, NULL);
+
+	//context->PSSetShaderResources(0, 1, &ExponentiateSRV);
+
+	pass++;
+
+	overrideShader = false;
+}
 void OrthogonalVolumetricLighting::SetupVerticalFilter()
 {
 }

@@ -38,6 +38,9 @@ SamplerState Linear_Sampler : register(s10);
 SamplerState Point_Sampler : register(s11);
 SamplerComparisonState Depth_Sampler : register(s13);
 
+float sum4(float4 v) {
+    return v.x + v.y + v.z + v.w;}
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 #define EPSILON 1e-6

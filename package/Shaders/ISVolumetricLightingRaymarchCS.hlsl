@@ -11,8 +11,8 @@ cbuffer PerTechnique : register(b0)
 	uint depth = (uint)TextureDimensions.z;
 	uint3 currCoord = uint3(dispatchID.xy, 0);
 	float acc = DensityRW[currCoord];
-	for (currCoord.z = 1; currCoord.z < depth; currCoord.z++) {
-		acc += DensityRW[currCoord];
-		DensityRW[currCoord] = acc;
-	}
+	//for (currCoord.z = 1; currCoord.z < depth; currCoord.z++) {
+		//acc += DensityRW[currCoord];
+		//DensityRW[currCoord] = acc;
+	//}
 }

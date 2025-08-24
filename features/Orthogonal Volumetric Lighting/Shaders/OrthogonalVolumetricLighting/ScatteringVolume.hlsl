@@ -5,16 +5,24 @@
 cbuffer ShadowVolumeBuffer : register(b0)
 {
     row_major float4x4 Frustum;
+    //row_major float4x4 CamerView;
+    row_major float4x4 InvCameraView;
+    //row_major float4x4 FrustumInvViewProj;
     float4 FrustumNearFar;
+    float4 frustumTL;
+    float4 frustumTR;
+    float4 frustumBL;
+    float4 frustumBR;
     float4 CameraPosition;
+    float4 CameraPositionTest;
     float4 VolumeSize;
 	float4 NoiseSize;
-    float4 PrevCameraData;
 	float2 ShadowAtlasSize;
 	float CellJitterValue;
 	float RayJitterValue;
 	uint ESM_Scale;
 	uint ESM_EXP;
+    uint FrameCounter;
 };
 
 cbuffer PerFrame : register(b1)
@@ -73,18 +81,14 @@ struct ShadowDataStruct
 };
 
 SamplerState Linear_Sampler : register(s10);
-
-
-
-
-
-
+SamplerState Point_Sampler : register(s11);
 
 #ifdef ScatterVolumeCompute
 
 Texture3D ShadowVolume : register(t0);
 Texture2DArray NoiseTex : register(t2);
 Texture1D InvRepartition : register(t1);
+Texture3D GameVLVolume : register(t3);
 StructuredBuffer<ShadowDataStruct> ShadowDataSB : register(t5);
 Texture2DArray ShadowMap : register(t6);
 
@@ -103,11 +107,13 @@ float LinearStep(float edge0, float edge1, float x){
 
 float4 FroxelWorldPosition(float3 Froxel)
 {
-    float SliceZ = exp2(Froxel.z / FrustumNearFar.w) / FrustumNearFar.z;
-    float2 CoordsUV = (Froxel.xy / VolumeSize.xy) * SliceZ;
-    float4 CoordsWS = mul(Frustum, float4(CoordsUV.xy, SliceZ, 1.0));
+    float ViewZ = exp2(Froxel.z / FrustumNearFar.w) / FrustumNearFar.z;
+    float2 CoordsUV = (Froxel.xy / VolumeSize.xy) * ViewZ;
+    float3 CoordsWS = mul(Frustum, float4(CoordsUV.xy, ViewZ, 1.0)).xyz;
 
-    return float4(CoordsWS.xyz, SliceZ);
+    float ClipZ = CameraProj[0][2][2] * ViewZ + CameraProj[0][2][3];
+
+    return float4(CoordsWS, ClipZ);
 }
 
 float BackScattering(float phase, float Extinction){
@@ -137,55 +143,6 @@ float MLobePhaseFunction(float3 IncidentDir, float3 CameraDir, float Anisotropy,
     return PrimaryLobe;// + SecondaryLobe;
 }
 
-
-
-uint STBNPhase3D(uint3 cell)
-{
-    uint h = (cell.x * 1973u) ^ (cell.y * 9277u) ^ (cell.z * 2663u) ^ 0x9E3779B9u;
-    return h % max(1u, NoiseSize.z);
-}
-
-float3 SampleNoise(uint3 froxel)
-{
-    uint  spatialPhase = STBNPhase3D(froxel);
-    uint  baseLayer = (SharedData::FrameCountAlwaysActive + spatialPhase) % max(1u, ceil(NoiseSize.z));
-
-    uint2 baseXY = uint2(froxel.xy) % NoiseSize.xy;
-
-    uint2 xy0 = baseXY;
-    uint2 xy1 = uint2((baseXY.x + 37u) % NoiseSize.x, (baseXY.y + 17u) % NoiseSize.y);
-    uint2 xy2 = uint2((baseXY.x + 11u) % NoiseSize.x, (baseXY.y + 29u) % NoiseSize.y);
-
-    float n0 = NoiseTex.Load(int4(int2(xy0), (baseLayer +  0u) % NoiseSize.z, 0)).x;
-    float n1 = NoiseTex.Load(int4(int2(xy1), (baseLayer +  7u) % NoiseSize.z, 0)).x;
-    float n2 = NoiseTex.Load(int4(int2(xy2), (baseLayer + 13u) % NoiseSize.z, 0)).x;
-
-    return float3(n0, n1, n2);
-}
-
-
-float SliceThicknessViewZ(float FroxelZ){
-    float ZCoordUV = FroxelZ * rcp(VolumeSize.z);
-    float ZCoordUV2 = (FroxelZ + 1) * rcp(VolumeSize.z);
-    float depth = InvRepartition.SampleLevel(Linear_Sampler, ZCoordUV, 0).x;
-    float depth2 = InvRepartition.SampleLevel(Linear_Sampler, ZCoordUV2, 0).x;
-
-    return max(depth2 - depth, EPSILON);
-}
-
-float GetRayJitter(uint3 Froxel)
-{
-    float ZThickness = SliceThicknessViewZ((float)Froxel.z);
-    float Limit = 0.45 * ZThickness;
-    float Noise = SampleNoise(Froxel).x * 2.0 - 1.0;
-          Noise = clamp(Noise * RayJitterValue * ZThickness, -Limit, +Limit);
-
-    float ZCoordUVCenter = float(Froxel.z + 0.5) * rcp(VolumeSize.z);
-    float ZCenter = InvRepartition.SampleLevel(Linear_Sampler, ZCoordUVCenter, 0).x;
-
-    return ZCenter + Noise;
-}
-
 float4 GetWorldCoords(float3 Froxel)
 {
     float3 CoordsUV = Froxel.xyz * (1.0 / (VolumeSize.xyz));
@@ -200,6 +157,33 @@ float4 GetWorldCoords(float3 Froxel)
 	CoordsCS *= 1.0 / CoordsCS.w;
 
     return float4(CoordsWS.xyz, CoordsCS.z);
+}
+
+float3 calcWorldSpacePos(float3 Froxel){
+    float2 invProjDiag = float2(CameraProjInverse[0][0][0], CameraProjInverse[0][1][1]);
+
+    //float ZDepth = FrustumNearFar.x * exp2((Froxel.z + 0.5) * rcp(VolumeSize.z) * log2(FrustumNearFar.y / FrustumNearFar.x));
+    float Depth = Froxel.z * rcp(VolumeSize.z);
+	float ZPosition = FrustumNearFar.x * exp2(Depth * (log2(FrustumNearFar.y / FrustumNearFar.x)));
+
+    float2 CoordsNDC = (Froxel.xy / VolumeSize.xy) * 2.0 - 1.0;
+    CoordsNDC.y = -CoordsNDC.y;
+
+    float3 posVS = float3(CoordsNDC * ZPosition * invProjDiag, ZPosition);
+    float3 posWS = mul(CameraViewInverse[0], float4(posVS, 1.0)).xyz;  // world space
+
+    //float2 CoordsUV = Froxel.xy / VolumeSize.xy;
+
+	//float3 pos = lerp(frustumTL.xyz, frustumTR.xyz, CoordsUV.x);
+	//pos = lerp(pos, lerp(frustumBL.xyz, frustumBR.xyz, CoordsUV.x), CoordsUV.y);
+
+	//float Depth = Froxel.z * rcp(VolumeSize.z);
+	//float ZPosition = FrustumNearFar.x * exp2(Depth * (log2(FrustumNearFar.y / FrustumNearFar.x)));
+	//pos *= ZPosition / FrustumNearFar.y;
+
+	//pos += CameraPosition.xyz;
+
+	return posWS;
 }
 
 float GetDirectionalShadow(float4 CoordsWS)
@@ -220,35 +204,46 @@ float GetDirectionalShadow(float4 CoordsWS)
     return Visibility;
 }
 
-
-
 #define Weight1 0.2
 #define Weight2 0.2
-#define Anisotropy 0.2
-#define Extinction 0.01 //0.002
+#define Anisotropy 0.10
+#define Extinction 0.004 //0.002
 #define Lobes 2
 
-[numthreads(8, 8, 4)]
+//float3 Jitter = SampleNoise(Froxel);
+//TexCoord += Jitter.xyz;
+
+[numthreads(4, 4, 4)]
 void main(uint3 Froxel : SV_DispatchThreadID)
 {
     float3 TexCoord = Froxel;
-    TexCoord.z *= 2.0;
-	TexCoord.z += (((Froxel.x + Froxel.y) & 1) == (SharedData::FrameCountAlwaysActive & 1)) ? 1.0 : 0.0;
+    //TexCoord.z *= 2.0;
+	//TexCoord.z += (((Froxel.x + Froxel.y) & 1) == (FrameCounter & 1)) ? 1.0 : 0.0;
 
-    //float3 Jitter = SampleNoise(Froxel);
-    //Jitter.z = frac(Jitter.z);
-	//TexCoord += Jitter.xyz;
+    //float4 CoordsWS = GetWorldCoords(TexCoord);
+    //float Shadow = GetDirectionalShadow(CoordsWS);
 
-    float4 CoordsWS = GetWorldCoords(TexCoord);
+    float3 CoordsWS = calcWorldSpacePos(TexCoord);
+
+    float4 CoordsCS = mul(CameraViewProj[0], float4(CoordsWS, 1.0));
+	float ZClip = CoordsCS.z * (1.0 / CoordsCS.w);
+    float Shadow = GetDirectionalShadow(float4(CoordsWS, ZClip));
+
+    //float3 Scattering = float3(1,1,1) * rcp(4 * Math::PI)  * 0.1;
+    //float3 ShadowCoord = Froxel.xyz * (1.0 / (VolumeSize.xyz));
+    //float Shadow = GameVLVolume.SampleLevel(Point_Sampler, ShadowCoord, 0).x;
+
     float4 CameraPosWS = mul(CameraViewInverse[0], float4(0, 0, 0, 1));
-
     float3 IncomingDir = SharedData::DirLightDirection.xyz;
     float3 OutgoingDir = -normalize(CameraPosWS.xyz - CoordsWS.xyz);
 
     float3 Scattering = SharedData::DirLightColor.xyz * MLobePhaseFunction(IncomingDir, OutgoingDir, Anisotropy, Extinction, Weight1, Weight2, Lobes);
 
-    float Shadow = GetDirectionalShadow(CoordsWS);
+    //float Noise = NoiseTex.Load(int4(int2(Froxel.xy) & 63, SharedData::FrameCountAlwaysActive & 31, 0)).x;
+    //Shadow = GetLightingShadow(Noise, CoordsWS.xyz, 0);
+
     Scattering = Scattering * Shadow;
+
 
     if(Froxel.z < 1)
         Scattering = float3(0, 0, 0);
@@ -256,6 +251,9 @@ void main(uint3 Froxel : SV_DispatchThreadID)
     ScatteringVolume[Froxel] = float4(Scattering, Extinction);
 }
 #endif
+
+
+
 
 #ifdef FilterVolumeCompute
 
@@ -267,69 +265,59 @@ Texture3D ScatteringVolume : register(t4);
 
 RWTexture3D<float4> FilterVolume : register(u0);
 
+static const int2 Offsets[4] = { int2(0, 1), int2(-1, 0), int2(1, 0), int2(0, -1)};
 
 float4 GetWorldCoords(float3 Froxel)
 {
     float3 CoordsUV = Froxel.xyz * (1.0 / VolumeSize.xyz);
-
 	float depth = InvRepartition.SampleLevel(Linear_Sampler, CoordsUV.z, 0).x;
 
 	float4 CoordsNDC = float4(CoordsUV.xy * 2.0 - 1.0, depth, 1.0);
 	CoordsNDC.y = -CoordsNDC.y;
-
 	float4 CoordsWS = mul(CameraViewProjInverse[0], CoordsNDC);
 	CoordsWS *= 1.0 / CoordsWS.w;
-
 	float4 CoordsCS = mul(CameraViewProj[0], CoordsWS);
 	CoordsCS *= 1.0 / CoordsCS.w;
 
     return float4(CoordsWS.xyz, CoordsCS.z);
 }
 
-float3 GetPrevWorldCoords(float3 CoordsWS)
+float3 GetPrevUVCoords(float3 CoordsWS)
 {
-    float4 PrevCS = mul(PrevCameraViewProj[0], float4(CoordsWS, 1.0));
+    float4 PrevCoordsVS = mul(PrevCameraView[0], float4(CoordsWS, 1.0));
+    float4 PrevCoordsCS = mul(PrevCameraProj[0], PrevCoordsVS);
+    PrevCoordsCS /= PrevCoordsCS.w;
 
-    if (PrevCS.w <= 0.0)
-        return float3(-1.0, -1.0, -1.0); //behind camera
+    float Depth = Repartition.SampleLevel(Point_Sampler, saturate(PrevCoordsCS.z), 0).x;
+    float3 PrevCoordsUVZ = float3((PrevCoordsCS.xy) * float2(0.5, -0.5) + 0.5, Depth);
 
-    float2 PrevNDC = PrevCS.xy / PrevCS.w;
-    float2 PrevUV = float2(PrevNDC.x, -PrevNDC.y) * 0.5 + 0.5;
-
-    float PrevZ = PrevCS.z / PrevCS.w;
-
-    float PrevDepth = Repartition.SampleLevel(Linear_Sampler, PrevZ, 0).x;
-
-    float3 PrevTexCoord = float3(PrevUV, PrevDepth);
-
-    if(all(PrevTexCoord >= 0.0 && PrevTexCoord <= 1.0))
-        return PrevTexCoord;
-
-    return float3(-1.0, -1.0, -1.0);
+    return PrevCoordsUVZ;
 }
-static const int2 Offsets[4] = { int2(0, 1), int2(-1, 0), int2(1, 0), int2(0, -1)};
 
 
+#define UseHistory true
+#define HistoryAlpha 0.2
 
-[numthreads(8, 8, 4)]
+[numthreads(4, 4, 4)]
 void main(uint3 Froxel : SV_DispatchThreadID)
 {
-
     float4 Output = float4(0.0, 0.0, 0.0, 0.0);
-    float HistoryAlpha = 0.2;
-    bool UseHistory = true;
 
-	bool checkerboardHole = (((Froxel.x + Froxel.y) & 1) == (SharedData::FrameCountAlwaysActive & 1));
+	bool checkerboardHole = (((Froxel.x + Froxel.y) & 1) == (FrameCounter & 1));
 	checkerboardHole = (Froxel.z & 1) ? !checkerboardHole : checkerboardHole;
 
 	if (!checkerboardHole)
 		Output = ScatteringVolume.Load(uint4(Froxel.xy, Froxel.z / 2, 0));
 
-    float4 CoordsWS = GetWorldCoords(float3(Froxel));
-
     if(UseHistory){
-        float3 PrevCoordsUVZ = GetPrevWorldCoords(CoordsWS.xyz);
-        bool Valid = (PrevCoordsUVZ.x >= 0.0);
+        float4 PrevCoordsVS = mul(PrevCameraView[0], float4(GetWorldCoords(float3(Froxel + 0.5)).xyz, 1.0));
+        float4 PrevCoordsCS = mul(PrevCameraProj[0], PrevCoordsVS); //use unjittered?
+        PrevCoordsCS /= PrevCoordsCS.w; // * 1 / w
+
+        float Depth = Repartition.SampleLevel(Point_Sampler, saturate(PrevCoordsCS.z), 0).x;
+        float3 PrevCoordsUVZ = float3((PrevCoordsCS.xy) * float2(0.5, -0.5) + 0.5, Depth);
+
+        bool Valid = all(PrevCoordsUVZ >= 0.0 && PrevCoordsUVZ <= 1.0); //setting to false makes it go away
 
         if(Valid){
             float4 HistoryValue = PrevFilterVolume.SampleLevel(Linear_Sampler, PrevCoordsUVZ, 0);

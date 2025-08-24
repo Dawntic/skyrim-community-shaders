@@ -31,7 +31,6 @@ RWTexture3D<float> DensityRW : register(u0);
 #	include "Common/ShadowSampling.hlsli"
 
 cbuffer PerTechnique : register(b0)
-
 {
 #	ifndef VR
 	row_major float4x4 CameraViewProj[1] : packoffset(c0);
@@ -68,68 +67,50 @@ cbuffer PerTechnique : register(b0)
 #	endif
 }
 
-// LH perspective camera, D3D depth in [0,1]
-float ViewZToDepth01_PerspLH(float z, float nearZ, float farZ)
-{
-    // depth = f/(f-n) - (f*n)/((f-n)*z)
-    float gap = farZ - nearZ;
-    float depth = (farZ / gap) - (farZ * nearZ) / max(1e-6f, gap * z);
-    return saturate(depth);
-}
+[numthreads(32, 32, 1)] void main(uint3 dispatchID : SV_DispatchThreadID) {
+	const float3 StepCoefficients[] = {
+		{ 0, 0, 0 },
+		{ 0, 0, 0.001 },
+		{ 0, 0.001, 0 },
+		{ 0, 0.001, 0.001 },
+		{ 0.001, 0, 0 },
+		{ 0.001, 0, 0.001 },
+		{ 0.001, 0.001, 0 },
+		{ 0.001, 0.001, 0.001 }
+	};
 
+	float3 normalizedCoordinates = dispatchID.xyz * rcp(TextureDimensions.xyz);
+	float2 uv = normalizedCoordinates.xy;
+	uint eyeIndex = Stereo::GetEyeIndexFromTexCoord(uv);
+	float3 depthUv = Stereo::ConvertFromStereoUV(normalizedCoordinates, eyeIndex) + StepCoefficients[IterationIndex];
+	float depth = InverseRepartitionTex.SampleLevel(InverseRepartitionSampler, depthUv.z, 0);
+	float4 positionCS = float4(2 * depthUv.x - 1, 1 - 2 * depthUv.y, depth, 1);
 
-// Pure log repartition (view-distance)
-float DepthFromLogT(float t, float nearZ, float farZ)
-{
-    float ratio = max(farZ / max(nearZ, 1e-6f), 1.0001f);
-    float zView = nearZ * pow(ratio, t);                 // inverse repartition: t -> viewZ
-    return ViewZToDepth01_PerspLH(zView, nearZ, farZ);   // -> camera NDC depth in [0,1]
-}
+	float4 positionWS = mul(CameraViewProjInverse[eyeIndex], positionCS);
+	positionWS *= rcp(positionWS.w);
 
-float DepthFromHybridT(float t, float nearZ, float farZ, float lambda)
-{
-    float zLin  = lerp(nearZ, farZ, t);
-    float ratio = max(farZ / max(nearZ, 1e-6f), 1.0001f);
-    float zLog  = nearZ * pow(ratio, t);
-    float zView = lerp(zLin, zLog, saturate(lambda));
-    return ViewZToDepth01_PerspLH(zView, nearZ, farZ);
-}
+	float4 positionCSShifted = mul(CameraViewProj[eyeIndex], positionWS);
+	positionCSShifted *= rcp(positionCSShifted.w);
 
-
-[numthreads(32, 32, 1)] void main(uint3 dispatchID : SV_DispatchThreadID)
-{
-	float3 CoordsUV = dispatchID.xyz * (1.0 / TextureDimensions.xyz);
-
-	float depth = InverseRepartitionTex.SampleLevel(InverseRepartitionSampler, CoordsUV.z, 0);
-
-	//float4 Camera = SharedData::CameraData;
-	//depth = DepthFromLogT(CoordsUV.z, Camera.y, Camera.x); //camera near and far in yx
-	//depth = DepthFromHybridT(CoordsUV.z, Camera.y, Camera.x, 1);
-
-	float4 positionCS = float4(CoordsUV.xy * 2.0 - 1.0, depth, 1.0);
-	positionCS.y = -positionCS.y;
-
-	float4 CoordsWS = mul(CameraViewProjInverse[0], positionCS);
-	CoordsWS *= 1.0 / CoordsWS.w;
-
-	float4 CoordsCS = mul(CameraViewProj[0], CoordsWS);
-	CoordsCS *= 1.0 / CoordsCS.w;
-
-	float shadowMapDepth = CoordsCS.z;
+	float shadowMapDepth = positionCSShifted.z;
 
 	bool noShadow = true;
 	if (EndSplitDistances.z >= shadowMapDepth) {
-		uint cascadeIndex = (shadowMapDepth > EndSplitDistances.x) ? 1 : 0;
+		uint cascadeIndex = ShadowMapCount >= 3.0f && shadowMapDepth > EndSplitDistances.y ? 2 : shadowMapDepth > EndSplitDistances.x ? 1 : 0;
+		float shadowMapThreshold = cascadeIndex == 0 ? 0.01f : 0.0f;
+		float4x3 lightProjectionMatrix = ShadowMapProj[eyeIndex][cascadeIndex];
 
-		float4x3 lightProjectionMatrix = ShadowMapProj[0][cascadeIndex];
+		float3 positionLS = mul(transpose(lightProjectionMatrix), float4(positionWS.xyz, 1)).xyz;
+		float shadowMapValue = ShadowmapTex.SampleLevel(ShadowmapSampler, float3(positionLS.xy, cascadeIndex), 0);
+		noShadow = shadowMapValue >= positionLS.z - shadowMapThreshold;
 
-		float3 CoordsLS = mul(transpose(lightProjectionMatrix), float4(CoordsWS.xyz, 1)).xyz;
-		float Visibility = ShadowmapTex.SampleLevel(ShadowmapSampler, float3(CoordsLS.xy, cascadeIndex), 0);
-		noShadow = Visibility >= CoordsLS.z;
+		if (EnableShadowCasting < 0.5) {
+			float shadowMapVLValue = ShadowmapVLTex.SampleLevel(ShadowmapVLSampler, float3(positionLS.xy, cascadeIndex), 0);
+			noShadow = noShadow & shadowMapVLValue >= positionLS.z - shadowMapThreshold;
+		}
 	}
-	//noShadow = 0;
 
-	DensityRW[dispatchID.xyz] = noShadow;
+	DensityRW[dispatchID.xyz] = float(noShadow);
 }
 #endif
 
