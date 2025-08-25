@@ -134,10 +134,10 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 	// Only check against non-shader bits
 	state->permutationData.PixelShaderDescriptor &= ~state->modifiedPixelDescriptor;
 
-	if (shader->fxpFilename == "ISApplyVolumetricLighting"sv) {
-		globals::features::orthogonalVolumetricLighting.overrideCalled = true;
-		globals::features::orthogonalVolumetricLighting.overrideNum = 1;
-	}
+	//if (shader->fxpFilename == "ISApplyVolumetricLighting"sv) {
+	//globals::features::orthogonalVolumetricLighting.overrideCalled = true;
+	//globals::features::orthogonalVolumetricLighting.overrideNum = 1;
+	//}
 
 	bool shaderFound = func(shader, vertexDescriptor, pixelDescriptor, skipPixelShader);
 

@@ -24,6 +24,8 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void CheckOverride();
 	virtual void LookupShader(int desc);
 
+	virtual void PerFrameUpdate();
+
 	virtual void SetupDownSampleExpo();
 	virtual void SetupMinify();
 	virtual void SetupShadowVolume();
@@ -33,14 +35,9 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupApplyVolume();
 	virtual void SetupOutput();
 
-	virtual void UpdateFrustum();
 	virtual int UpdateMatrixCache();
 	virtual void Override();
-
 	virtual bool CheckFrameBuffer();
-
-	virtual void SetupHorizontalFilter();
-	virtual void SetupVerticalFilter();
 
 	D3D11_VIEWPORT viewPort[4];
 	ConstantBuffer* ESMCBuffer = nullptr;
@@ -83,7 +80,8 @@ struct OrthogonalVolumetricLighting : Feature
 	Matrix frustuminvviewproj;
 
 	Microsoft::WRL::ComPtr<ID3D11Buffer> PrevFrameBuffer[2];
-	ConstantBuffer* ShadowVolumeBuffer = nullptr;
+	ConstantBuffer* VolumeCB = nullptr;
+	ConstantBuffer* SettingsCB = nullptr;
 	ID3D11BlendState* AddBlend = nullptr;
 
 	ID3D11ComputeShader* GenerateShadowVolumeCS = nullptr;
@@ -125,28 +123,23 @@ struct OrthogonalVolumetricLighting : Feature
 	float4 volumeDimensions = float4(160, 90, 64, 0);
 	float4 noiseDimensions = float4(64, 64, 32, 0);
 
-	uint numThreads = 4;
-	uint dispatchNormal[3] = { (UINT)std::ceil(volumeDimensions.x / numThreads), (UINT)std::ceil(volumeDimensions.y / numThreads), (UINT)std::ceil(volumeDimensions.z / numThreads) };
-	uint dispatchScatter[3] = { dispatchNormal[0], dispatchNormal[1], (UINT)std::ceil(volumeDimensions.z * 0.5 / numThreads) };
-	uint dispatchMarch[3] = { dispatchNormal[0], dispatchNormal[1], 1 };
-
 	float4 FrustumNearFar;
 	float4 cameraPosition;
 
-	float CellJitterValue = 0.4;  //
-	float RayJitterValue = 0.3;   //
+	int haltonCount = 32;
+	float haltonArray[96];
+	float3 haltonJitter;
 
 	bool overrideCalled = false;
 	bool overrideShader = false;
-
+	uint frameCounter = 0;
 	uint pass = 1;
 	float2 screenSize;
+
 	bool shadowVolParity;
 	bool FilterVolParity;
 	int PrevMatrixIdx;
 
-	int overrideNum = 0;
-	uint frameCounter = 0;
 	uintptr_t* skyrim_FlareData = nullptr;
 	uint32_t* skyrim_RunFlarePtr = nullptr;
 
@@ -160,16 +153,28 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
 
+	static inline float halton(size_t index, size_t base)
+	{
+		float f = 1.0f;
+		float r = 0.0f;
+		while (index > 0) {
+			f /= base;
+			r += f * (index % base);
+			index /= base;
+		}
+		return r;
+	}
+
 	struct Settings
 	{
+		uint useHistory = true;
+		float historyAlpha = 0.2;
 		float weight1 = 0.2;
 		float weight2 = 0.2;
 		float anisotropy = 0.1;
 		float extinction = 0.004;
-		float historyAlpha = 0.2;
-		uint useHistory = true;
-
 		uint esmExponent = 60;
+		float _pad[1];
 	};
 	Settings settings;
 
@@ -186,20 +191,26 @@ struct OrthogonalVolumetricLighting : Feature
 	};
 	virtual ESMBuffer UpdateESMBuffer(uint slice);
 
-	struct alignas(16) ShadowVolBuffer
+	struct alignas(16) VolumeBuffer
 	{
 		float4 FrustumNearFar;
 		float4 VolumeSize;
 		float4 NoiseSize;
-		float2 ShadowAtlasSize;
-		float CellJitterValue;
-		float RayJitterValue;
-		uint ESM_Scale;
-		uint ESM_EXP;
+		float4 Jitter;
+		//float2 ShadowAtlasSize;
+		//float CellJitterValue;
+		//float RayJitterValue;
 		uint frameCounter;
-		float _pad[1];
+		uint boardCondition;
+		float _pad[2];
 	};
-	virtual ShadowVolBuffer UpdateShadowBuffer();
+	virtual VolumeBuffer UpdateVolumeBuffer();
+
+	struct alignas(16) SettingsBuffer
+	{
+		Settings cbsettings;
+	};
+	virtual SettingsBuffer UpdateSettingsBuffer();
 
 	virtual inline DirectX::XMFLOAT4A VectorToXMFloat(float4& value) { return DirectX::XMFLOAT4A(value.x, value.y, value.z, value.w); }
 	virtual inline float LinearStep(float edge0, float edge1, float x) { return std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f); }

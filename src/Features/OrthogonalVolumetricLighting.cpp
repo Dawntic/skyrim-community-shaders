@@ -10,7 +10,9 @@
 #include <REX/W32/COMPTR.h>
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
-	OrthogonalVolumetricLighting::Settings, test)
+	OrthogonalVolumetricLighting::Settings,
+	useHistory, historyAlpha, weight1, weight2,
+	anisotropy, extinction, esmExponent)
 
 void OrthogonalVolumetricLighting::CompileShaders()
 {
@@ -68,6 +70,8 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateBlendState(&desc, &AddBlend));
 
 	ESMCBuffer = new ConstantBuffer(ConstantBufferDesc<ESMBuffer>());
+	SettingsCB = new ConstantBuffer(ConstantBufferDesc<SettingsBuffer>());
+	VolumeCB = new ConstantBuffer(ConstantBufferDesc<VolumeBuffer>());
 
 	screenSize = (float2)Util::ConvertToDynamic(globals::state->screenSize);
 
@@ -209,8 +213,6 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateRenderTargetView(OutputTexture, nullptr, &OutputRTV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(OutputTexture, nullptr, &OutputSRV));
 
-	ShadowVolumeBuffer = new ConstantBuffer(ConstantBufferDesc<ShadowVolBuffer>());
-
 	skyrim_FlareData = reinterpret_cast<uintptr_t*>(REL::RelocationID(527915, 414867).address());
 	skyrim_RunFlarePtr = reinterpret_cast<uint32_t*>(REL::RelocationID(527916, 414862).address());
 	LFApply_func = reinterpret_cast<decltype(LFApply_func)>(REL::RelocationID(106995, 106995).address());
@@ -230,6 +232,12 @@ void OrthogonalVolumetricLighting::SetupResources()
 	renderdata->SetupPass(Shaders::Output, true, 1, { .uncond_pass = true });
 
 	renderdata->SetupRenderData();
+
+	for (size_t i = 0; i < haltonCount; ++i) {
+		haltonArray[i * 3 + 0] = halton(i + 1, 2);
+		haltonArray[i * 3 + 1] = halton(i + 1, 3);
+		haltonArray[i * 3 + 2] = halton(i + 1, 5);
+	}
 }
 
 //skyrim_SunPosition = reinterpret_cast<RE::NiPoint3*>(REL::RelocationID(527924, 414871).address());
@@ -239,54 +247,57 @@ void OrthogonalVolumetricLighting::SetupResources()
 void OrthogonalVolumetricLighting::SetupShadowVolume()
 {
 	auto context = globals::d3d::context;
-	auto renderer = globals::game::renderer;
-	auto& terrain = globals::features::terrainShadows;
+	//auto renderer = globals::game::renderer;
+	//auto& terrain = globals::features::terrainShadows;
 	static int passCount = 1;
 
-	PrevMatrixIdx = UpdateMatrixCache();
-	ShadowVolumeBuffer->Update(UpdateShadowBuffer());
-
 	shadowVolParity = passCount & 1;
-	auto volumeUAV = ShadowVolumeUAV[!shadowVolParity];
-	auto prevVolumeSRV = ShadowVolumeSRV[shadowVolParity];
+	//auto volumeUAV = ShadowVolumeUAV[!shadowVolParity];
+	//auto prevVolumeSRV = ShadowVolumeSRV[shadowVolParity];
 
-	context->CSSetUnorderedAccessViews(0, 1, &volumeUAV, nullptr);
+	//context->CSSetUnorderedAccessViews(0, 1, &volumeUAV, nullptr);
+	//context->CSSetShader(GenerateShadowVolumeCS, nullptr, 0);
 
-	context->CSSetShader(GenerateShadowVolumeCS, nullptr, 0);
-	auto buffer = ShadowVolumeBuffer->CB();
+	auto volumeBuff = VolumeCB->CB();
+	auto settingsBuff = SettingsCB->CB();
 	ID3D11Buffer* prevFrameBuff = PrevFrameBuffer[PrevMatrixIdx].Get();
 	ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
-	context->CSSetConstantBuffers(0, 1, &buffer);
-	context->CSSetConstantBuffers(1, 1, &FrameBuff);
-	context->CSSetConstantBuffers(2, 1, &prevFrameBuff);
-
-	auto TerrainHeightSRV = terrain.texHeightMap->srv.get();
-	auto TerrainShadowSRV = terrain.texShadowHeight->srv.get();
-	auto shadowBuff = globals::deferred->perShadow->srv.get();
-	context->CSSetShaderResources(0, 1, &prevVolumeSRV);
-	context->CSSetShaderResources(1, 1, &STBNoiseSRV);
-	//context->CSSetShaderResources(2, 1, &MinifySRV);
-	context->CSSetShaderResources(2, 2, ExponentiateSRV);  //////////
-	context->CSSetShaderResources(3, 1, &TerrainHeightSRV);
-	context->CSSetShaderResources(4, 1, &TerrainShadowSRV);
-	context->CSSetShaderResources(5, 1, &shadowBuff);
-	context->CSSetShaderResources(8, 1, &InvRepartitionSRV);
-	context->CSSetShaderResources(9, 1, &RepartitionSRV);
+	context->CSSetConstantBuffers(0, 1, &volumeBuff);
+	context->CSSetConstantBuffers(1, 1, &settingsBuff);
+	context->CSSetConstantBuffers(2, 1, &FrameBuff);
+	context->CSSetConstantBuffers(3, 1, &prevFrameBuff);
 
 	context->CSSetSamplers(10, 1, &LinearSampler);
 	context->CSSetSamplers(11, 1, &PointSampler);
 	context->CSSetSamplers(12, 1, &DepthSampler);
 
-	auto shadowMap = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
-	auto shadowMapVL = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
-	context->CSSetShaderResources(6, 1, &shadowMap);
-	context->CSSetShaderResources(7, 1, &shadowMapVL);
+	auto shadowBuff = globals::deferred->perShadow->srv.get();
+	context->CSSetShaderResources(10, 1, &shadowBuff);
+	context->CSSetShaderResources(11, 1, &STBNoiseSRV);
 
-	context->Dispatch(40, 23, 16);
+	//auto TerrainHeightSRV = terrain.texHeightMap->srv.get();
+	//auto TerrainShadowSRV = terrain.texShadowHeight->srv.get();
+
+	//context->CSSetShaderResources(0, 1, &prevVolumeSRV);
+
+	//context->CSSetShaderResources(2, 1, &MinifySRV);
+	//context->CSSetShaderResources(2, 2, ExponentiateSRV);  //////////
+	//context->CSSetShaderResources(3, 1, &TerrainHeightSRV);
+	//context->CSSetShaderResources(4, 1, &TerrainShadowSRV);
+
+	//context->CSSetShaderResources(8, 1, &InvRepartitionSRV);
+	//context->CSSetShaderResources(9, 1, &RepartitionSRV);
+
+	//auto shadowMap = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
+	//auto shadowMapVL = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
+	//context->CSSetShaderResources(6, 1, &shadowMap);
+	//context->CSSetShaderResources(7, 1, &shadowMapVL);
+
+	//context->Dispatch(40, 23, 16);
 	//context->Dispatch(dispatchNormal[0], dispatchNormal[1], dispatchNormal[2]);
 
-	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
-	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	//ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	//context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
 
 	passCount++;
 	overrideShader = false;
@@ -300,15 +311,17 @@ void OrthogonalVolumetricLighting::SetupScatteringVolume()
 
 	context->CSSetShader(GenerateScatteringVolumeCS, nullptr, 0);
 
-	auto buffer = ShadowVolumeBuffer->CB();
-	ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
-	context->CSSetConstantBuffers(0, 1, &buffer);
-	context->CSSetConstantBuffers(1, 1, &FrameBuff);
+	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
+	context->CSSetShaderResources(0, 1, &shadowMap);
 
-	context->CSSetShaderResources(0, 1, &ShadowVolumeSRV[!shadowVolParity]);
-	context->CSSetShaderResources(1, 1, &InvRepartitionSRV);
-	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
-	context->CSSetShaderResources(3, 1, &GameVolumeSRV);
+	//auto volumeBuff = VolumeCB->CB();
+	//ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
+	//context->CSSetConstantBuffers(0, 1, &volumeBuff);
+	//context->CSSetConstantBuffers(1, 1, &FrameBuff);
+
+	//context->CSSetShaderResources(0, 1, &STBNoiseSRV);
+	//context->CSSetShaderResources(0, 1, &ShadowVolumeSRV[!shadowVolParity]);
+	//context->CSSetShaderResources(3, 1, &GameVolumeSRV);
 
 	context->Dispatch(40, 23, 8);
 	//context->Dispatch(dispatchScatter[0], dispatchScatter[1], dispatchScatter[2]);
@@ -332,18 +345,16 @@ void OrthogonalVolumetricLighting::SetupFilterPass()
 
 	context->CSSetShader(FilterVolumeCS, nullptr, 0);
 
-	auto buffer = ShadowVolumeBuffer->CB();
-	ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
-	ID3D11Buffer* prevFrameBuff = PrevFrameBuffer[PrevMatrixIdx].Get();
-	context->CSSetConstantBuffers(0, 1, &buffer);
-	context->CSSetConstantBuffers(1, 1, &FrameBuff);
-	context->CSSetConstantBuffers(2, 1, &prevFrameBuff);
+	//auto buffer = VolumeCB->CB();
+	//ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
+	//ID3D11Buffer* prevFrameBuff = PrevFrameBuffer[PrevMatrixIdx].Get();
+	//context->CSSetConstantBuffers(0, 1, &buffer);
+	//context->CSSetConstantBuffers(1, 1, &FrameBuff);
+	//context->CSSetConstantBuffers(2, 1, &prevFrameBuff);
 
 	context->CSSetShaderResources(0, 1, &prevVolumeSRV);
-	context->CSSetShaderResources(1, 1, &InvRepartitionSRV);
-	context->CSSetShaderResources(2, 1, &RepartitionSRV);
-	context->CSSetShaderResources(3, 1, &STBNoiseSRV);
-	context->CSSetShaderResources(4, 1, &ScatteringVolumeSRV);
+	//context->CSSetShaderResources(3, 1, &STBNoiseSRV);
+	context->CSSetShaderResources(1, 1, &ScatteringVolumeSRV);
 
 	context->Dispatch(40, 23, 16);
 	//context->Dispatch(dispatchNormal[0], dispatchNormal[1], dispatchNormal[2]);
@@ -363,17 +374,14 @@ void OrthogonalVolumetricLighting::SetupSliceMarch()
 
 	context->CSSetShader(SliceMarchCS, nullptr, 0);
 
-	auto buffer = ShadowVolumeBuffer->CB();
-	ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
-	context->CSSetConstantBuffers(0, 1, &buffer);
-	context->CSSetConstantBuffers(1, 1, &FrameBuff);
+	//auto buffer = VolumeCB->CB();
+	//ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
+	//context->CSSetConstantBuffers(0, 1, &buffer);
+	//context->CSSetConstantBuffers(1, 1, &FrameBuff);
 
-	//context->CSSetShaderResources(0, 1, &ScatteringVolumeSRV);
 	context->CSSetShaderResources(0, 1, &FilterVolumeSRV[!FilterVolParity]);
-	context->CSSetShaderResources(1, 1, &InvRepartitionSRV);
 
 	context->Dispatch(20, 12, 1);
-	//context->Dispatch(dispatchMarch[0], dispatchMarch[1], dispatchMarch[2]);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
@@ -393,20 +401,19 @@ void OrthogonalVolumetricLighting::SetupApplyVolume()
 	context->VSSetShader(BypassVertexShader, NULL, NULL);
 	context->PSSetShader(ApplyVolumePS, NULL, NULL);
 
-	auto buffer = ShadowVolumeBuffer->CB();
-	ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
-	context->PSSetConstantBuffers(0, 1, &buffer);
-	context->PSSetConstantBuffers(1, 1, &FrameBuff);
+	context->PSSetSamplers(10, 1, &LinearSampler);
+	context->PSSetSamplers(11, 1, &PointSampler);
+	context->PSSetSamplers(12, 1, &DepthSampler);
+
+	auto volumeBuff = VolumeCB->CB();
+	//ID3D11Buffer* FrameBuff = PrevFrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
+	context->PSSetConstantBuffers(0, 1, &volumeBuff);
+	//context->PSSetConstantBuffers(1, 1, &FrameBuff);
 
 	auto& mainDepthSRV = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN].depthSRV;
 	context->PSSetShaderResources(0, 1, &IntergrationVolumeSRV);
 	context->PSSetShaderResources(1, 1, &mainDepthSRV);
-	context->PSSetShaderResources(2, 1, &RepartitionSRV);
-	context->PSSetShaderResources(3, 1, &STBNoiseSRV);
-
-	context->PSSetSamplers(10, 1, &LinearSampler);
-	context->PSSetSamplers(11, 1, &PointSampler);
-	context->PSSetSamplers(12, 1, &DepthSampler);
+	context->PSSetShaderResources(2, 1, &STBNoiseSRV);
 
 	overrideShader = false;
 }
@@ -439,25 +446,9 @@ void OrthogonalVolumetricLighting::CheckOverride()
 {
 	static Util::FrameChecker frame_checker;
 
-	if (overrideCalled) {
-		if (overrideNum == 1) {
-			globals::d3d::context->PSGetShaderResources(2, 1, &GameVolumeSRV);
-			globals::d3d::context->PSGetShaderResources(3, 1, &RepartitionSRV);
-			overrideNum = 0;
-		} else {
-			globals::d3d::context->CSGetShaderResources(2, 1, &InvRepartitionSRV);
-		}
-		overrideCalled = false;
-	}
-
 	if (overrideShader) {
 		if (frame_checker.IsNewFrame()) {
-			UpdateFrustum();
-			frameCounter++;
-			pass = 1;
-			float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			//globals::d3d::context->ClearRenderTargetView(ExponentiateRTV, clear);
-			globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
+			PerFrameUpdate();
 		}
 		LookupShader(shaderdesc);
 	}
@@ -474,67 +465,32 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 		{ Shaders::IntergrationVolume, &OrthogonalVolumetricLighting::SetupSliceMarch },
 		{ Shaders::Apply, &OrthogonalVolumetricLighting::SetupApplyVolume },
 		{ Shaders::Output, &OrthogonalVolumetricLighting::SetupOutput },
-
-		{ Shaders::HorFilter, &OrthogonalVolumetricLighting::SetupHorizontalFilter },
-		{ Shaders::VerFilter, &OrthogonalVolumetricLighting::SetupVerticalFilter },
 	};
 	auto it = effects.find(desc);
 	if (it != effects.cend())
 		(this->*(it->second))();
 }
 
-void OrthogonalVolumetricLighting::UpdateFrustum()
+void OrthogonalVolumetricLighting::PerFrameUpdate()
 {
 	float nearPlane = Util::GetCameraData().y;
 	float farPlane = 11198.0f;
 	FrustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
-}
 
-int OrthogonalVolumetricLighting::UpdateMatrixCache()
-{
-	int outValue = 0;
-	if (CheckFrameBuffer()) {
-		auto buffer = *globals::game::perFrame.get();
-		static int PrevFrameWrite = 0;
-		static bool PrevFrameValid = false;
+	size_t haltonIdx0 = (frameCounter * 2) % haltonCount;
+	haltonJitter.x = haltonArray[haltonIdx0 * 3 + 0];
+	haltonJitter.y = haltonArray[haltonIdx0 * 3 + 1];
+	haltonJitter.z = haltonArray[haltonIdx0 * 3 + 2];
 
-		if (!PrevFrameValid) {
-			globals::d3d::context->CopyResource(PrevFrameBuffer[0].Get(), buffer);
-			globals::d3d::context->CopyResource(PrevFrameBuffer[1].Get(), buffer);
-			PrevFrameValid = true;
-			PrevFrameWrite = 0;
-		}
+	PrevMatrixIdx = UpdateMatrixCache();
+	VolumeCB->Update(UpdateVolumeBuffer());
+	SettingsCB->Update(UpdateSettingsBuffer());
 
-		outValue = PrevFrameWrite ^ 1;
-		globals::d3d::context->CopyResource(PrevFrameBuffer[PrevFrameWrite].Get(), buffer);
-		PrevFrameWrite ^= 1;
-	}
+	float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
 
-	return outValue;
-}
-
-bool OrthogonalVolumetricLighting::CheckFrameBuffer()
-{
-	if (ID3D11Buffer* buffer = *globals::game::perFrame.get()) {
-		if (!PrevFrameBuffer[0] || !PrevFrameBuffer[1]) {
-			D3D11_BUFFER_DESC srcDesc{};
-			buffer->GetDesc(&srcDesc);
-			D3D11_BUFFER_DESC dstDesc = srcDesc;
-			dstDesc.Usage = D3D11_USAGE_DEFAULT;
-			dstDesc.CPUAccessFlags = 0;
-			dstDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-			DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&dstDesc, nullptr, PrevFrameBuffer[0].GetAddressOf()));
-			DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&dstDesc, nullptr, PrevFrameBuffer[1].GetAddressOf()));
-		}
-
-		if (PrevFrameBuffer[0] || PrevFrameBuffer[1]) {
-			return true;
-		} else {
-			return false;
-		}
-	} else {
-		return false;
-	}
+	frameCounter++;
+	pass = 1;
 }
 
 OrthogonalVolumetricLighting::ESMBuffer OrthogonalVolumetricLighting::UpdateESMBuffer(uint passn)
@@ -558,18 +514,23 @@ OrthogonalVolumetricLighting::ESMBuffer OrthogonalVolumetricLighting::UpdateESMB
 	return data;
 }
 
-OrthogonalVolumetricLighting::ShadowVolBuffer OrthogonalVolumetricLighting::UpdateShadowBuffer()
+OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateVolumeBuffer()
 {
-	ShadowVolBuffer data{};
+	VolumeBuffer data{};
 	data.FrustumNearFar = FrustumNearFar;
 	data.VolumeSize = volumeDimensions;
 	data.NoiseSize = noiseDimensions;
-	data.ShadowAtlasSize = ESM_AtlasSize;
-	data.CellJitterValue = CellJitterValue;
-	data.RayJitterValue = RayJitterValue;
-	data.ESM_Scale = ESM_Scale;
-	data.ESM_EXP = ESM_EXP;
+	data.Jitter = float4(haltonJitter.x, haltonJitter.y, haltonJitter.z, 1.0f);
+	//data.ShadowAtlasSize = ESM_AtlasSize;
 	data.frameCounter = frameCounter;
+	data.boardCondition = frameCounter & 1;
+	return data;
+}
+
+OrthogonalVolumetricLighting::SettingsBuffer OrthogonalVolumetricLighting::UpdateSettingsBuffer()
+{
+	SettingsBuffer data{};
+	data.cbsettings = settings;
 	return data;
 }
 
@@ -634,12 +595,52 @@ void OrthogonalVolumetricLighting::SetupMinify()
 
 	overrideShader = false;
 }
-void OrthogonalVolumetricLighting::SetupVerticalFilter()
+
+int OrthogonalVolumetricLighting::UpdateMatrixCache()
 {
+	int outValue = 0;
+	if (CheckFrameBuffer()) {
+		auto buffer = *globals::game::perFrame.get();
+		static int PrevFrameWrite = 0;
+		static bool PrevFrameValid = false;
+
+		if (!PrevFrameValid) {
+			globals::d3d::context->CopyResource(PrevFrameBuffer[0].Get(), buffer);
+			globals::d3d::context->CopyResource(PrevFrameBuffer[1].Get(), buffer);
+			PrevFrameValid = true;
+			PrevFrameWrite = 0;
+		}
+
+		outValue = PrevFrameWrite ^ 1;
+		globals::d3d::context->CopyResource(PrevFrameBuffer[PrevFrameWrite].Get(), buffer);
+		PrevFrameWrite ^= 1;
+	}
+
+	return outValue;
 }
 
-void OrthogonalVolumetricLighting::SetupHorizontalFilter()
+bool OrthogonalVolumetricLighting::CheckFrameBuffer()
 {
+	if (ID3D11Buffer* buffer = *globals::game::perFrame.get()) {
+		if (!PrevFrameBuffer[0] || !PrevFrameBuffer[1]) {
+			D3D11_BUFFER_DESC srcDesc{};
+			buffer->GetDesc(&srcDesc);
+			D3D11_BUFFER_DESC dstDesc = srcDesc;
+			dstDesc.Usage = D3D11_USAGE_DEFAULT;
+			dstDesc.CPUAccessFlags = 0;
+			dstDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+			DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&dstDesc, nullptr, PrevFrameBuffer[0].GetAddressOf()));
+			DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&dstDesc, nullptr, PrevFrameBuffer[1].GetAddressOf()));
+		}
+
+		if (PrevFrameBuffer[0] || PrevFrameBuffer[1]) {
+			return true;
+		} else {
+			return false;
+		}
+	} else {
+		return false;
+	}
 }
 
 void OrthogonalVolumetricLighting::Hooks::LensFlare_CheckResources::thunk()
@@ -702,13 +703,13 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	}
 
 	ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
-	ImGui::SliderInt("ESM Exponent: ", (int*)&settings.esmExponent, 20, 250);
-
+	ImGui::SliderFloat("History Bias", &settings.historyAlpha, 0.0, 0.5);
 	ImGui::SliderFloat("Weight 1", &settings.weight1, 0.0, 1.0);
 	ImGui::SliderFloat("Weight 2", &settings.weight2, 0.0, 1.0);
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
 	ImGui::SliderFloat("Extinction", &settings.extinction, 0.0001, 0.1);
-	ImGui::SliderFloat("History Bias", &settings.historyAlpha, 0.0, 0.5);
+
+	ImGui::SliderInt("ESM Exponent: ", (int*)&settings.esmExponent, 20, 250);
 }
 
 void OrthogonalVolumetricLighting::LoadSettings(json& o_json)

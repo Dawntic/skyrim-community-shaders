@@ -12,13 +12,12 @@ cbuffer ShadowVolumeBuffer : register(b0)
     float4 FrustumNearFar;
     float4 VolumeSize;
 	float4 NoiseSize;
-	float2 ShadowAtlasSize;
-	float CellJitterValue;
-	float RayJitterValue;
-	uint ESM_Scale;
-	uint ESM_EXP;
+    float4 Jitter;
+	//float2 ShadowAtlasSize;
     uint FrameCounter;
+    uint BoardCond;
 };
+
 SamplerState Linear_Sampler : register(s10);
 SamplerState Point_Sampler : register(s11);
 
@@ -31,8 +30,7 @@ SamplerState Point_Sampler : register(s11);
 
 Texture3D IntergrationVolume : register(t0);
 Texture2D DepthTex : register(t1);
-Texture1D Repartition : register(t2);
-Texture2DArray STBNoise : register(t3);
+Texture2DArray STBNoise : register(t2);
 Texture3D STBNoiseVec : register(t51);
 
 float GetFroxelSlice(float Depth){
