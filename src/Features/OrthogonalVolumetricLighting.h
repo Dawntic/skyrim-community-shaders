@@ -121,33 +121,29 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11RenderTargetView* OutputRTV = nullptr;
 
 	//float4 volumeDimensions = float4(160, 88, 64, 0);
-	//float4 volumeDimensions = float4(160, 90, 64, 0);
-	float4 volumeDimensions = float4(320, 192, 90, 0);
+	//float4 volumeDimensions = float4(320, 192, 90, 0);
+	float4 volumeDimensions = float4(160, 90, 64, 0);
 	float4 noiseDimensions = float4(64, 64, 32, 0);
 
-	uint dispatchNormal[3] = { (UINT)std::ceil(volumeDimensions.x / 8), (UINT)std::ceil(volumeDimensions.y / 8), (UINT)std::ceil(volumeDimensions.z / 4) };
-	uint dispatchScatter[3] = { dispatchNormal[0], dispatchNormal[1], (UINT)std::ceil(volumeDimensions.z / 2 / 4) };
+	uint numThreads = 4;
+	uint dispatchNormal[3] = { (UINT)std::ceil(volumeDimensions.x / numThreads), (UINT)std::ceil(volumeDimensions.y / numThreads), (UINT)std::ceil(volumeDimensions.z / numThreads) };
+	uint dispatchScatter[3] = { dispatchNormal[0], dispatchNormal[1], (UINT)std::ceil(volumeDimensions.z * 0.5 / numThreads) };
 	uint dispatchMarch[3] = { dispatchNormal[0], dispatchNormal[1], 1 };
 
-	float4 FrustumNearFar;  // = float4(0.1f, 200.0f, 1.0f / 0.1f, volumeDimensions.z / std::log2(200.0f / 0.1f));
-	float4 frustumCorners[4];
+	float4 FrustumNearFar;
 	float4 cameraPosition;
-	Matrix WorldFromUVZ;
 
-	float4 PrevCameraData[2];
-	int PrevMatrixIdx;
-	float3 cameraPositionTest;
-
-	//float AmbientTerm = 1.0; //
 	float CellJitterValue = 0.4;  //
 	float RayJitterValue = 0.3;   //
 
 	bool overrideCalled = false;
 	bool overrideShader = false;
+
 	uint pass = 1;
 	float2 screenSize;
 	bool shadowVolParity;
 	bool FilterVolParity;
+	int PrevMatrixIdx;
 
 	int overrideNum = 0;
 	uint frameCounter = 0;
@@ -166,7 +162,14 @@ struct OrthogonalVolumetricLighting : Feature
 
 	struct Settings
 	{
-		float test = 1.0f;
+		float weight1 = 0.2;
+		float weight2 = 0.2;
+		float anisotropy = 0.1;
+		float extinction = 0.004;
+		float historyAlpha = 0.2;
+		uint useHistory = true;
+
+		uint esmExponent = 60;
 	};
 	Settings settings;
 
@@ -185,17 +188,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	struct alignas(16) ShadowVolBuffer
 	{
-		DirectX::XMFLOAT4X4 Frustum;
-		//DirectX::XMFLOAT4X4 CameraView;
-		DirectX::XMFLOAT4X4 InvCameraView;
-		//DirectX::XMFLOAT4X4 FrustumInvViewProj;
 		float4 FrustumNearFar;
-		float4 frustumTL;
-		float4 frustumTR;
-		float4 frustumBL;
-		float4 frustumBR;
-		float4 CameraPosition;
-		float4 CameraPositionTest;
 		float4 VolumeSize;
 		float4 NoiseSize;
 		float2 ShadowAtlasSize;

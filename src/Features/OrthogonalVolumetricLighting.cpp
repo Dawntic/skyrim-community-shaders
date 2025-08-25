@@ -18,11 +18,12 @@ void OrthogonalVolumetricLighting::CompileShaders()
 	DownSamplePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\DownSample.hlsl", { { "DownSample", "" } }, "ps_5_0");
 	MinifyPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\DownSample.hlsl", { { "Minify", "" } }, "ps_5_0");
 	GenerateShadowVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ShadowVolume.hlsl", { { "ShadowVolumeCompute", "" } }, "cs_5_0");
-	GenerateScatteringVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "ScatterVolumeCompute", "" } }, "cs_5_0");
-	FilterVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "FilterVolumeCompute", "" } }, "cs_5_0");
-	SliceMarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\MarchAndApply.hlsl", { { "MarchVolumeCompute", "" } }, "cs_5_0");
-	ApplyVolumePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\MarchAndApply.hlsl", { { "ApplyVolume", "" } }, "ps_5_0");
-	OutputPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\MarchAndApply.hlsl", { { "OutputPixel", "" } }, "ps_5_0");
+
+	GenerateScatteringVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "SCATTER_COMPUTE", "" } }, "cs_5_0");
+	FilterVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "FILTER_COMPUTE", "" } }, "cs_5_0");
+	SliceMarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "MARCH_COMPUTE", "" } }, "cs_5_0");
+	ApplyVolumePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\MarchAndApply.hlsl", { { "APPLY_PIXEL", "" } }, "ps_5_0");
+	OutputPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\MarchAndApply.hlsl", { { "OUTPUT_PIXEL", "" } }, "ps_5_0");
 
 	FilterPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\DownSample.hlsl", { { "Filter", "" } }, "ps_5_0");
 }
@@ -163,7 +164,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	D3D11_TEXTURE3D_DESC ScatterVolumeDesc{ R16VolumeDesc };
 	ScatterVolumeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-	//ScatterVolumeDesc.Depth = (UINT)std::ceil(volumeDimensions.z / 2);
+	ScatterVolumeDesc.Depth = (UINT)std::ceil(volumeDimensions.z / 2);
 
 	D3D11_UNORDERED_ACCESS_VIEW_DESC ScatterVolumeUAVDesc{ R16VolumeUAVdesc };
 	ScatterVolumeUAVDesc.Format = ScatterVolumeDesc.Format;
@@ -222,7 +223,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	renderdata->SetupPass(Shaders::ShadowVolume, true, 1, { .uncond_pass = true });
 	renderdata->SetupPass(Shaders::ScatterVolume, true, 1, { .uncond_pass = true });
-	//renderdata->SetupPass(Shaders::FilterVolume, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::FilterVolume, true, 1, { .uncond_pass = true });
 	renderdata->SetupPass(Shaders::IntergrationVolume, true, 1, { .uncond_pass = true });
 
 	renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
@@ -281,8 +282,8 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	context->CSSetShaderResources(6, 1, &shadowMap);
 	context->CSSetShaderResources(7, 1, &shadowMapVL);
 
-	//context->Dispatch(40, 24, 23);
-	context->Dispatch(dispatchNormal[0], dispatchNormal[1], dispatchNormal[2]);
+	context->Dispatch(40, 23, 16);
+	//context->Dispatch(dispatchNormal[0], dispatchNormal[1], dispatchNormal[2]);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
@@ -309,8 +310,7 @@ void OrthogonalVolumetricLighting::SetupScatteringVolume()
 	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
 	context->CSSetShaderResources(3, 1, &GameVolumeSRV);
 
-	//context->Dispatch(40, 23, 8);
-	context->Dispatch(80, 48, 23);
+	context->Dispatch(40, 23, 8);
 	//context->Dispatch(dispatchScatter[0], dispatchScatter[1], dispatchScatter[2]);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
@@ -368,12 +368,11 @@ void OrthogonalVolumetricLighting::SetupSliceMarch()
 	context->CSSetConstantBuffers(0, 1, &buffer);
 	context->CSSetConstantBuffers(1, 1, &FrameBuff);
 
-	context->CSSetShaderResources(0, 1, &ScatteringVolumeSRV);
-	//context->CSSetShaderResources(0, 1, &FilterVolumeSRV[!FilterVolParity]);
+	//context->CSSetShaderResources(0, 1, &ScatteringVolumeSRV);
+	context->CSSetShaderResources(0, 1, &FilterVolumeSRV[!FilterVolParity]);
 	context->CSSetShaderResources(1, 1, &InvRepartitionSRV);
 
-	context->Dispatch(40, 24, 1);
-	//context->Dispatch(20, 12, 1);
+	context->Dispatch(20, 12, 1);
 	//context->Dispatch(dispatchMarch[0], dispatchMarch[1], dispatchMarch[2]);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
@@ -399,16 +398,11 @@ void OrthogonalVolumetricLighting::SetupApplyVolume()
 	context->PSSetConstantBuffers(0, 1, &buffer);
 	context->PSSetConstantBuffers(1, 1, &FrameBuff);
 
-	//auto& noise = globals::features::skyLighting.stbn_vec3_2Dx1D_128x128x64.get();
-	//ID3D11ShaderResourceView* noise = globals::features::skylighting.stbn_vec3_2Dx1D_128x128x64.get();
-
 	auto& mainDepthSRV = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN].depthSRV;
 	context->PSSetShaderResources(0, 1, &IntergrationVolumeSRV);
 	context->PSSetShaderResources(1, 1, &mainDepthSRV);
 	context->PSSetShaderResources(2, 1, &RepartitionSRV);
 	context->PSSetShaderResources(3, 1, &STBNoiseSRV);
-	//context->CSSetShaderResources(4, 1, &STBNoiseFloat3SRV);
-	//context->PSSetShaderResources(4, 1, &noise);
 
 	context->PSSetSamplers(10, 1, &LinearSampler);
 	context->PSSetSamplers(11, 1, &PointSampler);
@@ -489,48 +483,10 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 		(this->*(it->second))();
 }
 
-//Matrix invCameraView = cameraView.Invert();
-
-//	float invPx = 1.0f / frustumProj.m[0][0];
-//	float invPy = 1.0f / frustumProj.m[1][1];
-
-//	Matrix ViewFromUVZ(
-//	2 * invPx, 0, -invPx, 0,
-//		0, -2 * invPy, invPy, 0,
-//	0, 0, 1, 0,
-//	0, 0, 0, 1);
-
-//WorldFromUVZ = (invCameraView * ViewFromUVZ); //should this be (ViewFromUVZ * invViewMat) ??
-//invcameraview = invCameraView;
-
 void OrthogonalVolumetricLighting::UpdateFrustum()
 {
-	float nearPlane = Util::GetCameraData().y;  //games camera nearPlane
-	float farPlane = 11198.0f;                  //frustum farPlane in game WS units
-
-	float aspect = screenSize.x / screenSize.y;
-	float FOVy = Util::GetVerticalFOVRad();  //games vertical FOV
-
-	Matrix frustumProj = Matrix(DirectX::XMMatrixPerspectiveFovLH(FOVy, aspect, nearPlane, farPlane));
-
-	Matrix cameraView = Util::GetCameraData(0).viewMat;
-	cameraView = cameraView.Transpose();  //GetCameraData() returns column major so we need to transpose
-
-	Matrix frustInvViewProj = (cameraView * frustumProj).Invert();
-
-	frustumCorners[0] = float4::Transform(float4(-1.0f, 1.0f, 1.0f, 1.0f), frustInvViewProj);   // top left
-	frustumCorners[1] = float4::Transform(float4(1.0f, 1.0f, 1.0f, 1.0f), frustInvViewProj);    // top right
-	frustumCorners[2] = float4::Transform(float4(-1.0f, -1.0f, 1.0f, 1.0f), frustInvViewProj);  // bottom left
-	frustumCorners[3] = float4::Transform(float4(1.0f, -1.0f, 1.0f, 1.0f), frustInvViewProj);   // bottom right
-
-	auto eyePos = Util::GetEyePosition(0);  // camera WS pos in game units
-	cameraPosition = float4(eyePos.x, eyePos.y, eyePos.z, 0.0f);
-
-	for (auto& corner : frustumCorners) {
-		corner /= corner.w;
-		corner -= cameraPosition;
-	}
-
+	float nearPlane = Util::GetCameraData().y;
+	float farPlane = 11198.0f;
 	FrustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
 }
 
@@ -551,7 +507,6 @@ int OrthogonalVolumetricLighting::UpdateMatrixCache()
 
 		outValue = PrevFrameWrite ^ 1;
 		globals::d3d::context->CopyResource(PrevFrameBuffer[PrevFrameWrite].Get(), buffer);
-		PrevCameraData[PrevFrameWrite] = Util::GetCameraData();
 		PrevFrameWrite ^= 1;
 	}
 
@@ -606,17 +561,7 @@ OrthogonalVolumetricLighting::ESMBuffer OrthogonalVolumetricLighting::UpdateESMB
 OrthogonalVolumetricLighting::ShadowVolBuffer OrthogonalVolumetricLighting::UpdateShadowBuffer()
 {
 	ShadowVolBuffer data{};
-	XMStoreFloat4x4(&data.Frustum, WorldFromUVZ);
-	//XMStoreFloat4x4(&data.CameraView, cameraview);
-	XMStoreFloat4x4(&data.InvCameraView, invcameraview);
-	//XMStoreFloat4x4(&data.FrustumInvViewProj, frustuminvviewproj);
 	data.FrustumNearFar = FrustumNearFar;
-	data.frustumTL = float4(frustumCorners[0].x, frustumCorners[0].y, frustumCorners[0].z, 0.0f);
-	data.frustumTR = float4(frustumCorners[1].x, frustumCorners[1].y, frustumCorners[1].z, 0.0f);
-	data.frustumBL = float4(frustumCorners[2].x, frustumCorners[2].y, frustumCorners[2].z, 0.0f);
-	data.frustumBR = float4(frustumCorners[3].x, frustumCorners[3].y, frustumCorners[3].z, 0.0f);
-	data.CameraPosition = cameraPosition;
-	data.CameraPositionTest = float4(cameraPositionTest.x, cameraPositionTest.y, cameraPositionTest.z, 1.0f);
 	data.VolumeSize = volumeDimensions;
 	data.NoiseSize = noiseDimensions;
 	data.ShadowAtlasSize = ESM_AtlasSize;
@@ -635,6 +580,7 @@ void OrthogonalVolumetricLighting::Override()
 		LFApply_func(BGSCamera, BGSShader, (uint64_t)0);
 	}
 }
+
 void OrthogonalVolumetricLighting::SetupDownSampleExpo()
 {
 	auto context = globals::d3d::context;
@@ -755,7 +701,14 @@ void OrthogonalVolumetricLighting::DrawSettings()
 		CompileShaders();
 	}
 
-	ImGui::SliderInt("ESM Exponent: ", (int*)&ESM_EXP, 20, 250);
+	ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
+	ImGui::SliderInt("ESM Exponent: ", (int*)&settings.esmExponent, 20, 250);
+
+	ImGui::SliderFloat("Weight 1", &settings.weight1, 0.0, 1.0);
+	ImGui::SliderFloat("Weight 2", &settings.weight2, 0.0, 1.0);
+	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
+	ImGui::SliderFloat("Extinction", &settings.extinction, 0.0001, 0.1);
+	ImGui::SliderFloat("History Bias", &settings.historyAlpha, 0.0, 0.5);
 }
 
 void OrthogonalVolumetricLighting::LoadSettings(json& o_json)
