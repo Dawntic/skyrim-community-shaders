@@ -31,7 +31,7 @@ cbuffer Settings : register(b1)
     uint ESM_SCALE;
     float2 SrcSize;
     float2 InvSrcSize;
-    float2 DstSize;
+    float2 ESMTextureSize;
 };
 
 SamplerState Linear_Sampler : register(s10);
@@ -74,6 +74,9 @@ float main(VertexShaderOutput input) : SV_Target
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
+
+
+
 
 
 

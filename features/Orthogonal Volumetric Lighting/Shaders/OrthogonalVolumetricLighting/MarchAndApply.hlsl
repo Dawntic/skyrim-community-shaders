@@ -7,13 +7,15 @@ struct VertexShaderOutput
     float2 TexCoord : TEXCOORD0;
 };
 
-cbuffer ShadowVolumeBuffer : register(b0)
+cbuffer VolumeBuffer : register(b0)
 {
+    row_major float4x3 ShadowCascadeMatrix[4];
+    row_major float4x4 CloudShadowMatrix;
+    float4 EVSMData;
     float4 FrustumNearFar;
     float4 VolumeSize;
 	float4 NoiseSize;
     float4 Jitter;
-	//float2 ShadowAtlasSize;
     uint FrameCounter;
     uint BoardCond;
 };
@@ -31,6 +33,8 @@ SamplerState Point_Sampler : register(s11);
 Texture3D IntergrationVolume : register(t0);
 Texture2D DepthTex : register(t1);
 Texture2DArray STBNoise : register(t2);
+Texture3D Filtering : register(t3);
+Texture3D SliceMarch : register(t4);
 Texture3D STBNoiseVec : register(t51);
 
 float GetFroxelSlice(float Depth){
@@ -47,8 +51,8 @@ float4 main(VertexShaderOutput input) : SV_Target
     float3 TexelSize = rcp(VolumeSize.xyz);
 
     float4 Noise;
-    Noise.xyz = STBNoiseVec.Load(int4(int2(input.Position.xy) & 63, SharedData::FrameCountAlwaysActive & 63, 0)).xyz;
-    Noise.w = STBNoise.Load(int4(int2(input.Position.xy) & 63, SharedData::FrameCountAlwaysActive & 31, 0)).x;
+    Noise.xyz = STBNoiseVec.Load(int4(int2(input.Position.xy) & 63, FrameCounter & 63, 0)).xyz;
+    Noise.w = STBNoise.Load(int4(int2(input.Position.xy) & 63, FrameCounter & 31, 0)).x;
     Noise = (Noise * 2.0 - 1.0) * 1.5;
 
     float Depth = DepthTex.Sample(Point_Sampler, input.TexCoord.xy).x;
@@ -61,7 +65,11 @@ float4 main(VertexShaderOutput input) : SV_Target
         Output += IntergrationVolume.SampleLevel(Linear_Sampler, TexCoord.xyz, 0.0) / 4.0;
         Noise = Noise.yzwx;
     }
-    Output = saturate(Output);
+    //Output = saturate(Output);
+
+    //Output = Scattering.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, 0.1), 0) *2;
+    //Output = Filtering.Sample(Linear_Sampler, float3(input.TexCoord.xy, 0.1)) * 2;
+    //Output = SliceMarch.Sample(Linear_Sampler, float3(input.TexCoord.xy, 0.3));
 
     return float4(Output.xyz, 1.0);
 }
