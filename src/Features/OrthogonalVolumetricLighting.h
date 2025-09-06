@@ -44,6 +44,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupApplyVolume();
 	virtual void SetupCloudMap();
 	virtual void SetupEVSM();
+	virtual void SetupShadowVolume();
 
 	D3D11_VIEWPORT viewPort[4];
 	ConstantBuffer* ESMCBuffer = nullptr;
@@ -51,6 +52,7 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11SamplerState* PointSampler = nullptr;
 	ID3D11SamplerState* DepthSampler = nullptr;
 	ID3D11SamplerState* AnisoLinear = nullptr;
+	ID3D11SamplerState* AnisoWrapLinear = nullptr;
 
 	ID3D11VertexShader* BypassVertexShader = nullptr;
 	ID3D11PixelShader* DownSamplePS = nullptr;
@@ -121,7 +123,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	uint CSM_Size = 2048;
 	float4 FrustumNearFar;
-	float4 volumeDimensions = float4(160, 90, 88, 0);
+	float4 volumeDimensions = float4(240, 136, 68, 0);
 	float4 noiseDimensions = float4(64, 64, 32, 0);
 
 	int haltonCount = 32;
@@ -140,43 +142,10 @@ struct OrthogonalVolumetricLighting : Feature
 
 	DirectX::XMFLOAT4X4 cloudShadowsMatrix;
 
-	//bool shadowMapRender = false;
-	//RE::NiPoint3* skyrim_SunPosition = nullptr;
-	//Matrix cameraview;
-	//Matrix invcameraview;
-	//Matrix frustuminvviewproj;
-	//float4 cameraPosition;
-	//float4 volumeDimensions = float4(160, 88, 64, 0);
-	//float4 volumeDimensions = float4(320, 192, 90, 0);
-
-	//bool overrideCalled = false;
-	//uint pass = 1;
-
-	//bool firstCSMRun = true;
-
-	//bool Active = false;
-	//int accumPassCount = 0;
-	//bool setCascade = true;
-	//int accumBatchPassCounter = 0;
-
-	//bool shadowVolParity;
-
-	//RE::NiFrustumPlanes fPlanes[4];
-	//float2* value1;
-	//float2* value2;
-	//float* value3;
-	//float* value4;
+	bool shadowVolParity;
 
 	uintptr_t* skyrim_FlareData = nullptr;
 	uint32_t* skyrim_RunFlarePtr = nullptr;
-
-	//void(__fastcall* LFApply_func)(RE::NiCamera*, void*, uint64_t) = nullptr;
-
-	//void(__fastcall* RenderCSM)(RE::BSShadowLight*, void*) = nullptr;
-	//void* a2 = nullptr;
-
-	//RE::NiCamera* BGSCamera = nullptr;
-	//void* BGSShader = nullptr;
 
 	virtual void RestoreDefaultSettings() override;
 	virtual void DrawSettings() override;
@@ -195,7 +164,6 @@ struct OrthogonalVolumetricLighting : Feature
 		float zPaddingWorld = 0.0f;
 		bool enableTexelSnap = true;
 	};
-	//virtual void BuildDirectionalCascade(const CascadeInputs& in, Matrix& outLightView, Matrix& outLightProj);
 	virtual void BuildCloudShadowMatrix(const CascadeInputs& in, Matrix& outLightView, Matrix& outLightProj);
 
 	static inline float halton(size_t index, size_t base)
@@ -465,7 +433,7 @@ struct OrthogonalVolumetricLighting : Feature
 			stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>>(RE::VTABLE_BSImagespaceShaderLensFlare[3]);
 			stl::write_vfunc<0x6, BSSkyShader_SetupMaterial>(RE::VTABLE_BSSkyShader[0]);
 
-			stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
+			//stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
 
 			stl::detour_thunk<SetShadowMapCount>(REL::RelocationID(107599, 107599));
 		}

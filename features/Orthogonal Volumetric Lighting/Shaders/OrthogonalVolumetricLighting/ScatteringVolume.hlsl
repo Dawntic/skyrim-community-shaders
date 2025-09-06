@@ -87,8 +87,6 @@ SamplerState Linear_Sampler : register(s10);
 SamplerState Point_Sampler : register(s11);
 
 StructuredBuffer<ShadowDataStruct> ShadowDataSB : register(t10);
-Texture2DArray NoiseTex : register(t11);
-Texture3D STBNoiseVec : register(t51);
 
 #define EPSILON 1e-6
 
@@ -107,25 +105,103 @@ float4 FroxelWorldPosition(float3 Froxel)
 }
 
 
+
+#ifdef SHADOW_COMPUTE
+
+Texture3D HistoryVolume : register(t0);
+Texture2DArray EVSMCascade : register(t1);
+Texture2DArray NoiseTexture : register(t2);
+RWTexture3D<float> ShadowVolume : register(u0);
+
+SamplerState AnisoX4Sampler : register(s13);
+
+float ShadowVisibility(float4 Coords, float2 Thickness, float Noise){
+    ShadowDataStruct ShadowData = ShadowDataSB[0];
+
+    int FromBuffer = 0.05;
+
+    float shadowMapThreshold = cascadeIndex == 0 ? 0.01f : 0.0f;
+    noShadow = shadowMapValue >= positionLS.z - shadowMapThreshold;
+
+    float Shadow = 0.0;
+    int NSamples = 4;
+    float passed = 0.00001;
+    float4 CoordsWS = Coords;
+    for (int i = 0; i < NSamples; ++i){
+        uint CascadeIndex = (CoordsWS.w < ShadowData.EndSplits.x) ? 0 : (CoordsWS.w < ShadowData.EndSplits.y) ? 1 : (CoordsWS.w < ShadowData.EndSplits.z) ? 2 : 3;
+        float3 CoordsLS = mul(ShadowCascadeMatrix[CascadeIndex], float4(CoordsWS.xyz, 1.0)).xyz;
+        CoordsLS.z = CoordsLS.z * 2.0 - 1.0;
+
+        if (abs(CoordsLS.z) > 1.0)
+            break;
+
+        float2 Moments = EVSMCascade.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CascadeIndex), 0).xy;
+        float Variance = max(Moments.y - Moments.x * Moments.x, 1e-6); //sharpness?
+        float Receiver = exp(CoordsLS.z * UIExponent);
+
+        float Delta = Receiver - Moments.x;
+        float Visibility = Variance / (Variance + Delta * Delta);
+        Visibility = (Receiver <= Moments.x) ? 1.0 : Visibility;
+
+        Shadow += Visibility;
+
+        float NoiseOffset = (FromBuffer + i + 1) & 15;
+        CoordsWS.xyz *= Thickness.x + Thickness.y * frac(Noise + NoiseOffset * 1.6180);
+
+        passed += 1;
+    }
+
+    return (Shadow / passed);
+}
+
+
+float GetHistoryValue(float3 CoordsWS)
+{
+    float4 PrevCoordsVS = mul(PrevCameraView[0], float4(CoordsWS, 1.0));
+    float4 PrevCoordsCS = mul(PrevCameraProj[0], PrevCoordsVS);
+
+    float2 PrevUVCoords = (PrevCoordsCS.xy / PrevCoordsCS.w) * float2(0.5, -0.5) + float2(0.5, 0.5);
+    float PrevUVDepth = saturate(log2(PrevCoordsVS.z * FrustumNearFar.z) * rcp(log2(FrustumNearFar.y * FrustumNearFar.z)));
+
+    float HistoryValue = HistoryVolume.SampleLevel(AnisoX4Sampler, float3(PrevUVCoords, PrevUVDepth), 0.0).x;
+
+    return HistoryValue;
+}
+
+[numthreads(4, 4, 4)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    float3 Froxel = ThreadID;
+
+    float4 CoordsWS = FroxelWorldPosition(Froxel + 0.5);
+
+    float Bound1 = exp2((Froxel.z-1) / FrustumNearFar.w) / FrustumNearFar.z;
+    float Bound2 = exp2((Froxel.z-2) / FrustumNearFar.w) / FrustumNearFar.z;
+    float Thickness = Bound2 - Bound1;
+
+    float Noise = NoiseTexture.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+
+    float Shadow = ShadowVisibility(CoordsWS, float2(Bound1, Thickness), Noise);
+
+    float ShadowHistory = GetHistoryValue(CoordsWS.xyz);
+
+    Shadow = lerp(Shadow, ShadowHistory, 1.0 - UIHistoryAlpha);
+
+
+    ShadowVolume[ThreadID] = Shadow;
+}
+
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
+
+
+
 //// Scattering Compute Shader //////////////////////////////////////////////////////////
 
 #ifdef SCATTER_COMPUTE
 
-Texture2DArray EVSMCascade : register(t0);
-Texture2DArray RegularShadowMap : register(t1);
+Texture3D ShadowVolume : register(t0);
 RWTexture3D<float4> ScatteringVolume : register(u0);
-
-float LinearStep(float edge0, float edge1, float x){
-    return saturate((x - edge0) / (edge1 - edge0));
-}
-
-#define BackScatterMin 0.0
-#define BackScatterMax 1.0
-
-float BackScattering(float phase, float Extinction){
-	float v = 1.0 / Math::PI * LinearStep(BackScatterMax, BackScatterMin, Extinction);
-	return max(phase, v);
-}
 
 float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
     Anisotropy = clamp(Anisotropy, -0.999, 0.999);
@@ -149,37 +225,10 @@ float PhaseFunction(float3 IncidentDir, float3 CameraDir, float Anisotropy, floa
     return PrimaryLobe + SecondaryLobe;
 }
 
-float ShadowVisibility(float4 CoordsWS){
-    float Visibility = 0.0;
-    ShadowDataStruct ShadowData = ShadowDataSB[0];
-
-    uint CascadeIndex = (CoordsWS.w < ShadowData.EndSplits.x) ? 0 : (CoordsWS.w < ShadowData.EndSplits.y) ? 1 : (CoordsWS.w < ShadowData.EndSplits.z) ? 2 : 3;
-    float3 CoordsLS = mul(ShadowCascadeMatrix[CascadeIndex], float4(CoordsWS.xyz, 1.0)).xyz;
-
-    float2 Moments = EVSMCascade.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CascadeIndex), 0).xy;
-    float Variance = max(Moments.y - Moments.x * Moments.x, 1e-5);
-    float Receiver = exp((CoordsLS.z * 2.0 - 1.0) * UIExponent);
-
-    float Delta = Receiver - Moments.x;
-    Visibility = Variance / (Variance + Delta * Delta);
-    Visibility = (Receiver <= Moments.x) ? 1.0 : Visibility;
-
-    return Visibility;
-}
-
-
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float3 Froxel = ThreadID;
-
-    if(CheckerBoard){
-        Froxel.z *= 2.0;
-        Froxel.z += (((ThreadID.x + ThreadID.y) & 1) == BoardCond) ? 1.0 : 0.0;
-        Froxel += Jitter.xyz;
-    }
-    //float3 Noise = STBNoiseVec.Load(int4(int2(ThreadID.xy) & 63, int(FrameCounter) & 63, 0)).xyz;
-    //Froxel += Noise;
 
     float4 CoordsWS = FroxelWorldPosition(Froxel);
 
@@ -190,7 +239,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 Color = lerp(float3(1.0, 1.0, 1.0), SharedData::DirLightColor.xyz, UISaturation);
     float3 Scattering = Color * PhaseFunction(IncomingDir, OutgoingDir, UIAnisotropy, UIExtinction, UIWeight, UIWeight2, 2);
 
-    float Shadow = ShadowVisibility(CoordsWS);
+    float Shadow = ShadowVolume.Load(int4(Froxel, 0)).x;
 
     Scattering = Scattering * Shadow;
 
@@ -201,19 +250,18 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 
 
-//// Filter Compute Shader //////////////////////////////////////////////////////////////
+//// Filter /////////////////////////////////////////////////////////////////////////////
 
-#ifdef FILTER_COMPUTE
-
-Texture3D PrevFilterVolume : register(t0);
-Texture3D ScatteringVolume : register(t1);
-
+Texture3D InputVolume : register(t0);
+Texture3D Perlin : register(t1);
+Texture3D BlueNoise : register(t2);
 RWTexture3D<float4> FilterVolume : register(u0);
 
-static const int2 Offsets[4] = { int2(0, 1), int2(-1, 0), int2(1, 0), int2(0, -1)};
+SamplerState AnisoWrapSampler : register(s13);
+SamplerState AnisoClampSampler : register(s13);
 
 
-float3 GetPreviousUVZ(float3 CoordsWS){
+float3 GetPreviousUV(float3 CoordsWS){
     float4 PrevCoordsVS = mul(PrevCameraView[0], float4(CoordsWS, 1.0));
     float4 PrevCoordsCS = mul(PrevCameraProj[0], PrevCoordsVS);
     float Depth = saturate(log2(PrevCoordsVS.z * FrustumNearFar.z) * rcp(log2(FrustumNearFar.y * FrustumNearFar.z)));
@@ -223,51 +271,39 @@ float3 GetPreviousUVZ(float3 CoordsWS){
 
 
 [numthreads(4, 4, 4)]
-void main(uint3 Froxel : SV_DispatchThreadID)
+void main(uint3 ThreadID : SV_DispatchThreadID)
 {
-    float3 CoordsWS = FroxelWorldPosition(float3(Froxel + 0.5)).xyz;
-    float3 PrevCoordsUVZ = GetPreviousUVZ(CoordsWS);
-    bool Valid = all(PrevCoordsUVZ >= 0.0 && PrevCoordsUVZ <= 1.0);
-    float4 Output = float4(0.0, 0.0, 0.0, 0.0);
+    float3 Froxel = ThreadID;
 
-    if(CheckerBoard){
-        bool Board = (((Froxel.x + Froxel.y) & 1) == BoardCond);
-        Board = (Froxel.z & 1) ? !Board : Board;
+    float Bound1 = exp2((Froxel.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
+    float Bound2 = exp2((Froxel.z + 1.0) / FrustumNearFar.w) / FrustumNearFar.z;
+    float Thickness = Bound2 - Bound1;
 
-        if (!Board)
-            Output = ScatteringVolume.Load(uint4(Froxel.xy, Froxel.z / 2, 0));
+    float3 PrevUV = GetPreviousUV(WorldCoords.xyz);
 
-        if(Valid){
-            float4 HistoryValue = PrevFilterVolume.SampleLevel(Linear_Sampler, PrevCoordsUVZ, 0);
-            Output = Board ? HistoryValue : lerp(HistoryValue, Output, UIHistoryAlpha);
-        }
+    float BNoise = BlueNoise.SampleLevel(AnisoClampSampler, PrevUV, 0.0);
 
-        if (!Valid && Board){
-            Output = 0.0;
-            [unroll]for(int i=0; i<4; ++i)
-                Output += ScatteringVolume.Load(uint4(Froxel.xy + Offsets[i], Froxel.z / 2, 0));
-            Output /= 4;
-        }
-    }
+    float ConfSample = 1.0;
+    float Cofidence = any(abs(PrevNDC) > 1.0) ? 0.0 : 0.9 * (PrevClip.w > 0.0) * ConfSample;
 
+    float BNoiseOffset = (Cofidence > 0) ? BNoise * ConfSample : BNoise;
 
-    else{
-        if(Valid){
-            float4 HistoryValue2 = PrevFilterVolume.SampleLevel(Linear_Sampler, PrevCoordsUVZ, 0);
-            Output = lerp(HistoryValue2, Output, UIHistoryAlpha);
-        }
-        else{
-            Output = 0.0;
-            [unroll]for(int i=0; i<4; ++i)
-                Output += ScatteringVolume.Load(uint4(Froxel.xy + Offsets[i], Froxel.z, 0));
-            Output /= 4;
-        }
-    }
+    float OffsetZ = Bound1 + Thickness * BNoiseOffset;
 
+    float4 CameraPosWS = mul(CameraViewInverse[0], float4(0, 0, 0, 1));
+    float NoiseCoord = OffsetZ * CoordsWS.xyz - CameraPosWS.xyz;  //Jittered Z
+          NoiseCoord *= rcp(32.0);
 
-     FilterVolume[Froxel] = Output;
+    float Perlin1 = Perlin.SampleLevel(AnisoWrapSampler, NoiseCoord, 0.0).x;
+    float Perlin2 = Perlin.SampleLevel(AnisoWrapSampler, NoiseCoord * 4.0, 0.0).x;
+    float Noise = saturate((((Perlin1 + Perlin2) * 0.5) - 0.39) * 5.42);
+
+    float NoiseFinal = (Noise * Noise) * (3.0 - (2.0 * Noise));
+          NoiseFinal = lerp(NoiseFinal, 1.0, saturate(OffsetZ * 0.0002));
+
+    float Mult = FFF * NoiseFinal;
+    FilterVolume[ThreadID] = Output;
 }
-#endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -276,7 +312,7 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 
 #ifdef MARCH_COMPUTE
 
-Texture3D FilteredVolume : register(t0);
+Texture3D ScatterVolume : register(t0);
 RWTexture3D<float4> IntergrationVolume : register(u0);
 
 void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSlice, float StepLength){
@@ -298,18 +334,17 @@ float GameUnitToMeter(float input){
 void main(uint3 Froxel : SV_DispatchThreadID)
 {
     float4 Accumulation = float4(0.0, 0.0, 0.0, 1.0);
-    float3 PrevCoordsWS = FroxelWorldPosition(float3(Froxel.xy + 0.5, 0.0)).xyz;
+    float PrevDepth = 0.0;
 
     for(int Slice=0; Slice < VolumeSize.z; Slice++){
-        float3 CoordsWS = FroxelWorldPosition(float3(Froxel.xy + 0.5, Slice + 1.0)).xyz;
+        float4 ScatteredSlice = ScatterVolume.Load(int4(Froxel.xy, Slice, 0));
 
-        float StepLength = GameUnitToMeter(distance(PrevCoordsWS, CoordsWS));
-
-        float4 ScatteredSlice = FilteredVolume.Load(int4(Froxel.xy, Slice, 0));
+        float CurrDepth = exp2((Slice + 1.0) / FrustumNearFar.w) / FrustumNearFar.z;
+        float StepLength = GameUnitToMeter(CurrDepth - PrevDepth);
 
         AccumulateScattering(Accumulation, ScatteredSlice, StepLength);
 
-        PrevCoordsWS = CoordsWS;
+        PrevDepth = CurrDepth;
         IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
     }
 }

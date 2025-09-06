@@ -12,7 +12,6 @@
 
 #include "Features/InteriorSun.h"
 #include "Features/LightLimitFix.h"
-#include "Features/OrthogonalVolumetricLighting.h"
 #include "Features/TerrainHelper.h"
 #include "Features/Upscaling.h"
 #include "Features/VR.h"
@@ -765,11 +764,6 @@ namespace Hooks
 				if (state->enabledClasses[RE::BSShader::Type::ImageSpace]) {
 					RE::BSImagespaceShader* isShader = CurrentlyDispatchedShader;
 					uint32_t techniqueId = CurrentComputeShaderTechniqueId;
-
-					if (CurrentlyDispatchedComputeShader->name == "ISVolumetricLightingGenerateCS"sv) {
-						globals::features::orthogonalVolumetricLighting.overrideCalled = true;
-					}
-
 					if (vl.loaded) {
 						if (CurrentlyDispatchedShader == nullptr) {
 							techniqueId = 0;

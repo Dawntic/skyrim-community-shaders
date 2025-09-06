@@ -1,5 +1,5 @@
 #include "FrameAnnotations.h"
-
+#include "Features/OrthogonalVolumetricLighting.h"
 #include "State.h"
 
 #pragma comment(lib, "dxguid.lib")
@@ -132,6 +132,9 @@ namespace FrameAnnotations
 		static void thunk(RE::BSShadowLight* light, void* a2)
 		{
 			globals::state->BeginPerfEvent("Directional Light Shadowmaps");
+
+			globals::features::orthogonalVolumetricLighting.shadowLight = light;
+			globals::features::orthogonalVolumetricLighting.SetupShadowCascade();
 
 			func(light, a2);
 
