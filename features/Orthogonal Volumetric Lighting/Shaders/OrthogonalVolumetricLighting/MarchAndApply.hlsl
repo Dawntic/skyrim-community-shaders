@@ -37,6 +37,8 @@ Texture3D Filtering : register(t3);
 Texture3D SliceMarch : register(t4);
 Texture3D STBNoiseVec : register(t51);
 
+#define kPhi 1.61803398875
+
 float GetFroxelSlice(float Depth){
     float FroxelSlice = log(Depth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x);
     return FroxelSlice;
@@ -50,26 +52,38 @@ float4 main(VertexShaderOutput input) : SV_Target
 {
     float3 TexelSize = rcp(VolumeSize.xyz);
 
-    float4 Noise;
-    Noise.xyz = STBNoiseVec.Load(int4(int2(input.Position.xy) & 63, FrameCounter & 63, 0)).xyz;
-    Noise.w = STBNoise.Load(int4(int2(input.Position.xy) & 63, FrameCounter & 31, 0)).x;
-    Noise = (Noise * 2.0 - 1.0) * 1.5;
+    //float4 Noise;
+    //Noise.xyz = STBNoiseVec.Load(int4(int2(input.Position.xy) & 63, FrameCounter & 63, 0)).xyz;
+   // Noise.w = STBNoise.Load(int4(int2(input.Position.xy) & 63, FrameCounter & 31, 0)).x;
+    //Noise = (Noise * 2.0 - 1.0) * 1.5;
+
+    float2 Noise;
+    Noise.x = STBNoise.Load(int4(int2(input.Position.xy) & 63, 0, 0)).x;
+    Noise.y = STBNoise.Load(int4(int2(input.Position.yx) & 63, 0, 0)).x;
+    Noise = frac(Noise + (float(FrameCounter & 16) * kPhi)) * 2.0 - 1.0;
 
     float Depth = DepthTex.Sample(Point_Sampler, input.TexCoord.xy).x;
     Depth = GetFroxelSlice(LinearDepth(Depth));
-    Depth = max(0.0, Depth - TexelSize.z * 1.5);
+    //Depth = max(0.0, Depth - TexelSize.z * 1.5);
 
-    float4 Output;
-    for (int i=0; i<4; ++i){
-        float3 TexCoord = float3(input.TexCoord.xy, Depth) + Noise.xyz * float3(1.0, 1.0, 0.5) * TexelSize;
-        Output += IntergrationVolume.SampleLevel(Linear_Sampler, TexCoord.xyz, 0.0) / 4.0;
-        Noise = Noise.yzwx;
-    }
+    float3 SamplePosition;
+    SamplePosition.xy = input.TexCoord.xy + (TexelSize.xy * Noise);
+    SamplePosition.z = Depth;
+
+    float4 Output = IntergrationVolume.SampleLevel(Linear_Sampler, SamplePosition, 0.0);
+
+
+   // for (int i=0; i<4; ++i){
+      //  float3 TexCoord = float3(input.TexCoord.xy, Depth) + Noise.xyz * float3(1.0, 1.0, 0.5) * TexelSize;
+      //  Output += IntergrationVolume.SampleLevel(Linear_Sampler, TexCoord.xyz, 0.0) / 4.0;
+      //  Noise = Noise.yzwx;
+    //}
     //Output = saturate(Output);
 
     //Output = Scattering.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, 0.1), 0) *2;
     //Output = Filtering.Sample(Linear_Sampler, float3(input.TexCoord.xy, 0.1)) * 2;
     //Output = SliceMarch.Sample(Linear_Sampler, float3(input.TexCoord.xy, 0.3));
+
 
     return float4(Output.xyz, 1.0);
 }

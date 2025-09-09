@@ -110,21 +110,23 @@ float4 FroxelWorldPosition(float3 Froxel)
 
 Texture3D HistoryVolume : register(t0);
 Texture2DArray EVSMCascade : register(t1);
-Texture2DArray NoiseTexture : register(t2);
+Texture2DArray BlueNoise : register(t2);
 RWTexture3D<float> ShadowVolume : register(u0);
 
 SamplerState AnisoX4Sampler : register(s13);
 
-float ShadowVisibility(float4 Coords, float2 Thickness, float Noise){
+#define kPhi 1.61803398875
+
+float ShadowVisibility(float4 Coords, float2 ThicknessZ, float Noise){
     ShadowDataStruct ShadowData = ShadowDataSB[0];
 
     int FromBuffer = 0.05;
 
-    float shadowMapThreshold = cascadeIndex == 0 ? 0.01f : 0.0f;
-    noShadow = shadowMapValue >= positionLS.z - shadowMapThreshold;
+    //float shadowMapThreshold = cascadeIndex == 0 ? 0.01f : 0.0f;
+    //noShadow = shadowMapValue >= positionLS.z - shadowMapThreshold;
 
     float Shadow = 0.0;
-    int NSamples = 4;
+    int NSamples = 1;
     float passed = 0.00001;
     float4 CoordsWS = Coords;
     for (int i = 0; i < NSamples; ++i){
@@ -146,7 +148,7 @@ float ShadowVisibility(float4 Coords, float2 Thickness, float Noise){
         Shadow += Visibility;
 
         float NoiseOffset = (FromBuffer + i + 1) & 15;
-        CoordsWS.xyz *= Thickness.x + Thickness.y * frac(Noise + NoiseOffset * 1.6180);
+        CoordsWS.xyz *= ThicknessZ.x + ThicknessZ.y * frac(Noise + NoiseOffset * 1.6180);
 
         passed += 1;
     }
@@ -173,19 +175,40 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float3 Froxel = ThreadID;
 
-    float4 CoordsWS = FroxelWorldPosition(Froxel + 0.5);
+    float2 Diag = float2(CameraProjInverse[0][0][0], CameraProjInverse[0][1][1]);
+    float3x3 InvViewRot = (float3x3)CameraViewInverse[0];
 
-    float Bound1 = exp2((Froxel.z-1) / FrustumNearFar.w) / FrustumNearFar.z;
-    float Bound2 = exp2((Froxel.z-2) / FrustumNearFar.w) / FrustumNearFar.z;
-    float Thickness = Bound2 - Bound1;
+    float3 c0 = mul(InvViewRot, float3(Diag.x, 0.0, 0.0)).xyz;
+    float3 c1 = mul(InvViewRot, float3(0.0, Diag.y, 0.0)).xyz;
+    float3 c2 = mul(InvViewRot, float3(0.0, 0.0, 1.0)).xyz;
+    float3x3 Matrix = transpose(float3x3(c0, c1, c2));
 
-    float Noise = NoiseTexture.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+    float3 CoordsNDC = float3(((Froxel.xy + 0.5) / VolumeSize.xy) * 2.0 - 1.0, 1.0);
+           CoordsNDC.y = -CoordsNDC.y;
 
-    float Shadow = ShadowVisibility(CoordsWS, float2(Bound1, Thickness), Noise);
+    float3 RayDirection = mul(Matrix, CoordsNDC).xyz;
 
-    float ShadowHistory = GetHistoryValue(CoordsWS.xyz);
+    float CoordZ = exp2(max(Froxel.z - 2, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
+    float Bound2 = exp2(max(Froxel.z - 1, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
 
-    Shadow = lerp(Shadow, ShadowHistory, 1.0 - UIHistoryAlpha);
+    float ThicknessZ = Bound2 - CoordZ;
+
+    float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+          BNoise = frac(BNoise + (FrameCounter & 31) * kPhi);
+
+    float3 OffsetCoords = RayDirection * (CoordZ + ThicknessZ * BNoise);
+
+    float3 CameraWS = mul(CameraViewInverse[0], float4(0, 0, 0, 1)).xyz;
+    OffsetCoords += CameraWS;
+
+    float4 CoordsCS = mul(CameraViewProj[0], float4(OffsetCoords, 1.0));
+    float ClipZ = CoordsCS.z / CoordsCS.w;
+
+    float Shadow = ShadowVisibility(float4(OffsetCoords, ClipZ), float2(CoordZ, ThicknessZ), BNoise);
+
+    //float ShadowHistory = GetHistoryValue(CoordsWS.xyz);
+
+    //Shadow = lerp(Shadow, ShadowHistory, 1.0 - UIHistoryAlpha);
 
 
     ShadowVolume[ThreadID] = Shadow;
@@ -196,12 +219,100 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 
 
+//// Filter /////////////////////////////////////////////////////////////////////////////
+
+#ifdef MEDIA_COMPUTE
+
+Texture3D PrevVolume : register(t0);
+Texture3D Perlin : register(t1);
+Texture2DArray BlueNoise : register(t2);
+RWTexture3D<float4> MediaVolume : register(u0);
+
+SamplerState AnisoWrapSampler : register(s14);
+
+
+float3 GetPreviousUV(float3 CoordsWS){
+    float4 PrevCoordsVS = mul(PrevCameraView[0], float4(CoordsWS, 1.0));
+    float4 PrevCoordsCS = mul(PrevCameraProj[0], PrevCoordsVS);
+    float Depth = saturate(log2(PrevCoordsVS.z * FrustumNearFar.z) * rcp(log2(FrustumNearFar.y * FrustumNearFar.z)));
+
+    return float3((PrevCoordsCS.xy / PrevCoordsCS.w) * float2(0.5, -0.5) + 0.5, Depth);
+}
+
+float GameUnitToMeter(float input){
+    return input * 0.0142875;
+}
+
+float MeterToGameUnit(float input) {
+    return input / 0.0142875;
+}
+
+#define kPhi 1.61803398875
+
+
+[numthreads(4, 4, 4)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    float3 Froxel = ThreadID;
+
+    float2 Diag = float2(CameraProjInverse[0][0][0], CameraProjInverse[0][1][1]);
+    float3x3 InvViewRot = (float3x3)CameraViewInverse[0];
+
+    float3 c0 = mul(InvViewRot, float3(Diag.x, 0.0, 0.0)).xyz;
+    float3 c1 = mul(InvViewRot, float3(0.0, Diag.y, 0.0)).xyz;
+    float3 c2 = mul(InvViewRot, float3(0.0, 0.0, 1.0)).xyz;
+    float3x3 Matrix = transpose(float3x3(c0, c1, c2));
+
+    float3 CoordsNDC = float3(((Froxel.xy + 0.5) / VolumeSize.xy) * 2.0 - 1.0, 1.0);
+           CoordsNDC.y = -CoordsNDC.y;
+    float3 RayDirection = mul(Matrix, CoordsNDC).xyz;
+
+    float CoordZ = exp2((Froxel.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
+    float Bound2 = exp2((Froxel.z + 1.5) / FrustumNearFar.w) / FrustumNearFar.z;
+    float ThicknessZ = Bound2 - CoordZ;
+
+
+    float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+          BNoise = frac(BNoise + (FrameCounter & 31) * kPhi);
+
+
+    float OffsetZ = ThicknessZ * BNoise + CoordZ;
+    float3 OffsetWS = RayDirection * OffsetZ - mul(CameraViewInverse[0], float4(0, 0, 0, 1)).xyz;
+
+
+    float Threshold = 0.4;
+    float Gain = 5.42;
+    float NoiseScale = 1.0 / MeterToGameUnit(25.0);
+    float3 NoiseCoord = OffsetWS * NoiseScale;
+    float Perlin1 = Perlin.SampleLevel(AnisoWrapSampler, NoiseCoord, 0.0).x;
+    float Perlin2 = Perlin.SampleLevel(AnisoWrapSampler, NoiseCoord * 4.0, 0.0).x;
+    float Noise = saturate((((Perlin1 + Perlin2) * 0.5) - Threshold) * Gain);
+
+    float FadeRate = 0.0002;
+    Noise = smoothstep(0.0, 1.0, Noise);
+    Noise = lerp(Noise, 1.0, saturate(OffsetZ * FadeRate));
+
+    Noise *= 0.002;
+
+    Noise *= 50;
+
+    MediaVolume[ThreadID] =  Noise.xxxx;
+}
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
+
+//BufferOne._m18.w = 0.0002 — per-meter fade rate to “no modulation.”
+//At OffsetZ ≈ 1 / 0.0002 = 5000 units, the factor hits 1.0, and you fully blend to 1.0 (i.e., the noise stops modulating the quantity). This avoids far-distance shimmer.
+
 //// Scattering Compute Shader //////////////////////////////////////////////////////////
 
 #ifdef SCATTER_COMPUTE
 
 Texture3D ShadowVolume : register(t0);
+Texture3D MediaVolume : register(t1);
+
 RWTexture3D<float4> ScatteringVolume : register(u0);
+
 
 float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
     Anisotropy = clamp(Anisotropy, -0.999, 0.999);
@@ -225,6 +336,7 @@ float PhaseFunction(float3 IncidentDir, float3 CameraDir, float Anisotropy, floa
     return PrimaryLobe + SecondaryLobe;
 }
 
+
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
@@ -237,73 +349,17 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 OutgoingDir = -normalize(CameraPosWS.xyz - CoordsWS.xyz);
 
     float3 Color = lerp(float3(1.0, 1.0, 1.0), SharedData::DirLightColor.xyz, UISaturation);
-    float3 Scattering = Color * PhaseFunction(IncomingDir, OutgoingDir, UIAnisotropy, UIExtinction, UIWeight, UIWeight2, 2);
+    float3 Scattering = Color * PhaseFunction(IncomingDir, OutgoingDir, UIAnisotropy, UIExtinction, UIWeight, UIWeight2, 2) * 10;
 
     float Shadow = ShadowVolume.Load(int4(Froxel, 0)).x;
+    float4 Media = MediaVolume.Load(int4(Froxel, 0));
 
-    Scattering = Scattering * Shadow;
+    Scattering = Scattering * Shadow * Media.xyz;
 
     ScatteringVolume[ThreadID] = float4(Scattering, UIExtinction);
+    //ScatteringVolume[ThreadID] = FilterVolume.Load(int4(ThreadID, 0.0));
 }
 #endif
-/////////////////////////////////////////////////////////////////////////////////////////
-
-
-
-//// Filter /////////////////////////////////////////////////////////////////////////////
-
-Texture3D InputVolume : register(t0);
-Texture3D Perlin : register(t1);
-Texture3D BlueNoise : register(t2);
-RWTexture3D<float4> FilterVolume : register(u0);
-
-SamplerState AnisoWrapSampler : register(s13);
-SamplerState AnisoClampSampler : register(s13);
-
-
-float3 GetPreviousUV(float3 CoordsWS){
-    float4 PrevCoordsVS = mul(PrevCameraView[0], float4(CoordsWS, 1.0));
-    float4 PrevCoordsCS = mul(PrevCameraProj[0], PrevCoordsVS);
-    float Depth = saturate(log2(PrevCoordsVS.z * FrustumNearFar.z) * rcp(log2(FrustumNearFar.y * FrustumNearFar.z)));
-
-    return float3((PrevCoordsCS.xy / PrevCoordsCS.w) * float2(0.5, -0.5) + 0.5, Depth);
-}
-
-
-[numthreads(4, 4, 4)]
-void main(uint3 ThreadID : SV_DispatchThreadID)
-{
-    float3 Froxel = ThreadID;
-
-    float Bound1 = exp2((Froxel.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
-    float Bound2 = exp2((Froxel.z + 1.0) / FrustumNearFar.w) / FrustumNearFar.z;
-    float Thickness = Bound2 - Bound1;
-
-    float3 PrevUV = GetPreviousUV(WorldCoords.xyz);
-
-    float BNoise = BlueNoise.SampleLevel(AnisoClampSampler, PrevUV, 0.0);
-
-    float ConfSample = 1.0;
-    float Cofidence = any(abs(PrevNDC) > 1.0) ? 0.0 : 0.9 * (PrevClip.w > 0.0) * ConfSample;
-
-    float BNoiseOffset = (Cofidence > 0) ? BNoise * ConfSample : BNoise;
-
-    float OffsetZ = Bound1 + Thickness * BNoiseOffset;
-
-    float4 CameraPosWS = mul(CameraViewInverse[0], float4(0, 0, 0, 1));
-    float NoiseCoord = OffsetZ * CoordsWS.xyz - CameraPosWS.xyz;  //Jittered Z
-          NoiseCoord *= rcp(32.0);
-
-    float Perlin1 = Perlin.SampleLevel(AnisoWrapSampler, NoiseCoord, 0.0).x;
-    float Perlin2 = Perlin.SampleLevel(AnisoWrapSampler, NoiseCoord * 4.0, 0.0).x;
-    float Noise = saturate((((Perlin1 + Perlin2) * 0.5) - 0.39) * 5.42);
-
-    float NoiseFinal = (Noise * Noise) * (3.0 - (2.0 * Noise));
-          NoiseFinal = lerp(NoiseFinal, 1.0, saturate(OffsetZ * 0.0002));
-
-    float Mult = FFF * NoiseFinal;
-    FilterVolume[ThreadID] = Output;
-}
 /////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -313,6 +369,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 #ifdef MARCH_COMPUTE
 
 Texture3D ScatterVolume : register(t0);
+
 RWTexture3D<float4> IntergrationVolume : register(u0);
 
 void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSlice, float StepLength){
@@ -383,3 +440,106 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
+
+//https://github.com/Bubblebird-Studio/NoiseGenerator
+
+#ifdef PERLIN_COMPUTE
+
+#define VolumeSize float3(32.0, 32.0, 32.0)
+#define perlinSize 0.16
+#define perlinOctaves 2
+#define perlinLacunarity 2.0
+#define seed 346
+
+RWTexture3D<float> PerlinVolume : register(u0);
+
+uint hash_uint(uint x){
+    uint h = x;
+    h ^= (h >> 16);
+    h *= 0x85EBCA6Bu;
+    h ^= (h >> 13);
+    h *= 0xC2B2AE35u;
+    h ^= (h >> 16);
+    return h;
+}
+
+uint hash_int3(int3 v){
+    uint x = asuint(v.x);
+    uint y = asuint(v.y);
+    uint z = asuint(v.z);
+
+    uint h = 0xDEADBEEFu;
+    h ^= x + 0x9E3779B9u + (h << 6) + (h >> 2);
+    h ^= y + 0x9E3779B9u + (h << 6) + (h >> 2);
+    h ^= z + 0x9E3779B9u + (h << 6) + (h >> 2);
+
+    h ^= (h >> 16);
+    h *= 0x85EBCA6Bu;
+    h ^= (h >> 13);
+    h *= 0xC2B2AE35u;
+    h ^= (h >> 16);
+
+    return h;
+}
+
+float3 rand_vector(uint h){
+    uint x = hash_uint(h ^ 0xA53C9A1Fu);
+    uint y = hash_uint(h ^ 0xC2B2AE35u);
+    uint z = hash_uint(h ^ 0x27D4EB2Fu);
+
+    const float invU32 = 1.0f / 4294967296.0f; // 2^-32
+    return float3((float)x * invU32, (float)y * invU32, (float)z * invU32);
+}
+
+float3 fade(float3 t){
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+float grad(uint h, float3 p){
+    uint hh = (h & 15u);
+    float3 g = rand_vector(hh) * 2.0 - 1.0;
+    return dot(g, p);
+}
+
+[numthreads(8, 8, 8)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    float grid_resolution = floor(1.0 / perlinSize);
+    float3 position = float3(ThreadID) / VolumeSize * grid_resolution;
+
+    float Output = 0.0;
+    [loop] for(uint i = 0u; i < perlinOctaves; ++i){
+        uint s = seed + i;
+
+        float attenuationF = floor(pow(perlinLacunarity, (float)i));
+        float3 p = position * attenuationF;
+
+        int3  pi = (int3)floor(p);
+        float3 pf = frac(p);
+        float3 f = fade(pf);
+
+        int3 period = (grid_resolution * (int)attenuationF).xxx;
+
+        float n000 = grad(hash_int3(( (pi + int3(0,0,0)) % period )) + s, pf - float3(0,0,0));
+        float n001 = grad(hash_int3(( (pi + int3(0,0,1)) % period )) + s, pf - float3(0,0,1));
+        float n010 = grad(hash_int3(( (pi + int3(0,1,0)) % period )) + s, pf - float3(0,1,0));
+        float n011 = grad(hash_int3(( (pi + int3(0,1,1)) % period )) + s, pf - float3(0,1,1));
+        float n100 = grad(hash_int3(( (pi + int3(1,0,0)) % period )) + s, pf - float3(1,0,0));
+        float n101 = grad(hash_int3(( (pi + int3(1,0,1)) % period )) + s, pf - float3(1,0,1));
+        float n110 = grad(hash_int3(( (pi + int3(1,1,0)) % period )) + s, pf - float3(1,1,0));
+        float n111 = grad(hash_int3(( (pi + int3(1,1,1)) % period )) + s, pf - float3(1,1,1));
+
+        float x00 = lerp(n000, n100, f.x);
+        float x01 = lerp(n001, n101, f.x);
+        float x10 = lerp(n010, n110, f.x);
+        float x11 = lerp(n011, n111, f.x);
+
+        float y0 = lerp(x00, x10, f.y);
+        float y1 = lerp(x01, x11, f.y);
+
+        Output += lerp(y0, y1, f.z) / max(attenuationF, 1.0);
+    }
+
+    PerlinVolume[ThreadID] = Output * 0.5 + 0.5;
+}
+#endif

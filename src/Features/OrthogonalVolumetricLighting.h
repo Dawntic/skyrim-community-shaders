@@ -9,6 +9,7 @@
 #include <DDSTextureLoader.h>
 #include <DirectXTex.h>
 #include <REX/W32/COMPTR.h>
+#include <cmath>
 #include <vector>
 
 struct OrthogonalVolumetricLighting : Feature
@@ -45,6 +46,10 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupCloudMap();
 	virtual void SetupEVSM();
 	virtual void SetupShadowVolume();
+	virtual void SetupMediaVolume();
+	virtual void SetupPerlinNoise();
+
+	virtual void OpenWorldMap();
 
 	D3D11_VIEWPORT viewPort[4];
 	ConstantBuffer* ESMCBuffer = nullptr;
@@ -86,13 +91,19 @@ struct OrthogonalVolumetricLighting : Feature
 	ConstantBuffer* SettingsCB = nullptr;
 	ID3D11BlendState* AddBlend = nullptr;
 
+	ID3D11ComputeShader* PerlinCS = nullptr;
 	ID3D11ComputeShader* DownSampleCS = nullptr;
 	ID3D11ComputeShader* GenerateShadowVolumeCS = nullptr;
 	ID3D11ComputeShader* GenerateScatteringVolumeCS = nullptr;
 	ID3D11ComputeShader* FilterVolumeCS = nullptr;
 	ID3D11ComputeShader* SliceMarchCS = nullptr;
+	ID3D11ComputeShader* MediaAccumulatorCS = nullptr;
 	ID3D11PixelShader* ApplyVolumePS = nullptr;
 	ID3D11PixelShader* OutputPS = nullptr;
+
+	ID3D11Texture3D* PerlinTex = nullptr;
+	ID3D11UnorderedAccessView* PerlinUAV = nullptr;
+	ID3D11ShaderResourceView* PerlinSRV = nullptr;
 
 	ID3D11Texture2D* ExpoTexture = nullptr;
 	ID3D11UnorderedAccessView* ExpoUAV = nullptr;
@@ -101,6 +112,10 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11Texture3D* ShadowVolume[2] = {};
 	ID3D11UnorderedAccessView* ShadowVolumeUAV[2] = {};
 	ID3D11ShaderResourceView* ShadowVolumeSRV[2] = {};
+
+	ID3D11Texture3D* MediaVolume[2] = {};
+	ID3D11UnorderedAccessView* MediaVolumeUAV[2] = {};
+	ID3D11ShaderResourceView* MediaVolumeSRV[2] = {};
 
 	ID3D11Texture3D* ScatteringVolume = nullptr;
 	ID3D11UnorderedAccessView* ScatteringVolumeUAV = nullptr;
@@ -116,6 +131,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	ID3D11ShaderResourceView* STBNoiseSRV = nullptr;
 	ID3D11ShaderResourceView* STBNoiseFloat3SRV = nullptr;
+	//ID3D11ShaderResourceView* PerlinSRV = nullptr;
 
 	ID3D11Texture2D* OutputTexture = nullptr;
 	ID3D11ShaderResourceView* OutputSRV = nullptr;
@@ -143,6 +159,7 @@ struct OrthogonalVolumetricLighting : Feature
 	DirectX::XMFLOAT4X4 cloudShadowsMatrix;
 
 	bool shadowVolParity;
+	bool mediaVolParity;
 
 	uintptr_t* skyrim_FlareData = nullptr;
 	uint32_t* skyrim_RunFlarePtr = nullptr;
@@ -230,7 +247,9 @@ struct OrthogonalVolumetricLighting : Feature
 			FilterVolume = 8,
 			Apply = 9,
 			Output = 10,
-			RenderCloudMap = 11
+			RenderCloudMap = 11,
+			MediaVolume = 12,
+			Perlin = 13
 		};
 	};
 	Shaders::Enum shaderdesc;

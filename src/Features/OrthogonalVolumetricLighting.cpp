@@ -12,6 +12,8 @@ void OrthogonalVolumetricLighting::CompileShaders()
 	GenerateScatteringVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "SCATTER_COMPUTE", "" } }, "cs_5_0");
 	//FilterVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "FILTER_COMPUTE", "" } }, "cs_5_0");
 	SliceMarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "MARCH_COMPUTE", "" } }, "cs_5_0");
+	MediaAccumulatorCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "MEDIA_COMPUTE", "" } }, "cs_5_0");
+	PerlinCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "PERLIN_COMPUTE", "" } }, "cs_5_0");
 
 	BypassVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\DownSample.hlsl", { { "BYPASS_VSSHADER", "" } }, "vs_5_0");
 	ApplyVolumePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\MarchAndApply.hlsl", { { "APPLY_PIXEL", "" } }, "ps_5_0");
@@ -93,6 +95,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateRasterizerState(&RasterizerDesc, &Rasterizer));
 
 	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\STBN.dds", nullptr, &STBNoiseSRV));
+	//DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\Perlin.dds", nullptr, &PerlinSRV));
 
 	D3D11_TEXTURE3D_DESC R16VolumeDesc{};
 	R16VolumeDesc.Width = (UINT)volumeDimensions.x;
@@ -126,6 +129,19 @@ void OrthogonalVolumetricLighting::SetupResources()
 	ScatterVolumeUAVDesc.Format = ScatterVolumeDesc.Format;
 	ScatterVolumeUAVDesc.Texture3D.WSize = ScatterVolumeDesc.Depth;
 
+	D3D11_TEXTURE3D_DESC PerlinVolumeDesc{ R16VolumeDesc };
+	PerlinVolumeDesc.Width = 32;
+	PerlinVolumeDesc.Height = 32;
+	PerlinVolumeDesc.Depth = 32;
+
+	D3D11_UNORDERED_ACCESS_VIEW_DESC PerlinUAVDesc{ R16VolumeUAVdesc };
+	PerlinUAVDesc.Format = PerlinVolumeDesc.Format;
+	PerlinUAVDesc.Texture3D.WSize = PerlinVolumeDesc.Depth;
+
+	DX::ThrowIfFailed(device->CreateTexture3D(&PerlinVolumeDesc, nullptr, &PerlinTex));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(PerlinTex, &PerlinUAVDesc, &PerlinUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(PerlinTex, nullptr, &PerlinSRV));
+
 	DX::ThrowIfFailed(device->CreateTexture3D(&R16VolumeDesc, nullptr, &ShadowVolume[0]));
 	DX::ThrowIfFailed(device->CreateTexture3D(&R16VolumeDesc, nullptr, &ShadowVolume[1]));
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ShadowVolume[0], &R16VolumeUAVdesc, &ShadowVolumeUAV[0]));
@@ -143,6 +159,13 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(FilteringVolume[1], &RGBA16VolumeUAVDesc, &FilterVolumeUAV[1]));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(FilteringVolume[0], nullptr, &FilterVolumeSRV[0]));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(FilteringVolume[1], nullptr, &FilterVolumeSRV[1]));
+
+	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &MediaVolume[0]));
+	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &MediaVolume[1]));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(MediaVolume[0], &RGBA16VolumeUAVDesc, &MediaVolumeUAV[0]));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(MediaVolume[1], &RGBA16VolumeUAVDesc, &MediaVolumeUAV[1]));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(MediaVolume[0], nullptr, &MediaVolumeSRV[0]));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(MediaVolume[1], nullptr, &MediaVolumeSRV[1]));
 
 	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &IntergrationVolume));
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(IntergrationVolume, &RGBA16VolumeUAVDesc, &IntergrationVolumeUAV));
@@ -174,8 +197,10 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	renderdata = new Setup::LF_RenderData;
 
+	renderdata->SetupPass(Shaders::Perlin, true, 1, { .uncond_pass = true });  //
 	renderdata->SetupPass(Shaders::ShadowEVSM, true, 1, { .uncond_pass = true });
 	renderdata->SetupPass(Shaders::ShadowVolume, true, 1, { .uncond_pass = true });   //
+	renderdata->SetupPass(Shaders::MediaVolume, true, 1, { .uncond_pass = true });    //
 	renderdata->SetupPass(Shaders::ScatterVolume, true, 1, { .uncond_pass = true });  //
 
 	//renderdata->SetupPass(Shaders::FilterVolume, true, 1, { .uncond_pass = true });
@@ -281,10 +306,28 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 		{ Shaders::Apply, &OrthogonalVolumetricLighting::SetupApplyVolume },
 		{ Shaders::ShadowEVSM, &OrthogonalVolumetricLighting::SetupEVSM },
 		{ Shaders::RenderCloudMap, &OrthogonalVolumetricLighting::SetupCloudMap },
+		{ Shaders::MediaVolume, &OrthogonalVolumetricLighting::SetupMediaVolume },
+		{ Shaders::Perlin, &OrthogonalVolumetricLighting::SetupPerlinNoise },
 	};
 	auto it = effects.find(desc);
 	if (it != effects.cend())
 		(this->*(it->second))();
+}
+
+void OrthogonalVolumetricLighting::SetupPerlinNoise()
+{
+	auto context = globals::d3d::context;
+	static bool run = true;
+
+	context->CSSetUnorderedAccessViews(0, 1, &PerlinUAV, nullptr);
+	context->CSSetShader(PerlinCS, nullptr, 0);
+
+	context->Dispatch(4, 4, 4);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	overrideShader = false;
 }
 
 void OrthogonalVolumetricLighting::SetupEVSM()
@@ -350,6 +393,31 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	overrideShader = false;
 }
 
+void OrthogonalVolumetricLighting::SetupMediaVolume()
+{
+	auto context = globals::d3d::context;
+	static int passCount = 1;
+
+	mediaVolParity = passCount & 1;
+	auto mediaUAV = MediaVolumeUAV[!mediaVolParity];
+	auto prevMediaSRV = MediaVolumeSRV[mediaVolParity];
+
+	context->CSSetUnorderedAccessViews(0, 1, &mediaUAV, nullptr);
+	context->CSSetShader(MediaAccumulatorCS, nullptr, 0);
+
+	context->CSSetShaderResources(0, 1, &prevMediaSRV);
+	context->CSSetShaderResources(1, 1, &PerlinSRV);
+	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
+
+	context->Dispatch(60, 34, 17);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	passCount++;
+	overrideShader = false;
+}
+
 void OrthogonalVolumetricLighting::SetupScatteringVolume()
 {
 	auto context = globals::d3d::context;
@@ -358,6 +426,7 @@ void OrthogonalVolumetricLighting::SetupScatteringVolume()
 	context->CSSetShader(GenerateScatteringVolumeCS, nullptr, 0);
 
 	context->CSSetShaderResources(0, 1, &ShadowVolumeSRV[!shadowVolParity]);
+	context->CSSetShaderResources(1, 1, &MediaVolumeSRV[!mediaVolParity]);
 
 	//context->CSSetShaderResources(0, 1, &ExpoSRV);
 
@@ -567,6 +636,61 @@ bool OrthogonalVolumetricLighting::CheckFrameBuffer()
 	return false;
 }
 
+struct WindParams
+{
+	float3 dirWS = float3(1.0f, 0.0f, 0.0f);
+	float speedMps = 10.0f;
+	float dirSmoothSec = 0.5f;
+	float spdSmoothSec = 0.5f;
+	float fadeDistanceM = 5000.0f;
+	float noiseScaleXY = 0.02f;
+	float noiseScaleZ = 0.02f;
+};
+
+struct WindState
+{
+	float3 offsetWS;      // accumulated scroll in meters (what becomes _m18.xyz)
+	float3 periodWS;      // wrap period per axis in meters  = (1/scaleXY, 1/scaleXY, 1/scaleZ)
+	float3 dirWS_smooth;  // smoothed direction
+	float speed_smooth;   // smoothed speed
+};
+
+float Saturate(float x) { return std::max(0.0f, std::min(1.0f, x)); }
+inline float3 floor(const float3& v) { return { std::floor(v.x), std::floor(v.y), std::floor(v.z) }; }
+inline float3 lerp(float3& start, float3& end, float factor) { return start + (end - start) * factor; }
+float SmoothK(float dt, float tau) { return 1.0f - exp(-dt / std::max(1e-3f, tau)); }
+float3 WrapToPeriod(float3 x, float3 period) { return x - period * floor(x / period); }
+float3 NormalizeSafe(float3 v, float3 fallback = { 1, 0, 0 })
+{
+	float len = v.Length();
+	return (len > 1e-6f) ? (v / len) : fallback;
+}
+
+void InitWind(const WindParams& windParams, WindState& windState)
+{
+	windState.offsetWS = { 0, 0, 0 };
+	windState.periodWS = { 1.0f / windParams.noiseScaleXY, 1.0f / windParams.noiseScaleXY, 1.0f / windParams.noiseScaleZ };
+	windState.dirWS_smooth = NormalizeSafe(windParams.dirWS);
+	windState.speed_smooth = windParams.speedMps;
+}
+
+void UpdateWind(const WindParams& windParams, float dt, WindState& windState)
+{
+	float kDir = SmoothK(dt, windParams.dirSmoothSec);
+	float kSpd = SmoothK(dt, windParams.spdSmoothSec);
+
+	float3 dirTarget = NormalizeSafe(windParams.dirWS);
+	windState.dirWS_smooth = NormalizeSafe(lerp(windState.dirWS_smooth, dirTarget, kDir), dirTarget);
+	windState.speed_smooth = std::lerp(windState.speed_smooth, windParams.speedMps, kSpd);
+
+	// 2) Integrate displacement in world meters
+	float3 velocityWS = windState.dirWS_smooth * windState.speed_smooth;  // m/windState
+	windState.offsetWS += velocityWS * dt;                                // meters
+
+	// 3) Wrap to noise period so values stay small and tile seamlessly
+	windState.offsetWS = WrapToPeriod(windState.offsetWS, windState.periodWS);
+}
+
 ///// SHADOW MAPPING //////////////////////////////////////////////////////////////
 
 static inline float Dot3(const Vector3& a, const Vector3& b)
@@ -726,6 +850,29 @@ RE::BSShaderProperty::RenderPassArray* OrthogonalVolumetricLighting::Hooks::BSSk
 	return passArray;
 }
 
+///// HEIGHT FOG ////////////////////////////////////////////////////////////////////
+
+void OrthogonalVolumetricLighting::OpenWorldMap()
+{
+	SKSE::GetTaskInterface()->AddUITask([] {
+		auto* ui = RE::UI::GetSingleton();
+		if (!ui)
+			return;
+
+		if (ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME))
+			return;
+
+		RE::UIMessageQueue::GetSingleton()->AddMessage(RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow, nullptr);
+	});
+}
+
+//inline void CloseWorldMap(){
+//	SKSE::GetTaskInterface()->AddUITask([] {
+//		RE::UIMessageQueue::GetSingleton()->AddMessage(
+//			RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+//	});
+//}
+
 //// GENERAL HOOKS ///////////////////////////////////////////////////////////////////
 
 void OrthogonalVolumetricLighting::Hooks::BSSkyShader_SetupMaterial::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
@@ -805,8 +952,12 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Extinction", &settings.extinction, 0.0001, 0.1);
 	ImGui::SliderFloat("Color Saturation Bias", &settings.color_saturation, 0.0, 1.0);
 	ImGui::SliderFloat("Shadow Threshold", &settings.shadow_threshold, 0.0, 1.0);
-
 	ImGui::SliderInt("VSM Exponent: ", (int*)&settings.esmExponent, 1, 100);
+
+	ImGui::Button("Open Map");
+	if (ImGui::IsItemClicked()) {
+		OpenWorldMap();
+	}
 }
 
 void OrthogonalVolumetricLighting::LoadSettings(json& o_json)
