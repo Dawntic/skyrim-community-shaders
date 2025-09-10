@@ -7,18 +7,16 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 void OrthogonalVolumetricLighting::CompileShaders()
 {
-	DownSampleCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "EVSM_COMPUTE", "" } }, "cs_5_0");
-	GenerateShadowVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "SHADOW_COMPUTE", "" } }, "cs_5_0");
-	GenerateScatteringVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "SCATTER_COMPUTE", "" } }, "cs_5_0");
-	//FilterVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "FILTER_COMPUTE", "" } }, "cs_5_0");
-	SliceMarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "MARCH_COMPUTE", "" } }, "cs_5_0");
-	MediaAccumulatorCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "MEDIA_COMPUTE", "" } }, "cs_5_0");
-	PerlinCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\ScatteringVolume.hlsl", { { "PERLIN_COMPUTE", "" } }, "cs_5_0");
+	BypassVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "BYPASS_VSSHADER", "" } }, "vs_5_0");
 
-	BypassVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\DownSample.hlsl", { { "BYPASS_VSSHADER", "" } }, "vs_5_0");
-	ApplyVolumePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\MarchAndApply.hlsl", { { "APPLY_PIXEL", "" } }, "ps_5_0");
-	//OutputPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\MarchAndApply.hlsl", { { "OUTPUT_PIXEL", "" } }, "ps_5_0");
-	//FilterPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\DownSample.hlsl", { { "Filter", "" } }, "ps_5_0");
+	GeneratePerlinCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "PERLIN_COMPUTE", "" } }, "cs_5_0");
+	GenerateEVSMCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "EVSM_COMPUTE", "" } }, "cs_5_0");
+	GenerateShadowVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SHADOW_COMPUTE", "" } }, "cs_5_0");
+	GenerateMediaVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "MEDIA_COMPUTE", "" } }, "cs_5_0");
+	GenerateScatteringVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SCATTER_COMPUTE", "" } }, "cs_5_0");
+	SliceMarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "MARCH_COMPUTE", "" } }, "cs_5_0");
+
+	ApplyVolumePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "APPLY_PIXEL", "" } }, "ps_5_0");
 }
 
 void OrthogonalVolumetricLighting::SetupResources()
@@ -253,8 +251,8 @@ void OrthogonalVolumetricLighting::SetupResources()
 	}
 
 	D3D11_TEXTURE2D_DESC ExpoDesc{};  //need to downsize once working
-	ExpoDesc.Width = CSM_Size / 4;
-	ExpoDesc.Height = CSM_Size / 4;
+	ExpoDesc.Width = EVSM_Size;
+	ExpoDesc.Height = EVSM_Size;
 	ExpoDesc.MipLevels = 1;
 	ExpoDesc.ArraySize = 4;
 	ExpoDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
@@ -319,13 +317,17 @@ void OrthogonalVolumetricLighting::SetupPerlinNoise()
 	auto context = globals::d3d::context;
 	static bool run = true;
 
-	context->CSSetUnorderedAccessViews(0, 1, &PerlinUAV, nullptr);
-	context->CSSetShader(PerlinCS, nullptr, 0);
+	if (run) {
+		context->CSSetUnorderedAccessViews(0, 1, &PerlinUAV, nullptr);
+		context->CSSetShader(GeneratePerlinCS, nullptr, 0);
 
-	context->Dispatch(4, 4, 4);
+		context->Dispatch(4, 4, 4);
 
-	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
-	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+		ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+		context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+		run = false;
+	}
 
 	overrideShader = false;
 }
@@ -335,7 +337,7 @@ void OrthogonalVolumetricLighting::SetupEVSM()
 	auto context = globals::d3d::context;
 
 	context->CSSetUnorderedAccessViews(0, 1, &ExpoUAV, nullptr);
-	context->CSSetShader(DownSampleCS, nullptr, 0);
+	context->CSSetShader(GenerateEVSMCS, nullptr, 0);
 
 	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
 	context->CSSetShaderResources(0, 1, &shadowMap);
@@ -359,7 +361,7 @@ void OrthogonalVolumetricLighting::SetupEVSM()
 	context->CSSetShaderResources(10, 1, &shadowBuff);
 	context->CSSetShaderResources(11, 1, &STBNoiseSRV);
 
-	auto groups = CSM_Size / 4 / 16;
+	auto groups = EVSM_Size / 16;
 	context->Dispatch(groups, groups, 4);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
@@ -403,7 +405,7 @@ void OrthogonalVolumetricLighting::SetupMediaVolume()
 	auto prevMediaSRV = MediaVolumeSRV[mediaVolParity];
 
 	context->CSSetUnorderedAccessViews(0, 1, &mediaUAV, nullptr);
-	context->CSSetShader(MediaAccumulatorCS, nullptr, 0);
+	context->CSSetShader(GenerateMediaVolumeCS, nullptr, 0);
 
 	context->CSSetShaderResources(0, 1, &prevMediaSRV);
 	context->CSSetShaderResources(1, 1, &PerlinSRV);
@@ -577,7 +579,7 @@ OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateV
 	data.shadowCascadeMatrix[2] = GetCascadeMatrix(lightData.shadowmapDescriptors[2].lightTransform);
 	data.shadowCascadeMatrix[3] = GetCascadeMatrix(lightData.shadowmapDescriptors[3].lightTransform);
 	data.cloudShadowMatrix = cloudShadowsMatrix;
-	data.EVSMData = float4(CSM_Size / 4.0f, CSM_Size / 4.0f, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
+	data.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
 	//data.EVSMData = float4((float)CSM_Size, (float)CSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
 	data.FrustumNearFar = FrustumNearFar;
 	data.VolumeSize = volumeDimensions;
@@ -732,8 +734,6 @@ REX::W32::XMFLOAT4X4 OrthogonalVolumetricLighting::GetCascadeMatrix(REX::W32::XM
 
 	if (currEye.x > 1)
 		eyePos = float4(currEye.x, currEye.y, currEye.z, 1.0f);
-
-	//logger::info("eyePos: {}, {}, {}", eyePos.x, eyePos.y, eyePos.z);
 
 	float4 transform = mul(eyePos, lightMatrix);
 

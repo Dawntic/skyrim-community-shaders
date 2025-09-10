@@ -91,13 +91,13 @@ struct OrthogonalVolumetricLighting : Feature
 	ConstantBuffer* SettingsCB = nullptr;
 	ID3D11BlendState* AddBlend = nullptr;
 
-	ID3D11ComputeShader* PerlinCS = nullptr;
-	ID3D11ComputeShader* DownSampleCS = nullptr;
+	ID3D11ComputeShader* GeneratePerlinCS = nullptr;
+	ID3D11ComputeShader* GenerateEVSMCS = nullptr;
 	ID3D11ComputeShader* GenerateShadowVolumeCS = nullptr;
 	ID3D11ComputeShader* GenerateScatteringVolumeCS = nullptr;
 	ID3D11ComputeShader* FilterVolumeCS = nullptr;
 	ID3D11ComputeShader* SliceMarchCS = nullptr;
-	ID3D11ComputeShader* MediaAccumulatorCS = nullptr;
+	ID3D11ComputeShader* GenerateMediaVolumeCS = nullptr;
 	ID3D11PixelShader* ApplyVolumePS = nullptr;
 	ID3D11PixelShader* OutputPS = nullptr;
 
@@ -138,6 +138,8 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11RenderTargetView* OutputRTV = nullptr;
 
 	uint CSM_Size = 2048;
+	uint EVSM_Size = CSM_Size / 4;
+
 	float4 FrustumNearFar;
 	float4 volumeDimensions = float4(240, 136, 68, 0);
 	float4 noiseDimensions = float4(64, 64, 32, 0);

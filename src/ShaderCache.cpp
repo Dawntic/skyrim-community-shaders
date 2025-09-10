@@ -2193,11 +2193,11 @@ namespace SIE
 		if (auto version = ini.GetValue("Cache", "Version")) {
 			if (strcmp(SHADER_CACHE_VERSION.string().c_str(), version) != 0 || !(globals::state->ValidateCache(ini))) {
 				logger::info("Disk cache outdated or invalid");
-				valid = false;
+				//valid = false;
 			}
 		} else {
 			logger::info("Disk cache outdated or invalid");
-			valid = false;
+			//valid = false;
 		}
 
 		if (valid) {
