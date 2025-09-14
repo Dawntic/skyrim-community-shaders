@@ -342,6 +342,8 @@ void OrthogonalVolumetricLighting::SetupEVSM()
 	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
 	context->CSSetShaderResources(0, 1, &shadowMap);
 
+	ID3D11Buffer* terrainShadowBuffer = globals::features::terrainShadows.shadowUpdateCB.get();
+
 	auto volumeBuff = VolumeCB->CB();
 	auto settingsBuff = SettingsCB->CB();
 	ID3D11Buffer* prevFrameBuff = FrameBuffer[PrevMatrixIdx].Get();
@@ -350,6 +352,7 @@ void OrthogonalVolumetricLighting::SetupEVSM()
 	context->CSSetConstantBuffers(1, 1, &settingsBuff);
 	context->CSSetConstantBuffers(2, 1, &FrameBuff);
 	context->CSSetConstantBuffers(3, 1, &prevFrameBuff);
+	context->CSSetConstantBuffers(4, 1, &terrainShadowBuffer);
 
 	context->CSSetSamplers(10, 1, &LinearSampler);
 	context->CSSetSamplers(11, 1, &PointSampler);

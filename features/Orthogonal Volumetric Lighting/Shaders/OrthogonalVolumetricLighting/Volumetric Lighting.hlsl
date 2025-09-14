@@ -80,6 +80,17 @@ cbuffer PrevPerFrame : register(b3)
     float4 PrevDynamicResolutionParams2 : packoffset(c44);
 };
 
+cbuffer ShadowUpdateCB : register(b4)
+{
+	float2 LightPxDir : packoffset(c0.x);   // direction on which light descends, from one pixel to next via dda
+	float2 LightDeltaZ : packoffset(c0.z);  // per lightUVDir, normalised, [upper, lower] penumbra, should be negative
+	uint StartPxCoord : packoffset(c1.x);
+	float2 PxSize : packoffset(c1.y);
+	float pad : packoffset(c1.w);
+	float2 TerrainPosRange : packoffset(c2.x);
+	float2 TerrainZRange : packoffset(c2.z);
+}
+
 struct ShadowDataStruct
 {
     float4 VPOSOffset;
@@ -147,7 +158,7 @@ Texture2DArray EVSMCascade : register(t1);
 Texture2DArray BlueNoise : register(t2);
 RWTexture3D<float> ShadowVolume : register(u0);
 
-float ShadowVisibility(float4 CoordsWS, float3 RayDirection, float2 SliceZ, float Noise){
+float GetCascadeShadow(float4 CoordsWS, float3 RayDirection, float2 SliceZ, float Noise){
     ShadowDataStruct ShadowData = ShadowDataSB[0];
 
     float BiasVal = 0.0005;
@@ -160,14 +171,15 @@ float ShadowVisibility(float4 CoordsWS, float3 RayDirection, float2 SliceZ, floa
         //uint CascadeIndex = (CoordsWS.w < ShadowData.EndSplits.x) ? 0 : 1;
         float3 CoordsLS = mul(ShadowCascadeMatrix[CascadeIndex], float4(CoordsWS.xyz, 1.0)).xyz;
 
-        float VSMReconstruct = exp(UIExponent * (saturate(CoordsLS.z) * 2.0 - 1.0)) + 9.9e-5;
+        float Reconstruct = exp(UIExponent * (saturate(CoordsLS.z) * 2.0 - 1.0)) + 9.9e-5;
         float2 Moments = EVSMCascade.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CascadeIndex), 0).xy + float2(9.9e-5, 9.9e-9);
-        float VarianceBias = BiasVal * VSMReconstruct;
+        float VarianceBias = BiasVal * Reconstruct;
         float Variance = max(Moments.y - Moments.x * Moments.x, VarianceBias * VarianceBias);
-        float Delta = VSMReconstruct - Moments.x;
+
+        float Delta = Reconstruct - Moments.x;
 
         float Visibility = Variance / (Variance + Delta * Delta);
-              Visibility = (VSMReconstruct <= Moments.x) ? 1.0 : saturate(Visibility * Values.x + Values.y);
+              Visibility = (Reconstruct <= Moments.x) ? 1.0 : saturate(Visibility * Values.x + Values.y);
 
         Result += Visibility;
 
@@ -204,7 +216,10 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float4 CoordsCS = mul(CameraViewProj[0], float4(OffsetCoords, 1.0));
     float ClipZ = CoordsCS.z / CoordsCS.w;
 
-    float Shadow = ShadowVisibility(float4(OffsetCoords, ClipZ), RayDirection, float2(CoordZ, ThicknessZ), BNoise);
+    float Shadow = GetCascadeShadow(float4(OffsetCoords, ClipZ), RayDirection, float2(CoordZ, ThicknessZ), BNoise);
+
+    Shadow += GetTerrainShadow(OffsetCoords, Point_Sampler);
+
 
     float2 Confidence;
     float SliceCenter = exp2(max(Froxel.z + 0.5, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
@@ -251,7 +266,7 @@ float MeterToGameUnit(float input){
 
 float GetHeightFog(float StartAltitude, float MaxAltitude, float DecayRate, float cosZenith, float Extinction){
     float Zenith = rcp(max(abs(cosZenith), EPSILON));
-    float MinHeight = (cosZenith >= 0) ? StartAltitude : -1e6; //-rcp(EPSILON);
+    float MinHeight = (cosZenith >= 0) ? StartAltitude : -1e6;
     float Fog = exp(-max(MinHeight - MaxAltitude, 0) * DecayRate) * (Zenith * rcp(DecayRate));
     float OpticalDepth = Extinction * (max((MaxAltitude - MinHeight) * Zenith, 0) + Fog);
 
@@ -298,17 +313,25 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 
     float3 UpWS = float3(0,1,0);
+    float3 FogBaseWS = float3(0.0, TerrainPosRange.x, 0.0);
 
-    float StartHeight = //comes from texture map, need to be reletive to world height at that location
-    float StartAltitude = dot(CameraWS - StartHeight, UpWS);
-    //float MaxAltitude = dot(RayEndPosWS - FogBaseOriginWS, UpWS);
+    float DepthFront = exp2((Froxel.z) / FrustumNearFar.w) / FrustumNearFar.z;
+    float DepthBack = exp2((Froxel.z + 1.0) / FrustumNearFar.w) / FrustumNearFar.z;
+    float3 Front = CameraWS + RayDirection * DepthFront;
+    float3 Back  = CameraWS + RayDirection * DepthBack;
 
-    float Falloff = 300.0; //Meters
+    float StartAltitude = dot(Front - FogBaseWS, UpWS);
+    float EndAltitude   = dot(Back  - FogBaseWS, UpWS);
+
+
+    float Falloff = MeterToGameUnit(300.0);
     float DecayRate = rcp(Falloff);
     float cosZenith = dot(normalize(RayDirection), UpWS); //(0,0,1)
     float Extinction = UIExtinction;
 
-    float HeightFog = GetHeightFog(
+    float HeightFog = GetHeightFog(StartAltitude, EndAltitude, DecayRate, cosZenith, Extinction);
+
+
     float4 Output = float4(1.0, 1.0, 1.0, HeightFog) * Noise;
 
     float BaseValue = 0.90;
