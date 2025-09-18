@@ -48,8 +48,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupShadowVolume();
 	virtual void SetupMediaVolume();
 	virtual void SetupPerlinNoise();
-
-	virtual void OpenWorldMap();
+	virtual void DrawFogMap();
 
 	D3D11_VIEWPORT viewPort[4];
 	ConstantBuffer* ESMCBuffer = nullptr;
@@ -92,6 +91,7 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11BlendState* AddBlend = nullptr;
 
 	ID3D11ComputeShader* GeneratePerlinCS = nullptr;
+	ID3D11ComputeShader* DrawFogMapCS = nullptr;
 	ID3D11ComputeShader* GenerateEVSMCS = nullptr;
 	ID3D11ComputeShader* GenerateShadowVolumeCS = nullptr;
 	ID3D11ComputeShader* GenerateScatteringVolumeCS = nullptr;
@@ -130,19 +130,33 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11ShaderResourceView* IntergrationVolumeSRV = nullptr;
 
 	ID3D11ShaderResourceView* STBNoiseSRV = nullptr;
-	ID3D11ShaderResourceView* STBNoiseFloat3SRV = nullptr;
-	//ID3D11ShaderResourceView* PerlinSRV = nullptr;
+
+	ID3D11Texture2D* WorldMapTexture = nullptr;
+	ID3D11ShaderResourceView* WorldMapSRV = nullptr;
+
+	ID3D11Texture2D* FogMapTexture = nullptr;
+	ID3D11ShaderResourceView* FogMapSRV = nullptr;
+	ID3D11UnorderedAccessView* FogMapUAV = nullptr;
 
 	ID3D11Texture2D* OutputTexture = nullptr;
 	ID3D11ShaderResourceView* OutputSRV = nullptr;
 	ID3D11RenderTargetView* OutputRTV = nullptr;
 
+	float2 screenSize;
+
 	uint CSM_Size = 2048;
 	uint EVSM_Size = CSM_Size / 4;
 
-	float4 FrustumNearFar;
+	float4 frustumNearFar;
 	float4 volumeDimensions = float4(240, 136, 68, 0);
 	float4 noiseDimensions = float4(64, 64, 32, 0);
+	float2 fogMapSize;  // = screenSize;
+
+	DirectX::XMFLOAT4X4 fogMapViewProj = DirectX::XMFLOAT4X4(
+		1.1865, -0.11179, -0.0001, 0.00,
+		0.19873, 2.10933, -0.00039, 0.00,
+		-8.20321E-09, -8.70688E-08, -1.00036, -128.04633,
+		-8.20024E-09, -8.70373E-08, -1.00, 0.00);
 
 	int haltonCount = 32;
 	float haltonArray[96];
@@ -150,7 +164,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	bool overrideShader = false;
 	uint frameCounter = 0;
-	float2 screenSize;
+	bool UpdateFogMap = true;
 
 	RE::BSShadowLight* shadowLight;
 	bool swapOutputRT = false;
@@ -163,13 +177,26 @@ struct OrthogonalVolumetricLighting : Feature
 	bool shadowVolParity;
 	bool mediaVolParity;
 
+	float ZOffsetValue = 1.0f;
+
 	uintptr_t* skyrim_FlareData = nullptr;
 	uint32_t* skyrim_RunFlarePtr = nullptr;
+
+	float4 MinMaxValues = float4(0, 0, 0, 0);
+	float2 FogMapCoords;
 
 	virtual void RestoreDefaultSettings() override;
 	virtual void DrawSettings() override;
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
+
+	float density = 0.1f;
+	float4 fogMapColor;
+	float fogStartHeight = 0.0f;
+	float fogFalloffRate = 0.0f;
+	float brushRadius = 24.0f;
+	float brushFeather = 0.5;
+	float fogErase = false;
 
 	struct CascadeInputs
 	{
@@ -209,7 +236,10 @@ struct OrthogonalVolumetricLighting : Feature
 		float color_saturation = 1.0;
 		float shadow_threshold = 1.0;
 		uint esmExponent = 5;
-		float _pad[2];
+		float4 fogMapData;
+		float4 fogMapColor;
+		float blendOpp = false;
+		float _pad[1];
 	};
 	Settings settings;
 
@@ -217,8 +247,9 @@ struct OrthogonalVolumetricLighting : Feature
 	{
 		REX::W32::XMFLOAT4X4 shadowCascadeMatrix[4];
 		DirectX::XMFLOAT4X4 cloudShadowMatrix;
+		DirectX::XMFLOAT4X4 fogMapMatrix;
 		float4 EVSMData;
-		float4 FrustumNearFar;
+		float4 frustumNearFar;
 		float4 VolumeSize;
 		float4 NoiseSize;
 		float4 Jitter;
@@ -236,6 +267,38 @@ struct OrthogonalVolumetricLighting : Feature
 
 	virtual inline DirectX::XMFLOAT4A VectorToXMFloat(float4& value) { return DirectX::XMFLOAT4A(value.x, value.y, value.z, value.w); }
 	virtual inline float LinearStep(float edge0, float edge1, float x) { return std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f); }
+
+	static inline float Dot3(const Vector3& a, const Vector3& b)
+	{
+		return a.x * b.x + a.y * b.y + a.z * b.z;
+	}
+
+	static inline Vector3 ViewRayFromNDC(float ndcX, float ndcY, const Matrix& cameraProj)
+	{
+		// Inverse projection diagonal (row-vector; HLSL column-major equivalent is 1/Proj[0][0], 1/Proj[1][1])
+		float invPx = 1.0f / cameraProj._11;
+		float invPy = 1.0f / cameraProj._22;
+		Vector3 dirVS(ndcX * invPx, ndcY * invPy, 1.0f);
+		dirVS.Normalize();
+		return dirVS;
+	}
+
+	static inline float4 mul(const float4& v, const REX::W32::XMFLOAT4X4& M)
+	{
+		return {
+			v.x * M.m[0][0] + v.y * M.m[1][0] + v.z * M.m[2][0] + v.w * M.m[3][0],
+			v.x * M.m[0][1] + v.y * M.m[1][1] + v.z * M.m[2][1] + v.w * M.m[3][1],
+			v.x * M.m[0][2] + v.y * M.m[1][2] + v.z * M.m[2][2] + v.w * M.m[3][2],
+			v.x * M.m[0][3] + v.y * M.m[1][3] + v.z * M.m[2][3] + v.w * M.m[3][3]
+		};
+	}
+
+	static inline void transpose(const REX::W32::XMFLOAT4X4& in, REX::W32::XMFLOAT4X4& out)
+	{
+		for (int r = 0; r < 4; ++r)
+			for (int c = 0; c < 4; ++c)
+				out.m[c][r] = in.m[r][c];
+	}
 
 	struct Shaders
 	{
@@ -456,7 +519,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 			//stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
 
-			stl::detour_thunk<SetShadowMapCount>(REL::RelocationID(107599, 107599));
+			//stl::detour_thunk<SetShadowMapCount>(REL::RelocationID(107599, 107599));
 		}
 	};
 };

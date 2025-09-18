@@ -10,6 +10,7 @@ void OrthogonalVolumetricLighting::CompileShaders()
 	BypassVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "BYPASS_VSSHADER", "" } }, "vs_5_0");
 
 	GeneratePerlinCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "PERLIN_COMPUTE", "" } }, "cs_5_0");
+	DrawFogMapCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "DRAW_FOGMAP", "" } }, "cs_5_0");
 	GenerateEVSMCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "EVSM_COMPUTE", "" } }, "cs_5_0");
 	GenerateShadowVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SHADOW_COMPUTE", "" } }, "cs_5_0");
 	GenerateMediaVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "MEDIA_COMPUTE", "" } }, "cs_5_0");
@@ -46,20 +47,15 @@ void OrthogonalVolumetricLighting::SetupResources()
 	anisoWrapSamplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
 	anisoWrapSamplerDesc.MaxAnisotropy = 4;
 
-	D3D11_SAMPLER_DESC depthSamplerDesc{ linearSamplerDesc };
-	depthSamplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
-	depthSamplerDesc.ComparisonFunc = D3D11_COMPARISON_EQUAL;
-
 	DX::ThrowIfFailed(device->CreateSamplerState(&linearSamplerDesc, &LinearSampler));
 	DX::ThrowIfFailed(device->CreateSamplerState(&pointSamplerDesc, &PointSampler));
-	DX::ThrowIfFailed(device->CreateSamplerState(&depthSamplerDesc, &DepthSampler));
 	DX::ThrowIfFailed(device->CreateSamplerState(&anisoLinearDesc, &AnisoLinear));
 	DX::ThrowIfFailed(device->CreateSamplerState(&anisoWrapSamplerDesc, &AnisoWrapLinear));
 
-	D3D11_BLEND_DESC desc = {};
-	desc.AlphaToCoverageEnable = FALSE;
-	desc.IndependentBlendEnable = FALSE;
-	auto& rt = desc.RenderTarget[0];
+	D3D11_BLEND_DESC addBlendDesc = {};
+	addBlendDesc.AlphaToCoverageEnable = FALSE;
+	addBlendDesc.IndependentBlendEnable = FALSE;
+	auto& rt = addBlendDesc.RenderTarget[0];
 	rt.BlendEnable = TRUE;
 	rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 	rt.SrcBlend = D3D11_BLEND_ONE;
@@ -69,14 +65,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 	rt.DestBlendAlpha = D3D11_BLEND_ONE;
 	rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
 
-	DX::ThrowIfFailed(device->CreateBlendState(&desc, &AddBlend));
-
-	SettingsCB = new ConstantBuffer(ConstantBufferDesc<SettingsBuffer>());
-	VolumeCB = new ConstantBuffer(ConstantBufferDesc<VolumeBuffer>());
-
-	screenSize = (float2)Util::ConvertToDynamic(globals::state->screenSize);
-
-	CompileShaders();
+	DX::ThrowIfFailed(device->CreateBlendState(&addBlendDesc, &AddBlend));
 
 	D3D11_RASTERIZER_DESC RasterizerDesc{};
 	RasterizerDesc.FillMode = D3D11_FILL_SOLID;
@@ -92,8 +81,11 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	DX::ThrowIfFailed(device->CreateRasterizerState(&RasterizerDesc, &Rasterizer));
 
-	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\STBN.dds", nullptr, &STBNoiseSRV));
-	//DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\Perlin.dds", nullptr, &PerlinSRV));
+	SettingsCB = new ConstantBuffer(ConstantBufferDesc<SettingsBuffer>());
+	VolumeCB = new ConstantBuffer(ConstantBufferDesc<VolumeBuffer>());
+	screenSize = (float2)Util::ConvertToDynamic(globals::state->screenSize);
+
+	//// VOLUMES /////////////////////////////////////////////////////
 
 	D3D11_TEXTURE3D_DESC R16VolumeDesc{};
 	R16VolumeDesc.Width = (UINT)volumeDimensions.x;
@@ -169,6 +161,8 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(IntergrationVolume, &RGBA16VolumeUAVDesc, &IntergrationVolumeUAV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(IntergrationVolume, nullptr, &IntergrationVolumeSRV));
 
+	//// MISC ///////////////////////////////////////////////////////////////////////////
+
 	D3D11_TEXTURE2D_DESC outputDesc{};
 	outputDesc.Width = (UINT)screenSize.x;
 	outputDesc.Height = (UINT)screenSize.y;
@@ -186,32 +180,28 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateRenderTargetView(OutputTexture, nullptr, &OutputRTV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(OutputTexture, nullptr, &OutputSRV));
 
-	skyrim_FlareData = reinterpret_cast<uintptr_t*>(REL::RelocationID(527915, 414867).address());
-	skyrim_RunFlarePtr = reinterpret_cast<uint32_t*>(REL::RelocationID(527916, 414862).address());
-	//LFApply_func = reinterpret_cast<decltype(LFApply_func)>(REL::RelocationID(106995, 106995).address());
-	//skyrim_SunPosition = reinterpret_cast<RE::NiPoint3*>(REL::RelocationID(527924, 414871).address());
+	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\STBN.dds", nullptr, &STBNoiseSRV));
 
-	*reinterpret_cast<uint32_t*>(REL::RelocationID(391108, 391108).address()) = 0;  //Disable VL maps
+	ID3D11Resource* Resource;
+	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\WorldMap.dds", &Resource, &WorldMapSRV));
+	DX::ThrowIfFailed(Resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&WorldMapTexture)));
 
-	renderdata = new Setup::LF_RenderData;
+	D3D11_TEXTURE2D_DESC FogMapDesc{};
+	WorldMapTexture->GetDesc(&FogMapDesc);
+	outputDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	FogMapDesc.Usage = D3D11_USAGE_DEFAULT;
+	FogMapDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
-	renderdata->SetupPass(Shaders::Perlin, true, 1, { .uncond_pass = true });  //
-	renderdata->SetupPass(Shaders::ShadowEVSM, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::ShadowVolume, true, 1, { .uncond_pass = true });   //
-	renderdata->SetupPass(Shaders::MediaVolume, true, 1, { .uncond_pass = true });    //
-	renderdata->SetupPass(Shaders::ScatterVolume, true, 1, { .uncond_pass = true });  //
+	fogMapSize = float2((float)FogMapDesc.Width, (float)FogMapDesc.Height);
 
-	//renderdata->SetupPass(Shaders::FilterVolume, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::IntergrationVolume, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
+	D3D11_UNORDERED_ACCESS_VIEW_DESC FogMapUAVDesc{};
+	FogMapUAVDesc.Format = FogMapDesc.Format;
+	FogMapUAVDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+	FogMapUAVDesc.Texture2D.MipSlice = 0;
 
-	renderdata->SetupRenderData();
-
-	for (size_t i = 0; i < haltonCount; ++i) {
-		haltonArray[i * 3 + 0] = halton(i + 1, 2);
-		haltonArray[i * 3 + 1] = halton(i + 1, 3);
-		haltonArray[i * 3 + 2] = halton(i + 1, 5);
-	}
+	DX::ThrowIfFailed(device->CreateTexture2D(&FogMapDesc, nullptr, &FogMapTexture));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(FogMapTexture, &FogMapUAVDesc, &FogMapUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(FogMapTexture, nullptr, &FogMapSRV));
 
 	//// SHADOW MAPPING ////////////////////////////////////////////////////
 
@@ -250,7 +240,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 		device->CreateDepthStencilView(CascadeTex, &CascadeDSVDesc, &CascadeDSV[i]);
 	}
 
-	D3D11_TEXTURE2D_DESC ExpoDesc{};  //need to downsize once working
+	D3D11_TEXTURE2D_DESC ExpoDesc{};
 	ExpoDesc.Width = EVSM_Size;
 	ExpoDesc.Height = EVSM_Size;
 	ExpoDesc.MipLevels = 1;
@@ -280,18 +270,35 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateTexture2D(&cloudMapDesc, nullptr, &CloudMapTexture));
 	DX::ThrowIfFailed(device->CreateRenderTargetView(CloudMapTexture, nullptr, &CloudMapRTV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(CloudMapTexture, nullptr, &CloudMapSRV));
-}
 
-void OrthogonalVolumetricLighting::CheckOverride()
-{
-	static Util::FrameChecker frame_checker;
+	//// GENERAL /////////////////////////////////////////////////////////////
 
-	if (overrideShader) {
-		if (frame_checker.IsNewFrame()) {
-			PerFrameUpdate();
-		}
-		LookupShader(shaderdesc);
+	skyrim_FlareData = reinterpret_cast<uintptr_t*>(REL::RelocationID(527915, 414867).address());
+	skyrim_RunFlarePtr = reinterpret_cast<uint32_t*>(REL::RelocationID(527916, 414862).address());
+
+	*reinterpret_cast<uint32_t*>(REL::RelocationID(391108, 391108).address()) = 0;  //Disable VL maps
+
+	renderdata = new Setup::LF_RenderData;
+
+	renderdata->SetupPass(Shaders::Perlin, true, 1, { .uncond_pass = true });  //
+	renderdata->SetupPass(Shaders::ShadowEVSM, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::ShadowVolume, true, 1, { .uncond_pass = true });   //
+	renderdata->SetupPass(Shaders::MediaVolume, true, 1, { .uncond_pass = true });    //
+	renderdata->SetupPass(Shaders::ScatterVolume, true, 1, { .uncond_pass = true });  //
+
+	//renderdata->SetupPass(Shaders::FilterVolume, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::IntergrationVolume, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
+
+	renderdata->SetupRenderData();
+
+	for (size_t i = 0; i < haltonCount; ++i) {
+		haltonArray[i * 3 + 0] = halton(i + 1, 2);
+		haltonArray[i * 3 + 1] = halton(i + 1, 3);
+		haltonArray[i * 3 + 2] = halton(i + 1, 5);
 	}
+
+	CompileShaders();
 }
 
 void OrthogonalVolumetricLighting::LookupShader(int desc)
@@ -310,6 +317,33 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 	auto it = effects.find(desc);
 	if (it != effects.cend())
 		(this->*(it->second))();
+}
+
+void OrthogonalVolumetricLighting::CheckOverride()
+{
+	static Util::FrameChecker frame_checker;
+
+	if (overrideShader) {
+		if (frame_checker.IsNewFrame()) {
+			PerFrameUpdate();
+		}
+		LookupShader(shaderdesc);
+	}
+}
+
+void OrthogonalVolumetricLighting::DrawFogMap()
+{
+	auto context = globals::d3d::context;
+
+	context->CSSetUnorderedAccessViews(0, 1, &FogMapUAV, nullptr);
+	context->CSSetShader(DrawFogMapCS, nullptr, 0);
+
+	context->Dispatch((UINT)fogMapSize.x, (UINT)fogMapSize.y, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	overrideShader = false;
 }
 
 void OrthogonalVolumetricLighting::SetupPerlinNoise()
@@ -342,7 +376,7 @@ void OrthogonalVolumetricLighting::SetupEVSM()
 	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
 	context->CSSetShaderResources(0, 1, &shadowMap);
 
-	ID3D11Buffer* terrainShadowBuffer = globals::features::terrainShadows.shadowUpdateCB.get();
+	ID3D11Buffer* terrainShadowBuffer = globals::features::terrainShadows.shadowUpdateCB.get()->CB();
 
 	auto volumeBuff = VolumeCB->CB();
 	auto settingsBuff = SettingsCB->CB();
@@ -356,7 +390,6 @@ void OrthogonalVolumetricLighting::SetupEVSM()
 
 	context->CSSetSamplers(10, 1, &LinearSampler);
 	context->CSSetSamplers(11, 1, &PointSampler);
-	context->CSSetSamplers(12, 1, &DepthSampler);
 	context->CSSetSamplers(13, 1, &AnisoLinear);
 	context->CSSetSamplers(14, 1, &AnisoWrapLinear);
 
@@ -413,6 +446,7 @@ void OrthogonalVolumetricLighting::SetupMediaVolume()
 	context->CSSetShaderResources(0, 1, &prevMediaSRV);
 	context->CSSetShaderResources(1, 1, &PerlinSRV);
 	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
+	context->CSSetShaderResources(3, 1, &FogMapSRV);
 
 	context->Dispatch(60, 34, 17);
 
@@ -549,18 +583,13 @@ void OrthogonalVolumetricLighting::SetupCloudMap()
 	overrideShader = false;
 }
 
+///// BUFFER UPDATE /////////////////////////////////////////////////////
+
 void OrthogonalVolumetricLighting::PerFrameUpdate()
 {
 	float nearPlane = Util::GetCameraData().y;
 	float farPlane = 11198.0f;
-	FrustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
-
-	size_t haltonIdx0 = (frameCounter * 2) % haltonCount;
-	haltonJitter.x = haltonArray[haltonIdx0 * 3 + 0];
-	haltonJitter.y = haltonArray[haltonIdx0 * 3 + 1];
-	haltonJitter.z = haltonArray[haltonIdx0 * 3 + 2];
-
-	//GetCascadeMatrix();
+	frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
 
 	PrevMatrixIdx = UpdateMatrixCache();
 	VolumeCB->Update(UpdateVolumeBuffer());
@@ -568,6 +597,11 @@ void OrthogonalVolumetricLighting::PerFrameUpdate()
 
 	float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 	globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
+
+	size_t haltonIdx0 = (frameCounter * 2) % haltonCount;
+	haltonJitter.x = haltonArray[haltonIdx0 * 3 + 0];
+	haltonJitter.y = haltonArray[haltonIdx0 * 3 + 1];
+	haltonJitter.z = haltonArray[haltonIdx0 * 3 + 2];
 
 	frameCounter++;
 }
@@ -582,9 +616,10 @@ OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateV
 	data.shadowCascadeMatrix[2] = GetCascadeMatrix(lightData.shadowmapDescriptors[2].lightTransform);
 	data.shadowCascadeMatrix[3] = GetCascadeMatrix(lightData.shadowmapDescriptors[3].lightTransform);
 	data.cloudShadowMatrix = cloudShadowsMatrix;
+	data.fogMapMatrix = fogMapViewProj;
 	data.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
 	//data.EVSMData = float4((float)CSM_Size, (float)CSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
-	data.FrustumNearFar = FrustumNearFar;
+	data.frustumNearFar = frustumNearFar;
 	data.VolumeSize = volumeDimensions;
 	data.NoiseSize = noiseDimensions;
 	data.Jitter = float4(haltonJitter.x, haltonJitter.y, haltonJitter.z, 1.0f);
@@ -641,94 +676,7 @@ bool OrthogonalVolumetricLighting::CheckFrameBuffer()
 	return false;
 }
 
-struct WindParams
-{
-	float3 dirWS = float3(1.0f, 0.0f, 0.0f);
-	float speedMps = 10.0f;
-	float dirSmoothSec = 0.5f;
-	float spdSmoothSec = 0.5f;
-	float fadeDistanceM = 5000.0f;
-	float noiseScaleXY = 0.02f;
-	float noiseScaleZ = 0.02f;
-};
-
-struct WindState
-{
-	float3 offsetWS;      // accumulated scroll in meters (what becomes _m18.xyz)
-	float3 periodWS;      // wrap period per axis in meters  = (1/scaleXY, 1/scaleXY, 1/scaleZ)
-	float3 dirWS_smooth;  // smoothed direction
-	float speed_smooth;   // smoothed speed
-};
-
-float Saturate(float x) { return std::max(0.0f, std::min(1.0f, x)); }
-inline float3 floor(const float3& v) { return { std::floor(v.x), std::floor(v.y), std::floor(v.z) }; }
-inline float3 lerp(float3& start, float3& end, float factor) { return start + (end - start) * factor; }
-float SmoothK(float dt, float tau) { return 1.0f - exp(-dt / std::max(1e-3f, tau)); }
-float3 WrapToPeriod(float3 x, float3 period) { return x - period * floor(x / period); }
-float3 NormalizeSafe(float3 v, float3 fallback = { 1, 0, 0 })
-{
-	float len = v.Length();
-	return (len > 1e-6f) ? (v / len) : fallback;
-}
-
-void InitWind(const WindParams& windParams, WindState& windState)
-{
-	windState.offsetWS = { 0, 0, 0 };
-	windState.periodWS = { 1.0f / windParams.noiseScaleXY, 1.0f / windParams.noiseScaleXY, 1.0f / windParams.noiseScaleZ };
-	windState.dirWS_smooth = NormalizeSafe(windParams.dirWS);
-	windState.speed_smooth = windParams.speedMps;
-}
-
-void UpdateWind(const WindParams& windParams, float dt, WindState& windState)
-{
-	float kDir = SmoothK(dt, windParams.dirSmoothSec);
-	float kSpd = SmoothK(dt, windParams.spdSmoothSec);
-
-	float3 dirTarget = NormalizeSafe(windParams.dirWS);
-	windState.dirWS_smooth = NormalizeSafe(lerp(windState.dirWS_smooth, dirTarget, kDir), dirTarget);
-	windState.speed_smooth = std::lerp(windState.speed_smooth, windParams.speedMps, kSpd);
-
-	// 2) Integrate displacement in world meters
-	float3 velocityWS = windState.dirWS_smooth * windState.speed_smooth;  // m/windState
-	windState.offsetWS += velocityWS * dt;                                // meters
-
-	// 3) Wrap to noise period so values stay small and tile seamlessly
-	windState.offsetWS = WrapToPeriod(windState.offsetWS, windState.periodWS);
-}
-
 ///// SHADOW MAPPING //////////////////////////////////////////////////////////////
-
-static inline float Dot3(const Vector3& a, const Vector3& b)
-{
-	return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-static inline Vector3 ViewRayFromNDC(float ndcX, float ndcY, const Matrix& cameraProj)
-{
-	// Inverse projection diagonal (row-vector; HLSL column-major equivalent is 1/Proj[0][0], 1/Proj[1][1])
-	float invPx = 1.0f / cameraProj._11;
-	float invPy = 1.0f / cameraProj._22;
-	Vector3 dirVS(ndcX * invPx, ndcY * invPy, 1.0f);
-	dirVS.Normalize();
-	return dirVS;
-}
-
-static inline float4 mul(const float4& v, const REX::W32::XMFLOAT4X4& M)
-{
-	return {
-		v.x * M.m[0][0] + v.y * M.m[1][0] + v.z * M.m[2][0] + v.w * M.m[3][0],
-		v.x * M.m[0][1] + v.y * M.m[1][1] + v.z * M.m[2][1] + v.w * M.m[3][1],
-		v.x * M.m[0][2] + v.y * M.m[1][2] + v.z * M.m[2][2] + v.w * M.m[3][2],
-		v.x * M.m[0][3] + v.y * M.m[1][3] + v.z * M.m[2][3] + v.w * M.m[3][3]
-	};
-}
-
-static inline void transpose(const REX::W32::XMFLOAT4X4& in, REX::W32::XMFLOAT4X4& out)
-{
-	for (int r = 0; r < 4; ++r)
-		for (int c = 0; c < 4; ++c)
-			out.m[c][r] = in.m[r][c];
-}
 
 REX::W32::XMFLOAT4X4 OrthogonalVolumetricLighting::GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightMatrix)
 {
@@ -762,9 +710,9 @@ void OrthogonalVolumetricLighting::SetupShadowCascade()
 		shadowMap.depthSRV = CascadeSRV;
 		std::copy_n(CascadeDSV, 4, shadowMap.views);
 
-		auto& runtime = shadowLight->GetRuntimeData();
-		runtime.shadowmapDescriptors[2].shadowmapIndex = 2;
-		runtime.shadowmapDescriptors[3].shadowmapIndex = 3;
+		//auto& runtime = shadowLight->GetRuntimeData();
+		//runtime.shadowmapDescriptors[2].shadowmapIndex = 2;
+		//runtime.shadowmapDescriptors[3].shadowmapIndex = 3;
 
 		firstRun = false;
 	}
@@ -853,28 +801,87 @@ RE::BSShaderProperty::RenderPassArray* OrthogonalVolumetricLighting::Hooks::BSSk
 	return passArray;
 }
 
-///// HEIGHT FOG ////////////////////////////////////////////////////////////////////
+///// SETTINGS //////////////////////////////////////////////////
 
-void OrthogonalVolumetricLighting::OpenWorldMap()
+void OrthogonalVolumetricLighting::DrawSettings()
 {
-	SKSE::GetTaskInterface()->AddUITask([] {
-		auto* ui = RE::UI::GetSingleton();
-		if (!ui)
-			return;
+	ImGui::SeparatorText("Reload");  ///////////////
+	ImGui::Button("Reload Flare");
+	if (ImGui::IsItemClicked()) {
+		DownSamplePS = nullptr;
+		MinifyPS = nullptr;
+		FilterPS = nullptr;
+		GenerateShadowVolumeCS = nullptr;
+		GenerateScatteringVolumeCS = nullptr;
+		SliceMarchCS = nullptr;
+		ApplyVolumePS = nullptr;
+		OutputPS = nullptr;
 
-		if (ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME))
-			return;
+		CompileShaders();
+	}
 
-		RE::UIMessageQueue::GetSingleton()->AddMessage(RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow, nullptr);
-	});
+	ImGui::Checkbox("Swap Output RT", (bool*)&swapOutputRT);
+
+	ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
+	ImGui::SliderFloat("History Bias", &settings.historyAlpha, 0.0, 0.5);
+	ImGui::SliderFloat("Weight 1", &settings.weight1, 0.0, 1.0);
+	ImGui::SliderFloat("Weight 2", &settings.weight2, 0.0, 1.0);
+	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
+	ImGui::SliderFloat("Extinction", &settings.extinction, 0.0001, 0.1);
+	ImGui::SliderFloat("Color Saturation Bias", &settings.color_saturation, 0.0, 1.0);
+	ImGui::SliderFloat("Shadow Threshold", &settings.shadow_threshold, 0.0, 1.0);
+	ImGui::SliderInt("VSM Exponent: ", (int*)&settings.esmExponent, 1, 100);
+
+	ImGui::SliderFloat("Density", &density, 0.0f, 1.0f);
+	ImGui::SliderFloat("Start Height", &fogStartHeight, 0.0f, 1.0f);
+	ImGui::SliderFloat("Falloff Rate", &fogFalloffRate, 0.0f, 1.0f);
+
+	ImGui::SliderFloat("Radius", &brushRadius, 1.0f, 200.0f, "%.0f");
+	ImGui::SliderFloat("Feather", &brushFeather, 0.0f, 1.0f);
+	ImGui::SliderFloat("Erase", &settings.blendOpp, -1.0f, 0.0f, "%.0f");
+
+	ImVec2 displaySize = ImVec2(screenSize.x * 0.5f, screenSize.y * 0.5f);
+
+	if (ImGui::BeginChild("PaintCanvas", displaySize, true, ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar)) {
+		ImVec2 mouse = ImGui::GetIO().MousePos;
+
+		ImVec2 PosTL = ImGui::GetCursorScreenPos();
+		ImVec2 PosBR = ImVec2(PosTL.x + displaySize.x, PosTL.y + displaySize.y);
+
+		ImDrawList* drawList = ImGui::GetWindowDrawList();
+		drawList->AddImage((ImTextureID)WorldMapSRV, PosTL, PosBR);
+		drawList->AddImage((ImTextureID)FogMapSRV, PosTL, PosBR);
+
+		ImGui::SetCursorScreenPos(PosTL);
+		ImGui::InvisibleButton("PaintHit", displaySize, ImGuiButtonFlags_MouseButtonLeft);
+
+		if (ImGui::IsItemHovered()) {
+			float ScaleX = displaySize.x / fogMapSize.x, ScaleY = displaySize.y / fogMapSize.y;
+			float RadiusX = brushRadius * ScaleX, RadiusY = brushRadius * ScaleY;
+			const int Seg = 64;
+
+			ImGui::GetIO().MouseDrawCursor = false;
+
+			drawList->PushClipRect(PosTL, PosBR, true);
+			drawList->PathClear();
+			for (int i = 0; i < Seg; ++i) {
+				float a = i * (2.0f * (float)std::_Pi_val / Seg);
+				drawList->PathLineTo(ImVec2(mouse.x + cosf(a) * RadiusX, mouse.y + sinf(a) * RadiusY));
+			}
+			drawList->PathStroke(IM_COL32(0, 0, 0, 255), true, 2.0f);
+			drawList->PopClipRect();
+
+			if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+				float2 Coords = float2(mouse.x - PosTL.x, mouse.y - PosTL.y) / float2(displaySize.x, displaySize.y) * fogMapSize;
+				settings.fogMapData = float4(Coords.x, Coords.y, brushRadius, brushFeather);
+				settings.fogMapColor = float4(1.0f + fogFalloffRate, 1.0f, 1.0f + fogStartHeight, density);
+
+				DrawFogMap();
+			}
+		}
+	}
+	ImGui::EndChild();
 }
-
-//inline void CloseWorldMap(){
-//	SKSE::GetTaskInterface()->AddUITask([] {
-//		RE::UIMessageQueue::GetSingleton()->AddMessage(
-//			RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
-//	});
-//}
 
 //// GENERAL HOOKS ///////////////////////////////////////////////////////////////////
 
@@ -928,41 +935,6 @@ void OrthogonalVolumetricLighting::Hooks::BSImagespaceShader_Render<RE::ImageSpa
 	func(shader, shape, param);
 }
 
-void OrthogonalVolumetricLighting::DrawSettings()
-{
-	ImGui::SeparatorText("Reload");  ///////////////
-	ImGui::Button("Reload Flare");
-	if (ImGui::IsItemClicked()) {
-		DownSamplePS = nullptr;
-		MinifyPS = nullptr;
-		FilterPS = nullptr;
-		GenerateShadowVolumeCS = nullptr;
-		GenerateScatteringVolumeCS = nullptr;
-		SliceMarchCS = nullptr;
-		ApplyVolumePS = nullptr;
-		OutputPS = nullptr;
-
-		CompileShaders();
-	}
-
-	ImGui::Checkbox("Swap Output RT", (bool*)&swapOutputRT);
-
-	ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
-	ImGui::SliderFloat("History Bias", &settings.historyAlpha, 0.0, 0.5);
-	ImGui::SliderFloat("Weight 1", &settings.weight1, 0.0, 1.0);
-	ImGui::SliderFloat("Weight 2", &settings.weight2, 0.0, 1.0);
-	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
-	ImGui::SliderFloat("Extinction", &settings.extinction, 0.0001, 0.1);
-	ImGui::SliderFloat("Color Saturation Bias", &settings.color_saturation, 0.0, 1.0);
-	ImGui::SliderFloat("Shadow Threshold", &settings.shadow_threshold, 0.0, 1.0);
-	ImGui::SliderInt("VSM Exponent: ", (int*)&settings.esmExponent, 1, 100);
-
-	ImGui::Button("Open Map");
-	if (ImGui::IsItemClicked()) {
-		OpenWorldMap();
-	}
-}
-
 void OrthogonalVolumetricLighting::LoadSettings(json& o_json)
 {
 	settings = o_json;
@@ -976,4 +948,59 @@ void OrthogonalVolumetricLighting::SaveSettings(json& o_json)
 void OrthogonalVolumetricLighting::RestoreDefaultSettings()
 {
 	settings = {};
+}
+
+struct WindParams
+{
+	float3 dirWS = float3(1.0f, 0.0f, 0.0f);
+	float speedMps = 10.0f;
+	float dirSmoothSec = 0.5f;
+	float spdSmoothSec = 0.5f;
+	float fadeDistanceM = 5000.0f;
+	float noiseScaleXY = 0.02f;
+	float noiseScaleZ = 0.02f;
+};
+
+struct WindState
+{
+	float3 offsetWS;      // accumulated scroll in meters (what becomes _m18.xyz)
+	float3 periodWS;      // wrap period per axis in meters  = (1/scaleXY, 1/scaleXY, 1/scaleZ)
+	float3 dirWS_smooth;  // smoothed direction
+	float speed_smooth;   // smoothed speed
+};
+
+float Saturate(float x) { return std::max(0.0f, std::min(1.0f, x)); }
+inline float3 floor(const float3& v) { return { std::floor(v.x), std::floor(v.y), std::floor(v.z) }; }
+inline float3 lerp(float3& start, float3& end, float factor) { return start + (end - start) * factor; }
+float SmoothK(float dt, float tau) { return 1.0f - exp(-dt / std::max(1e-3f, tau)); }
+float3 WrapToPeriod(float3 x, float3 period) { return x - period * floor(x / period); }
+float3 NormalizeSafe(float3 v, float3 fallback = { 1, 0, 0 })
+{
+	float len = v.Length();
+	return (len > 1e-6f) ? (v / len) : fallback;
+}
+
+void InitWind(const WindParams& windParams, WindState& windState)
+{
+	windState.offsetWS = { 0, 0, 0 };
+	windState.periodWS = { 1.0f / windParams.noiseScaleXY, 1.0f / windParams.noiseScaleXY, 1.0f / windParams.noiseScaleZ };
+	windState.dirWS_smooth = NormalizeSafe(windParams.dirWS);
+	windState.speed_smooth = windParams.speedMps;
+}
+
+void UpdateWind(const WindParams& windParams, float dt, WindState& windState)
+{
+	float kDir = SmoothK(dt, windParams.dirSmoothSec);
+	float kSpd = SmoothK(dt, windParams.spdSmoothSec);
+
+	float3 dirTarget = NormalizeSafe(windParams.dirWS);
+	windState.dirWS_smooth = NormalizeSafe(lerp(windState.dirWS_smooth, dirTarget, kDir), dirTarget);
+	windState.speed_smooth = std::lerp(windState.speed_smooth, windParams.speedMps, kSpd);
+
+	// 2) Integrate displacement in world meters
+	float3 velocityWS = windState.dirWS_smooth * windState.speed_smooth;  // m/windState
+	windState.offsetWS += velocityWS * dt;                                // meters
+
+	// 3) Wrap to noise period so values stay small and tile seamlessly
+	windState.offsetWS = WrapToPeriod(windState.offsetWS, windState.periodWS);
 }
