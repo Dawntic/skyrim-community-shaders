@@ -205,11 +205,9 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float3 RayDirection = FroxelWorldPosition(Froxel);
 
-
     float CoordZ = exp2(max(Froxel.z - 2, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
     float Bound2 = exp2(max(Froxel.z - 1, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
     float ThicknessZ = Bound2 - CoordZ;
-
 
     float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
     float BNoise2 = frac(BNoise + (FrameCounter & 31) * kPhi);
@@ -297,13 +295,13 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 CameraWS = mul(CameraViewInverse[0], float4(0, 0, 0, 1)).xyz;
 
     float OffsetZ = ThicknessZ * BNoise + CoordZ;
-    float3 OffsetWS = RayDirection * OffsetZ - CameraWS; //camera?
+    float3 OffsetWS = RayDirection * OffsetZ + CameraWS; //camera?
 
 
     float2 Confidence;
-    float3 PrevCoordWS = RayDirection * CoordZ - CameraWS;
+    float3 PrevCoordWS = RayDirection * CoordZ + CameraWS;
     float3 PrevCoordsUV = GetHistoryValue(PrevCoordWS, Confidence);
-    float MediaHistory = HistoryVolume.SampleLevel(AnisoClampSampler, PrevCoordsUV, 0).x;
+    float4 MediaHistory = HistoryVolume.SampleLevel(AnisoClampSampler, PrevCoordsUV, 0);
 
     float FadeRate = 0.0002;
     float Threshold = 0.4;
@@ -318,27 +316,10 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
           Noise = lerp(Noise, 1.0, saturate(OffsetZ * FadeRate));
 
 
-    float3 UpWS = float3(0,0,1);
-    float3 FogBaseWS = float3(0,0,TerrainPosRange.x);
-    float Bound1 = exp2((Froxel.z) / FrustumNearFar.w) / FrustumNearFar.z;
-    float Bound2 = exp2((Froxel.z + 1.0) / FrustumNearFar.w) / FrustumNearFar.z;
-    float3 PointA = RayDirection * Bound1 + CameraWS;
-    float3 PointB  = RayDirection * Bound2 + CameraWS;
-    float StartAltitude = dot(PointA - FogBaseWS, UpWS);
-    float EndAltitude = dot(PointB - FogBaseWS, UpWS);
-
-    float DecayRate = rcp(MeterToGameUnit(600.0));
-    //float DecayRate = rcp(TerrainPosRange.y);
-    float cosZenith = dot(-normalize(RayDirection), UpWS);
-    float Extinction = UIExtinction;
-    //float HeightFog = GetHeightFog(StartAltitude, EndAltitude, DecayRate, cosZenith, Extinction);
-
-
     float4 FogClip = mul(FogViewProjMatrix, float4(OffsetWS, 1.0));
     FogClip.xyz /= FogClip.w;
 
     float3 FogCoords = float3(FogClip.xy * float2(0.5, -0.5) + 0.5, 1.0); //
-
     float3 Fog = FogMap.SampleLevel(AnisoClampSampler, float3(FogCoords.xy, 0.0), 0.0).xyz;
 
     float LocalFog = 1.0 - min(1.0, abs((FogCoords.z - Fog.x) / Fog.y)); //coord Z
@@ -349,12 +330,15 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float HeightFog = LocalFog; //+ GlobalFog;
 
+
     //float4 Output = float4(1.0, 1.0, 1.0, HeightFog) * Noise;
+    //float4 Output = float4(Noise,Noise,Noise,Noise) * 0.2;
+
+    float4 Output = float4(1.0, 1.0, 1.0, UIExtinction);
 
     float BaseValue = 0.90;
-    //Output = lerp(Output, MediaHistory, BaseValue);
+    Output = lerp(Output, MediaHistory, BaseValue);
 
-     float4 Output = float4(Noise,Noise,Noise,Noise);
 
 
     MediaVolume[ThreadID] = Output;
@@ -410,9 +394,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 OutgoingDir = -normalize(RayDirection);
 
     float3 Color = lerp(float3(1.0, 1.0, 1.0), SharedData::DirLightColor.xyz, UISaturation);
-    float3 Scattering = Color * PhaseFunction(IncomingDir, OutgoingDir, UIAnisotropy, Media.w, UIWeight, UIWeight2, 2) * 10;
+    float3 Scattering = Color * PhaseFunction(IncomingDir, OutgoingDir, UIAnisotropy, Media.w, UIWeight, UIWeight2, 2);
     //float3 Scattering = Color * PhaseFunction(IncomingDir, OutgoingDir, UIAnisotropy, UIExtinction, UIWeight, UIWeight2, 2) * 10;
-
 
     Scattering = Scattering * Shadow * Media.xyz;
 
@@ -483,15 +466,15 @@ static const float4 ONE = float4(1.0, 1.0, 1.0, 1.0);
 [numthreads(16, 16, 1)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
-    bool ForceEnable = false;
     float3 Coords = float3((float2(ThreadID.xy) + 0.5) / EVSMData.xy, ThreadID.z);
 
+    float DeltaLim = 0.1;
     float3 Result = float3(0.0, 0.0, 0.0);
     [unroll] for(int i = 0; i < 4; ++i){
         float4 Sample = CSM.GatherRed(Point_Sampler, Coords, Offsets[i]);
-        float4 Value = ForceEnable ? ONE : saturate(sign(ONE - Sample));
-        float4 ExpValue = Value * exp((Sample * 2.0 - 1.0) * 5.0);
-        Result += float3(dot(ExpValue, ONE), dot(ExpValue, ExpValue), dot(Value, ONE));
+        float4 Valid = (Sample < (1.0 - DeltaLim)) ? ONE : 0.0;
+        float4 ExpValue = Valid * exp((Sample * 2.0 - 1.0) * UIExponent);
+        Result += float3(dot(ExpValue, ONE), dot(ExpValue, ExpValue), dot(Valid, ONE));
     }
     float2 Output = (Result.z > 0) ? Result.xy / Result.z : EVSMData.zw;
 

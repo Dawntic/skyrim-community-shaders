@@ -145,7 +145,7 @@ struct OrthogonalVolumetricLighting : Feature
 	float2 screenSize;
 
 	uint CSM_Size = 2048;
-	uint EVSM_Size = CSM_Size / 4;
+	uint EVSM_Size = CSM_Size / 8;
 
 	float4 frustumNearFar;
 	float4 volumeDimensions = float4(240, 136, 68, 0);
@@ -235,7 +235,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float extinction = 0.004;
 		float color_saturation = 1.0;
 		float shadow_threshold = 1.0;
-		uint esmExponent = 5;
+		uint esmExponent = 1;
 		float4 fogMapData;
 		float4 fogMapColor;
 		float blendOpp = false;
