@@ -48,6 +48,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupShadowVolume();
 	virtual void SetupMediaVolume();
 	virtual void SetupPerlinNoise();
+	virtual void SetupEVSMBlur();
 	virtual void DrawFogMap();
 
 	D3D11_VIEWPORT viewPort[4];
@@ -93,6 +94,7 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11ComputeShader* GeneratePerlinCS = nullptr;
 	ID3D11ComputeShader* DrawFogMapCS = nullptr;
 	ID3D11ComputeShader* GenerateEVSMCS = nullptr;
+	ID3D11ComputeShader* BlurEVSMCS = nullptr;
 	ID3D11ComputeShader* GenerateShadowVolumeCS = nullptr;
 	ID3D11ComputeShader* GenerateScatteringVolumeCS = nullptr;
 	ID3D11ComputeShader* FilterVolumeCS = nullptr;
@@ -108,6 +110,10 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11Texture2D* ExpoTexture = nullptr;
 	ID3D11UnorderedAccessView* ExpoUAV = nullptr;
 	ID3D11ShaderResourceView* ExpoSRV = nullptr;
+
+	ID3D11Texture2D* ExpoBlurTexture = nullptr;
+	ID3D11UnorderedAccessView* ExpoBlurUAV = nullptr;
+	ID3D11ShaderResourceView* ExpoBlurSRV = nullptr;
 
 	ID3D11Texture3D* ShadowVolume[2] = {};
 	ID3D11UnorderedAccessView* ShadowVolumeUAV[2] = {};
@@ -229,17 +235,17 @@ struct OrthogonalVolumetricLighting : Feature
 		uint useHistory = true;
 		uint useCheckerBoard = false;
 		float historyAlpha = 0.2;
-		float weight1 = 0.2;
-		float weight2 = 0.2;
-		float anisotropy = 0.1;
-		float extinction = 0.004;
+		float weight1 = 0.5;
+		float weight2 = 0.3;
+		float anisotropy = 0.0;
+		float extinction = 0.04;
 		float color_saturation = 1.0;
 		float shadow_threshold = 1.0;
-		uint esmExponent = 1;
-		float4 fogMapData;
-		float4 fogMapColor;
+		uint esmExponent = 2;
 		float blendOpp = false;
 		float _pad[1];
+		float4 fogMapData;
+		float4 fogMapColor;
 	};
 	Settings settings;
 
@@ -306,6 +312,7 @@ struct OrthogonalVolumetricLighting : Feature
 		{
 			Bypass = 0,
 			ShadowEVSM = 1,
+			ShadowEVSMBlur = 2,
 			ShadowVolume = 5,
 			ScatterVolume = 6,
 			IntergrationVolume = 7,

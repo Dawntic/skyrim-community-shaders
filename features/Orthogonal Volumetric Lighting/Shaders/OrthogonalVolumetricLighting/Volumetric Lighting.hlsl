@@ -41,9 +41,9 @@ cbuffer SettingsBuffer : register(b1)
     float UISaturation;
     float UIShadowThreshold;
     uint UIExponent;
+    float BlendOpp;
     float4 FogMapData;
     float4 FogMapColor;
-    float BlendOpp;
 }
 
 cbuffer PerFrame : register(b2)
@@ -258,8 +258,9 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 Texture3D HistoryVolume : register(t0);
 Texture3D Perlin : register(t1);
 Texture2DArray BlueNoise : register(t2);
-Texture2D FogMap : register(t3);
+//Texture2D FogMap : register(t3);
 RWTexture3D<float4> MediaVolume : register(u0);
+RWTexture2D<float4> FogMap : register(u1);
 
 float GameUnitToMeter(float input){
     return input * 0.0142875;
@@ -316,30 +317,47 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
           Noise = lerp(Noise, 1.0, saturate(OffsetZ * FadeRate));
 
 
-    float4 FogClip = mul(FogViewProjMatrix, float4(OffsetWS, 1.0));
+    //float3 CoordsTest = RayDirection * CoordZ + CameraWS;
+
+    float4 FogClip = mul(FogViewProjMatrix, float4(CameraPosAdjust[0].xyz, 1.0));
     FogClip.xyz /= FogClip.w;
 
-    float3 FogCoords = float3(FogClip.xy * float2(0.5, -0.5) + 0.5, 1.0); //
-    float3 Fog = FogMap.SampleLevel(AnisoClampSampler, float3(FogCoords.xy, 0.0), 0.0).xyz;
+    float2 FogCoordsUV = FogClip.xy * float2(0.5, -0.5) + 0.5;
+    float2 FogCoordsSS = FogCoordsUV.xy * float2(2560, 1440);
 
-    float LocalFog = 1.0 - min(1.0, abs((FogCoords.z - Fog.x) / Fog.y)); //coord Z
-          LocalFog = LocalFog * LocalFog * Fog.z;
+    //float4 Fog = FogMap.Load(int3(FogCoordsSS, 0));
+
+    //FogMap[int2(FogCoordsSS)] = float4(1.0, 1.0, 1.0, 1.0);
+
+    //float4 FogValue = FogMap[int2(FogCoordsSS)];
+
+    //FogMap[int2(FogCoordsSS)] = FogValue;
+
+    //float3 FogCoords = float3(FogClip.xy * float2(0.5, -0.5) + 0.5, 1.0); //
+    //float4 Fog = FogMap.SampleLevel(AnisoClampSampler, float3(FogCoords.xy, 0.0), 0.0);
+
+    //float LocalFog = 1.0 - min(1.0, abs((FogCoords.z - Fog.x) / Fog.y)); //coord Z
+    //      LocalFog = LocalFog * LocalFog * Fog.z;
 
     //float GlobalFog = 1.0 - clamp((OffsetWS.z - UIBaseHeight) * UIInverseFalloff, 0.0, 1.0);
     //      GlobalFog = GlobalFog * GlobalFog * GlobalFog * UIFogVisibility;
 
-    float HeightFog = LocalFog; //+ GlobalFog;
+    //float HeightFog = LocalFog; //+ GlobalFog;
 
 
     //float4 Output = float4(1.0, 1.0, 1.0, HeightFog) * Noise;
     //float4 Output = float4(Noise,Noise,Noise,Noise) * 0.2;
 
-    float4 Output = float4(1.0, 1.0, 1.0, UIExtinction);
+    float Extinction = UIExtinction;//   low vis
+    //if(FogValue.w > 0)
+    //    Extinction = 0.0;
+
+    float4 Output = float4(1.0, 1.0, 1.0, Extinction);
 
     float BaseValue = 0.90;
     Output = lerp(Output, MediaHistory, BaseValue);
 
-
+    //Output.xy = FogValue.xy;
 
     MediaVolume[ThreadID] = Output;
 }
@@ -453,38 +471,6 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 
 
 
-//// Create EVSM ////////////////////////////////////////////////////////////////////////
-
-#ifdef EVSM_COMPUTE
-
-Texture2DArray CSM : register(t0);
-RWTexture2DArray<float2> EVSM : register(u0);
-
-static const int2 Offsets[4] = { int2(-1,-1), int2( 1,-1), int2(-1, 1), int2( 1, 1) };
-static const float4 ONE = float4(1.0, 1.0, 1.0, 1.0);
-
-[numthreads(16, 16, 1)]
-void main(uint3 ThreadID : SV_DispatchThreadID)
-{
-    float3 Coords = float3((float2(ThreadID.xy) + 0.5) / EVSMData.xy, ThreadID.z);
-
-    float DeltaLim = 0.1;
-    float3 Result = float3(0.0, 0.0, 0.0);
-    [unroll] for(int i = 0; i < 4; ++i){
-        float4 Sample = CSM.GatherRed(Point_Sampler, Coords, Offsets[i]);
-        float4 Valid = (Sample < (1.0 - DeltaLim)) ? ONE : 0.0;
-        float4 ExpValue = Valid * exp((Sample * 2.0 - 1.0) * UIExponent);
-        Result += float3(dot(ExpValue, ONE), dot(ExpValue, ExpValue), dot(Valid, ONE));
-    }
-    float2 Output = (Result.z > 0) ? Result.xy / Result.z : EVSMData.zw;
-
-    EVSM[ThreadID] = Output;
-}
-#endif
-/////////////////////////////////////////////////////////////////////////////////////////
-
-
-
 //// Apply //////////////////////////////////////////////////////////////////////////////
 
 #ifdef APPLY_PIXEL
@@ -525,11 +511,74 @@ float4 main(VertexShaderOutput input) : SV_Target
 
 
 
+//// Create EVSM ////////////////////////////////////////////////////////////////////////
+
+#ifdef EVSM_COMPUTE
+
+Texture2DArray CSM : register(t0);
+RWTexture2DArray<float2> EVSM : register(u0);
+
+static const int2 Offsets[8] = { int2(-1,-1), int2( 1,-1), int2(-1, 1), int2( 1, 1),
+                                 int2(-2,-2), int2( 2,-2), int2(-2, 2), int2( 2, 2) };
+
+static const float4 ONE = float4(1.0, 1.0, 1.0, 1.0);
+
+float min4(float4 value){
+    return min(min(value.x, value.y), min(value.z, value.w));
+}
+
+float max4(float4 value){
+    return max(max(value.x, value.y), max(value.z, value.w));
+}
+
+[numthreads(16, 16, 1)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    float3 Coords = float3((float2(ThreadID.xy) + 0.5) / EVSMData.xy, ThreadID.z);
+
+    float DeltaLim = 0.3; //??
+    float3 Result = float3(0.0, 0.0, 0.0);
+    [unroll] for(int i = 0; i < 4; ++i){
+        float4 Sample = CSM.GatherRed(Point_Sampler, Coords, Offsets[i]);
+        float4 Valid = (Sample < (1.0 - DeltaLim)) ? ONE : 0.0;
+        float4 ExpValue = Valid * exp((Sample * 2.0 - 1.0) * UIExponent);
+        Result += float3(dot(ExpValue, ONE), dot(ExpValue, ExpValue), dot(Valid, ONE));
+    }
+    float2 Output = (Result.z > 0) ? Result.xy / Result.z : EVSMData.zw;
+
+    EVSM[ThreadID] = Output;
+}
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
+
+#ifdef EVSMBLUR_COMPUTE
+
+Texture2DArray EVSM : register(t0);
+RWTexture2DArray<float2> BlurOutput : register(u0);
+
+[numthreads(16, 16, 1)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    float2 Result = 3.4e+38;
+    int SearchRadius = 2;
+    [loop] for (int dy = -SearchRadius; dy <= SearchRadius; ++dy){
+        [loop] for (int dx = -SearchRadius; dx <= SearchRadius; ++dx){
+            Result = min(Result, EVSM.Load(int4(ThreadID.xy + int2(dx, dy), ThreadID.z, 0)).xyz);
+        }
+    }
+
+    //Result = EVSM.Load(int4(ThreadID.xyz, 0)).xy;
+
+    BlurOutput[ThreadID.xyz] = Result;
+}
+#endif
+
 //// Fog Map ////////////////////////////////////////////////////////////////////////////
 
 #ifdef DRAW_FOGMAP
 
 RWTexture2D<float4> FogMap : register(u0);
+Texture2D WorldMap : register(t0);
 
 float4 SatAddBlend(float4 dst, float4 src){
     return float4(dst.rgb + src.rgb * src.a, saturate(dst.a + src.a));
@@ -550,22 +599,29 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float2 Coords = float2(ThreadID.xy);
     float Radius = FogMapData.z;
 
-    if(length(Coords - FogMapData.xy) - Radius > 0.0)
-        return;
+    float4 PlayerWSPosition = CameraPosAdjust[0];
 
-    float4 Curr = FogMap[ThreadID.xy];
+    //float2 MinWS = float2(-233472, -176128); //-350208
+    //float2 MaxWS = float2(253952, 208896); //380928
 
-    float Dist = distance(Coords, FogMapData.xy);
-    float Feather = (1.0 - FogMapData.w) * (Radius * 0.5);
-    float Mask = 1.0 - smoothstep(Radius - Feather, Radius, Dist);
+    float2 MinWS = float2(-203472, -176128);
+    float2 MaxWS = float2(203472, 208896);
 
-    float Density = (BlendOpp != -1) ? Curr.w + FogMapColor.w : Curr.w - FogMapColor.w;
-          Density = saturate(Density);
+    float2 UVPos = (PlayerWSPosition.xy - MinWS) * rcp(MaxWS - MinWS);
+    UVPos.y = 1.0 - UVPos.y;
 
-    float4 Output = float4(FogMapColor.xyz, Density);
-           //Output *= Mask;
 
-    FogMap[ThreadID.xy] = Output;
+    float2 MapSS = UVPos * float2(2560.0, 1440.0);
+
+    if(length(Coords - MapSS) - Radius < 0.0)
+        FogMap[ThreadID.xy] = float4(1.0, 1.0, 1.0, 1.0);
+
+    //else
+        //FogMap[ThreadID.xy] = WorldMap.SampleLevel(Point_Sampler, Coords / float2(2560.0, 1440.0), 0.0);
+
+
+
+    //FogMap[ThreadID.xy] = Output;
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////

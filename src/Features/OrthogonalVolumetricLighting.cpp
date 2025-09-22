@@ -12,6 +12,7 @@ void OrthogonalVolumetricLighting::CompileShaders()
 	GeneratePerlinCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "PERLIN_COMPUTE", "" } }, "cs_5_0");
 	DrawFogMapCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "DRAW_FOGMAP", "" } }, "cs_5_0");
 	GenerateEVSMCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "EVSM_COMPUTE", "" } }, "cs_5_0");
+	BlurEVSMCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "EVSMBLUR_COMPUTE", "" } }, "cs_5_0");
 	GenerateShadowVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SHADOW_COMPUTE", "" } }, "cs_5_0");
 	GenerateMediaVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "MEDIA_COMPUTE", "" } }, "cs_5_0");
 	GenerateScatteringVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SCATTER_COMPUTE", "" } }, "cs_5_0");
@@ -263,6 +264,13 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ExpoTexture, &ExpoUAVDesc, &ExpoUAV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(ExpoTexture, nullptr, &ExpoSRV));
 
+	D3D11_TEXTURE2D_DESC ExpoBlurDesc{ ExpoDesc };
+	D3D11_UNORDERED_ACCESS_VIEW_DESC ExpoBlurUAVDesc{ ExpoUAVDesc };
+
+	DX::ThrowIfFailed(device->CreateTexture2D(&ExpoBlurDesc, nullptr, &ExpoBlurTexture));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ExpoBlurTexture, &ExpoBlurUAVDesc, &ExpoBlurUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ExpoBlurTexture, nullptr, &ExpoBlurSRV));
+
 	D3D11_TEXTURE2D_DESC cloudMapDesc{ outputDesc };
 	cloudMapDesc.MipLevels = 1;
 	cloudMapDesc.Format = DXGI_FORMAT_R16_FLOAT;
@@ -282,6 +290,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	renderdata->SetupPass(Shaders::Perlin, true, 1, { .uncond_pass = true });  //
 	renderdata->SetupPass(Shaders::ShadowEVSM, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::ShadowEVSMBlur, true, 1, { .uncond_pass = true });
 	renderdata->SetupPass(Shaders::ShadowVolume, true, 1, { .uncond_pass = true });   //
 	renderdata->SetupPass(Shaders::MediaVolume, true, 1, { .uncond_pass = true });    //
 	renderdata->SetupPass(Shaders::ScatterVolume, true, 1, { .uncond_pass = true });  //
@@ -313,6 +322,7 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 		{ Shaders::RenderCloudMap, &OrthogonalVolumetricLighting::SetupCloudMap },
 		{ Shaders::MediaVolume, &OrthogonalVolumetricLighting::SetupMediaVolume },
 		{ Shaders::Perlin, &OrthogonalVolumetricLighting::SetupPerlinNoise },
+		{ Shaders::ShadowEVSMBlur, &OrthogonalVolumetricLighting::SetupEVSMBlur },
 	};
 	auto it = effects.find(desc);
 	if (it != effects.cend())
@@ -326,6 +336,49 @@ void OrthogonalVolumetricLighting::CheckOverride()
 	if (overrideShader) {
 		if (frame_checker.IsNewFrame()) {
 			PerFrameUpdate();
+			auto worldSpace = globals::game::tes->GetRuntimeData2().worldSpace;
+
+			static auto height = worldSpace->worldMapData.cameraData.maxHeight;
+
+			//logger::info("Usable: {}, {}", worldSpace->worldMapData.usableHeight, worldSpace->worldMapData.usableHeight);
+			//logger::info("Usable(F): {}, {}", static_cast<float>(worldSpace->worldMapData.usableHeight), static_cast<float>(worldSpace->worldMapData.usableHeight));
+			//logger::info("WRot: {}", worldSpace->northRotation);
+			logger::info("Min Coords WS: {}, {}", worldSpace->minimumCoords.x, worldSpace->minimumCoords.y);
+			logger::info("Max Coords WS: {}, {}", worldSpace->maximumCoords.x, worldSpace->maximumCoords.y);
+
+			if (!settings.useHistory) {
+				worldSpace->worldMapData.cameraData.initialPitch = 90.0f;
+				worldSpace->worldMapData.cameraData.maxHeight = height * 5.0f;
+				//worldSpace->worldMapOffsetData.mapScale = 0.01f;
+				//worldSpace->worldMapOffsetData.mapOffsetZ = ZOffsetValue;
+			}
+
+			if (auto* UI = RE::UI::GetSingleton()) {
+				if (auto mapMenu = UI->GetMenu<RE::MapMenu>()) {
+					auto data = mapMenu->GetRuntimeData2();
+					auto data2 = mapMenu->GetRuntimeData();
+					//logger::info("Pick origin: {}, {}, {}", data->cameraPickOrigin.x, data->cameraPickOrigin.y, data->cameraPickOrigin.z);
+					auto& camera = data->camera;
+					if (camera.unk68[0]->mapData) {
+						logger::info("Min Coords: {}, {}", camera.unk68[0]->mapData->minimumCoordinates.x, camera.unk68[0]->mapData->minimumCoordinates.y);
+						logger::info("Max Coords: {}, {}", camera.unk68[0]->mapData->maximumCoordinates.x, camera.unk68[0]->mapData->maximumCoordinates.y);
+					}
+
+					//if (camera.unk68[1]->mapData) { INVALID
+					//	logger::info("Min Coords 2: {}, {}", camera.unk68[1]->mapData->minimumCoordinates.x, camera.unk68[1]->mapData->minimumCoordinates.y);
+					//	logger::info("Max Coords 2: {}, {}", camera.unk68[1]->mapData->maximumCoordinates.x, camera.unk68[1]->mapData->maximumCoordinates.y);
+					//}
+
+					auto& localMenu = data2->localMapMenu;
+					auto localCamera = localMenu.localCullingProcess.GetLocalMapCamera();
+					logger::info("Min Extent: {}, {}, {}", localCamera->minExtent.x, localCamera->minExtent.y, localCamera->minExtent.z);
+					logger::info("Max Extent: {}, {}, {}", localCamera->maxExtent.x, localCamera->maxExtent.y, localCamera->maxExtent.z);
+					//logger::info("Rot: {}", localCamera->zRotation);
+					//logger::info("Init Position: {}, {}, {}", localCamera->defaultState->initialPosition.x, localCamera->defaultState->initialPosition.y, localCamera->defaultState->initialPosition.z);
+					//logger::info("Translation: {}, {}, {}", localCamera->defaultState->translation.x, localCamera->defaultState->translation.y, localCamera->defaultState->translation.z);
+					//logger::info("Zoom: {}", localCamera->defaultState->zoom);
+				}
+			}
 		}
 		LookupShader(shaderdesc);
 	}
@@ -337,6 +390,8 @@ void OrthogonalVolumetricLighting::DrawFogMap()
 
 	context->CSSetUnorderedAccessViews(0, 1, &FogMapUAV, nullptr);
 	context->CSSetShader(DrawFogMapCS, nullptr, 0);
+
+	context->CSSetShaderResources(0, 1, &WorldMapSRV);
 
 	context->Dispatch((UINT)fogMapSize.x, (UINT)fogMapSize.y, 1);
 
@@ -406,6 +461,24 @@ void OrthogonalVolumetricLighting::SetupEVSM()
 	overrideShader = false;
 }
 
+void OrthogonalVolumetricLighting::SetupEVSMBlur()
+{
+	auto context = globals::d3d::context;
+
+	context->CSSetUnorderedAccessViews(0, 1, &ExpoBlurUAV, nullptr);
+	context->CSSetShader(BlurEVSMCS, nullptr, 0);
+
+	context->CSSetShaderResources(0, 1, &ExpoSRV);
+
+	auto groups = EVSM_Size / 16;
+	context->Dispatch(groups, groups, 4);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	overrideShader = false;
+}
+
 void OrthogonalVolumetricLighting::SetupShadowVolume()
 {
 	auto context = globals::d3d::context;
@@ -419,7 +492,7 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	context->CSSetShader(GenerateShadowVolumeCS, nullptr, 0);
 
 	context->CSSetShaderResources(0, 1, &prevVolumeSRV);
-	context->CSSetShaderResources(1, 1, &ExpoSRV);
+	context->CSSetShaderResources(1, 1, &ExpoBlurSRV);
 	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
 
 	context->Dispatch(60, 34, 17);
@@ -440,17 +513,18 @@ void OrthogonalVolumetricLighting::SetupMediaVolume()
 	auto mediaUAV = MediaVolumeUAV[!mediaVolParity];
 	auto prevMediaSRV = MediaVolumeSRV[mediaVolParity];
 
-	context->CSSetUnorderedAccessViews(0, 1, &mediaUAV, nullptr);
+	ID3D11UnorderedAccessView* UAVs[2] = { mediaUAV, FogMapUAV };
+	context->CSSetUnorderedAccessViews(0, 2, UAVs, nullptr);
 	context->CSSetShader(GenerateMediaVolumeCS, nullptr, 0);
 
 	context->CSSetShaderResources(0, 1, &prevMediaSRV);
 	context->CSSetShaderResources(1, 1, &PerlinSRV);
 	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
-	context->CSSetShaderResources(3, 1, &FogMapSRV);
+	//context->CSSetShaderResources(3, 1, &FogMapSRV);
 
 	context->Dispatch(60, 34, 17);
 
-	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	ID3D11UnorderedAccessView* nullUAVs[2] = { nullptr, nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
 
 	passCount++;
@@ -816,6 +890,8 @@ void OrthogonalVolumetricLighting::DrawSettings()
 		SliceMarchCS = nullptr;
 		ApplyVolumePS = nullptr;
 		OutputPS = nullptr;
+		DrawFogMapCS = nullptr;
+		BlurEVSMCS = nullptr;
 
 		CompileShaders();
 	}
