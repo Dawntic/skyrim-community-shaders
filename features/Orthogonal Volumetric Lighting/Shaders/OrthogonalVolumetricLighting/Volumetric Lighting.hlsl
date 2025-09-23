@@ -22,6 +22,7 @@ cbuffer VolumeBuffer : register(b0)
     row_major float4x4 FogViewProjMatrix;
     float4 EVSMData;
     float4 FrustumNearFar;
+    float4 CameraWS;
     float4 VolumeSize;
 	float4 NoiseSize;
     float4 Jitter;
@@ -212,10 +213,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
     float BNoise2 = frac(BNoise + (FrameCounter & 31) * kPhi);
 
-    float3 CameraWS = mul(CameraViewInverse[0], float4(0, 0, 0, 1)).xyz;
-
     float3 OffsetCoords = RayDirection * (CoordZ + ThicknessZ * BNoise2);
-           OffsetCoords += CameraWS; //??
+           //OffsetCoords += CameraWS; //??
 
     float4 CoordsCS = mul(CameraViewProj[0], float4(OffsetCoords, 1.0));
     float ClipZ = CoordsCS.z / CoordsCS.w;
@@ -227,7 +226,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float2 Confidence;
     float SliceCenter = exp2(max(Froxel.z + 0.5, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
-    float3 PrevCoordWS = CameraWS + RayDirection * SliceCenter;
+    float3 PrevCoordWS = RayDirection * SliceCenter; // + CameraWS;
     float3 PrevCoordsUV = GetHistoryValue(PrevCoordWS, Confidence);
 
     float ShadowHistory = HistoryVolume.SampleLevel(AnisoClampSampler, PrevCoordsUV, 0).x;
@@ -240,8 +239,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float BaseValue = 0.85;
     Shadow = lerp(Shadow, ShadowHistory, BaseValue);
 
+    //Shadow = lerp(Shadow, ShadowHistory, (1.0 - UIHistoryAlpha) * Confidence);
 
-     //Shadow = lerp(Shadow, ShadowHistory, (1.0 - UIHistoryAlpha) * Confidence);
 
     ShadowVolume[ThreadID] = Shadow;
 }
@@ -258,16 +257,16 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 Texture3D HistoryVolume : register(t0);
 Texture3D Perlin : register(t1);
 Texture2DArray BlueNoise : register(t2);
-//Texture2D FogMap : register(t3);
+Texture2D FogMap : register(t3);
 RWTexture3D<float4> MediaVolume : register(u0);
-RWTexture2D<float4> FogMap : register(u1);
+//RWTexture2D<float4> FogMap : register(u1);
 
 float GameUnitToMeter(float input){
-    return input * 0.0142875;
+    return input * 0.01428222656;
 }
 
 float MeterToGameUnit(float input){
-    return input / 0.0142875;
+    return input / 0.01428222656;
 }
 
 float GetHeightFog(float StartAltitude, float MaxAltitude, float DecayRate, float cosZenith, float Extinction){
@@ -277,6 +276,25 @@ float GetHeightFog(float StartAltitude, float MaxAltitude, float DecayRate, floa
     float OpticalDepth = Extinction * (max((MaxAltitude - MinHeight) * Zenith, 0) + Fog);
 
 	return OpticalDepth; //exp(-OpticalDepth);
+}
+
+float4 GetLocalFog(float3 CoordsWS){
+    float MapCameraDepth = -249920.0;
+
+    row_major float4x4 MapViewProj = float4x4(
+    float4(1.19175, 1.01186E-07, -0.00029, 0.00),
+    float4(0.00, 2.11867, 0.00065, 0.00),
+    float4(0.00, 0.00035, -1.00036, -128.04633),
+    float4(0.00, 0.00035, -1.00, 0.00));
+
+    float4 MapCoordsNDC = mul(MapViewProj, float4(CoordsWS.xy, CoordsWS.z + MapCameraDepth, 1.0));
+    float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
+
+    return FogMap.SampleLevel(Point_Sampler, MapCoordsUV, 0);
+}
+
+float2 MapRange(float x, float oldMin, float oldMax, float newMin, float newMax){
+    return newMin + ((x - oldMin) / max(oldMax - oldMin, EPSILON_DIVISION)) * (newMax - newMin);
 }
 
 
@@ -293,14 +311,11 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
           BNoise = frac(BNoise + (FrameCounter & 31) * kPhi);
 
-    float3 CameraWS = mul(CameraViewInverse[0], float4(0, 0, 0, 1)).xyz;
-
     float OffsetZ = ThicknessZ * BNoise + CoordZ;
-    float3 OffsetWS = RayDirection * OffsetZ + CameraWS; //camera?
-
+    float3 OffsetWS = RayDirection * OffsetZ + CameraWS.xyz; //camera?
 
     float2 Confidence;
-    float3 PrevCoordWS = RayDirection * CoordZ + CameraWS;
+    float3 PrevCoordWS = RayDirection * CoordZ + CameraWS.xyz;
     float3 PrevCoordsUV = GetHistoryValue(PrevCoordWS, Confidence);
     float4 MediaHistory = HistoryVolume.SampleLevel(AnisoClampSampler, PrevCoordsUV, 0);
 
@@ -317,21 +332,10 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
           Noise = lerp(Noise, 1.0, saturate(OffsetZ * FadeRate));
 
 
-    //float3 CoordsTest = RayDirection * CoordZ + CameraWS;
+    float3 CoordsWS = RayDirection * CoordZ + CameraWS.xyz;
 
-    float4 FogClip = mul(FogViewProjMatrix, float4(CameraPosAdjust[0].xyz, 1.0));
-    FogClip.xyz /= FogClip.w;
+    float4 FogValue = GetLocalFog(CoordsWS);
 
-    float2 FogCoordsUV = FogClip.xy * float2(0.5, -0.5) + 0.5;
-    float2 FogCoordsSS = FogCoordsUV.xy * float2(2560, 1440);
-
-    //float4 Fog = FogMap.Load(int3(FogCoordsSS, 0));
-
-    //FogMap[int2(FogCoordsSS)] = float4(1.0, 1.0, 1.0, 1.0);
-
-    //float4 FogValue = FogMap[int2(FogCoordsSS)];
-
-    //FogMap[int2(FogCoordsSS)] = FogValue;
 
     //float3 FogCoords = float3(FogClip.xy * float2(0.5, -0.5) + 0.5, 1.0); //
     //float4 Fog = FogMap.SampleLevel(AnisoClampSampler, float3(FogCoords.xy, 0.0), 0.0);
@@ -348,16 +352,15 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //float4 Output = float4(1.0, 1.0, 1.0, HeightFog) * Noise;
     //float4 Output = float4(Noise,Noise,Noise,Noise) * 0.2;
 
-    float Extinction = UIExtinction;//   low vis
-    //if(FogValue.w > 0)
-    //    Extinction = 0.0;
+
+    float Extinction = MapRange(FogValue.w, 0.0, 1.0, 0.1, 0.02);
+    //float Extinction = 1 - FogValue.w;
+    //Extinction = UIExtinction;
 
     float4 Output = float4(1.0, 1.0, 1.0, Extinction);
 
     float BaseValue = 0.90;
     Output = lerp(Output, MediaHistory, BaseValue);
-
-    //Output.xy = FogValue.xy;
 
     MediaVolume[ThreadID] = Output;
 }
@@ -372,7 +375,6 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 Texture3D ShadowVolume : register(t0);
 Texture3D MediaVolume : register(t1);
-
 RWTexture3D<float4> ScatteringVolume : register(u0);
 
 float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
@@ -409,16 +411,14 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float Shadow = ShadowVolume.Load(int4(Froxel, 0)).x;
 
     float3 IncomingDir = SharedData::DirLightDirection.xyz;
-    float3 OutgoingDir = -normalize(RayDirection);
+    float3 OutgoingDir = normalize(RayDirection);
 
     float3 Color = lerp(float3(1.0, 1.0, 1.0), SharedData::DirLightColor.xyz, UISaturation);
     float3 Scattering = Color * PhaseFunction(IncomingDir, OutgoingDir, UIAnisotropy, Media.w, UIWeight, UIWeight2, 2);
-    //float3 Scattering = Color * PhaseFunction(IncomingDir, OutgoingDir, UIAnisotropy, UIExtinction, UIWeight, UIWeight2, 2) * 10;
 
     Scattering = Scattering * Shadow * Media.xyz;
 
     ScatteringVolume[ThreadID] = float4(Scattering, Media.w);
-    //ScatteringVolume[ThreadID] = float4(Scattering, UIExtinction);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -430,7 +430,6 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 #ifdef MARCH_COMPUTE
 
 Texture3D ScatterVolume : register(t0);
-
 RWTexture3D<float4> IntergrationVolume : register(u0);
 
 void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSlice, float StepLength){
@@ -444,9 +443,8 @@ void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSlice, flo
 }
 
 float GameUnitToMeter(float input){
-    return input * 0.0142875;
+    return input * 0.01428222656;
 }
-//viewSpaceToMetersFactor = 0.01428222656;
 
 [numthreads(8, 8, 1)]
 void main(uint3 Froxel : SV_DispatchThreadID)
@@ -523,14 +521,6 @@ static const int2 Offsets[8] = { int2(-1,-1), int2( 1,-1), int2(-1, 1), int2( 1,
 
 static const float4 ONE = float4(1.0, 1.0, 1.0, 1.0);
 
-float min4(float4 value){
-    return min(min(value.x, value.y), min(value.z, value.w));
-}
-
-float max4(float4 value){
-    return max(max(value.x, value.y), max(value.z, value.w));
-}
-
 [numthreads(16, 16, 1)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
@@ -563,10 +553,9 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     int SearchRadius = 2;
     [loop] for (int dy = -SearchRadius; dy <= SearchRadius; ++dy){
         [loop] for (int dx = -SearchRadius; dx <= SearchRadius; ++dx){
-            Result = min(Result, EVSM.Load(int4(ThreadID.xy + int2(dx, dy), ThreadID.z, 0)).xyz);
+            Result = min(Result, EVSM.Load(int4(ThreadID.xy + int2(dx, dy), ThreadID.z, 0)).xy);
         }
     }
-
     //Result = EVSM.Load(int4(ThreadID.xyz, 0)).xy;
 
     BlurOutput[ThreadID.xyz] = Result;
@@ -593,35 +582,44 @@ float4 AbsSubBlend(float4 dst, float srcA){
     return float4(dst.rgb, dst.a) * (1.0 - srcA);
 }
 
+
 [numthreads(1, 1, 1)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float2 Coords = float2(ThreadID.xy);
     float Radius = FogMapData.z;
 
-    float4 PlayerWSPosition = CameraPosAdjust[0];
+    float CameraDepth = -249920.0;
 
-    //float2 MinWS = float2(-233472, -176128); //-350208
-    //float2 MaxWS = float2(253952, 208896); //380928
+    row_major float4x4 MapViewProj = float4x4(
+    float4(1.19175, 1.01186E-07, -0.00029, 0.00),
+    float4(0.00, 2.11867, 0.00065, 0.00),
+    float4(0.00, 0.00035, -1.00036, -128.04633),
+    float4(0.00, 0.00035, -1.00, 0.00));
 
-    float2 MinWS = float2(-203472, -176128);
-    float2 MaxWS = float2(203472, 208896);
+    float3 PlayerWSPosition = CameraWS.xyz;
+           PlayerWSPosition.z += CameraDepth;
 
-    float2 UVPos = (PlayerWSPosition.xy - MinWS) * rcp(MaxWS - MinWS);
-    UVPos.y = 1.0 - UVPos.y;
+    float4 MapCoordsNDC = mul(MapViewProj, float4(PlayerWSPosition, 1.0));
+    float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
+    float2 MapCoordsSS = MapCoordsUV * float2(2560.0, 1440.0);
 
+     //if(length(Coords - MapCoordsSS) - Radius < 0.0){
+     //   FogMap[ThreadID.xy] = float4(1.0, 0, 0, 1.0);
+     //}
 
-    float2 MapSS = UVPos * float2(2560.0, 1440.0);
+    float4 Output = 0.0;
+    float4 CurrValue = FogMap[ThreadID.xy];
 
-    if(length(Coords - MapSS) - Radius < 0.0)
-        FogMap[ThreadID.xy] = float4(1.0, 1.0, 1.0, 1.0);
+    if(length(Coords - FogMapData.xy) - Radius < 0.0){
+        float Density = (BlendOpp != -1) ? CurrValue.w + FogMapColor.w : CurrValue.w - FogMapColor.w;
+              Density = saturate(Density);
 
-    //else
-        //FogMap[ThreadID.xy] = WorldMap.SampleLevel(Point_Sampler, Coords / float2(2560.0, 1440.0), 0.0);
+        float4 Output = float4(FogMapColor.xyz, Density);
 
+        FogMap[ThreadID.xy] = Output;
+    }
 
-
-    //FogMap[ThreadID.xy] = Output;
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////

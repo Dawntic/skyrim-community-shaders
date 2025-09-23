@@ -336,49 +336,6 @@ void OrthogonalVolumetricLighting::CheckOverride()
 	if (overrideShader) {
 		if (frame_checker.IsNewFrame()) {
 			PerFrameUpdate();
-			auto worldSpace = globals::game::tes->GetRuntimeData2().worldSpace;
-
-			static auto height = worldSpace->worldMapData.cameraData.maxHeight;
-
-			//logger::info("Usable: {}, {}", worldSpace->worldMapData.usableHeight, worldSpace->worldMapData.usableHeight);
-			//logger::info("Usable(F): {}, {}", static_cast<float>(worldSpace->worldMapData.usableHeight), static_cast<float>(worldSpace->worldMapData.usableHeight));
-			//logger::info("WRot: {}", worldSpace->northRotation);
-			logger::info("Min Coords WS: {}, {}", worldSpace->minimumCoords.x, worldSpace->minimumCoords.y);
-			logger::info("Max Coords WS: {}, {}", worldSpace->maximumCoords.x, worldSpace->maximumCoords.y);
-
-			if (!settings.useHistory) {
-				worldSpace->worldMapData.cameraData.initialPitch = 90.0f;
-				worldSpace->worldMapData.cameraData.maxHeight = height * 5.0f;
-				//worldSpace->worldMapOffsetData.mapScale = 0.01f;
-				//worldSpace->worldMapOffsetData.mapOffsetZ = ZOffsetValue;
-			}
-
-			if (auto* UI = RE::UI::GetSingleton()) {
-				if (auto mapMenu = UI->GetMenu<RE::MapMenu>()) {
-					auto data = mapMenu->GetRuntimeData2();
-					auto data2 = mapMenu->GetRuntimeData();
-					//logger::info("Pick origin: {}, {}, {}", data->cameraPickOrigin.x, data->cameraPickOrigin.y, data->cameraPickOrigin.z);
-					auto& camera = data->camera;
-					if (camera.unk68[0]->mapData) {
-						logger::info("Min Coords: {}, {}", camera.unk68[0]->mapData->minimumCoordinates.x, camera.unk68[0]->mapData->minimumCoordinates.y);
-						logger::info("Max Coords: {}, {}", camera.unk68[0]->mapData->maximumCoordinates.x, camera.unk68[0]->mapData->maximumCoordinates.y);
-					}
-
-					//if (camera.unk68[1]->mapData) { INVALID
-					//	logger::info("Min Coords 2: {}, {}", camera.unk68[1]->mapData->minimumCoordinates.x, camera.unk68[1]->mapData->minimumCoordinates.y);
-					//	logger::info("Max Coords 2: {}, {}", camera.unk68[1]->mapData->maximumCoordinates.x, camera.unk68[1]->mapData->maximumCoordinates.y);
-					//}
-
-					auto& localMenu = data2->localMapMenu;
-					auto localCamera = localMenu.localCullingProcess.GetLocalMapCamera();
-					logger::info("Min Extent: {}, {}, {}", localCamera->minExtent.x, localCamera->minExtent.y, localCamera->minExtent.z);
-					logger::info("Max Extent: {}, {}, {}", localCamera->maxExtent.x, localCamera->maxExtent.y, localCamera->maxExtent.z);
-					//logger::info("Rot: {}", localCamera->zRotation);
-					//logger::info("Init Position: {}, {}, {}", localCamera->defaultState->initialPosition.x, localCamera->defaultState->initialPosition.y, localCamera->defaultState->initialPosition.z);
-					//logger::info("Translation: {}, {}, {}", localCamera->defaultState->translation.x, localCamera->defaultState->translation.y, localCamera->defaultState->translation.z);
-					//logger::info("Zoom: {}", localCamera->defaultState->zoom);
-				}
-			}
 		}
 		LookupShader(shaderdesc);
 	}
@@ -391,6 +348,8 @@ void OrthogonalVolumetricLighting::DrawFogMap()
 	context->CSSetUnorderedAccessViews(0, 1, &FogMapUAV, nullptr);
 	context->CSSetShader(DrawFogMapCS, nullptr, 0);
 
+	auto volumeBuff = VolumeCB->CB();
+	context->CSSetConstantBuffers(0, 1, &volumeBuff);
 	context->CSSetShaderResources(0, 1, &WorldMapSRV);
 
 	context->Dispatch((UINT)fogMapSize.x, (UINT)fogMapSize.y, 1);
@@ -513,14 +472,14 @@ void OrthogonalVolumetricLighting::SetupMediaVolume()
 	auto mediaUAV = MediaVolumeUAV[!mediaVolParity];
 	auto prevMediaSRV = MediaVolumeSRV[mediaVolParity];
 
-	ID3D11UnorderedAccessView* UAVs[2] = { mediaUAV, FogMapUAV };
-	context->CSSetUnorderedAccessViews(0, 2, UAVs, nullptr);
+	//ID3D11UnorderedAccessView* UAVs[2] = { mediaUAV, FogMapUAV };
+	context->CSSetUnorderedAccessViews(0, 1, &mediaUAV, nullptr);
 	context->CSSetShader(GenerateMediaVolumeCS, nullptr, 0);
 
 	context->CSSetShaderResources(0, 1, &prevMediaSRV);
 	context->CSSetShaderResources(1, 1, &PerlinSRV);
 	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
-	//context->CSSetShaderResources(3, 1, &FogMapSRV);
+	context->CSSetShaderResources(3, 1, &FogMapSRV);
 
 	context->Dispatch(60, 34, 17);
 
@@ -665,6 +624,12 @@ void OrthogonalVolumetricLighting::PerFrameUpdate()
 	float farPlane = 11198.0f;
 	frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
 
+	auto eyePos = Util::GetEyePosition(0);
+	if (eyePos.x > 1.0 || eyePos.x < -1.0) {
+		playerWSPos = float3(eyePos.x, eyePos.y, eyePos.z);
+		logger::info("camera pos: {}, {}, {}", playerWSPos.x, playerWSPos.y, playerWSPos.z);
+	}
+
 	PrevMatrixIdx = UpdateMatrixCache();
 	VolumeCB->Update(UpdateVolumeBuffer());
 	SettingsCB->Update(UpdateSettingsBuffer());
@@ -694,6 +659,7 @@ OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateV
 	data.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
 	//data.EVSMData = float4((float)CSM_Size, (float)CSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
 	data.frustumNearFar = frustumNearFar;
+	data.PlayerWSPos = float4(playerWSPos.x, playerWSPos.y, playerWSPos.z, 1.0f);
 	data.VolumeSize = volumeDimensions;
 	data.NoiseSize = noiseDimensions;
 	data.Jitter = float4(haltonJitter.x, haltonJitter.y, haltonJitter.z, 1.0f);

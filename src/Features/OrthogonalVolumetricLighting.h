@@ -159,10 +159,10 @@ struct OrthogonalVolumetricLighting : Feature
 	float2 fogMapSize;  // = screenSize;
 
 	DirectX::XMFLOAT4X4 fogMapViewProj = DirectX::XMFLOAT4X4(
-		1.1865, -0.11179, -0.0001, 0.00,
-		0.19873, 2.10933, -0.00039, 0.00,
-		-8.20321E-09, -8.70688E-08, -1.00036, -128.04633,
-		-8.20024E-09, -8.70373E-08, -1.00, 0.00);
+		1.19175, 1.01186E-07, -0.00029, 0.00,
+		0.00, 2.11867, 0.00065, 0.00,
+		0.00, 0.00035, -1.00036, -128.04633,
+		0.00, 0.00035, -1.00, 0.00);
 
 	int haltonCount = 32;
 	float haltonArray[96];
@@ -190,6 +190,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	float4 MinMaxValues = float4(0, 0, 0, 0);
 	float2 FogMapCoords;
+	float3 playerWSPos;
 
 	virtual void RestoreDefaultSettings() override;
 	virtual void DrawSettings() override;
@@ -256,6 +257,7 @@ struct OrthogonalVolumetricLighting : Feature
 		DirectX::XMFLOAT4X4 fogMapMatrix;
 		float4 EVSMData;
 		float4 frustumNearFar;
+		float4 PlayerWSPos;
 		float4 VolumeSize;
 		float4 NoiseSize;
 		float4 Jitter;
