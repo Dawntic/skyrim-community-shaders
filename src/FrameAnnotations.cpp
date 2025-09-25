@@ -136,6 +136,11 @@ namespace FrameAnnotations
 			globals::features::orthogonalVolumetricLighting.shadowLight = light;
 			globals::features::orthogonalVolumetricLighting.SetupShadowCascade();
 
+			if (auto manager = RE::BSTreeManager::GetSingleton()) {
+				//logger::info("Got manager");
+				manager->windMagnitude = 0.0f;
+			}
+
 			func(light, a2);
 
 			globals::state->EndPerfEvent();
@@ -290,6 +295,11 @@ namespace FrameAnnotations
 	{
 		static void thunk(void* shaderAccumulator, uint32_t firstPass, uint32_t lastPass, uint32_t renderFlags, int groupIndex)
 		{
+			if (auto manager = RE::BSTreeManager::GetSingleton()) {
+				//logger::info("Got manager");
+				manager->windMagnitude = 0.0f;
+			}
+
 			const bool frameAnnotations = globals::state->frameAnnotations;
 			if (frameAnnotations) {
 				globals::state->BeginPerfEvent(std::format("BSShaderAccumulator::RenderBatches ({:X}:{:X})[{}] <{}>", firstPass, lastPass, groupIndex,

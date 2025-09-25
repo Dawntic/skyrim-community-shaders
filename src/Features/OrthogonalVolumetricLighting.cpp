@@ -626,8 +626,8 @@ void OrthogonalVolumetricLighting::PerFrameUpdate()
 
 	auto eyePos = Util::GetEyePosition(0);
 	if (eyePos.x > 1.0 || eyePos.x < -1.0) {
-		playerWSPos = float3(eyePos.x, eyePos.y, eyePos.z);
-		logger::info("camera pos: {}, {}, {}", playerWSPos.x, playerWSPos.y, playerWSPos.z);
+		eyePositionWS = float3(eyePos.x, eyePos.y, eyePos.z);
+		//logger::info("camera pos: {}, {}, {}", eyePositionWS.x, eyePositionWS.y, eyePositionWS.z);
 	}
 
 	PrevMatrixIdx = UpdateMatrixCache();
@@ -657,9 +657,8 @@ OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateV
 	data.cloudShadowMatrix = cloudShadowsMatrix;
 	data.fogMapMatrix = fogMapViewProj;
 	data.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
-	//data.EVSMData = float4((float)CSM_Size, (float)CSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
 	data.frustumNearFar = frustumNearFar;
-	data.PlayerWSPos = float4(playerWSPos.x, playerWSPos.y, playerWSPos.z, 1.0f);
+	data.PlayerWSPos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
 	data.VolumeSize = volumeDimensions;
 	data.NoiseSize = noiseDimensions;
 	data.Jitter = float4(haltonJitter.x, haltonJitter.y, haltonJitter.z, 1.0f);
@@ -720,13 +719,8 @@ bool OrthogonalVolumetricLighting::CheckFrameBuffer()
 
 REX::W32::XMFLOAT4X4 OrthogonalVolumetricLighting::GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightMatrix)
 {
-	auto currEye = Util::GetEyePosition(0);
-	static auto eyePos = float4(currEye.x, currEye.y, currEye.z, 1.0f);
-
-	if (currEye.x > 1)
-		eyePos = float4(currEye.x, currEye.y, currEye.z, 1.0f);
-
-	float4 transform = mul(eyePos, lightMatrix);
+	float4 pos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0);
+	float4 transform = mul(pos, lightMatrix);
 
 	REX::W32::XMFLOAT4X4 matrix = lightMatrix;
 	matrix.m[3][0] = transform.x;

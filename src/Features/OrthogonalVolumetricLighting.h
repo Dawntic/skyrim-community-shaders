@@ -190,7 +190,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	float4 MinMaxValues = float4(0, 0, 0, 0);
 	float2 FogMapCoords;
-	float3 playerWSPos;
+	float3 eyePositionWS;
 
 	virtual void RestoreDefaultSettings() override;
 	virtual void DrawSettings() override;
