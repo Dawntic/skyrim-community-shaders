@@ -19,6 +19,10 @@ void OrthogonalVolumetricLighting::CompileShaders()
 	SliceMarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "MARCH_COMPUTE", "" } }, "cs_5_0");
 
 	ApplyVolumePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "APPLY_PIXEL", "" } }, "ps_5_0");
+
+	CloudShadowVS = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_VETEX", "" } }, "vs_5_0");
+	CloudShadowPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_PIXEL", "" } }, "ps_5_0");
+	CloudShadowCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_COMPUTE", "" } }, "cs_5_0");
 }
 
 void OrthogonalVolumetricLighting::SetupResources()
@@ -70,7 +74,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	D3D11_RASTERIZER_DESC RasterizerDesc{};
 	RasterizerDesc.FillMode = D3D11_FILL_SOLID;
-	RasterizerDesc.CullMode = D3D11_CULL_BACK;
+	RasterizerDesc.CullMode = D3D11_CULL_NONE;  //D3D11_CULL_BACK;
 	RasterizerDesc.FrontCounterClockwise = TRUE;
 	RasterizerDesc.DepthBias = 0;
 	RasterizerDesc.SlopeScaledDepthBias = 1.0f;
@@ -272,12 +276,20 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateShaderResourceView(ExpoBlurTexture, nullptr, &ExpoBlurSRV));
 
 	D3D11_TEXTURE2D_DESC cloudMapDesc{ outputDesc };
-	cloudMapDesc.MipLevels = 1;
-	cloudMapDesc.Format = DXGI_FORMAT_R16_FLOAT;
+	D3D11_TEXTURE2D_DESC cloudShadowESMDesc{ outputDesc };
+	cloudShadowESMDesc.MipLevels = 1;  //change this
+	cloudShadowESMDesc.Format = DXGI_FORMAT_R16_FLOAT;
+	cloudShadowESMDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+	D3D11_UNORDERED_ACCESS_VIEW_DESC cloudShadowESMUAVDesc{ FogMapUAVDesc };
+	cloudShadowESMUAVDesc.Format = cloudShadowESMDesc.Format;
 
-	DX::ThrowIfFailed(device->CreateTexture2D(&cloudMapDesc, nullptr, &CloudMapTexture));
-	DX::ThrowIfFailed(device->CreateRenderTargetView(CloudMapTexture, nullptr, &CloudMapRTV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(CloudMapTexture, nullptr, &CloudMapSRV));
+	DX::ThrowIfFailed(device->CreateTexture2D(&cloudMapDesc, nullptr, &CloudShadowTexture));
+	DX::ThrowIfFailed(device->CreateRenderTargetView(CloudShadowTexture, nullptr, &CloudShadowRTV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(CloudShadowTexture, nullptr, &CloudMapSRV));
+
+	DX::ThrowIfFailed(device->CreateTexture2D(&cloudShadowESMDesc, nullptr, &CloudShadowESMTexture));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(CloudShadowESMTexture, &cloudShadowESMUAVDesc, &CloudShadowESMUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(CloudShadowESMTexture, nullptr, &CloudShadowESMSRV));
 
 	//// GENERAL /////////////////////////////////////////////////////////////
 
@@ -286,14 +298,17 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	*reinterpret_cast<uint32_t*>(REL::RelocationID(391108, 391108).address()) = 0;  //Disable VL maps
 
+	skyrim_SunPosition = reinterpret_cast<RE::NiPoint3*>(REL::RelocationID(527924, 414871).address());
+
 	renderdata = new Setup::LF_RenderData;
 
-	renderdata->SetupPass(Shaders::Perlin, true, 1, { .uncond_pass = true });  //
+	renderdata->SetupPass(Shaders::Perlin, true, 1, { .uncond_pass = true });
 	renderdata->SetupPass(Shaders::ShadowEVSM, true, 1, { .uncond_pass = true });
 	renderdata->SetupPass(Shaders::ShadowEVSMBlur, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::ShadowVolume, true, 1, { .uncond_pass = true });   //
-	renderdata->SetupPass(Shaders::MediaVolume, true, 1, { .uncond_pass = true });    //
-	renderdata->SetupPass(Shaders::ScatterVolume, true, 1, { .uncond_pass = true });  //
+	renderdata->SetupPass(Shaders::CloudESM, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::ShadowVolume, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::MediaVolume, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::ScatterVolume, true, 1, { .uncond_pass = true });
 
 	//renderdata->SetupPass(Shaders::FilterVolume, true, 1, { .uncond_pass = true });
 	renderdata->SetupPass(Shaders::IntergrationVolume, true, 1, { .uncond_pass = true });
@@ -323,6 +338,8 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 		{ Shaders::MediaVolume, &OrthogonalVolumetricLighting::SetupMediaVolume },
 		{ Shaders::Perlin, &OrthogonalVolumetricLighting::SetupPerlinNoise },
 		{ Shaders::ShadowEVSMBlur, &OrthogonalVolumetricLighting::SetupEVSMBlur },
+		{ Shaders::CloudESM, &OrthogonalVolumetricLighting::SetupCloudESM }
+
 	};
 	auto it = effects.find(desc);
 	if (it != effects.cend())
@@ -398,7 +415,7 @@ void OrthogonalVolumetricLighting::SetupEVSM()
 	ID3D11Buffer* FrameBuff = FrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
 	context->CSSetConstantBuffers(0, 1, &volumeBuff);
 	context->CSSetConstantBuffers(1, 1, &settingsBuff);
-	context->CSSetConstantBuffers(2, 1, &FrameBuff);
+	context->CSSetConstantBuffers(10, 1, &FrameBuff);
 	context->CSSetConstantBuffers(3, 1, &prevFrameBuff);
 	context->CSSetConstantBuffers(4, 1, &terrainShadowBuffer);
 
@@ -453,6 +470,9 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	context->CSSetShaderResources(0, 1, &prevVolumeSRV);
 	context->CSSetShaderResources(1, 1, &ExpoBlurSRV);
 	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
+
+	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
+	context->CSSetShaderResources(3, 1, &shadowMap);
 
 	context->Dispatch(60, 34, 17);
 
@@ -602,16 +622,39 @@ void OrthogonalVolumetricLighting::SetupCloudMap()
 {
 	auto context = globals::d3d::context;
 
-	context->RSSetState(Rasterizer);
+	//context->RSSetState(Rasterizer);
 
-	context->OMSetRenderTargets(1, &CloudMapRTV, nullptr);
+	context->OMSetRenderTargets(1, &CloudShadowRTV, nullptr);
 
-	//context->VSSetShader();
-	//context->PSSetShader();
+	context->VSSetShader(CloudShadowVS, nullptr, 0);
+	context->PSSetShader(CloudShadowPS, nullptr, 0);
 
 	auto volumeBuff = VolumeCB->CB();
 	context->VSSetConstantBuffers(0, 1, &volumeBuff);
 	context->PSSetConstantBuffers(0, 1, &volumeBuff);
+
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET);
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RASTER_CULL_MODE);
+
+	overrideShader = false;
+}
+
+void OrthogonalVolumetricLighting::SetupCloudESM()
+{
+	auto context = globals::d3d::context;
+
+	context->CSSetUnorderedAccessViews(0, 1, &CloudShadowESMUAV, nullptr);
+	context->CSSetShader(CloudShadowCS, nullptr, 0);
+
+	context->CSSetShaderResources(0, 1, &CloudShadowESMSRV);
+
+	float2 groups = CloudESM_Size / 16;
+	//logger::info("groups: {}  Size: {}  int: {}", groups.x, CloudESM_Size.x, (UINT)groups.x);
+
+	context->Dispatch((UINT)groups.x, (UINT)groups.y, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
 
 	overrideShader = false;
 }
@@ -631,11 +674,15 @@ void OrthogonalVolumetricLighting::PerFrameUpdate()
 	}
 
 	PrevMatrixIdx = UpdateMatrixCache();
+
+	BuildCloudShadowMatrix();
+
 	VolumeCB->Update(UpdateVolumeBuffer());
 	SettingsCB->Update(UpdateSettingsBuffer());
 
 	float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 	globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
+	globals::d3d::context->ClearRenderTargetView(CloudShadowRTV, clear);
 
 	size_t haltonIdx0 = (frameCounter * 2) % haltonCount;
 	haltonJitter.x = haltonArray[haltonIdx0 * 3 + 0];
@@ -654,7 +701,7 @@ OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateV
 	data.shadowCascadeMatrix[1] = GetCascadeMatrix(lightData.shadowmapDescriptors[1].lightTransform);
 	data.shadowCascadeMatrix[2] = GetCascadeMatrix(lightData.shadowmapDescriptors[2].lightTransform);
 	data.shadowCascadeMatrix[3] = GetCascadeMatrix(lightData.shadowmapDescriptors[3].lightTransform);
-	data.cloudShadowMatrix = cloudShadowsMatrix;
+	data.cloudShadowMatrix = cloudShadowLSViewProj;
 	data.fogMapMatrix = fogMapViewProj;
 	data.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
 	data.frustumNearFar = frustumNearFar;
@@ -760,47 +807,43 @@ void OrthogonalVolumetricLighting::Hooks::SetShadowMapCount::thunk(RE::BSShadowL
 	func(light, numLights);
 }
 
-void OrthogonalVolumetricLighting::BuildCloudShadowMatrix(const CascadeInputs& in, Matrix& outLightView, Matrix& outLightProj)
+//const DirectX::XMMATRIX lightRotation = DirectX::XMMatrixRotationQuaternion(DirectX::XMLoadFloat4(&scene.weather.stars_rotation_quaternion));  // We only care about prioritized directional light anyway
+//const DirectX::XMVECTOR up = DirectX::XMVector3TransformNormal(DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), lightRotation);
+
+void OrthogonalVolumetricLighting::BuildCloudShadowMatrix()
 {
-	float cloudBaseHeightWS = (2e3f / 1.428e-2) * 0.25;
-	float cloudTopHeightWS = (2e3f / 1.428e-2) * 0.4;  ////
+	using namespace DirectX;
 
-	Matrix invView = in.cameraView.Invert();
-	float3 camPosWS = float3::Transform(float3::Zero, invView);  //?
+	const float planetRadiusF = 6371e3f / 1.428e-2;  //446,148,459
+	XMVECTOR planetRadius = { planetRadiusF, planetRadiusF, planetRadiusF };
+	XMVECTOR planetCentre = { 0.0, 0.0, -planetRadiusF };
 
-	const Vector2 ndc[4] = { { -1, +1 }, { +1, +1 }, { -1, -1 }, { +1, -1 } };
-	Vector3 ptsWS[8];
-	for (int i = 0; i < 4; ++i) {
-		Vector3 dirVS = ViewRayFromNDC(ndc[i].x, ndc[i].y, in.cameraProj);
-		Vector3 dirWS = Vector3::TransformNormal(dirVS, invView);
-		dirWS.Normalize();
+	const float cloudShadowSnapLength = 5000.0f;  //World-space snapping causes shimmering as sun angle / field of view changes
+	const float cloudShadowExtent = 10000.0f;     // The cloud shadow bounding box size
+	const float cloudShadowNearPlane = 0.0f;
+	const float cloudShadowFarPlane = cloudShadowExtent * 2.0;
 
-		float denom = Dot3(dirWS, in.worldUpWS);
-		float tBase = (cloudBaseHeightWS - Dot3(camPosWS, in.worldUpWS)) / std::max(1e-6f, denom);
-		float tTop = (cloudTopHeightWS - Dot3(camPosWS, in.worldUpWS)) / std::max(1e-6f, denom);
+	const XMVECTOR up = { 0.0f, 0.0f, 1.0f, 0.0f };  //XMMatrixLookAtLH will produce garbage when up is nearly colinear with the view direction
 
-		ptsWS[i + 0] = camPosWS + dirWS * tBase;  //base plane
-		ptsWS[i + 4] = camPosWS + dirWS * tTop;   //top plane
-	}
+	auto sunWSPos = *skyrim_SunPosition;
+	XMVECTOR sunDirection = XMVector3Normalize({ sunWSPos.x, sunWSPos.y, sunWSPos.z });
 
-	Vector3 footprintCenter = float3(0.0f, 0.0f, 0.0f);
-	for (int i = 0; i < 8; ++i)
-		footprintCenter += ptsWS[i];
-	footprintCenter /= 8.0f;
+	XMVECTOR lookAtPosition = XMVector3Normalize(XMVectorSubtract({ eyePositionWS.x, eyePositionWS.y, eyePositionWS.z }, planetCentre));
+	lookAtPosition = XMVectorMultiplyAdd(lookAtPosition, planetRadius, planetCentre);
+	lookAtPosition = XMVectorAdd(lookAtPosition, XMVectorReplicate(0.5f * cloudShadowSnapLength));
+	lookAtPosition = XMVectorScale(XMVectorFloor(XMVectorScale(lookAtPosition, 1.0f / cloudShadowSnapLength)), cloudShadowSnapLength);
 
-	Vector3 lightEye = footprintCenter - in.lightDirWS * 100.0f;  // any distance
+	XMVECTOR lightPosition = XMVectorMultiplyAdd(sunDirection, { cloudShadowExtent, cloudShadowExtent, cloudShadowExtent }, lookAtPosition);
 
-	outLightView = Matrix::CreateLookAt(lightEye, footprintCenter, in.worldUpWS);
+	XMMATRIX cloudShadowView = XMMatrixLookAtLH(lightPosition, lookAtPosition, up);
+	XMMATRIX cloudShadowProjection = XMMatrixOrthographicOffCenterLH(-cloudShadowExtent, cloudShadowExtent, -cloudShadowExtent, cloudShadowExtent, cloudShadowNearPlane, cloudShadowFarPlane);
 
-	// AABB in light space from these 8 points to gives XY extents AND zNear/zFar for the cloud slab
-	Vector3 minLS(FLT_MAX), maxLS(-FLT_MAX);
-	for (int i = 0; i < 8; ++i) {
-		Vector3 pLS = Vector3::Transform(ptsWS[i], outLightView);
-		minLS = Vector3::Min(minLS, pLS);
-		maxLS = Vector3::Max(maxLS, pLS);
-	}
+	//XMMATRIX cloudShadowViewProj = XMMatrixMultiply(cloudShadowView, cloudShadowProjection);
+	XMMATRIX cloudShadowViewProj = XMMatrixMultiply(cloudShadowProjection, cloudShadowView);
+	XMMATRIX cloudShadowViewProjInverse = XMMatrixInverse(nullptr, cloudShadowViewProj);
 
-	outLightProj = Matrix::CreateOrthographicOffCenter(minLS.x, maxLS.x, minLS.y, maxLS.y, minLS.z, maxLS.z);
+	XMStoreFloat4x4(&cloudShadowLSViewProj, XMMatrixTranspose(cloudShadowViewProj));
+	XMStoreFloat4x4(&cloudShadowLSViewProjInverse, XMMatrixTranspose(cloudShadowViewProjInverse));
 }
 
 RE::BSShaderProperty::RenderPassArray* OrthogonalVolumetricLighting::Hooks::BSSkyShader_GetRenderPasses::thunk(RE::BSGeometry* geometry, std::uint32_t arg2, RE::BSShaderAccumulator* accumulator)
@@ -923,13 +966,21 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 void OrthogonalVolumetricLighting::Hooks::BSSkyShader_SetupMaterial::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 {
-	//auto& OVL = globals::features::orthogonalVolumetricLighting;
-	auto skyProperty = reinterpret_cast<RE::BSSkyShaderProperty*>(Pass->shaderProperty);
+	auto& OVL = globals::features::orthogonalVolumetricLighting;
+	static Util::FrameChecker frame_checker;
+	static int counter = 0;
 
+	auto skyProperty = reinterpret_cast<RE::BSSkyShaderProperty*>(Pass->shaderProperty);
 	if (skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_CLOUDS) {
 		if ((Pass->passEnum == 0x5C000062 || Pass->passEnum == 0x5C000063) && RenderFlags == 65) {
-			//OVL.overrideShader = true;
-			//OVL.shaderdesc = Shaders::RenderCloudMap;
+			if (frame_checker.IsNewFrame()) {
+				counter = 0;
+			}
+			counter++;
+			if ((counter % 2) == 0) {
+				OVL.overrideShader = true;
+				OVL.shaderdesc = Shaders::RenderCloudMap;
+			}
 		}
 	}
 

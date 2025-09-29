@@ -38,6 +38,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual bool CheckFrameBuffer();
 	virtual void SetupShadowCascade();
 	virtual REX::W32::XMFLOAT4X4 GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightTransform);
+	virtual void BuildCloudShadowMatrix();
 
 	virtual void SetupScatteringVolume();
 	virtual void SetupFilterPass();
@@ -50,6 +51,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupPerlinNoise();
 	virtual void SetupEVSMBlur();
 	virtual void DrawFogMap();
+	virtual void SetupCloudESM();
 
 	D3D11_VIEWPORT viewPort[4];
 	ConstantBuffer* ESMCBuffer = nullptr;
@@ -64,10 +66,13 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11PixelShader* MinifyPS = nullptr;
 	ID3D11PixelShader* FilterPS = nullptr;
 
+	ID3D11VertexShader* CloudShadowVS = nullptr;
+	ID3D11PixelShader* CloudShadowPS = nullptr;
+
 	ID3D11Texture2D* MinifyTex = nullptr;
 	ID3D11Texture2D* HorizontalTex = nullptr;
 	ID3D11Texture2D* ESMTexture = nullptr;
-	ID3D11Texture2D* CloudMapTexture = nullptr;
+	ID3D11Texture2D* CloudShadowTexture = nullptr;
 
 	ID3D11ShaderResourceView* MinifySRV = nullptr;
 	ID3D11ShaderResourceView* HorizontalSRV = nullptr;
@@ -78,7 +83,7 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11RenderTargetView* MinifyRTV = nullptr;
 	ID3D11RenderTargetView* HorizontalRTV = nullptr;
 	ID3D11RenderTargetView* ESM_RTV = nullptr;
-	ID3D11RenderTargetView* CloudMapRTV = nullptr;
+	ID3D11RenderTargetView* CloudShadowRTV = nullptr;
 
 	ID3D11Texture2D* CascadeTex = nullptr;
 	ID3D11ShaderResourceView* CascadeSRV = nullptr;
@@ -100,6 +105,7 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11ComputeShader* FilterVolumeCS = nullptr;
 	ID3D11ComputeShader* SliceMarchCS = nullptr;
 	ID3D11ComputeShader* GenerateMediaVolumeCS = nullptr;
+	ID3D11ComputeShader* CloudShadowCS = nullptr;
 	ID3D11PixelShader* ApplyVolumePS = nullptr;
 	ID3D11PixelShader* OutputPS = nullptr;
 
@@ -144,6 +150,10 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11ShaderResourceView* FogMapSRV = nullptr;
 	ID3D11UnorderedAccessView* FogMapUAV = nullptr;
 
+	ID3D11Texture2D* CloudShadowESMTexture = nullptr;
+	ID3D11ShaderResourceView* CloudShadowESMSRV = nullptr;
+	ID3D11UnorderedAccessView* CloudShadowESMUAV = nullptr;
+
 	ID3D11Texture2D* OutputTexture = nullptr;
 	ID3D11ShaderResourceView* OutputSRV = nullptr;
 	ID3D11RenderTargetView* OutputRTV = nullptr;
@@ -152,6 +162,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	uint CSM_Size = 2048;
 	uint EVSM_Size = CSM_Size / 8;
+	float2 CloudESM_Size = float2(2560, 1440);
 
 	float4 frustumNearFar;
 	float4 volumeDimensions = float4(240, 136, 68, 0);
@@ -163,6 +174,9 @@ struct OrthogonalVolumetricLighting : Feature
 		0.00, 2.11867, 0.00065, 0.00,
 		0.00, 0.00035, -1.00036, -128.04633,
 		0.00, 0.00035, -1.00, 0.00);
+
+	DirectX::XMFLOAT4X4 cloudShadowLSViewProj;
+	DirectX::XMFLOAT4X4 cloudShadowLSViewProjInverse;
 
 	int haltonCount = 32;
 	float haltonArray[96];
@@ -187,6 +201,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	uintptr_t* skyrim_FlareData = nullptr;
 	uint32_t* skyrim_RunFlarePtr = nullptr;
+	RE::NiPoint3* skyrim_SunPosition = nullptr;
 
 	float4 MinMaxValues = float4(0, 0, 0, 0);
 	float2 FogMapCoords;
@@ -204,20 +219,6 @@ struct OrthogonalVolumetricLighting : Feature
 	float brushRadius = 24.0f;
 	float brushFeather = 0.5;
 	float fogErase = false;
-
-	struct CascadeInputs
-	{
-		Matrix cameraView;
-		Matrix cameraProj;
-		float3 lightDirWS;
-		float3 worldUpWS;
-		float2 nearFarSplit;
-		float2 mapSize;
-		float xyPaddingWorld = 0.0f;
-		float zPaddingWorld = 0.0f;
-		bool enableTexelSnap = true;
-	};
-	virtual void BuildCloudShadowMatrix(const CascadeInputs& in, Matrix& outLightView, Matrix& outLightProj);
 
 	static inline float halton(size_t index, size_t base)
 	{
@@ -323,7 +324,8 @@ struct OrthogonalVolumetricLighting : Feature
 			Output = 10,
 			RenderCloudMap = 11,
 			MediaVolume = 12,
-			Perlin = 13
+			Perlin = 13,
+			CloudESM = 14
 		};
 	};
 	Shaders::Enum shaderdesc;
@@ -526,7 +528,7 @@ struct OrthogonalVolumetricLighting : Feature
 			stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>>(RE::VTABLE_BSImagespaceShaderLensFlare[3]);
 			stl::write_vfunc<0x6, BSSkyShader_SetupMaterial>(RE::VTABLE_BSSkyShader[0]);
 
-			//stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
+			stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
 
 			//stl::detour_thunk<SetShadowMapCount>(REL::RelocationID(107599, 107599));
 		}

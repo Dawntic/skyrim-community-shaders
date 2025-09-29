@@ -18,7 +18,7 @@ struct VertexShaderOutput
 cbuffer VolumeBuffer : register(b0)
 {
     row_major float4x4 ShadowCascadeMatrix[4];
-    row_major float4x4 CloudShadowMatrix;
+    row_major float4x4 CloudShadowViewProj;
     row_major float4x4 FogViewProjMatrix;
     float4 EVSMData;
     float4 FrustumNearFar;
@@ -47,7 +47,7 @@ cbuffer SettingsBuffer : register(b1)
     float4 FogMapColor;
 }
 
-cbuffer PerFrame : register(b2)
+cbuffer PerFrame : register(b10)
 {
     row_major float4x4 CameraView[1] : packoffset(c0);
     row_major float4x4 CameraProj[1] : packoffset(c4);
@@ -123,7 +123,6 @@ StructuredBuffer<ShadowDataStruct> ShadowDataSB : register(t10);
 #define kPhi 1.61803398875
 
 
-
 float3 FroxelWorldDirection(float3 Froxel, float ViewZ)
 {
     float3 CoordsNDC = float3(((Froxel.xy + 0.5) / VolumeSize.xy) * 2.0 - 1.0, 1);
@@ -141,12 +140,12 @@ float3 GetHistoryValue(float3 CoordsWS, out float2 Confidence)
     float4 PrevClip = mul(PrevCameraViewProj[0], float4(CoordsWS, 1.0));
     float3 PrevNDC = PrevClip.xyz / PrevClip.w;
     float2 PrevUV = PrevNDC.xy * float2(0.5, -0.5) + 0.5;
-    float PrevZ = log2(PrevClip.w * FrustumNearFar.z) * rcp(log2(FrustumNearFar.y * FrustumNearFar.z));
+    float PrevZ = log(PrevClip.w / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x);
 
-    float ValidClip = float(PrevClip.w > 0.0);
+    float ValidViewZ = float(PrevClip.w > 0.0);
     float ValidDepth = float(PrevZ >= 0.0 && PrevZ <= 1.0);
 
-    Confidence = (any(abs(PrevNDC.xyz) > 1.0)) ? float2(0.0, 0.0) : float2(ValidClip, ValidClip * ValidDepth);
+    Confidence = (any(abs(PrevNDC.xyz) > 1.0)) ? float2(0.0, 0.0) : float2(ValidViewZ, ValidViewZ * ValidDepth);
 
     return float3(PrevUV, PrevZ);
 }
@@ -157,28 +156,62 @@ float3 GetHistoryValue(float3 CoordsWS, out float2 Confidence)
 Texture3D HistoryVolume : register(t0);
 Texture2DArray EVSMCascade : register(t1);
 Texture2DArray BlueNoise : register(t2);
+Texture2DArray CSMCascade : register(t3);
 RWTexture3D<float> ShadowVolume : register(u0);
 
 
-float GetCascadeShadow(float4 RayDirection){
-    float2 Values = float2(8388608.0, -8388608.0);
-
-    float ViewSplit = CameraProj[0][2][3] / (ShadowDataSB[0].EndSplits.x - CameraProj[0][2][2]); //move to cpu
-
-    uint CascadeIndex = (RayDirection.w < ViewSplit) ? 0 : 1;
-    float3 CoordsLS = mul(ShadowCascadeMatrix[CascadeIndex], float4(RayDirection.xyz, 1.0)).xyz;
-
-    float Reconstruct = exp(UIExponent * (CoordsLS.z * 2.0 - 1.0)) + 9.9e-5;
-    float2 Moments = EVSMCascade.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CascadeIndex), 0).xy + float2(9.9e-5, 9.9e-9);
-    float Variance = max(Moments.y - Moments.x * Moments.x, Reconstruct * Reconstruct);
-    float Delta = Reconstruct - Moments.x;
-
-    float Visibility = Variance / (Variance + Delta * Delta);
-          Visibility = (Reconstruct <= Moments.x) ? 1.0 : saturate(Visibility * Values.x + Values.y);
-
-    return Visibility;
+float GetFroxelSlice(float Depth){
+    float FroxelSlice = log(Depth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x);
+    return FroxelSlice;
 }
 
+float DepthVS(float depth){
+    return (SharedData::CameraData.w / (-depth * SharedData::CameraData.z + SharedData::CameraData.x));
+}
+
+
+float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float ThicknessZ, float BNoise){
+    float2 Values = float2(8388608.0, -8388608.0);
+    float BiasVal = 0.0005;
+    int Samples = 4;
+
+    float2 Splits = float2(0.98704, 0.99777);
+    float ViewSplit = GetFroxelSlice(DepthVS(Splits.x));
+          ViewSplit = exp2((ViewSplit * VolumeSize.z) / FrustumNearFar.w) / FrustumNearFar.z;
+
+    float Result = 0;
+    for(int i=0; i<Samples; i++){
+        float3 RaySampleCoords = RayPosition * ViewZ;
+
+        uint CascadeIndex = (ViewZ < ViewSplit) ? 0 : 1;
+        float3 CoordsLS = mul(ShadowCascadeMatrix[CascadeIndex], float4(RaySampleCoords, 1.0)).xyz;
+
+        float Reconstruct = exp(UIExponent * (saturate(CoordsLS.z) * 2.0 - 1.0)) + 9.99e-5;
+        float2 Moments = EVSMCascade.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CascadeIndex), 0).xy + float2(9.99e-5, 9.99e-9);
+        float Baised = Reconstruct * BiasVal;
+        float Variance = max(Moments.y - Moments.x * Moments.x, Baised * Baised);
+        float Delta = Reconstruct - Moments.x;
+
+        float Visibility = Variance / (Variance + Delta * Delta);
+              Visibility = (Reconstruct <= Moments.x) ? 1.0 : saturate(Visibility * Values.x + Values.y);
+
+        Result += Visibility;
+
+        int Offset = (FrameCounter & 31) + i + 1;
+        float NoiseValue = frac(BNoise + (Offset & 15) * kPhi);
+        ViewZ = CoordZ + ThicknessZ * NoiseValue;
+    }
+    Result /= Samples;
+
+    return Result;
+}
+
+
+//Happens with EVSM not unfiltered
+//Happens worse with downscaled
+//Much worse with Valid var in EVSM
+
+//twinkling issue only happens with EVSM
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -186,27 +219,36 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 Froxel = ThreadID;
 
     float CoordZ = exp2(max(Froxel.z - 2, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
-    float Bound2 = exp2(max(Froxel.z - 1, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
-    float ThicknessZ = Bound2 - CoordZ;
+    float ThicknessZ = exp2(max(Froxel.z - 1, 0.1) / FrustumNearFar.w) / FrustumNearFar.z - CoordZ;
 
     float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
-    float BNoise2 = frac(BNoise + (FrameCounter & 31) * kPhi);
+    float BNoise2 = frac(BNoise + (FrameCounter & 31) * kPhi); // +12?
 
     float ViewZ = CoordZ + ThicknessZ * BNoise2;
-    float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ) * ViewZ;
+    float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ);
 
-    float Shadow = GetCascadeShadow(float4(RayPosition, ViewZ));
+    float Shadow = GetCascadeShadow(RayPosition, ViewZ, CoordZ, ThicknessZ, BNoise);
 
 /*
-    float2 Confidence;
-    float SliceCenter = exp2(max(Froxel.z + 0.5, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
-    float3 PrevCoordWS = RayVector * SliceCenter; // + CameraWS;
-    float3 PrevCoordsUV = GetHistoryValue(PrevCoordWS, Confidence);
-    float ShadowHistory = HistoryVolume.SampleLevel(AnisoClampSampler, PrevCoordsUV, 0).x;
-    float BaseValue = 0.0;//0.85;
-    Shadow = lerp(Shadow, ShadowHistory, BaseValue);
+    float2 Splits = float2(0.98704, 0.99777);
+    float ViewSplit = GetFroxelSlice(DepthVS(Splits.x));
+          ViewSplit = exp2((ViewSplit * VolumeSize.z) / FrustumNearFar.w) / FrustumNearFar.z;
+    uint cascadeIndex = (ViewZ < ViewSplit) ? 0 : 1;
+    float3 positionLS = mul(ShadowCascadeMatrix[cascadeIndex], float4(RayPosition * ViewZ, 1.0)).xyz;
+    float shadowMapValue = CSMCascade.SampleLevel(Linear_Sampler, float3(positionLS.xy, cascadeIndex), 0).x;
+    float shadowMapThreshold = cascadeIndex == 0 ? 0.01 : 0.0;
+    Shadow = float(shadowMapValue >= positionLS.z - shadowMapThreshold);
 */
 
+    float2 Confidence;
+    float ViewZCenter = exp2(max(Froxel.z + 0.5, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
+    float3 PrevCoordsUV = GetHistoryValue(RayPosition * ViewZCenter, Confidence);
+
+    float BaseValue = 0.85; //add confience
+    float ShadowHistory = HistoryVolume.SampleLevel(AnisoClampSampler, PrevCoordsUV, 0).x;
+    Shadow = lerp(Shadow, ShadowHistory, BaseValue);
+    //Shadow = min(Shadow, 0.32);
+    //Shadow = 1;
 
     ShadowVolume[ThreadID] = Shadow;
 }
@@ -269,7 +311,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float4 FogValue = GetLocalFog(WorldPosition);
     float Extinction = 1.0 - MapRange(FogValue.w, 0.0, 1.0, 0.0, 0.2);
 
-    Extinction = MapRange(UIExtinction, 0.0, 0.1, 0.0, 0.1);
+    Extinction = MapRange(UIExtinction, 0.0, 0.1, 0.0, 1.0);
 
 
     float4 Output = float4(1.0, 1.0, 1.0, Extinction);
@@ -323,7 +365,7 @@ float PhaseFunction(float3 IncidentDir, float3 CameraDir, float Anisotropy, floa
 }
 //float3 Scattering = Color * PhaseFunction(IncomingDir, OutgoingDir, UIAnisotropy, Media.w, UIWeight, UIWeight2, 2);
 
-
+//g = 0.85  cosTheta = 0.70
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
@@ -332,10 +374,10 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float4 Media = MediaVolume.Load(int4(Froxel, 0));
     float Shadow = ShadowVolume.Load(int4(Froxel, 0)).x;
 
-    float ViewZ = exp2((Froxel.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
-    float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ) * ViewZ;
+    //float ViewZ = exp2((Froxel.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
+    float3 RayPosition = FroxelWorldDirection(Froxel, 1);
 
-    float3 IncomingDir = SharedData::DirLightDirection.xyz;
+    float3 IncomingDir = normalize(SharedData::DirLightDirection.xyz);
     float3 OutgoingDir = normalize(RayPosition);
     float ScatteringAngle = dot(IncomingDir, OutgoingDir);
 
@@ -343,6 +385,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
            Scattering *= lerp(float3(1.0, 1.0, 1.0), SharedData::DirLightColor.xyz, UISaturation);
            Scattering = Scattering * Media.xyz * Shadow;
 
+    //Scattering = ScatteringAngle.xxx;
 
     ScatteringVolume[ThreadID] = float4(Scattering, Media.w);
 }
@@ -461,22 +504,29 @@ static const int2 Offsets[8] = { int2(-1,-1), int2( 1,-1), int2(-1, 1), int2( 1,
 
 static const float4 ONE = float4(1.0, 1.0, 1.0, 1.0);
 
+float sum4(float4 value){ return value.x + value.y + value.z + value.w; }
+
 [numthreads(16, 16, 1)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float3 Coords = float3((float2(ThreadID.xy) + 0.5) / EVSMData.xy, ThreadID.z);
 
     float DeltaLim = 0.0; //??
-    float3 Result = float3(0.0, 0.0, 0.0);
+    float2 Result = float2(0.0, 0.0);
+    float4 Passed = 0;
     [unroll] for(int i = 0; i < 4; ++i){
         float4 Sample = CSM.GatherRed(Point_Sampler, Coords, Offsets[i]);
-        float4 Valid = (Sample < (1.0 - DeltaLim)) ? ONE : 0.0;
+        //float4 Valid = ONE;//(Sample < (1.0 - DeltaLim)) ? ONE : 0.0;
+        //Result += float3(dot(ExpValue, ONE), dot(ExpValue, ExpValue), dot(Valid, ONE));
+        float4 Valid = (float4)(Sample < 1.0);
         float4 ExpValue = Valid * exp((Sample * 2.0 - 1.0) * UIExponent);
-        Result += float3(dot(ExpValue, ONE), dot(ExpValue, ExpValue), dot(Valid, ONE));
+        Result += float2(dot(ExpValue, ONE), dot(ExpValue * ExpValue, ONE));
+        Passed += Valid;
     }
-    float2 Output = (Result.z > 0) ? Result.xy / Result.z : EVSMData.zw;
+    Passed.x = sum4(Passed);
+    Result = (Passed.x > 0) ? Result / Passed.x : EVSMData.zw;
 
-    EVSM[ThreadID] = Output;
+    EVSM[ThreadID] = Result;
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -500,6 +550,131 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     BlurOutput[ThreadID.xyz] = Result;
 }
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+//// Cloud Shadow Map ///////////////////////////////////////////////////////////////////
+
+#ifdef CLOUD_ESM_VETEX
+
+cbuffer PerGeometry : register(b2)
+{
+	row_major float4x4 WorldViewProj[1] : packoffset(c0);
+	row_major float4x4 World[1] : packoffset(c4);
+	row_major float4x4 PreviousWorld[1] : packoffset(c8);
+	float3 EyePosition[1] : packoffset(c12);
+	float VParams : packoffset(c12.w);
+	float4 BlendColor[3] : packoffset(c13);
+	float2 TexCoordOff : packoffset(c16);
+};
+
+
+//we want vertex position in WS so our shadow matrix can take it to clip space
+
+VertexShaderOutput main(VertexShaderInput input) //We override sky PS/VS
+{
+    VertexShaderOutput output;
+    output.TexCoord =  TexCoordOff + input.TexCoord;
+    //output.Position = mul(CloudShadowViewProj, float4(input.Position.xyz, 1.0)).xyww;
+    //output.Position = mul(ShadowCascadeMatrix[0], float4(input.Position.xyz, 1.0)).xyww;
+
+    //output.Position = mul(WorldViewProj[0], float4(input.Position.xyz, 1.0)).xyww;
+    //float4 WorldPosition = mul(World[0], float4(input.Position.xyz, 1.0));
+
+    //float4 ClipPos = mul(WorldViewProj[0], float4(input.Position.xyz, 1.0));
+    //float4 WorldPos = mul(FrameBuffer::CameraViewProjInverse[0], ClipPos);
+
+    //row_major float4x4 WorldMatrix = mul(FrameBuffer::CameraViewProjInverse[0], WorldViewProj[0]);
+    //WorldPosition.xyz += FrameBuffer::CameraPosAdjust[0].xyz;
+
+    //float4 LSClipPos = mul(CloudShadowViewProj, float4(WorldPosition.xyz, 1.0)).xyzw;
+
+
+    row_major float4x4 WorldMatrix = mul(FrameBuffer::CameraViewProjInverse[0], WorldViewProj[0]); //take original matrix that would position clouds reletive to the player camera persective and derive the world matrix used
+
+    //row_major float4x4 WorldViewProjLS = mul(FrameBuffer::CameraViewProj[0], WorldMatrix); //take that world matrix and combine with the light space view proj matrix
+    row_major float4x4 WorldViewProjLS = mul(CloudShadowViewProj, WorldMatrix); //take that world matrix and combine with the light space view proj matrix
+
+    float4 LSClipPos = mul(WorldViewProjLS, float4(input.Position.xyz, 1.0)); //convert vertex and convert into light space clip
+    output.Position = LSClipPos; //output vertex
+
+    //output.Position = mul(WorldViewProj[0],  float4(input.Position.xyz, 1.0));
+
+    //float4 WorldPosition = mul(WorldMatrix, float4(input.Position.xyz, 1.0));
+    //float4 LSClipPos = mul(CloudShadowViewProj, float4(WorldPosition.xyz, 1.0)).xyww;
+
+    //output.Position = mul(FrameBuffer::CameraViewProj[0], float4(WorldPos.xyz, 1.0)).xyww;
+
+    //mul(FrameBuffer::CameraViewProj[0], World[0]);
+
+    //float4 LSClipPos = mul(CloudShadowViewProj, float4(WorldPos.xyz, 1.0)).xyww;
+     //LSClipPos = mul(ShadowCascadeMatrix[0], float4(WorldPos.xyz / WorldPos.w, 1.0)).xyww;
+     //LSClipPos.zw = float2(0.0, 1.0);
+
+    //output.Position = LSClipPos;
+
+    return output;
+}
+#endif
+
+/*
+precise float4 positionMS = float4(input.PositionMS.xyz, 1.0);
+float4 positionCS = float4(0, 0, 0, 0);
+
+precise float4x4 WorldViewProj = mul(FrameBuffer::CameraViewProj[eyeIndex], World[eyeIndex]);
+positionCS = mul(WorldViewProj, positionMS);
+
+//positionCS.z = max(0, positionCS.z);
+
+float4 texCoord = float4(0, 0, 1, 1);
+texCoord.xy = input.TexCoord * TexcoordOffset.zw + TexcoordOffset.xy;
+
+texCoord1.xy = positionCS.zw;
+texCoord1.zw = input.TexCoord * TexcoordOffset.zw + TexcoordOffset.xy;
+vsout.TexCoord1 = texCoord1;
+*/
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+#ifdef CLOUD_ESM_PIXEL
+
+Texture2D CloudTexture : register(t0);
+
+
+float4 main(VertexShaderOutput input) : SV_Target
+{
+    float4 Color = CloudTexture.Sample(Point_Sampler, input.TexCoord.xy);
+
+    //if(input.Position.x > 0)
+    //    Color = float4(1,1,1,1);
+
+    return Color;
+}
+#endif
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+#ifdef CLOUD_ESM_COMPUTE
+
+Texture2D CloudShadowMap : register(t0);
+RWTexture2D<float4> CloudESM : register(u0);
+
+[numthreads(16, 16, 1)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    float3 Coords = float3((float2(ThreadID.xy) + 0.5) / EVSMData.xy, ThreadID.z);
+
+    float Output = CloudShadowMap.Load(int4(ThreadID.xyz, 0)).x;
+
+
+
+    CloudESM[ThreadID.xy] = Output;
+}
+
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
