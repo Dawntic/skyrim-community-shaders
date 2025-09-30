@@ -316,12 +316,6 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	renderdata->SetupRenderData();
 
-	for (size_t i = 0; i < haltonCount; ++i) {
-		haltonArray[i * 3 + 0] = halton(i + 1, 2);
-		haltonArray[i * 3 + 1] = halton(i + 1, 3);
-		haltonArray[i * 3 + 2] = halton(i + 1, 5);
-	}
-
 	CompileShaders();
 }
 
@@ -334,7 +328,7 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 		{ Shaders::IntergrationVolume, &OrthogonalVolumetricLighting::SetupSliceMarch },
 		{ Shaders::Apply, &OrthogonalVolumetricLighting::SetupApplyVolume },
 		{ Shaders::ShadowEVSM, &OrthogonalVolumetricLighting::SetupEVSM },
-		{ Shaders::RenderCloudMap, &OrthogonalVolumetricLighting::SetupCloudMap },
+		{ Shaders::RenderCloudMap, &OrthogonalVolumetricLighting::SetupCloudShadowMap },
 		{ Shaders::MediaVolume, &OrthogonalVolumetricLighting::SetupMediaVolume },
 		{ Shaders::Perlin, &OrthogonalVolumetricLighting::SetupPerlinNoise },
 		{ Shaders::ShadowEVSMBlur, &OrthogonalVolumetricLighting::SetupEVSMBlur },
@@ -358,45 +352,7 @@ void OrthogonalVolumetricLighting::CheckOverride()
 	}
 }
 
-void OrthogonalVolumetricLighting::DrawFogMap()
-{
-	auto context = globals::d3d::context;
-
-	context->CSSetUnorderedAccessViews(0, 1, &FogMapUAV, nullptr);
-	context->CSSetShader(DrawFogMapCS, nullptr, 0);
-
-	auto volumeBuff = VolumeCB->CB();
-	context->CSSetConstantBuffers(0, 1, &volumeBuff);
-	context->CSSetShaderResources(0, 1, &WorldMapSRV);
-
-	context->Dispatch((UINT)fogMapSize.x, (UINT)fogMapSize.y, 1);
-
-	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
-	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
-
-	overrideShader = false;
-}
-
-void OrthogonalVolumetricLighting::SetupPerlinNoise()
-{
-	auto context = globals::d3d::context;
-	static bool run = true;
-
-	if (run) {
-		context->CSSetUnorderedAccessViews(0, 1, &PerlinUAV, nullptr);
-		context->CSSetShader(GeneratePerlinCS, nullptr, 0);
-
-		context->Dispatch(4, 4, 4);
-
-		ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
-		context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
-
-		run = false;
-	}
-
-	overrideShader = false;
-}
-
+//// SHADOWS //////////////////////////////////////////////////
 void OrthogonalVolumetricLighting::SetupEVSM()
 {
 	auto context = globals::d3d::context;
@@ -483,6 +439,48 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	overrideShader = false;
 }
 
+void OrthogonalVolumetricLighting::SetupCloudShadowMap()
+{
+	auto context = globals::d3d::context;
+
+	context->RSSetState(Rasterizer);
+
+	context->OMSetRenderTargets(1, &CloudShadowRTV, nullptr);
+
+	context->VSSetShader(CloudShadowVS, nullptr, 0);
+	context->PSSetShader(CloudShadowPS, nullptr, 0);
+
+	auto volumeBuff = VolumeCB->CB();
+	context->VSSetConstantBuffers(0, 1, &volumeBuff);
+	context->PSSetConstantBuffers(0, 1, &volumeBuff);
+
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET);
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RASTER_CULL_MODE);
+
+	overrideShader = false;
+}
+
+void OrthogonalVolumetricLighting::SetupCloudESM()
+{
+	auto context = globals::d3d::context;
+
+	context->CSSetUnorderedAccessViews(0, 1, &CloudShadowESMUAV, nullptr);
+	context->CSSetShader(CloudShadowCS, nullptr, 0);
+
+	context->CSSetShaderResources(0, 1, &CloudShadowESMSRV);
+
+	float2 groups = CloudESM_Size / 16;
+	//logger::info("groups: {}  Size: {}  int: {}", groups.x, CloudESM_Size.x, (UINT)groups.x);
+
+	context->Dispatch((UINT)groups.x, (UINT)groups.y, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	overrideShader = false;
+}
+
+//// VOLUMES ///////////////////////////////////////////////////////////
 void OrthogonalVolumetricLighting::SetupMediaVolume()
 {
 	auto context = globals::d3d::context;
@@ -602,7 +600,7 @@ void OrthogonalVolumetricLighting::SetupApplyVolume()
 
 	context->PSSetSamplers(10, 1, &LinearSampler);
 	context->PSSetSamplers(11, 1, &PointSampler);
-	context->PSSetSamplers(12, 1, &DepthSampler);
+	//context->PSSetSamplers(12, 1, &DepthSampler);
 
 	auto volumeBuff = VolumeCB->CB();
 	context->PSSetConstantBuffers(0, 1, &volumeBuff);
@@ -618,40 +616,19 @@ void OrthogonalVolumetricLighting::SetupApplyVolume()
 	overrideShader = false;
 }
 
-void OrthogonalVolumetricLighting::SetupCloudMap()
+//// UTIL ////////////////////////////////////////////////////////////
+void OrthogonalVolumetricLighting::DrawFogMap()
 {
 	auto context = globals::d3d::context;
 
-	//context->RSSetState(Rasterizer);
-
-	context->OMSetRenderTargets(1, &CloudShadowRTV, nullptr);
-
-	context->VSSetShader(CloudShadowVS, nullptr, 0);
-	context->PSSetShader(CloudShadowPS, nullptr, 0);
+	context->CSSetUnorderedAccessViews(0, 1, &FogMapUAV, nullptr);
+	context->CSSetShader(DrawFogMapCS, nullptr, 0);
 
 	auto volumeBuff = VolumeCB->CB();
-	context->VSSetConstantBuffers(0, 1, &volumeBuff);
-	context->PSSetConstantBuffers(0, 1, &volumeBuff);
+	context->CSSetConstantBuffers(0, 1, &volumeBuff);
+	context->CSSetShaderResources(0, 1, &WorldMapSRV);
 
-	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET);
-	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RASTER_CULL_MODE);
-
-	overrideShader = false;
-}
-
-void OrthogonalVolumetricLighting::SetupCloudESM()
-{
-	auto context = globals::d3d::context;
-
-	context->CSSetUnorderedAccessViews(0, 1, &CloudShadowESMUAV, nullptr);
-	context->CSSetShader(CloudShadowCS, nullptr, 0);
-
-	context->CSSetShaderResources(0, 1, &CloudShadowESMSRV);
-
-	float2 groups = CloudESM_Size / 16;
-	//logger::info("groups: {}  Size: {}  int: {}", groups.x, CloudESM_Size.x, (UINT)groups.x);
-
-	context->Dispatch((UINT)groups.x, (UINT)groups.y, 1);
+	context->Dispatch((UINT)fogMapSize.x, (UINT)fogMapSize.y, 1);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
@@ -659,8 +636,27 @@ void OrthogonalVolumetricLighting::SetupCloudESM()
 	overrideShader = false;
 }
 
-///// BUFFER UPDATE /////////////////////////////////////////////////////
+void OrthogonalVolumetricLighting::SetupPerlinNoise()
+{
+	auto context = globals::d3d::context;
+	static bool run = true;
 
+	if (run) {
+		context->CSSetUnorderedAccessViews(0, 1, &PerlinUAV, nullptr);
+		context->CSSetShader(GeneratePerlinCS, nullptr, 0);
+
+		context->Dispatch(4, 4, 4);
+
+		ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+		context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+		run = false;
+	}
+
+	overrideShader = false;
+}
+
+///// BUFFER UPDATE /////////////////////////////////////////////////////
 void OrthogonalVolumetricLighting::PerFrameUpdate()
 {
 	float nearPlane = Util::GetCameraData().y;
@@ -684,11 +680,6 @@ void OrthogonalVolumetricLighting::PerFrameUpdate()
 	globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
 	globals::d3d::context->ClearRenderTargetView(CloudShadowRTV, clear);
 
-	size_t haltonIdx0 = (frameCounter * 2) % haltonCount;
-	haltonJitter.x = haltonArray[haltonIdx0 * 3 + 0];
-	haltonJitter.y = haltonArray[haltonIdx0 * 3 + 1];
-	haltonJitter.z = haltonArray[haltonIdx0 * 3 + 2];
-
 	frameCounter++;
 }
 
@@ -708,7 +699,6 @@ OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateV
 	data.PlayerWSPos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
 	data.VolumeSize = volumeDimensions;
 	data.NoiseSize = noiseDimensions;
-	data.Jitter = float4(haltonJitter.x, haltonJitter.y, haltonJitter.z, 1.0f);
 	data.frameCounter = frameCounter;
 	data.boardCondition = frameCounter & 1;
 	return data;
@@ -762,8 +752,7 @@ bool OrthogonalVolumetricLighting::CheckFrameBuffer()
 	return false;
 }
 
-///// SHADOW MAPPING //////////////////////////////////////////////////////////////
-
+///// SHADOW FUNCS //////////////////////////////////////////////////////////////
 REX::W32::XMFLOAT4X4 OrthogonalVolumetricLighting::GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightMatrix)
 {
 	float4 pos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0);
@@ -797,14 +786,6 @@ void OrthogonalVolumetricLighting::SetupShadowCascade()
 
 		firstRun = false;
 	}
-}
-
-void OrthogonalVolumetricLighting::Hooks::SetShadowMapCount::thunk(RE::BSShadowLight* light, uint64_t numLights)
-{
-	if (light->IsDirectionalLight())
-		numLights = 4;
-
-	func(light, numLights);
 }
 
 //const DirectX::XMMATRIX lightRotation = DirectX::XMMatrixRotationQuaternion(DirectX::XMLoadFloat4(&scene.weather.stars_rotation_quaternion));  // We only care about prioritized directional light anyway
@@ -878,16 +859,20 @@ RE::BSShaderProperty::RenderPassArray* OrthogonalVolumetricLighting::Hooks::BSSk
 	return passArray;
 }
 
-///// SETTINGS //////////////////////////////////////////////////
+void OrthogonalVolumetricLighting::Hooks::SetShadowMapCount::thunk(RE::BSShadowLight* light, uint64_t numLights)
+{
+	if (light->IsDirectionalLight())
+		numLights = 4;
 
+	func(light, numLights);
+}
+
+///// SETTINGS //////////////////////////////////////////////////
 void OrthogonalVolumetricLighting::DrawSettings()
 {
 	ImGui::SeparatorText("Reload");  ///////////////
 	ImGui::Button("Reload Flare");
 	if (ImGui::IsItemClicked()) {
-		DownSamplePS = nullptr;
-		MinifyPS = nullptr;
-		FilterPS = nullptr;
 		GenerateShadowVolumeCS = nullptr;
 		GenerateScatteringVolumeCS = nullptr;
 		SliceMarchCS = nullptr;
@@ -902,15 +887,16 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::Checkbox("Swap Output RT", (bool*)&swapOutputRT);
 
 	ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
-	ImGui::SliderFloat("History Bias", &settings.historyAlpha, 0.0, 0.5);
-	ImGui::SliderFloat("Weight 1", &settings.weight1, 0.0, 1.0);
-	ImGui::SliderFloat("Weight 2", &settings.weight2, 0.0, 1.0);
+	//ImGui::SliderFloat("History Bias", &settings.historyAlpha, 0.0, 0.5);
+	//ImGui::SliderFloat("Weight 1", &settings.weight1, 0.0, 1.0);
+	//ImGui::SliderFloat("Weight 2", &settings.weight2, 0.0, 1.0);
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
 	ImGui::SliderFloat("Extinction", &settings.extinction, 0.0001, 0.1);
-	ImGui::SliderFloat("Color Saturation Bias", &settings.color_saturation, 0.0, 1.0);
-	ImGui::SliderFloat("Shadow Threshold", &settings.shadow_threshold, 0.0, 1.0);
+	ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
+	//ImGui::SliderFloat("Shadow Threshold", &settings.shadow_threshold, 0.0, 1.0);
 	ImGui::SliderInt("VSM Exponent: ", (int*)&settings.esmExponent, 1, 100);
 
+	ImGui::SeparatorText("Fog Maps");
 	ImGui::SliderFloat("Density", &density, 0.0f, 1.0f);
 	ImGui::SliderFloat("Start Height", &fogStartHeight, 0.0f, 1.0f);
 	ImGui::SliderFloat("Falloff Rate", &fogFalloffRate, 0.0f, 1.0f);
@@ -918,6 +904,11 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Radius", &brushRadius, 1.0f, 200.0f, "%.0f");
 	ImGui::SliderFloat("Feather", &brushFeather, 0.0f, 1.0f);
 	ImGui::SliderFloat("Erase", &settings.blendOpp, -1.0f, 0.0f, "%.0f");
+
+	//ImGui::Button("Export Map");
+	//if (ImGui::IsItemClicked()) {
+
+	//}
 
 	ImVec2 displaySize = ImVec2(screenSize.x * 0.5f, screenSize.y * 0.5f);
 

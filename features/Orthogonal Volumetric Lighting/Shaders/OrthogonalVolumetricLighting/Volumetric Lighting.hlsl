@@ -25,7 +25,6 @@ cbuffer VolumeBuffer : register(b0)
     float4 CameraWS;
     float4 VolumeSize;
 	float4 NoiseSize;
-    float4 Jitter;
     uint FrameCounter;
     uint BoardCond;
 };
@@ -170,9 +169,43 @@ float DepthVS(float depth){
 }
 
 
-float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float ThicknessZ, float BNoise){
-    float2 Values = float2(8388608.0, -8388608.0);
+float ChebyshevUpperBound(float FirstMoment, float SecondMoment, float TestWarp, float VarianceFloor, float BleedReduction)
+{
+    float Variance = max(SecondMoment - FirstMoment * FirstMoment, VarianceFloor);
+    float Delta = TestWarp - FirstMoment;
+    if (BleedReduction > 0.0)
+        Delta = max(Delta - BleedReduction * sqrt(Variance), 0.0);
+
+    return saturate(Variance / (Variance + Delta * Delta + EPSILON));
+}
+
+float EVSM_VisibilityOther(float LightZ, float2 Moments)
+{
+    float TestWarp = exp(UIExponent * LightZ);
+    Moments = max(Moments, EPSILON);
+
+    float VarianceFloor = EPSILON;
+    float BleedReduction = 0.0;
+
+    return ChebyshevUpperBound(Moments.x, Moments.y, TestWarp, VarianceFloor, BleedReduction);
+}
+
+float EVSM_Visibility(float3 CoordsLS, float2 Moments){
+    float Offset = 8388888;
     float BiasVal = 0.0005;
+
+    float Depth = exp(UIExponent * CoordsLS.z);
+    float DepthBias = BiasVal * Depth;
+    float Delta = Depth - Moments.x;
+
+    float Variance = max(Moments.y - Moments.x * Moments.x, DepthBias * DepthBias);
+    float Visibility = Variance / (Variance + Delta * Delta);
+
+    return (Depth <= Moments.x) ? 1.0 : saturate(Visibility * Offset + -Offset);
+}
+
+float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float ThicknessZ, float BNoise){
+
     int Samples = 4;
 
     float2 Splits = float2(0.98704, 0.99777);
@@ -185,15 +218,8 @@ float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float Thic
 
         uint CascadeIndex = (ViewZ < ViewSplit) ? 0 : 1;
         float3 CoordsLS = mul(ShadowCascadeMatrix[CascadeIndex], float4(RaySampleCoords, 1.0)).xyz;
-
-        float Reconstruct = exp(UIExponent * (saturate(CoordsLS.z) * 2.0 - 1.0)) + 9.99e-5;
-        float2 Moments = EVSMCascade.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CascadeIndex), 0).xy + float2(9.99e-5, 9.99e-9);
-        float Baised = Reconstruct * BiasVal;
-        float Variance = max(Moments.y - Moments.x * Moments.x, Baised * Baised);
-        float Delta = Reconstruct - Moments.x;
-
-        float Visibility = Variance / (Variance + Delta * Delta);
-              Visibility = (Reconstruct <= Moments.x) ? 1.0 : saturate(Visibility * Values.x + Values.y);
+        float2 Moments = EVSMCascade.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CascadeIndex), 0).xy;
+        float Visibility = EVSM_Visibility(CoordsLS, Moments);
 
         Result += Visibility;
 
@@ -207,10 +233,47 @@ float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float Thic
 }
 
 
-//Happens with EVSM not unfiltered
+float Get2DFilteredShadowCascade(float noise, float2x2 rotationMatrix, float sampleOffsetScale, float2 baseUV, float cascadeIndex, float compareValue, uint eyeIndex)
+{
+    const uint sampleCount = 16;
+    float layerIndexRcp = rcp(1 + cascadeIndex);
+    float visibility = 0.0;
+
+    for (uint sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
+        float2 sampleOffset = mul(Random::PoissonSampleOffsets16[sampleIndex], rotationMatrix);
+        float2 sampleUV = layerIndexRcp * sampleOffset * sampleOffsetScale + baseUV;
+        float4 depths = CSMCascade.GatherRed(Linear_Sampler, float3(saturate(sampleUV), cascadeIndex), 0);
+        visibility += dot(depths > compareValue, 0.25);
+    }
+    return visibility * rcp((float)sampleCount);
+}
+
+float Get2DFilteredShadow(float noise, float2x2 rotationMatrix, float3 positionWS, uint eyeIndex, float ViewZ)
+{
+    float2 Splits = float2(0.98704, 0.99777);
+    float ViewSplit = GetFroxelSlice(DepthVS(Splits.x));
+          ViewSplit = exp2((ViewSplit * VolumeSize.z) / FrustumNearFar.w) / FrustumNearFar.z;
+
+    float cascadeIndex = (ViewZ < ViewSplit) ? 0 : 1;
+    float4x4 lightProjectionMatrix = ShadowCascadeMatrix[cascadeIndex];
+
+    float3 positionLS = mul(lightProjectionMatrix, float4(positionWS.xyz, 1)).xyz;
+    float shadowVisibility = Get2DFilteredShadowCascade(noise, rotationMatrix, ShadowDataSB[0].ShadowSampleParam.z, positionLS.xy, cascadeIndex, positionLS.z, eyeIndex);
+    float fadeFactor = 1 - pow(saturate(dot(positionWS.xyz, positionWS.xyz) / ShadowDataSB[0].ShadowLightParam.z), 8);
+
+    return lerp(1.0, shadowVisibility, fadeFactor);
+}
+
+float GetLightingShadow(float noise, float3 worldPosition, uint eyeIndex, float ViewZ)
+{
+    float2 rotation;
+    sincos(Math::TAU * noise, rotation.y, rotation.x);
+    float2x2 rotationMatrix = float2x2(rotation.x, rotation.y, -rotation.y, rotation.x);
+    return Get2DFilteredShadow(noise, rotationMatrix, worldPosition, eyeIndex, ViewZ);
+}
+//Happens only with EVSM not unfiltered
 //Happens worse with downscaled
 //Much worse with Valid var in EVSM
-
 //twinkling issue only happens with EVSM
 
 [numthreads(4, 4, 4)]
@@ -218,8 +281,11 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float3 Froxel = ThreadID;
 
-    float CoordZ = exp2(max(Froxel.z - 2, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
-    float ThicknessZ = exp2(max(Froxel.z - 1, 0.1) / FrustumNearFar.w) / FrustumNearFar.z - CoordZ;
+    //float CoordZ = exp2(max(Froxel.z - 2, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
+    //float ThicknessZ = exp2(max(Froxel.z - 1, 0.1) / FrustumNearFar.w) / FrustumNearFar.z - CoordZ;
+
+    float CoordZ = exp2(max(Froxel.z + 2, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
+    float ThicknessZ = exp2(max(Froxel.z + 1, 0.1) / FrustumNearFar.w) / FrustumNearFar.z - CoordZ;
 
     float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
     float BNoise2 = frac(BNoise + (FrameCounter & 31) * kPhi); // +12?
@@ -239,6 +305,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float shadowMapThreshold = cascadeIndex == 0 ? 0.01 : 0.0;
     Shadow = float(shadowMapValue >= positionLS.z - shadowMapThreshold);
 */
+    //Shadow = GetLightingShadow(0, RayPosition * ViewZ, 0, ViewZ);
 
     float2 Confidence;
     float ViewZCenter = exp2(max(Froxel.z + 0.5, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
@@ -248,11 +315,60 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ShadowHistory = HistoryVolume.SampleLevel(AnisoClampSampler, PrevCoordsUV, 0).x;
     Shadow = lerp(Shadow, ShadowHistory, BaseValue);
     //Shadow = min(Shadow, 0.32);
-    //Shadow = 1;
+    //Shadow = (Froxel.z < 60) ? 0.0 : Shadow;
 
     ShadowVolume[ThreadID] = Shadow;
 }
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
 
+
+
+//// Create EVSM ////////////////////////////////////////////////////////////////////////
+
+#ifdef EVSM_COMPUTE
+
+Texture2DArray CSM : register(t0);
+RWTexture2DArray<float2> EVSM : register(u0);
+
+static const int2 Offsets[4] = { int2(-1,-1), int2( 1,-1), int2(-1, 1), int2( 1, 1) };
+static const float4 ONE = float4(1.0, 1.0, 1.0, 1.0);
+float sum4(float4 value){ return value.x + value.y + value.z + value.w; }
+
+[numthreads(16, 16, 1)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    float2 Coords = (float2(ThreadID.xy) + 0.5) / EVSMData.xy;
+    float Sample = CSM.SampleLevel(Point_Sampler, float3(Coords, ThreadID.z), 0).x;
+    float ExpValue = exp(UIExponent * Sample);
+    float2 Output = float2(ExpValue, ExpValue * ExpValue);
+
+    EVSM[ThreadID.xyz] = Output;
+}
+#endif
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+#ifdef EVSMBLUR_COMPUTE
+
+Texture2DArray EVSM : register(t0);
+RWTexture2DArray<float2> BlurOutput : register(u0);
+
+[numthreads(16, 16, 1)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    float2 Result = 1e+10;
+    int SearchRadius = 2;
+    [loop] for (int dy = -SearchRadius+1; dy <= SearchRadius; ++dy){
+        [loop] for (int dx = -SearchRadius+1; dx <= SearchRadius; ++dx){
+            int2 Coords = clamp(int2(ThreadID.xy) + int2(dx, dy), int2(0,0), int2(EVSMData.xy - 1));
+            Result = min(Result, EVSM.Load(int4(Coords, ThreadID.z, 0)).xy);
+        }
+    }
+    //Result = EVSM.Load(int4(ThreadID.xyz, 0)).xy;
+
+    BlurOutput[ThreadID.xyz] = Result;
+}
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -350,21 +466,6 @@ float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
     return (1.0 - AnisotropySq) / (4.0 * Math::PI * phase);
 }
 
-float PhaseFunction(float3 IncidentDir, float3 CameraDir, float Anisotropy, float Extinction, float Weight1, float Weight2, int MLobes){
-	float SecondaryLobe = 0.0;
-    float secondAnisotropy = Anisotropy * (2.0 / 3.0);
-
-    float ScatteringAngle = dot(IncidentDir, CameraDir);
-    float PrimaryLobe = HenyeyGreensteinPhase(ScatteringAngle, Anisotropy) * Weight1;
-
-    for (int j = 1; j <= MLobes; ++j)
-        SecondaryLobe += HenyeyGreensteinPhase(ScatteringAngle, secondAnisotropy);
-    SecondaryLobe = (Weight2 * Extinction / float(MLobes - 1)) * SecondaryLobe;
-
-    return PrimaryLobe + SecondaryLobe;
-}
-//float3 Scattering = Color * PhaseFunction(IncomingDir, OutgoingDir, UIAnisotropy, Media.w, UIWeight, UIWeight2, 2);
-
 //g = 0.85  cosTheta = 0.70
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -374,18 +475,15 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float4 Media = MediaVolume.Load(int4(Froxel, 0));
     float Shadow = ShadowVolume.Load(int4(Froxel, 0)).x;
 
-    //float ViewZ = exp2((Froxel.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
-    float3 RayPosition = FroxelWorldDirection(Froxel, 1);
+    float3 RayPosition = FroxelWorldDirection(Froxel, 15.7);
 
     float3 IncomingDir = normalize(SharedData::DirLightDirection.xyz);
     float3 OutgoingDir = normalize(RayPosition);
-    float ScatteringAngle = dot(IncomingDir, OutgoingDir);
+    float ScatterCos = dot(IncomingDir, OutgoingDir);
 
-    float3 Scattering = HenyeyGreensteinPhase(ScatteringAngle, UIAnisotropy).xxx;
+    float3 Scattering = HenyeyGreensteinPhase(ScatterCos, UIAnisotropy).xxx;
            Scattering *= lerp(float3(1.0, 1.0, 1.0), SharedData::DirLightColor.xyz, UISaturation);
            Scattering = Scattering * Media.xyz * Shadow;
-
-    //Scattering = ScatteringAngle.xxx;
 
     ScatteringVolume[ThreadID] = float4(Scattering, Media.w);
 }
@@ -489,70 +587,6 @@ float4 main(VertexShaderOutput input) : SV_Target
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
-
-
-
-//// Create EVSM ////////////////////////////////////////////////////////////////////////
-
-#ifdef EVSM_COMPUTE
-
-Texture2DArray CSM : register(t0);
-RWTexture2DArray<float2> EVSM : register(u0);
-
-static const int2 Offsets[8] = { int2(-1,-1), int2( 1,-1), int2(-1, 1), int2( 1, 1),
-                                 int2(-2,-2), int2( 2,-2), int2(-2, 2), int2( 2, 2) };
-
-static const float4 ONE = float4(1.0, 1.0, 1.0, 1.0);
-
-float sum4(float4 value){ return value.x + value.y + value.z + value.w; }
-
-[numthreads(16, 16, 1)]
-void main(uint3 ThreadID : SV_DispatchThreadID)
-{
-    float3 Coords = float3((float2(ThreadID.xy) + 0.5) / EVSMData.xy, ThreadID.z);
-
-    float DeltaLim = 0.0; //??
-    float2 Result = float2(0.0, 0.0);
-    float4 Passed = 0;
-    [unroll] for(int i = 0; i < 4; ++i){
-        float4 Sample = CSM.GatherRed(Point_Sampler, Coords, Offsets[i]);
-        //float4 Valid = ONE;//(Sample < (1.0 - DeltaLim)) ? ONE : 0.0;
-        //Result += float3(dot(ExpValue, ONE), dot(ExpValue, ExpValue), dot(Valid, ONE));
-        float4 Valid = (float4)(Sample < 1.0);
-        float4 ExpValue = Valid * exp((Sample * 2.0 - 1.0) * UIExponent);
-        Result += float2(dot(ExpValue, ONE), dot(ExpValue * ExpValue, ONE));
-        Passed += Valid;
-    }
-    Passed.x = sum4(Passed);
-    Result = (Passed.x > 0) ? Result / Passed.x : EVSMData.zw;
-
-    EVSM[ThreadID] = Result;
-}
-#endif
-/////////////////////////////////////////////////////////////////////////////////////////
-
-#ifdef EVSMBLUR_COMPUTE
-
-Texture2DArray EVSM : register(t0);
-RWTexture2DArray<float2> BlurOutput : register(u0);
-
-[numthreads(16, 16, 1)]
-void main(uint3 ThreadID : SV_DispatchThreadID)
-{
-    float2 Result = 3.4e+38;
-    int SearchRadius = 2;
-    [loop] for (int dy = -SearchRadius; dy <= SearchRadius; ++dy){
-        [loop] for (int dx = -SearchRadius; dx <= SearchRadius; ++dx){
-            Result = min(Result, EVSM.Load(int4(ThreadID.xy + int2(dx, dy), ThreadID.z, 0)).xy);
-        }
-    }
-    Result = EVSM.Load(int4(ThreadID.xyz, 0)).xy;
-
-    BlurOutput[ThreadID.xyz] = Result;
-}
-#endif
-/////////////////////////////////////////////////////////////////////////////////////////
-
 
 
 //// Cloud Shadow Map ///////////////////////////////////////////////////////////////////

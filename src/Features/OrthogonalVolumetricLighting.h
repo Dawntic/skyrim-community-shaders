@@ -44,7 +44,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupFilterPass();
 	virtual void SetupSliceMarch();
 	virtual void SetupApplyVolume();
-	virtual void SetupCloudMap();
+	virtual void SetupCloudShadowMap();
 	virtual void SetupEVSM();
 	virtual void SetupShadowVolume();
 	virtual void SetupMediaVolume();
@@ -54,64 +54,58 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupCloudESM();
 
 	D3D11_VIEWPORT viewPort[4];
+	ID3D11RasterizerState* Rasterizer = nullptr;
+	Microsoft::WRL::ComPtr<ID3D11Buffer> FrameBuffer[2];
+	ConstantBuffer* VolumeCB = nullptr;
+	ConstantBuffer* SettingsCB = nullptr;
 	ConstantBuffer* ESMCBuffer = nullptr;
+	ID3D11BlendState* AddBlend = nullptr;
 	ID3D11SamplerState* LinearSampler = nullptr;
 	ID3D11SamplerState* PointSampler = nullptr;
-	ID3D11SamplerState* DepthSampler = nullptr;
 	ID3D11SamplerState* AnisoLinear = nullptr;
 	ID3D11SamplerState* AnisoWrapLinear = nullptr;
 
-	ID3D11VertexShader* BypassVertexShader = nullptr;
-	ID3D11PixelShader* DownSamplePS = nullptr;
-	ID3D11PixelShader* MinifyPS = nullptr;
-	ID3D11PixelShader* FilterPS = nullptr;
+	//// Volumes ////////////
+	ID3D11ComputeShader* GenerateScatteringVolumeCS = nullptr;
+	ID3D11ComputeShader* FilterVolumeCS = nullptr;
+	ID3D11ComputeShader* SliceMarchCS = nullptr;
+	ID3D11ComputeShader* GenerateMediaVolumeCS = nullptr;
 
+	ID3D11Texture3D* MediaVolume[2] = {};
+	ID3D11UnorderedAccessView* MediaVolumeUAV[2] = {};
+	ID3D11ShaderResourceView* MediaVolumeSRV[2] = {};
+
+	ID3D11Texture3D* ScatteringVolume = nullptr;
+	ID3D11UnorderedAccessView* ScatteringVolumeUAV = nullptr;
+	ID3D11ShaderResourceView* ScatteringVolumeSRV = nullptr;
+
+	ID3D11Texture3D* IntergrationVolume = nullptr;
+	ID3D11UnorderedAccessView* IntergrationVolumeUAV = nullptr;
+	ID3D11ShaderResourceView* IntergrationVolumeSRV = nullptr;
+
+	ID3D11Texture3D* FilteringVolume[2] = {};
+	ID3D11UnorderedAccessView* FilterVolumeUAV[2] = {};
+	ID3D11ShaderResourceView* FilterVolumeSRV[2] = {};
+
+	//// Shadows /////////////
+	ID3D11ComputeShader* GenerateEVSMCS = nullptr;
+	ID3D11ComputeShader* BlurEVSMCS = nullptr;
+	ID3D11ComputeShader* GenerateShadowVolumeCS = nullptr;
+	ID3D11ComputeShader* CloudShadowCS = nullptr;
 	ID3D11VertexShader* CloudShadowVS = nullptr;
 	ID3D11PixelShader* CloudShadowPS = nullptr;
-
-	ID3D11Texture2D* MinifyTex = nullptr;
-	ID3D11Texture2D* HorizontalTex = nullptr;
-	ID3D11Texture2D* ESMTexture = nullptr;
-	ID3D11Texture2D* CloudShadowTexture = nullptr;
-
-	ID3D11ShaderResourceView* MinifySRV = nullptr;
-	ID3D11ShaderResourceView* HorizontalSRV = nullptr;
-	ID3D11ShaderResourceView* ESM_SRV = nullptr;
-	ID3D11ShaderResourceView* CloudMapSRV = nullptr;
-
-	ID3D11RenderTargetView* ExponentiateRTV[2] = {};
-	ID3D11RenderTargetView* MinifyRTV = nullptr;
-	ID3D11RenderTargetView* HorizontalRTV = nullptr;
-	ID3D11RenderTargetView* ESM_RTV = nullptr;
-	ID3D11RenderTargetView* CloudShadowRTV = nullptr;
 
 	ID3D11Texture2D* CascadeTex = nullptr;
 	ID3D11ShaderResourceView* CascadeSRV = nullptr;
 	ID3D11DepthStencilView* CascadeDSV[4] = {};
 
-	ID3D11RasterizerState* Rasterizer = nullptr;
+	ID3D11Texture2D* CloudShadowTexture = nullptr;
+	ID3D11RenderTargetView* CloudShadowRTV = nullptr;
+	ID3D11ShaderResourceView* CloudMapSRV = nullptr;
 
-	Microsoft::WRL::ComPtr<ID3D11Buffer> FrameBuffer[2];
-	ConstantBuffer* VolumeCB = nullptr;
-	ConstantBuffer* SettingsCB = nullptr;
-	ID3D11BlendState* AddBlend = nullptr;
-
-	ID3D11ComputeShader* GeneratePerlinCS = nullptr;
-	ID3D11ComputeShader* DrawFogMapCS = nullptr;
-	ID3D11ComputeShader* GenerateEVSMCS = nullptr;
-	ID3D11ComputeShader* BlurEVSMCS = nullptr;
-	ID3D11ComputeShader* GenerateShadowVolumeCS = nullptr;
-	ID3D11ComputeShader* GenerateScatteringVolumeCS = nullptr;
-	ID3D11ComputeShader* FilterVolumeCS = nullptr;
-	ID3D11ComputeShader* SliceMarchCS = nullptr;
-	ID3D11ComputeShader* GenerateMediaVolumeCS = nullptr;
-	ID3D11ComputeShader* CloudShadowCS = nullptr;
-	ID3D11PixelShader* ApplyVolumePS = nullptr;
-	ID3D11PixelShader* OutputPS = nullptr;
-
-	ID3D11Texture3D* PerlinTex = nullptr;
-	ID3D11UnorderedAccessView* PerlinUAV = nullptr;
-	ID3D11ShaderResourceView* PerlinSRV = nullptr;
+	ID3D11Texture2D* CloudShadowESMTexture = nullptr;
+	ID3D11ShaderResourceView* CloudShadowESMSRV = nullptr;
+	ID3D11UnorderedAccessView* CloudShadowESMUAV = nullptr;
 
 	ID3D11Texture2D* ExpoTexture = nullptr;
 	ID3D11UnorderedAccessView* ExpoUAV = nullptr;
@@ -125,23 +119,14 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11UnorderedAccessView* ShadowVolumeUAV[2] = {};
 	ID3D11ShaderResourceView* ShadowVolumeSRV[2] = {};
 
-	ID3D11Texture3D* MediaVolume[2] = {};
-	ID3D11UnorderedAccessView* MediaVolumeUAV[2] = {};
-	ID3D11ShaderResourceView* MediaVolumeSRV[2] = {};
+	//// Util /////////////
+	ID3D11ComputeShader* GeneratePerlinCS = nullptr;
+	ID3D11ComputeShader* DrawFogMapCS = nullptr;
+	ID3D11VertexShader* BypassVertexShader = nullptr;
 
-	ID3D11Texture3D* ScatteringVolume = nullptr;
-	ID3D11UnorderedAccessView* ScatteringVolumeUAV = nullptr;
-	ID3D11ShaderResourceView* ScatteringVolumeSRV = nullptr;
-
-	ID3D11Texture3D* FilteringVolume[2] = {};
-	ID3D11UnorderedAccessView* FilterVolumeUAV[2] = {};
-	ID3D11ShaderResourceView* FilterVolumeSRV[2] = {};
-
-	ID3D11Texture3D* IntergrationVolume = nullptr;
-	ID3D11UnorderedAccessView* IntergrationVolumeUAV = nullptr;
-	ID3D11ShaderResourceView* IntergrationVolumeSRV = nullptr;
-
-	ID3D11ShaderResourceView* STBNoiseSRV = nullptr;
+	ID3D11Texture3D* PerlinTex = nullptr;
+	ID3D11UnorderedAccessView* PerlinUAV = nullptr;
+	ID3D11ShaderResourceView* PerlinSRV = nullptr;
 
 	ID3D11Texture2D* WorldMapTexture = nullptr;
 	ID3D11ShaderResourceView* WorldMapSRV = nullptr;
@@ -150,15 +135,14 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11ShaderResourceView* FogMapSRV = nullptr;
 	ID3D11UnorderedAccessView* FogMapUAV = nullptr;
 
-	ID3D11Texture2D* CloudShadowESMTexture = nullptr;
-	ID3D11ShaderResourceView* CloudShadowESMSRV = nullptr;
-	ID3D11UnorderedAccessView* CloudShadowESMUAV = nullptr;
+	//// Misc /////////
+	ID3D11PixelShader* ApplyVolumePS = nullptr;
+	ID3D11PixelShader* OutputPS = nullptr;
+	ID3D11ShaderResourceView* STBNoiseSRV = nullptr;
 
 	ID3D11Texture2D* OutputTexture = nullptr;
 	ID3D11ShaderResourceView* OutputSRV = nullptr;
 	ID3D11RenderTargetView* OutputRTV = nullptr;
-
-	float2 screenSize;
 
 	uint CSM_Size = 2048;
 	uint EVSM_Size = CSM_Size / 8;
@@ -177,35 +161,22 @@ struct OrthogonalVolumetricLighting : Feature
 
 	DirectX::XMFLOAT4X4 cloudShadowLSViewProj;
 	DirectX::XMFLOAT4X4 cloudShadowLSViewProjInverse;
-
-	int haltonCount = 32;
-	float haltonArray[96];
-	float3 haltonJitter;
+	float3 eyePositionWS;
+	float2 screenSize;
+	uint frameCounter = 0;
 
 	bool overrideShader = false;
-	uint frameCounter = 0;
-	bool UpdateFogMap = true;
-
-	RE::BSShadowLight* shadowLight;
 	bool swapOutputRT = false;
 
-	bool FilterVolParity;
 	int PrevMatrixIdx;
-
-	DirectX::XMFLOAT4X4 cloudShadowsMatrix;
-
+	bool FilterVolParity;
 	bool shadowVolParity;
 	bool mediaVolParity;
-
-	float ZOffsetValue = 1.0f;
 
 	uintptr_t* skyrim_FlareData = nullptr;
 	uint32_t* skyrim_RunFlarePtr = nullptr;
 	RE::NiPoint3* skyrim_SunPosition = nullptr;
-
-	float4 MinMaxValues = float4(0, 0, 0, 0);
-	float2 FogMapCoords;
-	float3 eyePositionWS;
+	RE::BSShadowLight* shadowLight;
 
 	virtual void RestoreDefaultSettings() override;
 	virtual void DrawSettings() override;
@@ -219,18 +190,6 @@ struct OrthogonalVolumetricLighting : Feature
 	float brushRadius = 24.0f;
 	float brushFeather = 0.5;
 	float fogErase = false;
-
-	static inline float halton(size_t index, size_t base)
-	{
-		float f = 1.0f;
-		float r = 0.0f;
-		while (index > 0) {
-			f /= base;
-			r += f * (index % base);
-			index /= base;
-		}
-		return r;
-	}
 
 	struct Settings
 	{
@@ -274,41 +233,6 @@ struct OrthogonalVolumetricLighting : Feature
 	};
 	virtual SettingsBuffer UpdateSettingsBuffer();
 
-	virtual inline DirectX::XMFLOAT4A VectorToXMFloat(float4& value) { return DirectX::XMFLOAT4A(value.x, value.y, value.z, value.w); }
-	virtual inline float LinearStep(float edge0, float edge1, float x) { return std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f); }
-
-	static inline float Dot3(const Vector3& a, const Vector3& b)
-	{
-		return a.x * b.x + a.y * b.y + a.z * b.z;
-	}
-
-	static inline Vector3 ViewRayFromNDC(float ndcX, float ndcY, const Matrix& cameraProj)
-	{
-		// Inverse projection diagonal (row-vector; HLSL column-major equivalent is 1/Proj[0][0], 1/Proj[1][1])
-		float invPx = 1.0f / cameraProj._11;
-		float invPy = 1.0f / cameraProj._22;
-		Vector3 dirVS(ndcX * invPx, ndcY * invPy, 1.0f);
-		dirVS.Normalize();
-		return dirVS;
-	}
-
-	static inline float4 mul(const float4& v, const REX::W32::XMFLOAT4X4& M)
-	{
-		return {
-			v.x * M.m[0][0] + v.y * M.m[1][0] + v.z * M.m[2][0] + v.w * M.m[3][0],
-			v.x * M.m[0][1] + v.y * M.m[1][1] + v.z * M.m[2][1] + v.w * M.m[3][1],
-			v.x * M.m[0][2] + v.y * M.m[1][2] + v.z * M.m[2][2] + v.w * M.m[3][2],
-			v.x * M.m[0][3] + v.y * M.m[1][3] + v.z * M.m[2][3] + v.w * M.m[3][3]
-		};
-	}
-
-	static inline void transpose(const REX::W32::XMFLOAT4X4& in, REX::W32::XMFLOAT4X4& out)
-	{
-		for (int r = 0; r < 4; ++r)
-			for (int c = 0; c < 4; ++c)
-				out.m[c][r] = in.m[r][c];
-	}
-
 	struct Shaders
 	{
 		enum Enum
@@ -329,6 +253,26 @@ struct OrthogonalVolumetricLighting : Feature
 		};
 	};
 	Shaders::Enum shaderdesc;
+
+	virtual inline DirectX::XMFLOAT4A VectorToXMFloat(float4& value) { return DirectX::XMFLOAT4A(value.x, value.y, value.z, value.w); }
+	virtual inline float LinearStep(float edge0, float edge1, float x) { return std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f); }
+
+	static inline float4 mul(const float4& v, const REX::W32::XMFLOAT4X4& M)
+	{
+		return {
+			v.x * M.m[0][0] + v.y * M.m[1][0] + v.z * M.m[2][0] + v.w * M.m[3][0],
+			v.x * M.m[0][1] + v.y * M.m[1][1] + v.z * M.m[2][1] + v.w * M.m[3][1],
+			v.x * M.m[0][2] + v.y * M.m[1][2] + v.z * M.m[2][2] + v.w * M.m[3][2],
+			v.x * M.m[0][3] + v.y * M.m[1][3] + v.z * M.m[2][3] + v.w * M.m[3][3]
+		};
+	}
+
+	static inline void transpose(const REX::W32::XMFLOAT4X4& in, REX::W32::XMFLOAT4X4& out)
+	{
+		for (int r = 0; r < 4; ++r)
+			for (int c = 0; c < 4; ++c)
+				out.m[c][r] = in.m[r][c];
+	}
 
 	struct Setup  //expanded version of BGS lens flare system
 	{
