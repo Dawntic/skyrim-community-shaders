@@ -101,7 +101,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	ID3D11Texture2D* CloudShadowTexture = nullptr;
 	ID3D11RenderTargetView* CloudShadowRTV = nullptr;
-	ID3D11ShaderResourceView* CloudMapSRV = nullptr;
+	ID3D11ShaderResourceView* CloudShadowSRV = nullptr;
 
 	ID3D11Texture2D* CloudShadowESMTexture = nullptr;
 	ID3D11ShaderResourceView* CloudShadowESMSRV = nullptr;
@@ -145,7 +145,7 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11RenderTargetView* OutputRTV = nullptr;
 
 	uint CSM_Size = 2048;
-	uint EVSM_Size = CSM_Size / 8;
+	uint EVSM_Size = CSM_Size / 2;
 	float2 CloudESM_Size = float2(2560, 1440);
 
 	float4 frustumNearFar;
@@ -175,7 +175,8 @@ struct OrthogonalVolumetricLighting : Feature
 
 	uintptr_t* skyrim_FlareData = nullptr;
 	uint32_t* skyrim_RunFlarePtr = nullptr;
-	RE::NiPoint3* skyrim_SunPosition = nullptr;
+	//RE::NiPoint3* skyrim_SunPosition = nullptr;
+	inline static RE::NiPoint3* skyrim_SunPosition = nullptr;
 	RE::BSShadowLight* shadowLight;
 
 	virtual void RestoreDefaultSettings() override;
@@ -199,16 +200,19 @@ struct OrthogonalVolumetricLighting : Feature
 		float weight1 = 0.5;
 		float weight2 = 0.3;
 		float anisotropy = 0.0;
-		float extinction = 0.04;
+		float visibilityMeters = 0.04;
+		float albedo = 1.0;
 		float color_saturation = 1.0;
 		float shadow_threshold = 1.0;
 		uint esmExponent = 2;
 		float blendOpp = false;
-		float _pad[1];
+		//float _pad[1];
 		float4 fogMapData;
 		float4 fogMapColor;
 	};
 	Settings settings;
+
+	float4 cloudOrigin = float4(1, 1, 1, 1);
 
 	struct alignas(16) VolumeBuffer
 	{
@@ -223,6 +227,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float4 Jitter;
 		uint frameCounter;
 		uint boardCondition;
+		float4 CloudOrigin;
 		float _pad[2];
 	};
 	virtual VolumeBuffer UpdateVolumeBuffer();
@@ -472,7 +477,7 @@ struct OrthogonalVolumetricLighting : Feature
 			stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>>(RE::VTABLE_BSImagespaceShaderLensFlare[3]);
 			stl::write_vfunc<0x6, BSSkyShader_SetupMaterial>(RE::VTABLE_BSSkyShader[0]);
 
-			stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
+			//stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
 
 			//stl::detour_thunk<SetShadowMapCount>(REL::RelocationID(107599, 107599));
 		}
