@@ -417,13 +417,27 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //Extinction = MapRange(UIExtinction, 0.0, 0.1, 0.0, 1.0);
     //float Absorption = Extinction - ScatterCoeff;
 
-    float3 Base = float3(1.0, 1.0, 1.0);
-    float Density = 1.0; //comes from fog map and or global fog (after accounting for height)
-    float Extinction = 1.0 / UIVisibilityMeters;
-    float ScatterCoeff = UIAlbedo * Extinction * Density;
+   // float3 Base = float3(1.0, 1.0, 1.0);
+   // float Density = 1.0; //comes from fog map and or global fog (after accounting for height)
+    //float Extinction = 1.0 / UIVisibilityMeters;
+   // float ScatterCoeff = UIAlbedo * Extinction * Density;
 
-    float4 Output = float4(Base * ScatterCoeff, Extinction * Density);
-    Output = float4(Base, Extinction);
+   // float4 Output = float4(Base * ScatterCoeff, Extinction * Density);
+   // Output = float4(Base, Extinction);
+
+    float VisCorrect = UIVisibilityMeters * rcp(250);
+    float MediaDensity = 1.0;
+    float3 MediaScat = float3(1,1,1) * MediaDensity;
+    float MediaExt = VisCorrect * MediaDensity;
+
+    float4 Output = float4(MediaScat, MediaExt);
+   // float MediaAbsorb = 0.0;
+    //float MediaExt = MediaScat + MediaAbsorb;
+    //float Abledo = MediaScat / MediaExt;
+
+
+
+    //float MediaPhase = 0.85; //g factor?
 
 
 //// Wind Vectoring
@@ -481,6 +495,30 @@ float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
     return (1.0 - AnisotropySq) / (4.0 * Math::PI * (phase * sqrt(phase)));
 }
 
+    //float3 Ambient = Color::GammaToLinear(SharedData::DirectionalAmbient._14_24_34);
+    //float3 ambientLight = (1.0 / Math::PI);
+    //float Directional_Light_Radiance =
+/*
+    float TransMult = 50.0;
+    float BaseTransmittance = exp(-Scattering_Extinction.w * TransMult);
+    float ShadowTransmittance = Shadow * BaseTransmittance;
+
+    float3 RadianceMult = float3(20000, 11100, 3400) * 0.01;
+    float RandomMult = 1500.0;
+    RandomMult = 1;
+
+    float3 FillAmbient = float3(100, 200, 350) * 0.0;
+
+    float3 MultTermFirst = RandomMult * RadianceMult * ShadowTransmittance;
+    float3 MultTermSecond = FillAmbient * ShadowTransmittance;
+
+    //Phase = Phase * MultTermFirst + MultTermSecond;
+
+    //float3 Scattering = Color * Phase * MediaScattering_EScattering_Extinctionxtinction.xyz * Shadow;// * 30; //* Shadow
+    //Scattering += ambientLight / (4.0 * Math::PI);
+
+     //float3 Color = lerp(float3(1.0, 1.0, 1.0), SharedData::DirLightColor.xyz, UISaturation); //need to preserve power
+*/
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -498,33 +536,19 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float4 Scattering_Extinction = MediaVolume.Load(int4(Froxel, 0));
     float Shadow = ShadowVolume.Load(int4(Froxel, 0)).x;
 
-    float3 Color = lerp(float3(1.0, 1.0, 1.0), SharedData::DirLightColor.xyz, UISaturation); //need to preserve power
+
+    float3 Lighting = float3(0,0,0);
+
+    float3 Ambient = rcp(Math::PI) / (4.0 * Math::PI);
+    Lighting += Ambient;
+
+    float3 DirLight = SharedData::DirLightColor.xyz * Phase * Shadow;
+    Lighting += DirLight;
+
+    Lighting *= Scattering_Extinction.xyz;
 
 
-    //float3 Ambient = Color::GammaToLinear(SharedData::DirectionalAmbient._14_24_34);
-    //float3 ambientLight = (1.0 / Math::PI);
-    //float Directional_Light_Radiance =
-
-    float TransMult = 50.0;
-    float BaseTransmittance = exp(-Scattering_Extinction.w * TransMult);
-    float ShadowTransmittance = Shadow * BaseTransmittance;
-
-    float3 RadianceMult = float3(20000, 11100, 3400) * 0.01;
-    float RandomMult = 1500.0;
-    RandomMult = 1;
-
-    float3 FillAmbient = float3(100, 200, 350) * 0.0;
-
-    float3 MultTermFirst = RandomMult * RadianceMult * ShadowTransmittance;
-    float3 MultTermSecond = FillAmbient * ShadowTransmittance;
-
-    //Phase = Phase * MultTermFirst + MultTermSecond;
-
-    float3 Scattering = Color * Phase * Scattering_Extinction.xyz * Shadow;// * 30; //* Shadow
-    //Scattering += ambientLight / (4.0 * Math::PI);
-
-
-    ScatteringVolume[ThreadID] = float4(Scattering, Scattering_Extinction.w);
+    ScatteringVolume[ThreadID] = float4(Lighting, Scattering_Extinction.w);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -623,7 +647,7 @@ float4 main(VertexShaderOutput input) : SV_Target
     float4 Output = IntergrationVolume.SampleLevel(Linear_Sampler, SamplePosition, 0.0);
     Output = saturate(Output);
 
-    Output.xyz = ShadowVolume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, FroxelDepth), 0.0).xxx;
+    //Output.xyz = ShadowVolume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, FroxelDepth), 0.0).xxx;
 
     return float4(Output.xyz, 0.0);
 }
@@ -927,6 +951,7 @@ VertexShaderOutput main(VertexShaderInput input)
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
+
 
 
 

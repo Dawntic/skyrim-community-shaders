@@ -20,9 +20,9 @@ void OrthogonalVolumetricLighting::CompileShaders()
 
 	ApplyVolumePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "APPLY_PIXEL", "" } }, "ps_5_0");
 
-	CloudShadowVS = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_VETEX", "" } }, "vs_5_0");
-	CloudShadowPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_PIXEL", "" } }, "ps_5_0");
-	CloudShadowCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_COMPUTE", "" } }, "cs_5_0");
+	//CloudShadowVS = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_VETEX", "" } }, "vs_5_0");
+	//CloudShadowPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_PIXEL", "" } }, "ps_5_0");
+	//CloudShadowCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_COMPUTE", "" } }, "cs_5_0");
 }
 
 void OrthogonalVolumetricLighting::SetupResources()
@@ -801,67 +801,6 @@ void OrthogonalVolumetricLighting::SetupShadowCascade()
 	}
 }
 
-/*
-const float cloudShadowSnapLength = 5000.0f;
-const float cloudShadowExtent = 10000.0f;  // The cloud shadow bounding box size
-const float cloudShadowNearPlane = 0.0f;
-const float cloudShadowFarPlane = cloudShadowExtent * 2.0;
-
-const float metersToSkyUnit = 0.001f;  // Engine units are in meters (must be same as globals.hlsli)
-const float skyUnitToMeters = 1.0f / metersToSkyUnit;
-
-XMVECTOR atmosphereCenter = XMLoadFloat3(&vis.scene->weather.atmosphereParameters.planetCenter);
-XMVECTOR sunDirection = XMLoadFloat3(&vis.scene->weather.sunDirection);
-const float planetRadius = vis.scene->weather.atmosphereParameters.bottomRadius;
-
-// Point on the surface of the planet relative to camera position and planet normal
-XMVECTOR lookAtPosition = XMVector3Normalize(vis.camera->GetEye() - (atmosphereCenter * skyUnitToMeters));
-lookAtPosition = (atmosphereCenter + lookAtPosition * planetRadius) * skyUnitToMeters;
-
-// Snap with user defined value
-lookAtPosition = XMVectorFloor(XMVectorAdd(lookAtPosition, XMVectorReplicate(0.5f * cloudShadowSnapLength)) / cloudShadowSnapLength) * cloudShadowSnapLength;
-
-XMVECTOR lightPosition = lookAtPosition + sunDirection * cloudShadowExtent;  // far plane not needed here
-
-const XMMATRIX lightRotation = XMMatrixRotationQuaternion(XMLoadFloat4(&scene.weather.stars_rotation_quaternion));
-const XMVECTOR up = XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), lightRotation);
-
-XMMATRIX cloudShadowProjection = XMMatrixOrthographicOffCenterLH(-cloudShadowExtent, cloudShadowExtent, -cloudShadowExtent, cloudShadowExtent, cloudShadowNearPlane, cloudShadowFarPlane);
-XMMATRIX cloudShadowView = XMMatrixLookAtLH(lightPosition, lookAtPosition, up);
-
-XMMATRIX cloudShadowLightSpaceMatrix = XMMatrixMultiply(cloudShadowView, cloudShadowProjection);
-XMMATRIX cloudShadowLightSpaceMatrixInverse = XMMatrixInverse(nullptr, cloudShadowLightSpaceMatrix);
-
-XMStoreFloat4x4(&frameCB.cloudShadowLightSpaceMatrix, cloudShadowLightSpaceMatrix);
-XMStoreFloat4x4(&frameCB.cloudShadowLightSpaceMatrixInverse, cloudShadowLightSpaceMatrixInverse);
-frameCB.cloudShadowFarPlaneKm = cloudShadowFarPlane * metersToSkyUnit;
-frameCB.texture_volumetricclouds_shadow_index = device->GetDescriptorIndex(&textures[TEXTYPE_2D_VOLUMETRICCLOUDS_SHADOW], SubresourceType::SRV);
-*/
-
-//	lookAtPosition = XMVectorFloor(XMVectorAdd(lookAtPosition, XMVectorReplicate(0.5f * cloudShadowSnapLength)) / cloudShadowSnapLength) * cloudShadowSnapLength;
-
-//Thoughts
-//use sky rotation for up vector
-
-//XMMATRIX lightRotation = XMMatrixRotationQuaternion(skyRotation);
-//XMVECTOR up = XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), lightRotation);
-//if (XMVectorGetX(XMVectorAbs(XMVector3Dot(up, eyeToLight))) > 0.95f)
-//	up = XMVectorSet(0, 1, 0, 0);
-//auto skyRot = globals::game::sky->root->local.rotate.GetVectorX();
-//XMVECTOR skyRotation = { skyRot.x, skyRot.y, skyRot.z, 0.0 };
-//const float cloudShadowSnapLength = 1.0f;
-//auto sunDir = globals::game::sky->sun->root->local.translate;
-//logger::info("sunDir: {}, {}, {}", sunDir.x, sunDir.y, sunDir.z);
-//XMMATRIX origin = XMMatrixTranslationFromVector(XMVectorNegate(planetCentre));
-//XMVECTOR eyeToLight = XMVector3Normalize(XMVector3TransformNormal(sunPosition, origin));
-//XMVECTOR eyePositionLightSpace = XMVectorMultiplyAdd(eyeToLight, XMVectorReplicate(cloudShadowExtent), XMVectorZero());
-//XMVECTOR eyeToLight = XMVector3Normalize(sunPosition); //Player towards sun  - Tested correct
-//XMVECTOR eyePositionLightSpace = XMVectorMultiplyAdd(eyeToLight, XMVectorReplicate(cloudShadowExtent), lookAtPosition);
-
-//lookAtPosition = XMVectorZero();
-//XMVECTOR lookFromDirection = XMVector3Normalize(XMVectorSubtract(sunPosition, planetCentre));
-//XMVECTOR eyePositionLightSpace = XMVectorMultiplyAdd(lookFromDirection, XMVectorReplicate(cloudShadowExtent), XMVectorZero());
-
 void OrthogonalVolumetricLighting::BuildCloudShadowMatrix()
 {
 	using namespace DirectX;
@@ -900,25 +839,6 @@ void OrthogonalVolumetricLighting::BuildCloudShadowMatrix()
 
 	XMStoreFloat4x4(&cloudShadowLSViewProj, XMMatrixTranspose(cloudShadowViewProj));
 	XMStoreFloat4x4(&cloudShadowLSViewProjInverse, XMMatrixTranspose(cloudShadowViewProjInverse));
-
-	if (auto sky = globals::game::sky) {
-		if (auto clouds = sky->clouds->clouds->get()) {
-			auto rot = clouds->world.rotate;
-			rot = clouds->local.rotate;
-			auto trans = clouds->world.translate;
-			auto scale = clouds->world.scale;
-			logger::info("Cloud Trans: {}, {}, {}  Scale: {}", trans.x, trans.y, trans.z, scale);
-			auto rotVecX = rot.GetVectorX();
-			auto rotVecY = rot.GetVectorY();
-			auto rotVecZ = rot.GetVectorZ();
-			logger::info("Cloud Rot row 1: {}, {}, {}", rotVecX.x, rotVecX.y, rotVecX.z);
-			logger::info("Cloud Rot row 2: {}, {}, {}", rotVecY.x, rotVecY.y, rotVecY.z);
-			logger::info("Cloud Rot row 3: {}, {}, {}", rotVecZ.x, rotVecZ.y, rotVecZ.z);
-		}
-	}
-
-	logger::info("Look At Position: {},{},{},{}", DirectX::XMVectorGetX(lookAtPosition), DirectX::XMVectorGetY(lookAtPosition), DirectX::XMVectorGetZ(lookAtPosition), DirectX::XMVectorGetW(lookAtPosition));
-	logger::info("Eye Position LS: {},{},{},{}", DirectX::XMVectorGetX(eyePositionLightSpace), DirectX::XMVectorGetY(eyePositionLightSpace), DirectX::XMVectorGetZ(eyePositionLightSpace), DirectX::XMVectorGetW(eyePositionLightSpace));
 }
 
 RE::BSShaderProperty::RenderPassArray* OrthogonalVolumetricLighting::Hooks::BSSkyShader_GetRenderPasses::thunk(RE::BSGeometry* geometry, std::uint32_t arg2, RE::BSShaderAccumulator* accumulator)
@@ -1054,17 +974,17 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 void OrthogonalVolumetricLighting::Hooks::BSSkyShader_SetupMaterial::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 {
-	auto& OVL = globals::features::orthogonalVolumetricLighting;
-	static Util::FrameChecker frame_checker;
-	static int counter = 0;
+	//auto& OVL = globals::features::orthogonalVolumetricLighting;
+	//static Util::FrameChecker frame_checker;
+	//static int counter = 0;
 
 	//Pass->geometry->AsNiControllerManager().trans
 
 	auto skyProperty = reinterpret_cast<RE::BSSkyShaderProperty*>(Pass->shaderProperty);
 	if (skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_CLOUDS) {
 		if ((Pass->passEnum == 0x5C000062 || Pass->passEnum == 0x5C000063 || Pass->passEnum == 0x5C000064) && RenderFlags == 65) {
-			OVL.overrideShader = true;
-			OVL.shaderdesc = Shaders::RenderCloudMap;
+			//OVL.overrideShader = true;
+			//OVL.shaderdesc = Shaders::RenderCloudMap;
 
 			//auto rot = Pass->geometry->world.rotate;
 
