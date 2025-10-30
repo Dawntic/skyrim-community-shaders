@@ -1,6 +1,5 @@
 #pragma once
 #include "../Deferred.h"
-#include "../Upscaling.h"
 #include "Feature.h"
 #include "Skylighting.h"
 #include "State.h"
@@ -24,7 +23,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual inline std::string GetShortName() override { return "OrthogonalVolumetricLighting"; }
 	virtual inline bool HasShaderDefine(RE::BSShader::Type) override { return true; }
 	virtual inline std::string_view GetShaderDefineName() override { return "OVL"; }
-	//virtual std::string_view GetCategory() const override { return "Post Process"; }
+	virtual std::string_view GetCategory() const override { return "Display"; }
 	virtual inline bool SupportsVR() override { return false; };  //
 
 	virtual inline void PostPostLoad() override { Hooks::Install(); }
@@ -40,6 +39,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual REX::W32::XMFLOAT4X4 GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightTransform);
 	virtual void BuildCloudShadowMatrix();
 
+	virtual void SetupBypass();
 	virtual void SetupScatteringVolume();
 	virtual void SetupFilterPass();
 	virtual void SetupSliceMarch();
@@ -199,8 +199,8 @@ struct OrthogonalVolumetricLighting : Feature
 		float historyAlpha = 0.2;
 		float weight1 = 0.5;
 		float weight2 = 0.3;
-		float anisotropy = 0.0;
-		float visibilityMeters = 0.04;
+		float anisotropy = 0.85;
+		float Extinction = 1;
 		float albedo = 1.0;
 		float color_saturation = 1.0;
 		float shadow_threshold = 1.0;
@@ -475,7 +475,7 @@ struct OrthogonalVolumetricLighting : Feature
 			stl::write_thunk_call<LensFlare_AssignTexture>(REL::RelocationID(100280, 106994).address() + REL::Relocate(0x4B, 0x4B));
 
 			stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>>(RE::VTABLE_BSImagespaceShaderLensFlare[3]);
-			//stl::write_vfunc<0x6, BSSkyShader_SetupMaterial>(RE::VTABLE_BSSkyShader[0]);
+			stl::write_vfunc<0x6, BSSkyShader_SetupMaterial>(RE::VTABLE_BSSkyShader[0]);
 
 			//stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
 

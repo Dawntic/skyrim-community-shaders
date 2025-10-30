@@ -115,8 +115,3 @@ cbuffer PerTechnique : register(b0)
 #endif
 
 
-
-
-	float shadowContribution = noShadow;
-	float vl = shadowContribution * densityContribution * phaseContribution;
-

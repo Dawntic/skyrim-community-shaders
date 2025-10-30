@@ -40,8 +40,8 @@ cbuffer SettingsBuffer : register(b1)
     float UIWeight;
     float UIWeight2;
     float UIAnisotropy;
-    float UIVisibilityMeters;
-    float UIAlbedo;
+    float UIExtinction;
+    float UIScatterRatio;
     float UISaturation;
     float UIShadowThreshold;
     uint UIExponent;
@@ -414,31 +414,13 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
           BNoise = frac(BNoise + (FrameCounter & 31) * kPhi);
 
 
-    //Extinction = MapRange(UIExtinction, 0.0, 0.1, 0.0, 1.0);
-    //float Absorption = Extinction - ScatterCoeff;
 
-   // float3 Base = float3(1.0, 1.0, 1.0);
-   // float Density = 1.0; //comes from fog map and or global fog (after accounting for height)
-    //float Extinction = 1.0 / UIVisibilityMeters;
-   // float ScatterCoeff = UIAlbedo * Extinction * Density;
+    float DensityAtFroxel = 1.0;
 
-   // float4 Output = float4(Base * ScatterCoeff, Extinction * Density);
-   // Output = float4(Base, Extinction);
-
-    float VisCorrect = UIVisibilityMeters * rcp(250);
-    float MediaDensity = 1.0;
-    float3 MediaScat = float3(1,1,1) * MediaDensity;
-    float MediaExt = VisCorrect * MediaDensity;
+    float MediaExt = UIExtinction * DensityAtFroxel;
+    float3 MediaScat = UIScatterRatio.xxx;
 
     float4 Output = float4(MediaScat, MediaExt);
-   // float MediaAbsorb = 0.0;
-    //float MediaExt = MediaScat + MediaAbsorb;
-    //float Abledo = MediaScat / MediaExt;
-
-
-
-    //float MediaPhase = 0.85; //g factor?
-
 
 //// Wind Vectoring
 /*
@@ -476,7 +458,34 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
+    //Extinction = MapRange(UIExtinction, 0.0, 0.1, 0.0, 1.0);
+    //float Absorption = Extinction - ScatterCoeff;
 
+   // float3 Base = float3(1.0, 1.0, 1.0);
+   // float Density = 1.0; //comes from fog map and or global fog (after accounting for height)
+    //float Extinction = 1.0 / UIVisibilityMeters;
+   // float ScatterCoeff = UIAlbedo * Extinction * Density;
+
+   // float4 Output = float4(Base * ScatterCoeff, Extinction * Density);
+   // Output = float4(Base, Extinction);
+
+    // float MediaAbsorb = 0.0;
+    //float MediaExt = MediaScat + MediaAbsorb;
+    //float Abledo = MediaScat / MediaExt;
+
+
+    //float MediaExt = UIExtinction * MediaDensity;
+    //float3 MediaScat = MediaAlbedo * MediaDensity;
+
+    //float MediaExt = UIExtinction * DensityAtFroxel;
+    //float3 MediaScat = MediaAlbedo * MediaExt;
+
+    //float MediaScat = UIScattering * DensityAtFroxel;
+    //float Abledo = MediaScat / MediaExt;
+
+
+    //float UIExtinction = 0.1;
+    //float3 UIScatterRatio = float3(1.0, 1.0, 1.0);
 
 
 //// Scattering Compute Shader //////////////////////////////////////////////////////////
@@ -495,6 +504,41 @@ float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
     return (1.0 - AnisotropySq) / (4.0 * Math::PI * (phase * sqrt(phase)));
 }
 
+[numthreads(4, 4, 4)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    float3 Froxel = ThreadID;
+
+    float3 RayPosition = FroxelWorldDirection(Froxel, 15.7);
+
+    float3 IncomingDir = normalize(SharedData::DirLightDirection.xyz); //Eye to sun
+    float3 OutgoingDir = normalize(RayPosition);
+    float ScatterCos = dot(IncomingDir, OutgoingDir);
+
+    float3 Phase = HenyeyGreensteinPhase(ScatterCos, UIAnisotropy).xxx;
+
+    float4 Scattering_Extinction = MediaVolume.Load(int4(Froxel, 0));
+    float3 MediaScattering = Scattering_Extinction.xyz;
+    float MediaExtinction = Scattering_Extinction.w;
+
+    float Shadow = ShadowVolume.Load(int4(Froxel, 0)).x;
+
+
+    float3 Lighting = float3(0,0,0);
+
+    float3 Ambient = rcp(Math::PI) / (4.0 * Math::PI);
+    //Lighting += Ambient;
+
+    float3 DirLight = SharedData::DirLightColor.xyz * Phase * Shadow;
+    Lighting += DirLight;
+
+    Lighting *= MediaScattering;
+
+
+    ScatteringVolume[ThreadID] = float4(Lighting, MediaExtinction);
+}
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
     //float3 Ambient = Color::GammaToLinear(SharedData::DirectionalAmbient._14_24_34);
     //float3 ambientLight = (1.0 / Math::PI);
     //float Directional_Light_Radiance =
@@ -519,40 +563,6 @@ float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
 
      //float3 Color = lerp(float3(1.0, 1.0, 1.0), SharedData::DirLightColor.xyz, UISaturation); //need to preserve power
 */
-
-[numthreads(4, 4, 4)]
-void main(uint3 ThreadID : SV_DispatchThreadID)
-{
-    float3 Froxel = ThreadID;
-
-    float3 RayPosition = FroxelWorldDirection(Froxel, 15.7);
-
-    float3 IncomingDir = normalize(SharedData::DirLightDirection.xyz); //Eye to sun
-    float3 OutgoingDir = normalize(RayPosition);
-    float ScatterCos = dot(IncomingDir, OutgoingDir);
-
-    float3 Phase = HenyeyGreensteinPhase(ScatterCos, UIAnisotropy).xxx;
-
-    float4 Scattering_Extinction = MediaVolume.Load(int4(Froxel, 0));
-    float Shadow = ShadowVolume.Load(int4(Froxel, 0)).x;
-
-
-    float3 Lighting = float3(0,0,0);
-
-    float3 Ambient = rcp(Math::PI) / (4.0 * Math::PI);
-    Lighting += Ambient;
-
-    float3 DirLight = SharedData::DirLightColor.xyz * Phase * Shadow;
-    Lighting += DirLight;
-
-    Lighting *= Scattering_Extinction.xyz;
-
-
-    ScatteringVolume[ThreadID] = float4(Lighting, Scattering_Extinction.w);
-}
-#endif
-/////////////////////////////////////////////////////////////////////////////////////////
-
 
 
 //// Slicemarch Compute Shader /////////////////////////////////////////////////////////

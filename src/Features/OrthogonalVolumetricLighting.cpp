@@ -3,7 +3,7 @@
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	OrthogonalVolumetricLighting::Settings,
 	useHistory, historyAlpha, weight1, weight2,
-	anisotropy, visibilityMeters, color_saturation, esmExponent, useCheckerBoard, albedo)
+	anisotropy, Extinction, color_saturation, esmExponent, useCheckerBoard, albedo)
 
 void OrthogonalVolumetricLighting::CompileShaders()
 {
@@ -334,7 +334,8 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 		{ Shaders::MediaVolume, &OrthogonalVolumetricLighting::SetupMediaVolume },
 		{ Shaders::Perlin, &OrthogonalVolumetricLighting::SetupPerlinNoise },
 		{ Shaders::ShadowEVSMBlur, &OrthogonalVolumetricLighting::SetupEVSMBlur },
-		{ Shaders::CloudESM, &OrthogonalVolumetricLighting::SetupCloudESM }
+		{ Shaders::CloudESM, &OrthogonalVolumetricLighting::SetupCloudESM },
+		{ Shaders::Bypass, &OrthogonalVolumetricLighting::SetupBypass },
 
 	};
 	auto it = effects.find(desc);
@@ -665,6 +666,15 @@ void OrthogonalVolumetricLighting::SetupPerlinNoise()
 	overrideShader = false;
 }
 
+void OrthogonalVolumetricLighting::SetupBypass()
+{
+	auto context = globals::d3d::context;
+
+	context->PSSetShader(nullptr, nullptr, 0);
+
+	overrideShader = false;
+}
+
 ///// BUFFER UPDATE /////////////////////////////////////////////////////
 void OrthogonalVolumetricLighting::PerFrameUpdate()
 {
@@ -898,27 +908,33 @@ void OrthogonalVolumetricLighting::DrawSettings()
 		CompileShaders();
 	}
 
+	ImGui::Spacing();
 	ImGui::Checkbox("Swap Output RT", (bool*)&swapOutputRT);
 
-	ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
+	ImGui::SeparatorText("Media properties");
+	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
+	ImGui::SliderFloat("Extinction Per Meter", &settings.Extinction, 0.0001, 0.25);
+	ImGui::SliderFloat("Scatter to Absorption Ratio", &settings.albedo, 0.0, 1.0);
+	ImGui::Spacing();
+	ImGui::SeparatorText("Shadow properties");
+	ImGui::SliderInt("VSM Exponent: ", (int*)&settings.esmExponent, 1, 100);
+
+	//ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
 	//ImGui::SliderFloat("History Bias", &settings.historyAlpha, 0.0, 0.5);
 	//ImGui::SliderFloat("Weight 1", &settings.weight1, 0.0, 1.0);
 	//ImGui::SliderFloat("Weight 2", &settings.weight2, 0.0, 1.0);
-	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
-	ImGui::SliderFloat("Media Visibility", &settings.visibilityMeters, 0.1, 250);
-	ImGui::SliderFloat("Media Albedo", &settings.albedo, 0.0, 1.0);
-	ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
+	//ImGui::SliderFloat("Media Albedo", &settings.albedo, 0.0, 1.0);
+	//ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
 	//ImGui::SliderFloat("Shadow Threshold", &settings.shadow_threshold, 0.0, 1.0);
-	ImGui::SliderInt("VSM Exponent: ", (int*)&settings.esmExponent, 1, 100);
 
-	ImGui::SeparatorText("Fog Maps");
-	ImGui::SliderFloat("Density", &density, 0.0f, 1.0f);
-	ImGui::SliderFloat("Start Height", &fogStartHeight, 0.0f, 1.0f);
-	ImGui::SliderFloat("Falloff Rate", &fogFalloffRate, 0.0f, 1.0f);
+	//ImGui::SeparatorText("Fog Maps");
+	//ImGui::SliderFloat("Density", &density, 0.0f, 1.0f);
+	//ImGui::SliderFloat("Start Height", &fogStartHeight, 0.0f, 1.0f);
+	//ImGui::SliderFloat("Falloff Rate", &fogFalloffRate, 0.0f, 1.0f);
 
-	ImGui::SliderFloat("Radius", &brushRadius, 1.0f, 200.0f, "%.0f");
-	ImGui::SliderFloat("Feather", &brushFeather, 0.0f, 1.0f);
-	ImGui::SliderFloat("Erase", &settings.blendOpp, -1.0f, 0.0f, "%.0f");
+	//ImGui::SliderFloat("Radius", &brushRadius, 1.0f, 200.0f, "%.0f");
+	//ImGui::SliderFloat("Feather", &brushFeather, 0.0f, 1.0f);
+	//ImGui::SliderFloat("Erase", &settings.blendOpp, -1.0f, 0.0f, "%.0f");
 
 	//ImGui::Button("Export Map");
 	//if (ImGui::IsItemClicked()) {
@@ -926,6 +942,8 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	//}
 
 	//ImVec2 displaySize = ImVec2(screenSize.x * 0.5f, screenSize.y * 0.5f);
+	/*
+
 	ImVec2 displaySize = ImVec2(512, 512);
 
 	if (ImGui::BeginChild("PaintCanvas", displaySize, true, ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar)) {
@@ -968,36 +986,42 @@ void OrthogonalVolumetricLighting::DrawSettings()
 		}
 	}
 	ImGui::EndChild();
+	*/
 }
 
 //// GENERAL HOOKS ///////////////////////////////////////////////////////////////////
 
 void OrthogonalVolumetricLighting::Hooks::BSSkyShader_SetupMaterial::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 {
-	//auto& OVL = globals::features::orthogonalVolumetricLighting;
-	//static Util::FrameChecker frame_checker;
-	//static int counter = 0;
-
-	//Pass->geometry->AsNiControllerManager().trans
+	auto& OVL = globals::features::orthogonalVolumetricLighting;
 
 	auto skyProperty = reinterpret_cast<RE::BSSkyShaderProperty*>(Pass->shaderProperty);
-	if (skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_CLOUDS) {
-		if ((Pass->passEnum == 0x5C000062 || Pass->passEnum == 0x5C000063 || Pass->passEnum == 0x5C000064) && RenderFlags == 65) {
-			//OVL.overrideShader = true;
-			//OVL.shaderdesc = Shaders::RenderCloudMap;
 
-			//auto rot = Pass->geometry->world.rotate;
-
-			//if (frame_checker.IsNewFrame()) {
-			//	counter = 0;
-			//}
-			//counter++;
-			//if ((counter % 2) == 0) {
-			//	OVL.overrideShader = true;
-			//	OVL.shaderdesc = Shaders::RenderCloudMap;
-			//}
+	if (skyProperty) {
+		if (skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_SUN_GLARE) {
+			OVL.overrideShader = true;
+			OVL.shaderdesc = Shaders::Bypass;
 		}
 	}
+
+	//auto skyProperty = reinterpret_cast<RE::BSSkyShaderProperty*>(Pass->shaderProperty);
+	//if (skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_CLOUDS) {
+	//	if ((Pass->passEnum == 0x5C000062 || Pass->passEnum == 0x5C000063 || Pass->passEnum == 0x5C000064) && RenderFlags == 65) {
+	//OVL.overrideShader = true;
+	//OVL.shaderdesc = Shaders::RenderCloudMap;
+
+	//auto rot = Pass->geometry->world.rotate;
+
+	//if (frame_checker.IsNewFrame()) {
+	//	counter = 0;
+	//}
+	//counter++;
+	//if ((counter % 2) == 0) {
+	//	OVL.overrideShader = true;
+	//	OVL.shaderdesc = Shaders::RenderCloudMap;
+	//}
+	//}
+	//	}
 
 	func(This, Pass, RenderFlags);
 }
