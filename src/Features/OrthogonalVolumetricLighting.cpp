@@ -25,6 +25,76 @@ void OrthogonalVolumetricLighting::CompileShaders()
 	//CloudShadowCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_COMPUTE", "" } }, "cs_5_0");
 }
 
+void OrthogonalVolumetricLighting::SetupCascadeTextures()
+{
+	auto device = globals::d3d::device;
+
+	D3D11_TEXTURE2D_DESC CascadeDesc{};
+	CascadeDesc.Width = CSM_Size;
+	CascadeDesc.Height = CSM_Size;
+	CascadeDesc.MipLevels = 1;
+	CascadeDesc.ArraySize = 4;
+	CascadeDesc.Format = DXGI_FORMAT_R16_TYPELESS;
+	CascadeDesc.Usage = D3D11_USAGE_DEFAULT;
+	CascadeDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+	CascadeDesc.SampleDesc.Count = 1;
+	CascadeDesc.SampleDesc.Quality = 0;
+	CascadeDesc.CPUAccessFlags = 0;
+	CascadeDesc.MiscFlags = 0;
+	D3D11_DEPTH_STENCIL_VIEW_DESC CascadeDSVDesc{};
+	CascadeDSVDesc.Format = DXGI_FORMAT_D16_UNORM;
+	CascadeDSVDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
+	CascadeDSVDesc.Texture2DArray.MipSlice = 0;
+	CascadeDSVDesc.Texture2DArray.FirstArraySlice = 0;
+	CascadeDSVDesc.Texture2DArray.ArraySize = 4;
+	D3D11_SHADER_RESOURCE_VIEW_DESC CascadeSRVDesc{};
+	CascadeSRVDesc.Format = DXGI_FORMAT_R16_UNORM;
+	CascadeSRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+	CascadeSRVDesc.Texture2DArray.MostDetailedMip = 0;
+	CascadeSRVDesc.Texture2DArray.MipLevels = 1;
+	CascadeSRVDesc.Texture2DArray.FirstArraySlice = 0;
+	CascadeSRVDesc.Texture2DArray.ArraySize = 4;
+
+	DX::ThrowIfFailed(device->CreateTexture2D(&CascadeDesc, nullptr, &CascadeTex));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(CascadeTex, &CascadeSRVDesc, &CascadeSRV));
+
+	for (UINT i = 0; i < 4; ++i) {
+		CascadeDSVDesc.Texture2DArray.FirstArraySlice = i;
+		CascadeDSVDesc.Texture2DArray.ArraySize = 1;
+		device->CreateDepthStencilView(CascadeTex, &CascadeDSVDesc, &CascadeDSV[i]);
+	}
+
+	D3D11_TEXTURE2D_DESC ExpoDesc{};
+	ExpoDesc.Width = EVSM_Size;
+	ExpoDesc.Height = EVSM_Size;
+	ExpoDesc.MipLevels = 1;
+	ExpoDesc.ArraySize = 4;
+	ExpoDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	ExpoDesc.Usage = D3D11_USAGE_DEFAULT;
+	ExpoDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+	ExpoDesc.SampleDesc.Count = 1;
+	ExpoDesc.SampleDesc.Quality = 0;
+	ExpoDesc.CPUAccessFlags = 0;
+	ExpoDesc.MiscFlags = 0;
+	D3D11_UNORDERED_ACCESS_VIEW_DESC ExpoUAVDesc{};
+	ExpoUAVDesc.Format = ExpoDesc.Format;
+	ExpoUAVDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
+	ExpoUAVDesc.Texture2DArray.MipSlice = 0;
+	ExpoUAVDesc.Texture2DArray.FirstArraySlice = 0;
+	ExpoUAVDesc.Texture2DArray.ArraySize = 4;
+
+	DX::ThrowIfFailed(device->CreateTexture2D(&ExpoDesc, nullptr, &ExpoTexture));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ExpoTexture, &ExpoUAVDesc, &ExpoUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ExpoTexture, nullptr, &ExpoSRV));
+
+	D3D11_TEXTURE2D_DESC ExpoBlurDesc{ ExpoDesc };
+	D3D11_UNORDERED_ACCESS_VIEW_DESC ExpoBlurUAVDesc{ ExpoUAVDesc };
+
+	DX::ThrowIfFailed(device->CreateTexture2D(&ExpoBlurDesc, nullptr, &ExpoBlurTexture));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ExpoBlurTexture, &ExpoBlurUAVDesc, &ExpoBlurUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(ExpoBlurTexture, nullptr, &ExpoBlurSRV));
+}
+
 void OrthogonalVolumetricLighting::SetupResources()
 {
 	auto device = globals::d3d::device;
@@ -212,91 +282,6 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(FogMapTexture, &FogMapUAVDesc, &FogMapUAV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(FogMapTexture, nullptr, &FogMapSRV));
 
-	//// SHADOW MAPPING ////////////////////////////////////////////////////
-
-	D3D11_TEXTURE2D_DESC CascadeDesc{};
-	CascadeDesc.Width = CSM_Size;
-	CascadeDesc.Height = CSM_Size;
-	CascadeDesc.MipLevels = 1;
-	CascadeDesc.ArraySize = 4;
-	CascadeDesc.Format = DXGI_FORMAT_R16_TYPELESS;
-	CascadeDesc.Usage = D3D11_USAGE_DEFAULT;
-	CascadeDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
-	CascadeDesc.SampleDesc.Count = 1;
-	CascadeDesc.SampleDesc.Quality = 0;
-	CascadeDesc.CPUAccessFlags = 0;
-	CascadeDesc.MiscFlags = 0;
-	D3D11_DEPTH_STENCIL_VIEW_DESC CascadeDSVDesc{};
-	CascadeDSVDesc.Format = DXGI_FORMAT_D16_UNORM;
-	CascadeDSVDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
-	CascadeDSVDesc.Texture2DArray.MipSlice = 0;
-	CascadeDSVDesc.Texture2DArray.FirstArraySlice = 0;
-	CascadeDSVDesc.Texture2DArray.ArraySize = 4;
-	D3D11_SHADER_RESOURCE_VIEW_DESC CascadeSRVDesc{};
-	CascadeSRVDesc.Format = DXGI_FORMAT_R16_UNORM;
-	CascadeSRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-	CascadeSRVDesc.Texture2DArray.MostDetailedMip = 0;
-	CascadeSRVDesc.Texture2DArray.MipLevels = 1;
-	CascadeSRVDesc.Texture2DArray.FirstArraySlice = 0;
-	CascadeSRVDesc.Texture2DArray.ArraySize = 4;
-
-	DX::ThrowIfFailed(device->CreateTexture2D(&CascadeDesc, nullptr, &CascadeTex));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(CascadeTex, &CascadeSRVDesc, &CascadeSRV));
-
-	for (UINT i = 0; i < 4; ++i) {
-		CascadeDSVDesc.Texture2DArray.FirstArraySlice = i;
-		CascadeDSVDesc.Texture2DArray.ArraySize = 1;
-		device->CreateDepthStencilView(CascadeTex, &CascadeDSVDesc, &CascadeDSV[i]);
-	}
-
-	D3D11_TEXTURE2D_DESC ExpoDesc{};
-	ExpoDesc.Width = EVSM_Size;
-	ExpoDesc.Height = EVSM_Size;
-	ExpoDesc.MipLevels = 1;
-	ExpoDesc.ArraySize = 4;
-	ExpoDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-	ExpoDesc.Usage = D3D11_USAGE_DEFAULT;
-	ExpoDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
-	ExpoDesc.SampleDesc.Count = 1;
-	ExpoDesc.SampleDesc.Quality = 0;
-	ExpoDesc.CPUAccessFlags = 0;
-	ExpoDesc.MiscFlags = 0;
-	D3D11_UNORDERED_ACCESS_VIEW_DESC ExpoUAVDesc{};
-	ExpoUAVDesc.Format = ExpoDesc.Format;
-	ExpoUAVDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
-	ExpoUAVDesc.Texture2DArray.MipSlice = 0;
-	ExpoUAVDesc.Texture2DArray.FirstArraySlice = 0;
-	ExpoUAVDesc.Texture2DArray.ArraySize = 4;
-
-	DX::ThrowIfFailed(device->CreateTexture2D(&ExpoDesc, nullptr, &ExpoTexture));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ExpoTexture, &ExpoUAVDesc, &ExpoUAV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(ExpoTexture, nullptr, &ExpoSRV));
-
-	D3D11_TEXTURE2D_DESC ExpoBlurDesc{ ExpoDesc };
-	D3D11_UNORDERED_ACCESS_VIEW_DESC ExpoBlurUAVDesc{ ExpoUAVDesc };
-
-	DX::ThrowIfFailed(device->CreateTexture2D(&ExpoBlurDesc, nullptr, &ExpoBlurTexture));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ExpoBlurTexture, &ExpoBlurUAVDesc, &ExpoBlurUAV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(ExpoBlurTexture, nullptr, &ExpoBlurSRV));
-
-	D3D11_TEXTURE2D_DESC cloudShadowMapDesc{ outputDesc };
-	cloudShadowMapDesc.Width = 2048;
-	cloudShadowMapDesc.Height = 2048;
-	D3D11_TEXTURE2D_DESC cloudShadowESMDesc{ cloudShadowMapDesc };
-	cloudShadowESMDesc.MipLevels = 1;  //change this
-	cloudShadowESMDesc.Format = DXGI_FORMAT_R16_FLOAT;
-	cloudShadowESMDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
-	D3D11_UNORDERED_ACCESS_VIEW_DESC cloudShadowESMUAVDesc{ FogMapUAVDesc };
-	cloudShadowESMUAVDesc.Format = cloudShadowESMDesc.Format;
-
-	DX::ThrowIfFailed(device->CreateTexture2D(&cloudShadowMapDesc, nullptr, &CloudShadowTexture));
-	DX::ThrowIfFailed(device->CreateRenderTargetView(CloudShadowTexture, nullptr, &CloudShadowRTV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(CloudShadowTexture, nullptr, &CloudShadowSRV));
-
-	DX::ThrowIfFailed(device->CreateTexture2D(&cloudShadowESMDesc, nullptr, &CloudShadowESMTexture));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(CloudShadowESMTexture, &cloudShadowESMUAVDesc, &CloudShadowESMUAV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(CloudShadowESMTexture, nullptr, &CloudShadowESMSRV));
-
 	//// GENERAL /////////////////////////////////////////////////////////////
 
 	skyrim_FlareData = reinterpret_cast<uintptr_t*>(REL::RelocationID(527915, 414867).address());
@@ -332,7 +317,7 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 		{ Shaders::ScatterVolume, &OrthogonalVolumetricLighting::SetupScatteringVolume },
 		{ Shaders::FilterVolume, &OrthogonalVolumetricLighting::SetupFilterPass },
 		{ Shaders::IntergrationVolume, &OrthogonalVolumetricLighting::SetupSliceMarch },
-		{ Shaders::Apply, &OrthogonalVolumetricLighting::SetupApplyVolume },
+		{ Shaders::Apply, &OrthogonalVolumetricLighting::SetupApplyPass },
 		{ Shaders::ShadowEVSM, &OrthogonalVolumetricLighting::SetupEVSM },
 		{ Shaders::RenderCloudMap, &OrthogonalVolumetricLighting::SetupCloudShadowMap },
 		{ Shaders::MediaVolume, &OrthogonalVolumetricLighting::SetupMediaVolume },
@@ -447,53 +432,6 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	overrideShader = false;
 }
 
-void OrthogonalVolumetricLighting::SetupCloudShadowMap()
-{
-	auto context = globals::d3d::context;
-
-	//context->RSSetState(Rasterizer);
-	D3D11_VIEWPORT viewport{};
-	UINT numview = 1;
-	context->RSGetViewports(&numview, &viewport);
-	viewport.Width = 2048;
-	viewport.Height = 2048;
-	context->RSSetViewports(numview, &viewport);
-
-	context->OMSetRenderTargets(1, &CloudShadowRTV, nullptr);
-
-	context->VSSetShader(CloudShadowVS, nullptr, 0);
-	context->PSSetShader(CloudShadowPS, nullptr, 0);
-
-	auto volumeBuff = VolumeCB->CB();
-	context->VSSetConstantBuffers(0, 1, &volumeBuff);
-	context->PSSetConstantBuffers(0, 1, &volumeBuff);
-
-	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET);
-	//globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RASTER_CULL_MODE);
-
-	overrideShader = false;
-}
-
-void OrthogonalVolumetricLighting::SetupCloudESM()
-{
-	auto context = globals::d3d::context;
-
-	context->CSSetUnorderedAccessViews(0, 1, &CloudShadowESMUAV, nullptr);
-	context->CSSetShader(CloudShadowCS, nullptr, 0);
-
-	context->CSSetShaderResources(0, 1, &CloudShadowESMSRV);
-
-	float2 groups = CloudESM_Size / 16;
-	//logger::info("groups: {}  Size: {}  int: {}", groups.x, CloudESM_Size.x, (UINT)groups.x);
-
-	context->Dispatch((UINT)groups.x, (UINT)groups.y, 1);
-
-	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
-	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
-
-	overrideShader = false;
-}
-
 //// VOLUMES ///////////////////////////////////////////////////////////
 void OrthogonalVolumetricLighting::SetupMediaVolume()
 {
@@ -597,7 +535,7 @@ void OrthogonalVolumetricLighting::SetupSliceMarch()
 	overrideShader = false;
 }
 
-void OrthogonalVolumetricLighting::SetupApplyVolume()
+void OrthogonalVolumetricLighting::SetupApplyPass()
 {
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
@@ -627,7 +565,7 @@ void OrthogonalVolumetricLighting::SetupApplyVolume()
 	context->PSSetShaderResources(2, 1, &STBNoiseSRV);
 
 	context->PSSetShaderResources(3, 1, &ShadowVolumeSRV[!shadowVolParity]);
-	context->PSSetShaderResources(4, 1, &ExpoBlurSRV);
+	//context->PSSetShaderResources(4, 1, &ExpoBlurSRV);
 	//context->PSSetShaderResources(3, 1, &ScatteringVolumeSRV);
 	//context->PSSetShaderResources(4, 1, &FilterVolumeSRV[!FilterVolParity]);
 
@@ -698,7 +636,7 @@ void OrthogonalVolumetricLighting::PerFrameUpdate()
 
 	PrevMatrixIdx = UpdateMatrixCache();
 
-	BuildCloudShadowMatrix();
+	//BuildCloudShadowMatrix();
 
 	VolumeCB->Update(UpdateVolumeBuffer());
 	SettingsCB->Update(UpdateSettingsBuffer());
@@ -817,78 +755,6 @@ void OrthogonalVolumetricLighting::SetupShadowCascade()
 
 		firstRun = false;
 	}
-}
-
-void OrthogonalVolumetricLighting::BuildCloudShadowMatrix()
-{
-	using namespace DirectX;
-
-	const float GUnitToM = 0.01428222656;
-	const float planetRadius = 6371000.0;
-	XMVECTOR planetCentre = { 0.0, 0.0, -planetRadius };
-
-	float cloudShadowExtent = 500.0f;
-	const float cloudShadowNearPlane = 15.0f;
-	const float cloudShadowFarPlane = cloudShadowExtent * 2.0f;
-
-	auto sunWSPos = *skyrim_SunPosition;
-	XMVECTOR sunPosition = { sunWSPos.x, sunWSPos.y, sunWSPos.z };
-	XMVECTOR eyePosition = { eyePositionWS.x, eyePositionWS.y, eyePositionWS.z };
-	eyePosition = XMVectorMultiply(eyePosition, XMVectorReplicate(GUnitToM));
-
-	//XMVECTOR lookAtDirection = XMVector3Normalize(XMVectorSubtract(eyePosition, planetCentre)); //looks from planet centre towards player eye
-	//XMVECTOR lookAtPosition = XMVectorMultiplyAdd(lookAtDirection, XMVectorReplicate(planetRadius), planetCentre); // snapping shouldn't matter too much right now
-	//lookAtPosition = XMVectorZero();
-
-	XMVECTOR lookAtDirection = XMVector3Normalize(XMVectorSubtract(eyePosition, planetCentre));
-	XMVECTOR lookAtPosition = XMVectorMultiplyAdd(lookAtDirection, XMVectorReplicate(cloudShadowExtent), XMVectorZero());
-	lookAtPosition = XMVectorSubtract(lookAtPosition, { 0.0, 0.0, 500.0 });
-
-	XMVECTOR lookFromDirection = XMVector3Normalize(XMVectorSubtract(sunPosition, planetCentre));  //maybe negate this
-	XMVECTOR eyePositionLightSpace = XMVectorMultiplyAdd(lookFromDirection, XMVectorReplicate(cloudShadowExtent), XMVectorZero());
-
-	XMVECTOR up = { 0, 0, 1 };
-
-	XMMATRIX cloudShadowView = XMMatrixLookAtLH(eyePositionLightSpace, lookAtPosition, up);
-	XMMATRIX cloudShadowProjection = XMMatrixOrthographicOffCenterLH(-cloudShadowExtent, cloudShadowExtent, -cloudShadowExtent, cloudShadowExtent, cloudShadowNearPlane, cloudShadowFarPlane);
-
-	XMMATRIX cloudShadowViewProj = XMMatrixMultiply(cloudShadowView, cloudShadowProjection);
-	XMMATRIX cloudShadowViewProjInverse = XMMatrixInverse(nullptr, cloudShadowViewProj);
-
-	XMStoreFloat4x4(&cloudShadowLSViewProj, XMMatrixTranspose(cloudShadowViewProj));
-	XMStoreFloat4x4(&cloudShadowLSViewProjInverse, XMMatrixTranspose(cloudShadowViewProjInverse));
-}
-
-RE::BSShaderProperty::RenderPassArray* OrthogonalVolumetricLighting::Hooks::BSSkyShader_GetRenderPasses::thunk(RE::BSGeometry* geometry, std::uint32_t arg2, RE::BSShaderAccumulator* accumulator)
-{
-	RE::BSShaderProperty::RenderPassArray* passArray = func(geometry, arg2, accumulator);
-
-	if (!passArray || !passArray->head)
-		return passArray;
-
-	std::vector<RE::BSRenderPass*> newArray;
-
-	auto pass = passArray->head;
-	while (pass) {
-		if (reinterpret_cast<RE::BSSkyShaderProperty*>(pass->shaderProperty)->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_CLOUDS)
-			newArray.push_back(pass);
-		pass = pass->next;
-	}
-
-	if (newArray.size() < 2) {
-		auto tail = passArray->head;
-		while (tail->next)
-			tail = tail->next;
-
-		for (auto p : newArray) {
-			auto newPass = new RE::BSRenderPass(*p);
-			newPass->next = nullptr;
-			tail->next = newPass;
-			tail = newPass;
-		}
-	}
-
-	return passArray;
 }
 
 void OrthogonalVolumetricLighting::Hooks::SetShadowMapCount::thunk(RE::BSShadowLight* light, uint64_t numLights)
@@ -1137,4 +1003,143 @@ void UpdateWind(const WindParams& windParams, float dt, WindState& windState)
 
 	// 3) Wrap to noise period so values stay small and tile seamlessly
 	windState.offsetWS = WrapToPeriod(windState.offsetWS, windState.periodWS);
+}
+
+/*
+	D3D11_TEXTURE2D_DESC cloudShadowMapDesc{ outputDesc };
+	cloudShadowMapDesc.Width = 2048;
+	cloudShadowMapDesc.Height = 2048;
+	D3D11_TEXTURE2D_DESC cloudShadowESMDesc{ cloudShadowMapDesc };
+	cloudShadowESMDesc.MipLevels = 1;  //change this
+	cloudShadowESMDesc.Format = DXGI_FORMAT_R16_FLOAT;
+	cloudShadowESMDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+	D3D11_UNORDERED_ACCESS_VIEW_DESC cloudShadowESMUAVDesc{ FogMapUAVDesc };
+	cloudShadowESMUAVDesc.Format = cloudShadowESMDesc.Format;
+
+	DX::ThrowIfFailed(device->CreateTexture2D(&cloudShadowMapDesc, nullptr, &CloudShadowTexture));
+	DX::ThrowIfFailed(device->CreateRenderTargetView(CloudShadowTexture, nullptr, &CloudShadowRTV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(CloudShadowTexture, nullptr, &CloudShadowSRV));
+
+	DX::ThrowIfFailed(device->CreateTexture2D(&cloudShadowESMDesc, nullptr, &CloudShadowESMTexture));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(CloudShadowESMTexture, &cloudShadowESMUAVDesc, &CloudShadowESMUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(CloudShadowESMTexture, nullptr, &CloudShadowESMSRV));
+*/
+
+void OrthogonalVolumetricLighting::SetupCloudShadowMap()
+{
+	auto context = globals::d3d::context;
+
+	//context->RSSetState(Rasterizer);
+	D3D11_VIEWPORT viewport{};
+	UINT numview = 1;
+	context->RSGetViewports(&numview, &viewport);
+	viewport.Width = 2048;
+	viewport.Height = 2048;
+	context->RSSetViewports(numview, &viewport);
+
+	context->OMSetRenderTargets(1, &CloudShadowRTV, nullptr);
+
+	context->VSSetShader(CloudShadowVS, nullptr, 0);
+	context->PSSetShader(CloudShadowPS, nullptr, 0);
+
+	auto volumeBuff = VolumeCB->CB();
+	context->VSSetConstantBuffers(0, 1, &volumeBuff);
+	context->PSSetConstantBuffers(0, 1, &volumeBuff);
+
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET);
+	//globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RASTER_CULL_MODE);
+
+	overrideShader = false;
+}
+
+void OrthogonalVolumetricLighting::SetupCloudESM()
+{
+	auto context = globals::d3d::context;
+
+	context->CSSetUnorderedAccessViews(0, 1, &CloudShadowESMUAV, nullptr);
+	context->CSSetShader(CloudShadowCS, nullptr, 0);
+
+	context->CSSetShaderResources(0, 1, &CloudShadowESMSRV);
+
+	float2 groups = CloudESM_Size / 16;
+	//logger::info("groups: {}  Size: {}  int: {}", groups.x, CloudESM_Size.x, (UINT)groups.x);
+
+	context->Dispatch((UINT)groups.x, (UINT)groups.y, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	overrideShader = false;
+}
+
+void OrthogonalVolumetricLighting::BuildCloudShadowMatrix()
+{
+	using namespace DirectX;
+
+	const float GUnitToM = 0.01428222656;
+	const float planetRadius = 6371000.0;
+	XMVECTOR planetCentre = { 0.0, 0.0, -planetRadius };
+
+	float cloudShadowExtent = 500.0f;
+	const float cloudShadowNearPlane = 15.0f;
+	const float cloudShadowFarPlane = cloudShadowExtent * 2.0f;
+
+	auto sunWSPos = *skyrim_SunPosition;
+	XMVECTOR sunPosition = { sunWSPos.x, sunWSPos.y, sunWSPos.z };
+	XMVECTOR eyePosition = { eyePositionWS.x, eyePositionWS.y, eyePositionWS.z };
+	eyePosition = XMVectorMultiply(eyePosition, XMVectorReplicate(GUnitToM));
+
+	//XMVECTOR lookAtDirection = XMVector3Normalize(XMVectorSubtract(eyePosition, planetCentre)); //looks from planet centre towards player eye
+	//XMVECTOR lookAtPosition = XMVectorMultiplyAdd(lookAtDirection, XMVectorReplicate(planetRadius), planetCentre); // snapping shouldn't matter too much right now
+	//lookAtPosition = XMVectorZero();
+
+	XMVECTOR lookAtDirection = XMVector3Normalize(XMVectorSubtract(eyePosition, planetCentre));
+	XMVECTOR lookAtPosition = XMVectorMultiplyAdd(lookAtDirection, XMVectorReplicate(cloudShadowExtent), XMVectorZero());
+	lookAtPosition = XMVectorSubtract(lookAtPosition, { 0.0, 0.0, 500.0 });
+
+	XMVECTOR lookFromDirection = XMVector3Normalize(XMVectorSubtract(sunPosition, planetCentre));  //maybe negate this
+	XMVECTOR eyePositionLightSpace = XMVectorMultiplyAdd(lookFromDirection, XMVectorReplicate(cloudShadowExtent), XMVectorZero());
+
+	XMVECTOR up = { 0, 0, 1 };
+
+	XMMATRIX cloudShadowView = XMMatrixLookAtLH(eyePositionLightSpace, lookAtPosition, up);
+	XMMATRIX cloudShadowProjection = XMMatrixOrthographicOffCenterLH(-cloudShadowExtent, cloudShadowExtent, -cloudShadowExtent, cloudShadowExtent, cloudShadowNearPlane, cloudShadowFarPlane);
+
+	XMMATRIX cloudShadowViewProj = XMMatrixMultiply(cloudShadowView, cloudShadowProjection);
+	XMMATRIX cloudShadowViewProjInverse = XMMatrixInverse(nullptr, cloudShadowViewProj);
+
+	XMStoreFloat4x4(&cloudShadowLSViewProj, XMMatrixTranspose(cloudShadowViewProj));
+	XMStoreFloat4x4(&cloudShadowLSViewProjInverse, XMMatrixTranspose(cloudShadowViewProjInverse));
+}
+
+RE::BSShaderProperty::RenderPassArray* OrthogonalVolumetricLighting::Hooks::BSSkyShader_GetRenderPasses::thunk(RE::BSGeometry* geometry, std::uint32_t arg2, RE::BSShaderAccumulator* accumulator)
+{
+	RE::BSShaderProperty::RenderPassArray* passArray = func(geometry, arg2, accumulator);
+
+	if (!passArray || !passArray->head)
+		return passArray;
+
+	std::vector<RE::BSRenderPass*> newArray;
+
+	auto pass = passArray->head;
+	while (pass) {
+		if (reinterpret_cast<RE::BSSkyShaderProperty*>(pass->shaderProperty)->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_CLOUDS)
+			newArray.push_back(pass);
+		pass = pass->next;
+	}
+
+	if (newArray.size() < 2) {
+		auto tail = passArray->head;
+		while (tail->next)
+			tail = tail->next;
+
+		for (auto p : newArray) {
+			auto newPass = new RE::BSRenderPass(*p);
+			newPass->next = nullptr;
+			tail->next = newPass;
+			tail = newPass;
+		}
+	}
+
+	return passArray;
 }

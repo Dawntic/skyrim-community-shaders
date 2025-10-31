@@ -26,6 +26,19 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual std::string_view GetCategory() const override { return "Display"; }
 	virtual inline bool SupportsVR() override { return false; };  //
 
+	uint CSM_Size;
+	uint EVSM_Size;
+	void SetupCascadeTextures();
+
+	virtual inline void DataLoaded() override
+	{
+		RE::GetINISetting("bLensFlare:Imagespace")->data.b = true;
+		CSM_Size = RE::GetINISetting("iShadowMapResolution:Display")->data.u;
+		EVSM_Size = CSM_Size / 4;
+
+		SetupCascadeTextures();
+	}
+
 	virtual inline void PostPostLoad() override { Hooks::Install(); }
 	virtual void SetupResources() override;
 	virtual void CompileShaders();
@@ -43,7 +56,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupScatteringVolume();
 	virtual void SetupFilterPass();
 	virtual void SetupSliceMarch();
-	virtual void SetupApplyVolume();
+	virtual void SetupApplyPass();
 	virtual void SetupCloudShadowMap();
 	virtual void SetupEVSM();
 	virtual void SetupShadowVolume();
@@ -145,8 +158,6 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11ShaderResourceView* OutputSRV = nullptr;
 	ID3D11RenderTargetView* OutputRTV = nullptr;
 
-	uint CSM_Size = 2048;
-	uint EVSM_Size = CSM_Size / 2;
 	float2 CloudESM_Size = float2(2560, 1440);
 
 	float4 frustumNearFar;

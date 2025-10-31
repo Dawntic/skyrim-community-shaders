@@ -183,7 +183,6 @@ float Get2DFilteredShadowCascade(float noise, float2x2 rotationMatrix, float sam
         float2 sampleOffset = mul(Random::PoissonSampleOffsets16[sampleIndex], rotationMatrix);
         float2 sampleUV = layerIndexRcp * sampleOffset * sampleOffsetScale + baseUV;
         float4 depths = CSMCascade.GatherRed(Linear_Sampler, float3(saturate(sampleUV), cascadeIndex), 0);
-        //float4 depths = EVSMCascade.GatherRed(Linear_Sampler, float3(saturate(sampleUV), cascadeIndex), 0);
         visibility += dot(depths > compareValue, 0.25);
     }
     return visibility * rcp((float)sampleCount);
@@ -273,21 +272,10 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float ViewZ = CoordZ + ThicknessZ * ViewZNoise;
     float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ);
-    //70us
 
-    float Shadow = GetCascadeShadow(RayPosition, ViewZ, CoordZ, ThicknessZ, BNoise); //280us
-    //350us
-/*
-    float2 Splits = float2(0.98704, 0.99777);
-    float ViewSplit = GetFroxelSlice(DepthVS(Splits.x));
-          ViewSplit = exp2((ViewSplit * VolumeSize.z) / FrustumNearFar.w) / FrustumNearFar.z;
-    uint cascadeIndex = (ViewZ < ViewSplit) ? 0 : 1;
-    float3 positionLS = mul(ShadowCascadeMatrix[cascadeIndex], float4(RayPosition * ViewZ, 1.0)).xyz;
-    float shadowMapValue = CSMCascade.SampleLevel(Linear_Sampler, float3(positionLS.xy, cascadeIndex), 0).x;
-    float shadowMapThreshold = cascadeIndex == 0 ? 0.01 : 0.0;
-    //Shadow = float(shadowMapValue >= positionLS.z - shadowMapThreshold);
-*/
-     //Shadow = GetLightingShadow(0, RayPosition * ViewZ, 0, ViewZ);
+    float Shadow = GetCascadeShadow(RayPosition, ViewZ, CoordZ, ThicknessZ, BNoise);
+
+    //Shadow = GetLightingShadow(0, RayPosition * ViewZ, 0, ViewZ);
 
     float2 Confidence;
     float ViewZCenter = exp2(max(Froxel.z + 0.5, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
@@ -301,6 +289,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
+
 /*
     //Shadow = min(Shadow, 0.12);
 
@@ -316,7 +305,6 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     Shadow = GetLightingShadow(0, RayPosition * ViewZ, 0, ViewZ);
 */
 
-
 //// Create EVSM ////////////////////////////////////////////////////////////////////////
 
 #ifdef EVSM_COMPUTE
@@ -324,35 +312,27 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 Texture2DArray CSM : register(t0);
 RWTexture2DArray<float4> EVSM : register(u0);
 
-//static const int2 Offsets[4] = { int2(-1,-1), int2( 1,-1), int2(-1, 1), int2( 1, 1) };
-//static const float4 ONE = float4(1.0, 1.0, 1.0, 1.0);
 float sum4(float4 value){ return value.x + value.y + value.z + value.w; }
+
+static const int2 Offsets[4] = { int2(-1,-1), int2( 1,-1), int2(-1, 1), int2( 1, 1) };
+
 
 [numthreads(16, 16, 1)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
-    //float2 Coords = (float2(ThreadID.xy) + 0.5) / EVSMData.xy;
-    //float Sample = CSM.SampleLevel(Point_Sampler, float3(Coords, ThreadID.z), 0).x;
-    //float ExpValue = exp(UIExponent * Sample);
-    //float2 Output = float2(ExpValue, ExpValue * ExpValue);
-    //float2 Output = Sample.xx;
-
-    //float4 Sample = (float4)0;
-    //for(int i=0; i<4; i++){
-   // }
     float2 Coords = (float2(ThreadID.xy) + 0.5) / EVSMData.xy;
-    float4 Sample = CSM.GatherRed(Point_Sampler, float3(Coords, ThreadID.z));
-    float4 ExpValue = exp(UIExponent * Sample);
-    float2 Output = float2(sum4(ExpValue), sum4(ExpValue * ExpValue)) * 0.25;
 
-    float4 PrevFrame = EVSM.Load(int4(int3(ThreadID.xyz), 0));
-    //float4 FinalOut;
-    //if(FrameCounter & 1)
-    float4 FinalOut = float4(Output, PrevFrame.xy);
-    //else
-    //    FinalOut = float4(Output, PrevFrame.xy);
+    float2 Output = 0.0;
+    for(int i=0; i<4; i++){
+        float4 Sample = CSM.GatherRed(Linear_Sampler, float3(Coords, ThreadID.z), Offsets[i]);
+        float4 ExpValue = exp(UIExponent * Sample);
+        Output += float2(sum4(ExpValue), sum4(ExpValue * ExpValue)) * 0.25;
+    }
+    Output *= 0.25;
 
-    EVSM[ThreadID.xyz] = FinalOut;//Output.xyxy;
+    //float4 PrevFrame = EVSM.Load(int4(int3(ThreadID.xyz), 0));
+
+    EVSM[ThreadID.xyz] = Output.xyxy;//float4(Output, PrevFrame.xy);
 }
 #endif
 
@@ -367,24 +347,19 @@ RWTexture2DArray<float4> BlurOutput : register(u0);
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float2 Result = 1e+10;
-    int SearchRadius = 2;
+    int SearchRadius = 1;
     [loop] for (int dy = -SearchRadius+1; dy <= SearchRadius; ++dy){
         [loop] for (int dx = -SearchRadius+1; dx <= SearchRadius; ++dx){
             int2 Coords = clamp(int2(ThreadID.xy) + int2(dx, dy), int2(0,0), int2(EVSMData.xy - 1));
-            float4 Sample = EVSM.Load(int4(Coords, ThreadID.z, 0));
-            float2 MinTest = (Sample.x < Sample.z) ? Sample.xy : Sample.zw;
-            //Result = min(Result, MinTest);
-            //Result = min(Result, Sample.xy);
-
-            //Result = (Result.x < Sample.x) ? Result.xy : Sample.xy;
-            Result = (Result.x < MinTest.x) ? Result.xy : MinTest.xy;
+            float4 Sample = EVSM.SampleLevel(Linear_Sampler, float3(Coords / EVSMData.xy, ThreadID.z), 0);
+            Result = (Result.x < Sample.x) ? Result.xy : Sample.xy;
+            //float2 MinTest = (Sample.x < Sample.z) ? Sample.xy : Sample.zw;
+            //Result = (Result.x < MinTest.x) ? Result.xy : MinTest.xy;
         }
     }
     //Result.xy = EVSM.Load(int4(ThreadID.xyz, 0)).xy;
-
-   // float4 Sample = EVSM.Load(int4(ThreadID.xy, ThreadID.z, 0));
-   // Result = (Sample.x < Sample.z) ? Sample.xy : Sample.zw;
-    //Result = Sample.xy;
+    //float4 Sample = EVSM.Load(int4(ThreadID.xyz, 0));
+    //Result = (Sample.x < Sample.z) ? Sample.xy : Sample.zw;
 
     BlurOutput[ThreadID.xyz] = Result.xyxy;
 }
