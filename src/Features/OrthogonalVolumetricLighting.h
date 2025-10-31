@@ -61,6 +61,7 @@ struct OrthogonalVolumetricLighting : Feature
 	ConstantBuffer* ESMCBuffer = nullptr;
 	ID3D11BlendState* AddBlend = nullptr;
 	ID3D11SamplerState* LinearSampler = nullptr;
+	ID3D11SamplerState* LinearMinSampler = nullptr;
 	ID3D11SamplerState* PointSampler = nullptr;
 	ID3D11SamplerState* AnisoLinear = nullptr;
 	ID3D11SamplerState* AnisoWrapLinear = nullptr;

@@ -38,6 +38,9 @@ void OrthogonalVolumetricLighting::SetupResources()
 	linearSamplerDesc.MinLOD = 0;
 	linearSamplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
 
+	D3D11_SAMPLER_DESC linearMinDesc{ linearSamplerDesc };
+	linearMinDesc.Filter = D3D11_FILTER_MINIMUM_MIN_MAG_LINEAR_MIP_POINT;
+
 	D3D11_SAMPLER_DESC anisoLinearDesc{ linearSamplerDesc };
 	anisoLinearDesc.Filter = D3D11_FILTER_ANISOTROPIC;
 	anisoLinearDesc.MaxAnisotropy = 4;
@@ -53,6 +56,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 	anisoWrapSamplerDesc.MaxAnisotropy = 4;
 
 	DX::ThrowIfFailed(device->CreateSamplerState(&linearSamplerDesc, &LinearSampler));
+	DX::ThrowIfFailed(device->CreateSamplerState(&linearMinDesc, &LinearMinSampler));
 	DX::ThrowIfFailed(device->CreateSamplerState(&pointSamplerDesc, &PointSampler));
 	DX::ThrowIfFailed(device->CreateSamplerState(&anisoLinearDesc, &AnisoLinear));
 	DX::ThrowIfFailed(device->CreateSamplerState(&anisoWrapSamplerDesc, &AnisoWrapLinear));
@@ -250,7 +254,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 	ExpoDesc.Height = EVSM_Size;
 	ExpoDesc.MipLevels = 1;
 	ExpoDesc.ArraySize = 4;
-	ExpoDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
+	ExpoDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 	ExpoDesc.Usage = D3D11_USAGE_DEFAULT;
 	ExpoDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
 	ExpoDesc.SampleDesc.Count = 1;
@@ -382,6 +386,7 @@ void OrthogonalVolumetricLighting::SetupEVSM()
 	context->CSSetSamplers(11, 1, &PointSampler);
 	context->CSSetSamplers(13, 1, &AnisoLinear);
 	context->CSSetSamplers(14, 1, &AnisoWrapLinear);
+	context->CSSetSamplers(15, 1, &LinearMinSampler);
 
 	auto shadowBuff = globals::deferred->perShadow->srv.get();
 	context->CSSetShaderResources(10, 1, &shadowBuff);
@@ -433,7 +438,7 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
 	context->CSSetShaderResources(3, 1, &shadowMap);
 
-	context->Dispatch(60, 34, 17);
+	context->Dispatch(60, 34, 16);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
@@ -609,6 +614,8 @@ void OrthogonalVolumetricLighting::SetupApplyVolume()
 
 	context->PSSetSamplers(10, 1, &LinearSampler);
 	context->PSSetSamplers(11, 1, &PointSampler);
+	context->CSSetSamplers(13, 1, &AnisoLinear);
+	context->CSSetSamplers(14, 1, &AnisoWrapLinear);
 	//context->PSSetSamplers(12, 1, &DepthSampler);
 
 	auto volumeBuff = VolumeCB->CB();
@@ -620,6 +627,7 @@ void OrthogonalVolumetricLighting::SetupApplyVolume()
 	context->PSSetShaderResources(2, 1, &STBNoiseSRV);
 
 	context->PSSetShaderResources(3, 1, &ShadowVolumeSRV[!shadowVolParity]);
+	context->PSSetShaderResources(4, 1, &ExpoBlurSRV);
 	//context->PSSetShaderResources(3, 1, &ScatteringVolumeSRV);
 	//context->PSSetShaderResources(4, 1, &FilterVolumeSRV[!FilterVolParity]);
 
