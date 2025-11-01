@@ -133,8 +133,8 @@ namespace FrameAnnotations
 		{
 			globals::state->BeginPerfEvent("Directional Light Shadowmaps");
 
-			globals::features::orthogonalVolumetricLighting.shadowLight = light;
-			globals::features::orthogonalVolumetricLighting.SetupShadowCascade();
+			//globals::features::orthogonalVolumetricLighting.shadowLight = light;
+			//globals::features::orthogonalVolumetricLighting.SetupShadowCascade();
 
 			if (auto manager = RE::BSTreeManager::GetSingleton()) {
 				//logger::info("Got manager");

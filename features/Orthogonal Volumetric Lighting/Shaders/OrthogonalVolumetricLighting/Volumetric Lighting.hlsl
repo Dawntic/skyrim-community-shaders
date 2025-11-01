@@ -2,6 +2,8 @@
 #include "Common/Math.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/Color.hlsli"
+//#include "LightLimitFix/LightLimitFix.hlsli"
+//#include "InverseSquareLighting/InverseSquareLighting.hlsli"
 
 struct VertexShaderInput
 {
@@ -18,7 +20,8 @@ struct VertexShaderOutput
 
 cbuffer VolumeBuffer : register(b0)
 {
-    row_major float4x4 ShadowCascadeMatrix[4];
+    row_major float4x4 DirectionalShadowCascadeMatrix[4];
+    row_major float4x4 LocalShadowCascadeMatrix[16];
     row_major float4x4 CloudShadowViewProj;
     row_major float4x4 FogViewProjMatrix;
     float4 EVSMData;
@@ -195,7 +198,7 @@ float Get2DFilteredShadow(float noise, float2x2 rotationMatrix, float3 positionW
           ViewSplit = exp2((ViewSplit * VolumeSize.z) / FrustumNearFar.w) / FrustumNearFar.z;
 
     float cascadeIndex = (ViewZ < ViewSplit) ? 0 : 1;
-    float4x4 lightProjectionMatrix = ShadowCascadeMatrix[cascadeIndex];
+    float4x4 lightProjectionMatrix = DirectionalShadowCascadeMatrix[cascadeIndex];
 
     float3 positionLS = mul(lightProjectionMatrix, float4(positionWS.xyz, 1)).xyz;
     float shadowVisibility = Get2DFilteredShadowCascade(noise, rotationMatrix, ShadowDataSB[0].ShadowSampleParam.z, positionLS.xy, cascadeIndex, positionLS.z, eyeIndex);
@@ -236,28 +239,23 @@ float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float Thic
           ViewSplit = exp2((ViewSplit * VolumeSize.z) / FrustumNearFar.w) / FrustumNearFar.z;
 
     float Result = 0;
-    for(int i=0; i<Samples; i++){
+    for(int i=1; i<Samples+1; i++){
         float3 RaySampleCoords = RayPosition * ViewZ;
 
         uint CascadeIndex = (ViewZ < ViewSplit) ? 0 : 1;
-        float3 CoordsLS = mul(ShadowCascadeMatrix[CascadeIndex], float4(RaySampleCoords, 1.0)).xyz;
+        float3 CoordsLS = mul(DirectionalShadowCascadeMatrix[CascadeIndex], float4(RaySampleCoords, 1.0)).xyz;
         float2 Moments = EVSMCascade.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CascadeIndex), 0).xy;
         float Visibility = EVSM_Visibility(CoordsLS, Moments);
 
         Result += Visibility;
 
-        float ViewZNoise = frac(BNoise + (FrameCounter * (i+2)) * kPhi);
+        float ViewZNoise = frac(BNoise + (FrameCounter * i) * kPhi);
         ViewZ = CoordZ + ThicknessZ * ViewZNoise;
     }
     Result /= Samples;
 
     return Result;
 }
-
-//Happens only with EVSM not unfiltered
-//Happens worse with downscaled
-//Much worse with Valid var in EVSM
-//twinkling issue only happens with EVSM
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -274,8 +272,6 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ);
 
     float Shadow = GetCascadeShadow(RayPosition, ViewZ, CoordZ, ThicknessZ, BNoise);
-
-    //Shadow = GetLightingShadow(0, RayPosition * ViewZ, 0, ViewZ);
 
     float2 Confidence;
     float ViewZCenter = exp2(max(Froxel.z + 0.5, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
@@ -297,7 +293,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ViewSplit = GetFroxelSlice(DepthVS(Splits.x));
           ViewSplit = exp2((ViewSplit * VolumeSize.z) / FrustumNearFar.w) / FrustumNearFar.z;
     uint cascadeIndex = (ViewZ < ViewSplit) ? 0 : 1;
-    float3 positionLS = mul(ShadowCascadeMatrix[cascadeIndex], float4(RayPosition * ViewZ, 1.0)).xyz;
+    float3 positionLS = mul(DirectionalShadowCascadeMatrix[cascadeIndex], float4(RayPosition * ViewZ, 1.0)).xyz;
     float shadowMapValue = CSMCascade.SampleLevel(Linear_Sampler, float3(positionLS.xy, cascadeIndex), 0).x;
     float shadowMapThreshold = cascadeIndex == 0 ? 0.01 : 0.0;
     Shadow = float(shadowMapValue >= positionLS.z - shadowMapThreshold);
@@ -322,17 +318,19 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float2 Coords = (float2(ThreadID.xy) + 0.5) / EVSMData.xy;
 
+    float DeltaLim = 0.3;
+    float ValidSamples = 0;
     float2 Output = 0.0;
     for(int i=0; i<4; i++){
         float4 Sample = CSM.GatherRed(Linear_Sampler, float3(Coords, ThreadID.z), Offsets[i]);
-        float4 ExpValue = exp(UIExponent * Sample);
-        Output += float2(sum4(ExpValue), sum4(ExpValue * ExpValue)) * 0.25;
+        float4 Valid = (Sample < (1.0 - DeltaLim)) ? 1 : 0;
+        float4 ExpValue = Valid * exp(UIExponent * Sample);
+        Output += float2(sum4(ExpValue), sum4(ExpValue * ExpValue));
+        ValidSamples += sum4(Valid);
     }
-    Output *= 0.25;
+    Output = (ValidSamples > 0) ? Output.xy / ValidSamples : EVSMData.zw;
 
-    //float4 PrevFrame = EVSM.Load(int4(int3(ThreadID.xyz), 0));
-
-    EVSM[ThreadID.xyz] = Output.xyxy;//float4(Output, PrevFrame.xy);
+    EVSM[ThreadID.xyz] = Output.xyxy;
 }
 #endif
 
@@ -347,9 +345,9 @@ RWTexture2DArray<float4> BlurOutput : register(u0);
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float2 Result = 1e+10;
-    int SearchRadius = 1;
-    [loop] for (int dy = -SearchRadius+1; dy <= SearchRadius; ++dy){
-        [loop] for (int dx = -SearchRadius+1; dx <= SearchRadius; ++dx){
+    int SearchRadius = 2;
+    [loop] for (int dy = -1; dy <= SearchRadius; ++dy){
+        [loop] for (int dx = -1; dx <= SearchRadius; ++dx){
             int2 Coords = clamp(int2(ThreadID.xy) + int2(dx, dy), int2(0,0), int2(EVSMData.xy - 1));
             float4 Sample = EVSM.SampleLevel(Linear_Sampler, float3(Coords / EVSMData.xy, ThreadID.z), 0);
             Result = (Result.x < Sample.x) ? Result.xy : Sample.xy;
@@ -357,7 +355,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
             //Result = (Result.x < MinTest.x) ? Result.xy : MinTest.xy;
         }
     }
-    //Result.xy = EVSM.Load(int4(ThreadID.xyz, 0)).xy;
+    Result.xy = EVSM.SampleLevel(Linear_Sampler, float3(ThreadID.xy / EVSMData.xy, ThreadID.z), 0);
+
     //float4 Sample = EVSM.Load(int4(ThreadID.xyz, 0));
     //Result = (Sample.x < Sample.z) ? Sample.xy : Sample.zw;
 
@@ -369,7 +368,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 //Player at slice 20 - 23
 //Higher is further
 
-//// Media Volume /////////////////////////////////////////////////////////////////////////////
+//// Media Volume ///////////////////////////////////////////////////////////////////////
 
 #ifdef MEDIA_COMPUTE
 
@@ -464,6 +463,14 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 #ifdef SCATTER_COMPUTE
 
+#	if defined(LIGHT_LIMIT_FIX)
+#		include "LightLimitFix/LightLimitFix.hlsli"
+#	endif
+
+#	if defined(ISL) && defined(LIGHT_LIMIT_FIX)
+#		include "InverseSquareLighting/InverseSquareLighting.hlsli"
+#	endif
+
 Texture3D ShadowVolume : register(t0);
 Texture3D MediaVolume : register(t1);
 RWTexture3D<float4> ScatteringVolume : register(u0);
@@ -475,6 +482,65 @@ float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
 
     return (1.0 - AnisotropySq) / (4.0 * Math::PI * (phase * sqrt(phase)));
 }
+
+float HenyeyGreensteinPhase(float3 RayDirection, float3 LightDirection, float Anisotropy){
+    float ScatteringAngle = dot(LightDirection, RayDirection);
+    Anisotropy = clamp(Anisotropy, -0.999, 0.999);
+	float AnisotropySq = Anisotropy * Anisotropy;
+	float phase = max(1.0 + AnisotropySq - 2.0 * Anisotropy * ScatteringAngle, EPSILON);
+
+    return (1.0 - AnisotropySq) / (4.0 * Math::PI * (phase * sqrt(phase)));
+}
+
+/*
+void GetLocalLights(float3 RayDirection, float Phase)
+{
+    float Lighting = 0.0;
+    uint clusterIndex = 0;
+    uint lightCount = 0;
+    if (LightLimitFix::GetClusterIndex(screenUV, viewPosition.z, clusterIndex)) { //fill
+        lightCount = LightLimitFix::lightGrid[clusterIndex].lightCount;
+        uint lightOffset = LightLimitFix::lightGrid[clusterIndex].offset;
+
+        [loop] for (uint i = 0; i < lightCount; i++){
+            uint LightIndex = LightLimitFix::lightList[lightOffset + i];
+            LightLimitFix::Light Light = LightLimitFix::lights[LightIndex];
+            float3 LightPosition = Light.positionWS[0].xyz - input.WorldPosition.xyz; //fill
+
+            //ISL
+            float Attenuation;
+            #if defined(ISL)
+                Attenuation = InverseSquareLighting::GetAttenuation(length(LightPosition), light);
+                if (Attenuation < 1e-5) continue;
+            #else
+                float intensityFactor = saturate(length(LightPosition) / light.radius);
+                if (intensityFactor == 1) continue;
+                Attenuation = 1 - intensityFactor * intensityFactor;
+            #endif
+
+            //Point Lights
+            if (Light.lightFlags & LightLimitFix::LightFlags::Simple) {
+                float3 Radiance = Light.color * Attenuation;
+                Lighting += Radiance * HenyeyGreensteinPhase(RayDirection, normalize(LightPosition), Phase);
+            }
+
+            //Shadow Point Lights   //Needs Matrices
+            if (Light.lightFlags & LightLimitFix::LightFlags::Shadow) {
+                //SampleLocalShadowMap();
+            }
+
+            //Phase
+            //float3 IncomingDir = normalize(Direction);
+            //float3 OutgoingDir = normalize(RayPosition);
+            //float Phase = henyeyGreenstein(dot(IncomingDir, OutgoingDir), phase);
+
+            //Sum
+            //float3 LightColor = Light.color.xyz * Intensity;
+            //Lighting += LightColor * Phase;
+        }
+    }
+}
+*/
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)

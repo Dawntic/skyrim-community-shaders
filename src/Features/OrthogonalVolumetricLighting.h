@@ -28,6 +28,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	uint CSM_Size;
 	uint EVSM_Size;
+	uint lightCascades = 2;
 	void SetupCascadeTextures();
 
 	virtual inline void DataLoaded() override
@@ -50,6 +51,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual bool CheckFrameBuffer();
 	virtual void SetupShadowCascade();
 	virtual REX::W32::XMFLOAT4X4 GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightTransform);
+	void UpdateShadowLightMatrices();
 	virtual void BuildCloudShadowMatrix();
 
 	virtual void SetupBypass();
@@ -158,25 +160,22 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11ShaderResourceView* OutputSRV = nullptr;
 	ID3D11RenderTargetView* OutputRTV = nullptr;
 
-	float2 CloudESM_Size = float2(2560, 1440);
-
 	float4 frustumNearFar;
-	float4 volumeDimensions = float4(240, 136, 68, 0);
-	float4 noiseDimensions = float4(64, 64, 32, 0);
-	float2 fogMapSize;  // = screenSize;
+	float3 eyePositionWS;
+	REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4] = {};
+	REX::W32::XMFLOAT4X4 localShadowCascadeMatrices[16] = {};
 
+	static constexpr float4 volumeDimensions = float4(240, 136, 68, 0);
+	static constexpr float4 noiseDimensions = float4(64, 64, 32, 0);
+	float2 fogMapSize;
 	DirectX::XMFLOAT4X4 fogMapViewProj = DirectX::XMFLOAT4X4(
 		1.19175, 1.01186E-07, -0.00029, 0.00,
 		0.00, 2.11867, 0.00065, 0.00,
 		0.00, 0.00035, -1.00036, -128.04633,
 		0.00, 0.00035, -1.00, 0.00);
 
-	DirectX::XMFLOAT4X4 cloudShadowLSViewProj;
-	DirectX::XMFLOAT4X4 cloudShadowLSViewProjInverse;
-	float3 eyePositionWS;
 	float2 screenSize;
 	uint frameCounter = 0;
-
 	bool overrideShader = false;
 	bool swapOutputRT = false;
 
@@ -189,7 +188,7 @@ struct OrthogonalVolumetricLighting : Feature
 	uint32_t* skyrim_RunFlarePtr = nullptr;
 	//RE::NiPoint3* skyrim_SunPosition = nullptr;
 	inline static RE::NiPoint3* skyrim_SunPosition = nullptr;
-	RE::BSShadowLight* shadowLight;
+	//RE::BSShadowLight* shadowLight;
 
 	virtual void RestoreDefaultSettings() override;
 	virtual void DrawSettings() override;
@@ -203,6 +202,11 @@ struct OrthogonalVolumetricLighting : Feature
 	float brushRadius = 24.0f;
 	float brushFeather = 0.5;
 	float fogErase = false;
+
+	float2 CloudESM_Size = float2(2560, 1440);
+	DirectX::XMFLOAT4X4 cloudShadowLSViewProj;
+	DirectX::XMFLOAT4X4 cloudShadowLSViewProjInverse;
+	float4 cloudOrigin = float4(1, 1, 1, 1);
 
 	struct Settings
 	{
@@ -224,11 +228,10 @@ struct OrthogonalVolumetricLighting : Feature
 	};
 	Settings settings;
 
-	float4 cloudOrigin = float4(1, 1, 1, 1);
-
 	struct alignas(16) VolumeBuffer
 	{
-		REX::W32::XMFLOAT4X4 shadowCascadeMatrix[4];
+		REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4];
+		REX::W32::XMFLOAT4X4 localShadowCascadeMatrices[16];
 		DirectX::XMFLOAT4X4 cloudShadowMatrix;
 		DirectX::XMFLOAT4X4 fogMapMatrix;
 		float4 EVSMData;
