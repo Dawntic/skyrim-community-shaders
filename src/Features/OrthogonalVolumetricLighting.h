@@ -164,6 +164,7 @@ struct OrthogonalVolumetricLighting : Feature
 	float3 eyePositionWS;
 	REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4] = {};
 	REX::W32::XMFLOAT4X4 localShadowCascadeMatrices[16] = {};
+	float4 shadowCascadeEndSplit = float4(0, 0, 0, 0);
 
 	static constexpr float4 volumeDimensions = float4(240, 136, 68, 0);
 	static constexpr float4 noiseDimensions = float4(64, 64, 32, 0);
@@ -195,10 +196,10 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
 
-	float density = 0.1f;
+	float globalFogDensity = 0.1f;
 	float4 fogMapColor;
-	float fogStartHeight = 0.0f;
-	float fogFalloffRate = 0.0f;
+	float globalFogStartHeight = 0.0f;
+	float globalFogFalloffHeight = 0.0f;
 	float brushRadius = 24.0f;
 	float brushFeather = 0.5;
 	float fogErase = false;
@@ -210,19 +211,18 @@ struct OrthogonalVolumetricLighting : Feature
 
 	struct Settings
 	{
-		uint useHistory = true;
-		uint useCheckerBoard = false;
-		float historyAlpha = 0.2;
-		float weight1 = 0.5;
-		float weight2 = 0.3;
+		float extinction = 1;
 		float anisotropy = 0.85;
-		float Extinction = 1;
+		uint esmExponent = 2;
 		float albedo = 1.0;
 		float color_saturation = 1.0;
-		float shadow_threshold = 1.0;
-		uint esmExponent = 2;
+
+		float globalFogDensity = 0;
+		float globalFogStartHeight = 0;
+		float globalFogFalloffHeight = 0;
+
 		float blendOpp = false;
-		//float _pad[1];
+		float _pad[3];
 		float4 fogMapData;
 		float4 fogMapColor;
 	};
@@ -232,8 +232,8 @@ struct OrthogonalVolumetricLighting : Feature
 	{
 		REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4];
 		REX::W32::XMFLOAT4X4 localShadowCascadeMatrices[16];
-		DirectX::XMFLOAT4X4 cloudShadowMatrix;
 		DirectX::XMFLOAT4X4 fogMapMatrix;
+		float4 shadowCascadeEndSplit;
 		float4 EVSMData;
 		float4 frustumNearFar;
 		float4 PlayerWSPos;
@@ -242,7 +242,6 @@ struct OrthogonalVolumetricLighting : Feature
 		float4 Jitter;
 		uint frameCounter;
 		uint boardCondition;
-		float4 CloudOrigin;
 		float _pad[2];
 	};
 	virtual VolumeBuffer UpdateVolumeBuffer();

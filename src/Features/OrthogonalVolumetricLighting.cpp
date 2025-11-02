@@ -2,8 +2,8 @@
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	OrthogonalVolumetricLighting::Settings,
-	useHistory, historyAlpha, weight1, weight2,
-	anisotropy, Extinction, color_saturation, esmExponent, useCheckerBoard, albedo)
+	anisotropy, extinction, albedo, esmExponent, color_saturation,
+	globalFogDensity, globalFogStartHeight, globalFogFalloffHeight)
 
 void OrthogonalVolumetricLighting::CompileShaders()
 {
@@ -181,10 +181,10 @@ void OrthogonalVolumetricLighting::SetupResources()
 	D3D11_TEXTURE3D_DESC ScatterVolumeDesc{ R16VolumeDesc };
 	ScatterVolumeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
-	if (settings.useCheckerBoard)
-		ScatterVolumeDesc.Depth = (UINT)std::ceil(volumeDimensions.z / 2);
-	else
-		ScatterVolumeDesc.Depth = (UINT)volumeDimensions.z;
+	//if (settings.useCheckerBoard)
+	//	ScatterVolumeDesc.Depth = (UINT)std::ceil(volumeDimensions.z / 2);
+	//else
+	ScatterVolumeDesc.Depth = (UINT)volumeDimensions.z;
 
 	D3D11_UNORDERED_ACCESS_VIEW_DESC R16VolumeUAVdesc{};
 	R16VolumeUAVdesc.Format = R16VolumeDesc.Format;
@@ -343,7 +343,7 @@ void OrthogonalVolumetricLighting::CheckOverride()
 		LookupShader(shaderdesc);
 	}
 }
-
+#include "Features/Skylighting.h"
 //// SHADOWS //////////////////////////////////////////////////
 void OrthogonalVolumetricLighting::SetupEVSM()
 {
@@ -425,6 +425,9 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
 	context->CSSetShaderResources(3, 1, &shadowMap);
 
+	auto skylightstbn = globals::features::skylighting.stbn_vec3_2Dx1D_128x128x64.get();
+	context->CSSetShaderResources(4, 1, &skylightstbn);
+
 	context->Dispatch(60, 34, 16);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
@@ -484,10 +487,10 @@ void OrthogonalVolumetricLighting::SetupScatteringVolume()
 
 	//context->Dispatch(40, 23, 8);
 
-	if (settings.useCheckerBoard)
-		context->Dispatch(40, 23, 11);
-	else
-		context->Dispatch(60, 34, 17);
+	//if (settings.useCheckerBoard)
+	//	context->Dispatch(40, 23, 11);
+	//else
+	context->Dispatch(60, 34, 17);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
@@ -651,8 +654,8 @@ OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateV
 	VolumeBuffer data{};
 	std::memcpy(data.directionalShadowCascadeMatrices, directionalShadowCascadeMatrices, sizeof(data.directionalShadowCascadeMatrices));
 	std::memcpy(data.localShadowCascadeMatrices, localShadowCascadeMatrices, sizeof(data.localShadowCascadeMatrices));
-	data.cloudShadowMatrix = cloudShadowLSViewProj;
 	data.fogMapMatrix = fogMapViewProj;
+	data.shadowCascadeEndSplit = shadowCascadeEndSplit;
 	data.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
 	data.frustumNearFar = frustumNearFar;
 	data.PlayerWSPos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
@@ -660,7 +663,6 @@ OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateV
 	data.NoiseSize = noiseDimensions;
 	data.frameCounter = frameCounter;
 	data.boardCondition = frameCounter & 1;
-	data.CloudOrigin = cloudOrigin;
 	return data;
 }
 
@@ -716,27 +718,28 @@ bool OrthogonalVolumetricLighting::CheckFrameBuffer()
 void OrthogonalVolumetricLighting::UpdateShadowLightMatrices()
 {
 	auto smState = globals::game::smState;
-	//logger::info("Shadow Func");
 
 	if (auto shadowSceneNode = smState->shadowSceneNode[0]) {
-		auto& shadowRuntime = shadowSceneNode->GetRuntimeData();
-		auto& shadowLightList = shadowRuntime.activeShadowLights;
+		auto& shadowNodeRuntime = shadowSceneNode->GetRuntimeData();
+
+		if (shadowNodeRuntime.shadowDirLight) {
+			auto& dirLight = shadowNodeRuntime.shadowDirLight;
+			auto& dirLightData = dirLight->GetRuntimeData();
+			auto& dirCascadeList = dirLightData.shadowmapDescriptors;
+			for (uint it = 0; it < dirCascadeList.size() && it < 4; it++) {
+				directionalShadowCascadeMatrices[it] = GetCascadeMatrix(dirCascadeList[it].lightTransform);
+			}
+			auto& dirLightData2 = dirLight->GetShadowDirectionalLightRuntimeData();
+			shadowCascadeEndSplit = float4(dirLightData2.endSplitDistances[0], dirLightData2.endSplitDistances[1], dirLightData2.endSplitDistances[2], 0.0);
+		}
 
 		int index = 0;
+		auto& shadowLightList = shadowNodeRuntime.activeShadowLights;
 		for (uint i = 0; i < shadowLightList.size(); i++) {
 			auto& lightData = shadowLightList[i]->GetRuntimeData();
 			auto& cascadeList = lightData.shadowmapDescriptors;
-
-			if (shadowLightList[i]->IsDirectionalLight()) {
-				for (uint i = 0; i < cascadeList.size() && i < 4; i++) {
-					directionalShadowCascadeMatrices[i] = GetCascadeMatrix(cascadeList[i].lightTransform);
-				}
-				//logger::info("Found Directional Shadow Light");
-			} else {
-				localShadowCascadeMatrices[index++] = GetCascadeMatrix(cascadeList[0].lightTransform);
-				localShadowCascadeMatrices[index++] = GetCascadeMatrix(cascadeList[1].lightTransform);
-				//logger::info("Found Local Shadow Light");
-			}
+			localShadowCascadeMatrices[index++] = GetCascadeMatrix(cascadeList[0].lightTransform);
+			localShadowCascadeMatrices[index++] = GetCascadeMatrix(cascadeList[1].lightTransform);
 		}
 	}
 }
@@ -777,12 +780,12 @@ void OrthogonalVolumetricLighting::SetupShadowCascade()
 	//	}
 }
 
-void OrthogonalVolumetricLighting::Hooks::SetShadowMapCount::thunk(RE::BSShadowLight* light, uint64_t numLights)
+void OrthogonalVolumetricLighting::Hooks::SetShadowMapCount::thunk(RE::BSShadowLight* light, uint64_t numCascades)
 {
 	if (light->IsDirectionalLight())
-		numLights = 4;
-
-	func(light, numLights);
+		numCascades = 4;
+	logger::info("Set shadow map count");
+	func(light, numCascades);
 }
 
 ///// SETTINGS //////////////////////////////////////////////////
@@ -807,11 +810,18 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 	ImGui::SeparatorText("Media properties");
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
-	ImGui::SliderFloat("Extinction Per Meter", &settings.Extinction, 0.0001, 0.25);
+	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.0001, 0.25);
 	ImGui::SliderFloat("Scatter to Absorption Ratio", &settings.albedo, 0.0, 1.0);
 	ImGui::Spacing();
+
 	ImGui::SeparatorText("Shadow properties");
 	ImGui::SliderInt("VSM Exponent: ", (int*)&settings.esmExponent, 1, 100);
+	ImGui::Spacing();
+
+	ImGui::SeparatorText("Global height fog");
+	ImGui::SliderFloat("Density", &settings.globalFogDensity, 0.0f, 1.0f);
+	ImGui::SliderFloat("Start Height", &settings.globalFogStartHeight, -20000.0f, 50000.0f);
+	ImGui::SliderFloat("Falloff Height Above Start", &settings.globalFogFalloffHeight, 0.0f, 20000.0f);
 
 	//ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
 	//ImGui::SliderFloat("History Bias", &settings.historyAlpha, 0.0, 0.5);
@@ -822,9 +832,6 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	//ImGui::SliderFloat("Shadow Threshold", &settings.shadow_threshold, 0.0, 1.0);
 
 	//ImGui::SeparatorText("Fog Maps");
-	//ImGui::SliderFloat("Density", &density, 0.0f, 1.0f);
-	//ImGui::SliderFloat("Start Height", &fogStartHeight, 0.0f, 1.0f);
-	//ImGui::SliderFloat("Falloff Rate", &fogFalloffRate, 0.0f, 1.0f);
 
 	//ImGui::SliderFloat("Radius", &brushRadius, 1.0f, 200.0f, "%.0f");
 	//ImGui::SliderFloat("Feather", &brushFeather, 0.0f, 1.0f);
