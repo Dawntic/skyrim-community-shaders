@@ -168,7 +168,7 @@ Texture2DArray BlueNoise : register(t2);
 Texture2DArray CSMCascade : register(t3);
 RWTexture3D<float> ShadowVolume : register(u0);
 Texture2DArray STBNFloat3 : register(t4);
-Texture2DArray EVSM : register(t5);
+Texture2DArray EVSMCascade2 : register(t5); // non blurred
 
 float GetFroxelSlice(float Depth){
     float FroxelSlice = log(Depth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x);
@@ -195,7 +195,7 @@ float EVSM_Visibility(float3 CoordsLS, float2 Moments){
 
 float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float ThicknessZ, float BNoise){
 
-    int Samples = 1;
+    int Samples = 4;
 
     float Result = 0;
     for(int i=0; i<Samples; i++){
@@ -208,52 +208,12 @@ float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float Thic
 
         Result += Visibility;
 
-        //float ViewZNoise = frac(BNoise + (FrameCounter * (i+2)) * kPhi);
-        //ViewZ = CoordZ + ThicknessZ * ViewZNoise;
+        float ViewZNoise = frac(BNoise + (FrameCounter * (i+2)) * kPhi);
+        ViewZ = CoordZ + ThicknessZ * ViewZNoise;
     }
     Result /= Samples;
 
     return Result;
-}
-
-
-float Get2DFilteredShadowCascade(float noise, float2x2 rotationMatrix, float sampleOffsetScale, float2 baseUV, float cascadeIndex, float compareValue, uint eyeIndex)
-{
-    const uint sampleCount = 16;
-    float layerIndexRcp = rcp(1 + cascadeIndex);
-    float visibility = 0.0;
-
-    for (uint sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
-        float2 sampleOffset = mul(Random::PoissonSampleOffsets16[sampleIndex], rotationMatrix);
-        float2 sampleUV = layerIndexRcp * sampleOffset * sampleOffsetScale + baseUV;
-        float4 depths = CSMCascade.GatherRed(Linear_Sampler, float3(saturate(sampleUV), cascadeIndex), 0);
-        visibility += dot(depths > compareValue, 0.25);
-    }
-    return visibility * rcp((float)sampleCount);
-}
-
-float Get2DFilteredShadow(float noise, float2x2 rotationMatrix, float3 positionWS, uint eyeIndex, float ViewZ)
-{
-    float2 Splits = float2(0.98704, 0.99777);
-    float ViewSplit = GetFroxelSlice(DepthVS(Splits.x));
-          ViewSplit = exp2((ViewSplit * VolumeSize.z) / FrustumNearFar.w) / FrustumNearFar.z;
-
-    float cascadeIndex = (ViewZ < ViewSplit) ? 0 : 1;
-    float4x4 lightProjectionMatrix = DirectionalShadowCascadeMatrix[cascadeIndex];
-
-    float3 positionLS = mul(lightProjectionMatrix, float4(positionWS.xyz, 1)).xyz;
-    float shadowVisibility = Get2DFilteredShadowCascade(noise, rotationMatrix, ShadowDataSB[0].ShadowSampleParam.z, positionLS.xy, cascadeIndex, positionLS.z, eyeIndex);
-    float fadeFactor = 1 - pow(saturate(dot(positionWS.xyz, positionWS.xyz) / ShadowDataSB[0].ShadowLightParam.z), 8);
-
-    return lerp(1.0, shadowVisibility, fadeFactor);
-}
-
-float GetLightingShadow(float noise, float3 worldPosition, uint eyeIndex, float ViewZ)
-{
-    float2 rotation;
-    sincos(Math::TAU * noise, rotation.y, rotation.x);
-    float2x2 rotationMatrix = float2x2(rotation.x, rotation.y, -rotation.y, rotation.x);
-    return Get2DFilteredShadow(noise, rotationMatrix, worldPosition, eyeIndex, ViewZ);
 }
 
 
@@ -275,7 +235,6 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float CascadeShadow = GetCascadeShadow(RayPosition, ViewZ, CoordZ, ThicknessZ, BNoise);
 
-    //CascadeShadow = GetLightingShadow(0, RayPosition * ViewZ, 0, ViewZ);
 
     float UICloudShadowContrib = 1.0;
     float CloudShadow = CloudShadows::GetCloudShadowMult(WorldPosition, Linear_Sampler) * UICloudShadowContrib;
@@ -291,27 +250,14 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float BaseValue = 0.85;
     float ShadowHistory = HistoryVolume.SampleLevel(AnisoClampSampler, PrevCoordsUV, 0).x;
-    //Shadow = lerp(Shadow, ShadowHistory, BaseValue);
+    Shadow = lerp(Shadow, ShadowHistory, BaseValue);
 
     ShadowVolume[ThreadID] = Shadow;
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
-/*
-    //Shadow = min(Shadow, 0.12);
 
-    float2 Splits = float2(0.98704, 0.99777);
-    float ViewSplit = GetFroxelSlice(DepthVS(Splits.x));
-          ViewSplit = exp2((ViewSplit * VolumeSize.z) / FrustumNearFar.w) / FrustumNearFar.z;
-    uint cascadeIndex = (ViewZ < ViewSplit) ? 0 : 1;
-    float3 positionLS = mul(DirectionalShadowCascadeMatrix[cascadeIndex], float4(RayPosition * ViewZ, 1.0)).xyz;
-    float shadowMapValue = CSMCascade.SampleLevel(Linear_Sampler, float3(positionLS.xy, cascadeIndex), 0).x;
-    float shadowMapThreshold = cascadeIndex == 0 ? 0.01 : 0.0;
-    Shadow = float(shadowMapValue >= positionLS.z - shadowMapThreshold);
-
-    Shadow = GetLightingShadow(0, RayPosition * ViewZ, 0, ViewZ);
-*/
 
 //// Create EVSM ////////////////////////////////////////////////////////////////////////
 
@@ -330,17 +276,13 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float2 Coords = (float2(ThreadID.xy) + 0.5) / EVSMData.xy;
 
-    float DeltaLim = 0.3; //add to UI?
-    float ValidSamples = 0;
     float2 Output = 0.0;
     for(int i=0; i<4; i++){
         float4 Sample = CSM.GatherRed(Linear_Sampler, float3(Coords, ThreadID.z), Offsets[i]);
-        float4 Valid = (Sample < (1.0 - DeltaLim)) ? 1 : 0;
-        float4 ExpValue = Valid * exp(UIEVSMExponent * Sample);
+        float4 ExpValue = exp(UIEVSMExponent * Sample);
         Output += float2(sum4(ExpValue), sum4(ExpValue * ExpValue));
-        ValidSamples += sum4(Valid);
     }
-    Output = (ValidSamples > 0) ? Output.xy / ValidSamples : EVSMData.zw;
+    Output /= 16;
 
     EVSM[ThreadID.xyz] = Output.xyxy;
 }
@@ -356,21 +298,18 @@ RWTexture2DArray<float4> BlurOutput : register(u0);
 [numthreads(16, 16, 1)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
+    float2 Coords = (float2(ThreadID.xy) + 0.5) / EVSMData.xy;
+
     float2 Result = 1e+10;
     int SearchRadius = 2;
     [loop] for (int dy = -1; dy <= SearchRadius; ++dy){
         [loop] for (int dx = -1; dx <= SearchRadius; ++dx){
-            int2 Coords = clamp(int2(ThreadID.xy) + int2(dx, dy), int2(0,0), int2(EVSMData.xy - 1));
-            float4 Sample = EVSM.SampleLevel(Linear_Sampler, float3(Coords / EVSMData.xy, ThreadID.z), 0);
+             float3 SampleCoords = float3(clamp(Coords + (int2(dx, dy) / EVSMData.xy), int2(0,0), int2(EVSMData.xy - 1)), ThreadID.z);
+             float4 Sample = EVSM.SampleLevel(Linear_Sampler, SampleCoords, 0);
             Result = (Result.x < Sample.x) ? Result.xy : Sample.xy;
-            //float2 MinTest = (Sample.x < Sample.z) ? Sample.xy : Sample.zw;
-            //Result = (Result.x < MinTest.x) ? Result.xy : MinTest.xy;
         }
     }
-    Result.xy = EVSM.SampleLevel(Linear_Sampler, float3(ThreadID.xy / EVSMData.xy, ThreadID.z), 0).xy;
-
-    //float4 Sample = EVSM.Load(int4(ThreadID.xyz, 0));
-    //Result = (Sample.x < Sample.z) ? Sample.xy : Sample.zw;
+    //Result.xy = EVSM.SampleLevel(Linear_Sampler, float3(Coords, ThreadID.z), 0).xy;
 
     BlurOutput[ThreadID.xyz] = Result.xyxy;
 }
