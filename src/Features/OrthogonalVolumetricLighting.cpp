@@ -83,16 +83,16 @@ void OrthogonalVolumetricLighting::SetupCascadeTextures()
 	ExpoUAVDesc.Texture2DArray.FirstArraySlice = 0;
 	ExpoUAVDesc.Texture2DArray.ArraySize = lightCascades;
 
-	DX::ThrowIfFailed(device->CreateTexture2D(&ExpoDesc, nullptr, &ExpoTexture));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ExpoTexture, &ExpoUAVDesc, &ExpoUAV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(ExpoTexture, nullptr, &ExpoSRV));
+	DX::ThrowIfFailed(device->CreateTexture2D(&ExpoDesc, nullptr, &EVSMTexture));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(EVSMTexture, &ExpoUAVDesc, &EVSMUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(EVSMTexture, nullptr, &EVSMSRV));
 
 	D3D11_TEXTURE2D_DESC ExpoBlurDesc{ ExpoDesc };
 	D3D11_UNORDERED_ACCESS_VIEW_DESC ExpoBlurUAVDesc{ ExpoUAVDesc };
 
-	DX::ThrowIfFailed(device->CreateTexture2D(&ExpoBlurDesc, nullptr, &ExpoBlurTexture));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ExpoBlurTexture, &ExpoBlurUAVDesc, &ExpoBlurUAV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(ExpoBlurTexture, nullptr, &ExpoBlurSRV));
+	DX::ThrowIfFailed(device->CreateTexture2D(&ExpoBlurDesc, nullptr, &EVSMBlurTexture));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(EVSMBlurTexture, &ExpoBlurUAVDesc, &EVSMBlurUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(EVSMBlurTexture, nullptr, &EVSMBlurSRV));
 }
 
 void OrthogonalVolumetricLighting::SetupResources()
@@ -351,7 +351,7 @@ void OrthogonalVolumetricLighting::SetupEVSM()
 
 	UpdateShadowLightMatrices();
 
-	context->CSSetUnorderedAccessViews(0, 1, &ExpoUAV, nullptr);
+	context->CSSetUnorderedAccessViews(0, 1, &EVSMUAV, nullptr);
 	context->CSSetShader(GenerateEVSMCS, nullptr, 0);
 
 	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
@@ -392,10 +392,10 @@ void OrthogonalVolumetricLighting::SetupEVSMBlur()
 {
 	auto context = globals::d3d::context;
 
-	context->CSSetUnorderedAccessViews(0, 1, &ExpoBlurUAV, nullptr);
+	context->CSSetUnorderedAccessViews(0, 1, &EVSMBlurUAV, nullptr);
 	context->CSSetShader(BlurEVSMCS, nullptr, 0);
 
-	context->CSSetShaderResources(0, 1, &ExpoSRV);
+	context->CSSetShaderResources(0, 1, &EVSMSRV);
 
 	auto groups = EVSM_Size / 16;
 	context->Dispatch(groups, groups, lightCascades);
@@ -419,8 +419,9 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	context->CSSetShader(GenerateShadowVolumeCS, nullptr, 0);
 
 	context->CSSetShaderResources(0, 1, &prevVolumeSRV);
-	context->CSSetShaderResources(1, 1, &ExpoBlurSRV);
+	context->CSSetShaderResources(1, 1, &EVSMBlurSRV);
 	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
+	context->CSSetShaderResources(5, 1, &EVSMSRV);
 
 	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
 	context->CSSetShaderResources(3, 1, &shadowMap);
@@ -627,7 +628,7 @@ void OrthogonalVolumetricLighting::SetupBypass()
 void OrthogonalVolumetricLighting::PerFrameUpdate()
 {
 	float nearPlane = Util::GetCameraData().y;
-	float farPlane = 11198.0f;
+	float farPlane = 11200.0f;
 	frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
 
 	auto eyePos = Util::GetEyePosition(0);

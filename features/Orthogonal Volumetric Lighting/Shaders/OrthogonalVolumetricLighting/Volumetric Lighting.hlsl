@@ -168,6 +168,7 @@ Texture2DArray BlueNoise : register(t2);
 Texture2DArray CSMCascade : register(t3);
 RWTexture3D<float> ShadowVolume : register(u0);
 Texture2DArray STBNFloat3 : register(t4);
+Texture2DArray EVSM : register(t5);
 
 float GetFroxelSlice(float Depth){
     float FroxelSlice = log(Depth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x);
@@ -194,7 +195,7 @@ float EVSM_Visibility(float3 CoordsLS, float2 Moments){
 
 float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float ThicknessZ, float BNoise){
 
-    int Samples = 4;
+    int Samples = 1;
 
     float Result = 0;
     for(int i=0; i<Samples; i++){
@@ -207,12 +208,52 @@ float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float Thic
 
         Result += Visibility;
 
-        float ViewZNoise = frac(BNoise + (FrameCounter * (i+2)) * kPhi);
-        ViewZ = CoordZ + ThicknessZ * ViewZNoise;
+        //float ViewZNoise = frac(BNoise + (FrameCounter * (i+2)) * kPhi);
+        //ViewZ = CoordZ + ThicknessZ * ViewZNoise;
     }
     Result /= Samples;
 
     return Result;
+}
+
+
+float Get2DFilteredShadowCascade(float noise, float2x2 rotationMatrix, float sampleOffsetScale, float2 baseUV, float cascadeIndex, float compareValue, uint eyeIndex)
+{
+    const uint sampleCount = 16;
+    float layerIndexRcp = rcp(1 + cascadeIndex);
+    float visibility = 0.0;
+
+    for (uint sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
+        float2 sampleOffset = mul(Random::PoissonSampleOffsets16[sampleIndex], rotationMatrix);
+        float2 sampleUV = layerIndexRcp * sampleOffset * sampleOffsetScale + baseUV;
+        float4 depths = CSMCascade.GatherRed(Linear_Sampler, float3(saturate(sampleUV), cascadeIndex), 0);
+        visibility += dot(depths > compareValue, 0.25);
+    }
+    return visibility * rcp((float)sampleCount);
+}
+
+float Get2DFilteredShadow(float noise, float2x2 rotationMatrix, float3 positionWS, uint eyeIndex, float ViewZ)
+{
+    float2 Splits = float2(0.98704, 0.99777);
+    float ViewSplit = GetFroxelSlice(DepthVS(Splits.x));
+          ViewSplit = exp2((ViewSplit * VolumeSize.z) / FrustumNearFar.w) / FrustumNearFar.z;
+
+    float cascadeIndex = (ViewZ < ViewSplit) ? 0 : 1;
+    float4x4 lightProjectionMatrix = DirectionalShadowCascadeMatrix[cascadeIndex];
+
+    float3 positionLS = mul(lightProjectionMatrix, float4(positionWS.xyz, 1)).xyz;
+    float shadowVisibility = Get2DFilteredShadowCascade(noise, rotationMatrix, ShadowDataSB[0].ShadowSampleParam.z, positionLS.xy, cascadeIndex, positionLS.z, eyeIndex);
+    float fadeFactor = 1 - pow(saturate(dot(positionWS.xyz, positionWS.xyz) / ShadowDataSB[0].ShadowLightParam.z), 8);
+
+    return lerp(1.0, shadowVisibility, fadeFactor);
+}
+
+float GetLightingShadow(float noise, float3 worldPosition, uint eyeIndex, float ViewZ)
+{
+    float2 rotation;
+    sincos(Math::TAU * noise, rotation.y, rotation.x);
+    float2x2 rotationMatrix = float2x2(rotation.x, rotation.y, -rotation.y, rotation.x);
+    return Get2DFilteredShadow(noise, rotationMatrix, worldPosition, eyeIndex, ViewZ);
 }
 
 
@@ -221,8 +262,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float3 Froxel = ThreadID;
 
-    float CoordZ = exp2(max(Froxel.z - 2, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
-    float ThicknessZ = exp2(max(Froxel.z - 1, 0.1) / FrustumNearFar.w) / FrustumNearFar.z - CoordZ;
+    float CoordZ = exp2((Froxel.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
+    float ThicknessZ = exp2((Froxel.z + 1.5) / FrustumNearFar.w) / FrustumNearFar.z - CoordZ;
 
     float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x; //true vec4 STBN from SSGI
     float ViewZNoise = frac(BNoise + FrameCounter * kPhi);
@@ -233,6 +274,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 WorldPosition = RayPosition * ViewZ + CameraWS.xyz;
 
     float CascadeShadow = GetCascadeShadow(RayPosition, ViewZ, CoordZ, ThicknessZ, BNoise);
+
+    //CascadeShadow = GetLightingShadow(0, RayPosition * ViewZ, 0, ViewZ);
 
     float UICloudShadowContrib = 1.0;
     float CloudShadow = CloudShadows::GetCloudShadowMult(WorldPosition, Linear_Sampler) * UICloudShadowContrib;
@@ -248,7 +291,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float BaseValue = 0.85;
     float ShadowHistory = HistoryVolume.SampleLevel(AnisoClampSampler, PrevCoordsUV, 0).x;
-    Shadow = lerp(Shadow, ShadowHistory, BaseValue);
+    //Shadow = lerp(Shadow, ShadowHistory, BaseValue);
 
     ShadowVolume[ThreadID] = Shadow;
 }

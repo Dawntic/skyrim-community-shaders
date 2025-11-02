@@ -123,13 +123,13 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11ShaderResourceView* CloudShadowESMSRV = nullptr;
 	ID3D11UnorderedAccessView* CloudShadowESMUAV = nullptr;
 
-	ID3D11Texture2D* ExpoTexture = nullptr;
-	ID3D11UnorderedAccessView* ExpoUAV = nullptr;
-	ID3D11ShaderResourceView* ExpoSRV = nullptr;
+	ID3D11Texture2D* EVSMTexture = nullptr;
+	ID3D11UnorderedAccessView* EVSMUAV = nullptr;
+	ID3D11ShaderResourceView* EVSMSRV = nullptr;
 
-	ID3D11Texture2D* ExpoBlurTexture = nullptr;
-	ID3D11UnorderedAccessView* ExpoBlurUAV = nullptr;
-	ID3D11ShaderResourceView* ExpoBlurSRV = nullptr;
+	ID3D11Texture2D* EVSMBlurTexture = nullptr;
+	ID3D11UnorderedAccessView* EVSMBlurUAV = nullptr;
+	ID3D11ShaderResourceView* EVSMBlurSRV = nullptr;
 
 	ID3D11Texture3D* ShadowVolume[2] = {};
 	ID3D11UnorderedAccessView* ShadowVolumeUAV[2] = {};
