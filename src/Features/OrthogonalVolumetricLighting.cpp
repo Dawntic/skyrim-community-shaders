@@ -262,7 +262,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\STBN.dds", nullptr, &STBNoiseSRV));
 
 	ID3D11Resource* Resource;
-	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\WorldMap.dds", &Resource, &WorldMapSRV));
+	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\WorldMap.dds", &Resource, &staticWorldMapSRV));
 	DX::ThrowIfFailed(Resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&WorldMapTexture)));
 
 	D3D11_TEXTURE2D_DESC FogMapDesc{};
@@ -277,6 +277,10 @@ void OrthogonalVolumetricLighting::SetupResources()
 	FogMapUAVDesc.Format = FogMapDesc.Format;
 	FogMapUAVDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
 	FogMapUAVDesc.Texture2D.MipSlice = 0;
+
+	DX::ThrowIfFailed(device->CreateTexture2D(&FogMapDesc, nullptr, &UIFogMapTexture));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(UIFogMapTexture, &FogMapUAVDesc, &UIFogMapUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(UIFogMapTexture, nullptr, &UIFogMapSRV));
 
 	DX::ThrowIfFailed(device->CreateTexture2D(&FogMapDesc, nullptr, &FogMapTexture));
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(FogMapTexture, &FogMapUAVDesc, &FogMapUAV));
@@ -343,7 +347,7 @@ void OrthogonalVolumetricLighting::CheckOverride()
 		LookupShader(shaderdesc);
 	}
 }
-#include "Features/Skylighting.h"
+
 //// SHADOWS //////////////////////////////////////////////////
 void OrthogonalVolumetricLighting::SetupEVSM()
 {
@@ -583,12 +587,18 @@ void OrthogonalVolumetricLighting::DrawFogMap()
 {
 	auto context = globals::d3d::context;
 
-	context->CSSetUnorderedAccessViews(0, 1, &FogMapUAV, nullptr);
+	context->CSSetUnorderedAccessViews(0, 1, &UIFogMapUAV, nullptr);
+	context->CSSetUnorderedAccessViews(1, 1, &FogMapUAV, nullptr);
+
 	context->CSSetShader(DrawFogMapCS, nullptr, 0);
 
 	auto volumeBuff = VolumeCB->CB();
 	context->CSSetConstantBuffers(0, 1, &volumeBuff);
-	context->CSSetShaderResources(0, 1, &WorldMapSRV);
+
+	context->CSSetShaderResources(0, 1, &staticWorldMapSRV);
+
+	auto heightMapSRV = globals::features::terrainShadows.texHeightMap->srv.get();
+	context->CSSetShaderResources(1, 1, &heightMapSRV);
 
 	context->Dispatch((UINT)fogMapSize.x, (UINT)fogMapSize.y, 1);
 
@@ -652,16 +662,32 @@ void OrthogonalVolumetricLighting::PerFrameUpdate()
 
 OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateVolumeBuffer()
 {
+	float3 mapScale = float3(0, 0, 0);
+	float2 mapOffset = float2(0, 0);
+	float2 mapRange = float2(0, 0);
+	if (globals::features::terrainShadows.IsHeightMapReady()) {
+		auto& heightMap = globals::features::terrainShadows.cachedHeightmap;
+		mapScale = float3(1.0f, 1.0f, 1.0f) / float3(heightMap->pos1 - heightMap->pos0);
+		mapOffset = -heightMap->pos0 * float2{ mapScale.x, mapScale.y };
+		mapRange = float2(heightMap->pos0.z, heightMap->pos1.z);
+	}
+
 	VolumeBuffer data{};
 	std::memcpy(data.directionalShadowCascadeMatrices, directionalShadowCascadeMatrices, sizeof(data.directionalShadowCascadeMatrices));
 	std::memcpy(data.localShadowCascadeMatrices, localShadowCascadeMatrices, sizeof(data.localShadowCascadeMatrices));
 	data.fogMapMatrix = fogMapViewProj;
+
 	data.shadowCascadeEndSplit = shadowCascadeEndSplit;
-	data.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
 	data.frustumNearFar = frustumNearFar;
-	data.PlayerWSPos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
+	data.CameraWSPos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
+
+	data.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
+	data.heightMapParams = float4(mapScale.x, mapScale.y, mapOffset.x, mapOffset.y);
+	data.heightMapZRange = float4(mapRange.x, mapRange.y, 0.0, 0.0);
+
 	data.VolumeSize = volumeDimensions;
 	data.NoiseSize = noiseDimensions;
+
 	data.frameCounter = frameCounter;
 	data.boardCondition = frameCounter & 1;
 	return data;
@@ -820,6 +846,11 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::Spacing();
 
 	ImGui::SeparatorText("Global height fog");
+	//ImGui::SliderFloat("Fog Density", &settings.globalFogDensity, 0.0f, 1.0f);
+	//ImGui::SliderFloat("Ground Level Bias", &settings.globalFogStartHeight, -2000.0f, 2000.0f);
+	//ImGui::SliderFloat("End Height", &settings.globalFogStartHeight, 0.0f, 50000.0f);
+	//ImGui::SliderFloat("Falloff Distance", &settings.globalFogFalloffHeight, 0.0f, 10000.0f);
+
 	ImGui::SliderFloat("Density", &settings.globalFogDensity, 0.0f, 1.0f);
 	ImGui::SliderFloat("Start Height", &settings.globalFogStartHeight, -20000.0f, 50000.0f);
 	ImGui::SliderFloat("Falloff Height Above Start", &settings.globalFogFalloffHeight, 0.0f, 20000.0f);
@@ -832,21 +863,21 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	//ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
 	//ImGui::SliderFloat("Shadow Threshold", &settings.shadow_threshold, 0.0, 1.0);
 
-	//ImGui::SeparatorText("Fog Maps");
+	ImGui::SeparatorText("Fog Maps");
+	ImGui::SliderFloat("Radius", &brushRadius, 1.0f, 200.0f, "%.0f");
+	ImGui::SliderFloat("Feather", &brushFeather, 0.0f, 1.0f);
+	ImGui::SliderFloat("Erase", &settings.blendOpp, -1.0f, 0.0f, "%.0f");
 
-	//ImGui::SliderFloat("Radius", &brushRadius, 1.0f, 200.0f, "%.0f");
-	//ImGui::SliderFloat("Feather", &brushFeather, 0.0f, 1.0f);
-	//ImGui::SliderFloat("Erase", &settings.blendOpp, -1.0f, 0.0f, "%.0f");
+	static float localFogDensity = 0.0;
+	static float localFogGroundLevelBias = 0.0;
+	static float localFogMaxHeight = 0.0;
+	static float localFogFalloffDistance = 0.0;
+	ImGui::SliderFloat("Fog Density", &localFogDensity, 0.0f, 1.0f);
+	ImGui::SliderFloat("DISABLED Ground Level Bias", &localFogGroundLevelBias, -2000.0f, 2000.0f);
+	ImGui::SliderFloat("Fog Height", &localFogMaxHeight, 0.0f, 50000.0f);              //(GroundLevel + Bias) + This   = FogTop
+	ImGui::SliderFloat("Falloff Distance", &localFogFalloffDistance, 0.0f, 10000.0f);  //EndHeight - This  = FalloffStart
 
-	//ImGui::Button("Export Map");
-	//if (ImGui::IsItemClicked()) {
-
-	//}
-
-	//ImVec2 displaySize = ImVec2(screenSize.x * 0.5f, screenSize.y * 0.5f);
-	/*
-
-	ImVec2 displaySize = ImVec2(512, 512);
+	ImVec2 displaySize = ImVec2(screenSize.x * 0.5f, screenSize.y * 0.5f);
 
 	if (ImGui::BeginChild("PaintCanvas", displaySize, true, ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar)) {
 		ImVec2 mouse = ImGui::GetIO().MousePos;
@@ -855,9 +886,8 @@ void OrthogonalVolumetricLighting::DrawSettings()
 		ImVec2 PosBR = ImVec2(PosTL.x + displaySize.x, PosTL.y + displaySize.y);
 
 		ImDrawList* drawList = ImGui::GetWindowDrawList();
-		//drawList->AddImage((ImTextureID)WorldMapSRV, PosTL, PosBR);
-		//drawList->AddImage((ImTextureID)FogMapSRV, PosTL, PosBR);
-		drawList->AddImage((ImTextureID)CloudShadowSRV, PosTL, PosBR);
+		drawList->AddImage((ImTextureID)staticWorldMapSRV, PosTL, PosBR);
+		drawList->AddImage((ImTextureID)UIFogMapSRV, PosTL, PosBR);
 
 		ImGui::SetCursorScreenPos(PosTL);
 		ImGui::InvisibleButton("PaintHit", displaySize, ImGuiButtonFlags_MouseButtonLeft);
@@ -881,14 +911,13 @@ void OrthogonalVolumetricLighting::DrawSettings()
 			if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
 				float2 Coords = float2(mouse.x - PosTL.x, mouse.y - PosTL.y) / float2(displaySize.x, displaySize.y) * fogMapSize;
 				settings.fogMapData = float4(Coords.x, Coords.y, brushRadius, brushFeather);
-				settings.fogMapColor = float4(1.0f + fogFalloffRate, 1.0f, 1.0f + fogStartHeight, density);
+				settings.UIfogMapParams = float4(localFogGroundLevelBias, localFogMaxHeight, localFogFalloffDistance, localFogDensity);
 
 				DrawFogMap();
 			}
 		}
 	}
 	ImGui::EndChild();
-	*/
 }
 
 //// GENERAL HOOKS ///////////////////////////////////////////////////////////////////

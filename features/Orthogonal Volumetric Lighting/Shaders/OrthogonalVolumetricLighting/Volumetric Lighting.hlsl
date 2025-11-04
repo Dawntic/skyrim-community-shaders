@@ -22,13 +22,18 @@ cbuffer VolumeBuffer : register(b0)
     row_major float4x4 DirectionalShadowCascadeMatrix[4];
     row_major float4x4 LocalShadowCascadeMatrix[16];
     row_major float4x4 FogViewProjMatrix;
+
     float4 ShadowCascadeEndSplit;
-    float4 EVSMData;
     float4 FrustumNearFar;
     float4 CameraWS;
+
+    float4 EVSMData;
+    float4 HeightMapParams;
+    float4 HeightMapZRange;
+
     float4 VolumeSize;
 	float4 NoiseSize;
-    float4 Jitter;
+
     uint FrameCounter;
     uint BoardCond;
 };
@@ -42,12 +47,12 @@ cbuffer SettingsBuffer : register(b1)
     float UISaturation;
 
     float UIGlobalFogDensity;
-    float UIGlobalFogStartHeight;
-    float UIGobalFogFalloffHeight;
+    float UIGlobalFogHeight;
+    float UIGobalFogFalloff;
 
     float FogMapBlendOpp;
     float4 FogMapData;
-    float4 FogMapColor;
+    float4 UIFogMapInput;
 
     uint CheckerBoard;
 }
@@ -183,7 +188,7 @@ float EVSM_Visibility(float3 CoordsLS, float2 Moments){
     float Offset = 8388888;
     float BiasVal = 0.0005;
 
-    float Depth = exp(UIEVSMExponent * CoordsLS.z);
+    float Depth = exp(UIEVSMExponent * (CoordsLS.z+0.0));
     float DepthBias = BiasVal * Depth;
     float Delta = Depth - Moments.x;
 
@@ -230,7 +235,6 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float ViewZ = CoordZ + ThicknessZ * ViewZNoise;
     float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ);
-
     float3 WorldPosition = RayPosition * ViewZ + CameraWS.xyz;
 
     float CascadeShadow = GetCascadeShadow(RayPosition, ViewZ, CoordZ, ThicknessZ, BNoise);
@@ -274,17 +278,17 @@ static const int2 Offsets[4] = { int2(-1,-1), int2( 1,-1), int2(-1, 1), int2( 1,
 [numthreads(16, 16, 1)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
-    float2 Coords = (float2(ThreadID.xy) + 0.5) / EVSMData.xy;
+    float2 Coords = (ThreadID.xy + 0.5) / EVSMData.xy;
 
-    float2 Output = 0.0;
+    float2 Result = 0.0;
     for(int i=0; i<4; i++){
         float4 Sample = CSM.GatherRed(Linear_Sampler, float3(Coords, ThreadID.z), Offsets[i]);
         float4 ExpValue = exp(UIEVSMExponent * Sample);
-        Output += float2(sum4(ExpValue), sum4(ExpValue * ExpValue));
+        Result += float2(sum4(ExpValue), sum4(ExpValue * ExpValue));
     }
-    Output /= 16;
+    Result /= 16;
 
-    EVSM[ThreadID.xyz] = Output.xyxy;
+    EVSM[ThreadID.xyz] = Result.xyxy;
 }
 #endif
 
@@ -298,13 +302,13 @@ RWTexture2DArray<float4> BlurOutput : register(u0);
 [numthreads(16, 16, 1)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
-    float2 Coords = (float2(ThreadID.xy) + 0.5) / EVSMData.xy;
+    float2 Coords = (ThreadID.xy + 0.5) / EVSMData.xy;
 
     float2 Result = 1e+10;
     int SearchRadius = 2;
     [loop] for (int dy = -1; dy <= SearchRadius; ++dy){
         [loop] for (int dx = -1; dx <= SearchRadius; ++dx){
-             float3 SampleCoords = float3(clamp(Coords + (int2(dx, dy) / EVSMData.xy), int2(0,0), int2(EVSMData.xy - 1)), ThreadID.z);
+             float3 SampleCoords = float3(clamp(Coords + (float2(dx, dy) / EVSMData.xy), float2(0.0, 0.0), EVSMData.xy - 1), ThreadID.z);
              float4 Sample = EVSM.SampleLevel(Linear_Sampler, SampleCoords, 0);
             Result = (Result.x < Sample.x) ? Result.xy : Sample.xy;
         }
@@ -334,18 +338,10 @@ RWTexture3D<float4> MediaVolume : register(u0);
 //Abledo
 //Base height
 //Falloff
-
-
-float4 GetLocalFog(float3 CoordsWS){
+float4 GetLocalFogData(float3 CoordsWS){
     float MapCameraDepth = -249920.0;
 
-    row_major float4x4 MapViewProj = float4x4(
-    float4(1.19175, 1.01186E-07, -0.00029, 0.00),
-    float4(0.00, 2.11867, 0.00065, 0.00),
-    float4(0.00, 0.00035, -1.00036, -128.04633),
-    float4(0.00, 0.00035, -1.00, 0.00));
-
-    float4 MapCoordsNDC = mul(MapViewProj, float4(CoordsWS.xy, CoordsWS.z + MapCameraDepth, 1.0));
+    float4 MapCoordsNDC = mul(FogViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z + MapCameraDepth, 1.0));
     float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
 
     return FogMap.SampleLevel(Point_Sampler, MapCoordsUV, 0);
@@ -353,13 +349,45 @@ float4 GetLocalFog(float3 CoordsWS){
 
 float GetGlobalHeightFog(float FroxelWorldHeight){
     //method 1
-    float GlobalFog = clamp((FroxelWorldHeight - UIGlobalFogStartHeight) * rcp(UIGobalFogFalloffHeight), 0.0, 1.0);
+    float GlobalFog = 1.0 - clamp((FroxelWorldHeight - UIGlobalFogHeight) / UIGobalFogFalloff, 0.0, 1.0);
     GlobalFog = GlobalFog * GlobalFog * GlobalFog * UIGlobalFogDensity;
 
     //method 2
-	//GlobalFog = exp(-(FroxelWorldHeight - UIGlobalFogStartHeight) * UIGobalFogFalloffHeight);
+	//GlobalFog = exp(-(FroxelWorldHeight - UIGlobalFogHeight) * UIGobalFogFalloff);
+
     return GlobalFog;
 }
+
+float TestLocalFog(float FroxelWorldHeight){
+    float MaxHeight = UIGlobalFogHeight; //
+    float FalloffDistance = UIGobalFogFalloff; //
+
+    float Falloff = MaxHeight - (MaxHeight - FalloffDistance);
+
+    float LocalFog = 1.0 - saturate((FroxelWorldHeight - (MaxHeight - FalloffDistance)) / Falloff);
+
+    return LocalFog * LocalFog * LocalFog * UIGlobalFogDensity;
+
+}
+
+    //float Falloff = MaxHeight - (MaxHeight - FalloffDistance);
+    //float LocalFog = 1.0 - saturate((FroxelWorldHeight - (MaxHeight - FalloffDistance)) / Falloff);
+     //LocalFog = LocalFog * LocalFog * LocalFog * UIGlobalFogDensity;
+
+//function takes a current height, fog start height, fog maximum height and falloff distance
+//start height = worldHeight + Bias
+//max height = max height
+//falloff = max height - falloff ??
+
+//1.0 - LinearStep(MaxHeight - falloff, MaxHeight,
+//(FroxelWorldHeight - (WorldHeight + UIBias)) /
+
+
+float GetFogDensity(float FroxelWorldHeight, float Density, float Height, float Falloff){
+    float Fog = 1.0 - clamp((FroxelWorldHeight - Height) / Falloff, 0.0, 1.0);
+    return Fog * Fog * Fog * Density;
+}
+
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -368,23 +396,27 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float ViewZ = exp2((Froxel.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
     //float ThicknessZ = exp2((Froxel.z + 1.5) / FrustumNearFar.w) / FrustumNearFar.z - ViewZ;
-    float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ) * ViewZ;
 
     //float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
     //      BNoise = frac(BNoise + (FrameCounter & 31) * kPhi);
 
+    float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ) * ViewZ;
+
     float3 WorldPosition = RayPosition + CameraWS.xyz;
 
-    float4 LocalFogData = GetLocalFog(WorldPosition);
-    float LocalFog = 0.0;
 
-    float GlobalFog = GetGlobalHeightFog(WorldPosition.z);
+    float GlobalFog = GetFogDensity(WorldPosition.z, UIGlobalFogDensity, UIGlobalFogHeight, UIGobalFogFalloff);
 
-    float DensityAtFroxel = GlobalFog + LocalFog;
-    DensityAtFroxel = 1.0;
+    float4 LocalFogData = GetLocalFogData(WorldPosition);
+    float LocalFog =  GetFogDensity(WorldPosition.z, LocalFogData.w, LocalFogData.x, LocalFogData.y);
+
+    float DensityAtFroxel = LocalFog + GlobalFog;
+
+
+
 
     float MediaExt = UIExtinction * DensityAtFroxel;
-    float3 MediaScat = UIScatterRatio.xxx;
+    float3 MediaScat = UIScatterRatio.xxx * DensityAtFroxel;
 
     float4 Output = float4(MediaScat, MediaExt);
     //Output.xyz = WorldPosition;
@@ -669,141 +701,79 @@ float4 main(VertexShaderOutput input) : SV_Target
 
 
 
-//// Cloud Shadow Map ///////////////////////////////////////////////////////////////////
-
-struct VertexShaderInputV
-{
-	float4 Position : POSITION0;
-	float2 TexCoord : TEXCOORD0;
-	float4 Color : COLOR0;
-};
-
-struct VertexShaderOutputV
-{
-	float4 Position : SV_POSITION0;
-	float2 TexCoord : TEXCOORD0;
-	float4 Color : COLOR0;
-};
-
-
-#ifdef CLOUD_ESM_VETEX
-
-cbuffer PerGeometry : register(b2)
-{
-	row_major float4x4 WorldViewProj[1] : packoffset(c0);
-	row_major float4x4 World[1] : packoffset(c4);
-	row_major float4x4 PreviousWorld[1] : packoffset(c8);
-	float3 EyePosition[1] : packoffset(c12);
-	float VParams : packoffset(c12.w);
-	float4 BlendColor[3] : packoffset(c13);
-	float2 TexCoordOff : packoffset(c16);
-};
-
-
-
-VertexShaderOutputV main(VertexShaderInputV input)
-{
-    VertexShaderOutputV output;
-    output.TexCoord = input.TexCoord + TexCoordOff;
-    output.Color = float4(1.0, 1.0, 1.0, BlendColor[0].w * input.Color.w);
-
-    float3 WorldPosition = mul(World[0], float4(input.Position.xyz, 1.0));
-    output.Position = mul(CloudShadowViewProj, float4(WorldPosition, 1.0));
-
-    return output;
-}
-#endif
-
-/////////////////////////////////////////////////////////////////////////////////////////
-
-#ifdef CLOUD_ESM_PIXEL
-
-Texture2D CloudTexture : register(t0);
-Texture2D TexDepthSampler : register(t17);
-
-float4 main(VertexShaderOutputV input) : SV_Target
-{
-    float4 Color = CloudTexture.Sample(Point_Sampler, input.TexCoord.xy);
-    Color.w = input.Color.w * Color.w;
-
-    Color.xyz = float3(dot(float3(1.0, 1.0, 1.0), Color.xyz) * 0.33, 0.0, 0.0);
-
-    return Color;
-}
-#endif
-
-
-
-/////////////////////////////////////////////////////////////////////////////////////////
-
-#ifdef CLOUD_ESM_COMPUTE
-
-Texture2D CloudShadowMap : register(t0);
-RWTexture2D<float4> CloudESM : register(u0);
-
-
-// Reconstruct world-space ray from UV
-void BuildRay(float2 UV, out float3 RayOrigin, out float3 RayDirection)
-{
-    float2 ndc = float2(UV.x * 2 - 1, 1 - UV.y * 2); // D3D Y flip
-    float4 nearH = mul(ViewProjInverse, float4(ndc, 0, 1));
-    float4 farH  = mul(ViewProjInverse, float4(ndc, 1, 1));
-    float3 Pn = nearH.xyz / nearH.w;
-    float3 Pf = farH.xyz  / farH.w;
-    RayOrigin    = CameraWS;
-    RayDirection = normalize(Pf - Pn);
-}
-
-
-[numthreads(16, 16, 1)]
-void main(uint3 ThreadID : SV_DispatchThreadID)
-{
-    float3 Coords = float3((float2(ThreadID.xy) + 0.5) / EVSMData.xy, ThreadID.z);
-
-    float Output = CloudShadowMap.Load(int4(ThreadID.xyz, 0)).x;
-
-
-    float3 RayOrigin, RayDir;
-    BuildRay(In.UV, RayOrigin, RayDir);
-
-    float RayDist = 0.0;
-    float Transmittance = 1.0;
-
-    int MaxSteps = 2
-    [loop]for (int StepIndex = 0; StepIndex < MaxSteps && RayDist < MaxDistance; ++StepIndex)
-    {
-        float3 SamplePositionWS = RayOrigin + RayDir * RayDist;
-
-        float StepLength = GameUnitToMeter(CurrDepth - PrevDepth);
-
-        float Extinction = max(ScatteringSlice.w, EPSILON);
-        Transmittance = exp(-Extinction * StepLength);
-
-
-        RayT += DistanceToSurface;
-    }
-
-
-    CloudESM[ThreadID.xy] = Output;
-}
-
-#endif
-/////////////////////////////////////////////////////////////////////////////////////////
-
-
-
 //// Fog Map ////////////////////////////////////////////////////////////////////////////
 
 #ifdef DRAW_FOGMAP
 
-RWTexture2D<float4> FogMap : register(u0);
+RWTexture2D<float4> UIFogMap : register(u0);
+RWTexture2D<float4> FogMap : register(u1);
 Texture2D WorldMap : register(t0);
+Texture2D HeightMap : register(t1);
 
-[numthreads(1, 1, 1)]
-void main(uint3 ThreadID : SV_DispatchThreadID)
+  //  float3 CoordsNDC = float3(((Froxel.xy + 0.5) / VolumeSize.xy) * 2.0 - 1.0, 1);
+  //         CoordsNDC = float3(CoordsNDC.xy * float2(1.0, -1.0), CameraProj[0][2][2] + CameraProj[0][2][3] / ViewZ);
+
+  //  float4 CoordsVS = mul(CameraProjInverse[0], float4(CoordsNDC, 1.0));
+  //  float3 CoordsWS = mul((float3x3)CameraViewInverse[0], CoordsVS.xyz / CoordsVS.z);
+
+//float ClipZ =  CameraProj[0][2][2] + CameraProj[0][2][3] / MapCameraDepth;
+//float2 CoordsUV = (CoordsPx + 0.5) / float2(2560.0, 1440.0);
+//float2 CoordsNDC = (CoordsUV * 2.0 - 1.0) * float2(1.0, -1.0);
+
+
+   // float depth = 0.99986;
+   // depth = (SharedData::CameraData.w / (-depth * SharedData::CameraData.z + SharedData::CameraData.x));
+
+ //float4 MapCoordsNDC = mul(MapViewProj, float4(CoordsWS.xy, CoordsWS.z + MapCameraDepth, 1.0));
+
+/*
+    row_major float4x4 MapProjInverse = float4x4(
+    float4(0.8391, 0.00, 0.00, -0.00025),
+    float4(0.00, 0.47199, 0.00, -0.00004),
+    float4(0.00, 0.00, 0.00, 1.00),
+    float4(0.00, 0.00, -0.00781, 0.00781));
+
+    row_major float4x4 MapViewInverse = float4x4(
+    float4(1.00, 0.00, 0.00, 0.00),
+    float4(0.00, 1.00, 0.00035, 0.00),
+    float4(0.00, 0.00035, -1.00, 0.00),
+    float4(0.00, 0.00, 0.00, 1.00));
+
+
+    float ViewZ = abs(MapCameraDepth);
+    float3 CoordsNDC = float3(((CoordsSS.xy + 0.5) / float2(2560.0, 1440.0)) * 2.0 - 1.0, 1);
+           CoordsNDC = float3(CoordsNDC.xy * float2(1.0, -1.0), MapProj[2][2] + MapProj[2][3] / ViewZ);
+
+    float4 CoordsVS = mul(MapProjInverse, float4(CoordsNDC, 1.0));
+    float3 CoordsWS = mul((float3x3)MapViewInverse, CoordsVS.xyz / CoordsVS.z);
+
+
+float GetInterpolatedHeight(float2 pxCoord, bool isVertical)
 {
-    float2 Coords = float2(ThreadID.xy);
-    float Radius = FogMapData.z;
+	uint2 dims;
+	TexHeight.GetDimensions(dims.x, dims.y);
+
+	// oob is fine
+	int2 lerpPxCoordA = int2(pxCoord - .5 * float2(isVertical, !isVertical));
+	int2 lerpPxCoordB = int2(pxCoord + .5 * float2(isVertical, !isVertical));
+	float heightA = TexHeight[lerpPxCoordA];
+	float heightB = TexHeight[lerpPxCoordB];
+
+	// normalize
+	heightA = lerp(PosRange.x, PosRange.y, heightA);
+	heightB = lerp(PosRange.x, PosRange.y, heightB);
+	heightA = (heightA - ZRange.x) / (ZRange.y - ZRange.x);
+	heightB = (heightB - ZRange.x) / (ZRange.y - ZRange.x);
+
+	bool inBoundA = all(lerpPxCoordA > 0);
+	bool inBoundB = all(lerpPxCoordB < int2(dims));
+	if (inBoundA && inBoundB)
+		return lerp(heightA, heightB, frac((isVertical ? pxCoord.x : pxCoord.y) - .5));
+	else if (!inBoundA)
+		return heightB;
+	else
+		return heightA;
+}
 
     float CameraDepth = -249920.0;
 
@@ -820,22 +790,116 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
     float2 MapCoordsSS = MapCoordsUV * float2(2560.0, 1440.0);
 
-     //if(length(Coords - MapCoordsSS) - Radius < 0.0){
-     //   FogMap[ThreadID.xy] = float4(1.0, 0, 0, 1.0);
-     //}
 
-    float4 Output = 0.0;
+
+   // float3 MapSS = GetMapSSFromWorldPos(CameraWS.xyz); //for testing,  is correct: 1480, 815   cameraZ only = 1490, 815
+   // float3 FogWorldPoint = GetWorldPosFromMapSS(MapSS);
+   // float3 SSPoint = GetMapSSFromWorldPos(FogWorldPoint);
+
+    FogMap[ThreadID.xy] = float4(FogWorldPoint.xy, 0, 1);
+*/
+
+//get world xy from from map ss
+
+float3 GetMapSSFromWorldPos(float3 CoordsWS){
+    float MapCameraDepth = 249920.0;
+
+    row_major float4x4 MapViewProj = float4x4(
+    float4(1.19175, 1.01186E-07, -0.00029, 0.00),
+    float4(0.00, 2.11867, 0.00065, 0.00),
+    float4(0.00, 0.00035, -1.00036, -128.04633),
+    float4(0.00, 0.00035, -1.00, 0.00));
+
+    row_major float4x4 MapViewProjTest = float4x4(
+    float4( 1.19175, 0.00, 0.00, 0.00),
+    float4(0.00, 2.11867, 0.00073, 0.00),
+    float4(0.00, 0.00035, -1.00036, -128.04633),
+    float4(0.00, 0.00035, -1.00, 0.00));
+
+    float4 MapCoordsNDC = mul(FogViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
+    float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
+
+    return float3(MapCoordsUV * float2(2560.0, 1440.0), MapCoordsNDC.z / MapCoordsNDC.w);
+}
+
+float3 GetWorldPosFromMapSS(float2 CoordsSS){
+    float MapCameraDepth = 249920.0;
+
+    row_major float4x4 MapViewProjInverse = float4x4(
+    float4(0.8391, 2.81308E-15, 0.00, -0.00025),
+    float4(0.00, 0.47199, 0.00, 0.00031),
+    float4(0.00, 0.00016, 0.00, -1.00),
+    float4(0.00, 0.00, -0.00781, 0.00781));
+
+    row_major float4x4 MapViewProjInverseTest = float4x4(
+    float4(0.8391, 0.00, 0.00, 0.00),
+    float4(0.00, 0.47199, 0.00, 0.00035),
+    float4(0.00, 0.00016, 0.00, -1.00),
+    float4(0.00, 0.00, -0.00781, 0.00781));
+
+    row_major float4x4 MapProj = float4x4(
+    float4(1.19175, 0.00, 0.00029, 0.00),
+    float4(0.00, 2.11867, 0.00008, 0.00),
+    float4(0.00, 0.00, 1.00036, -128.04633),
+    float4(0.00, 0.00, 1.00, 0.00));
+
+    float NDCDepth = MapProj[2][2] + MapProj[2][3] / MapCameraDepth;
+    NDCDepth = 0.99952;
+
+    float3 CoordsNDC = float3(((CoordsSS.xy+0.5) / float2(2560.0, 1440.0)) * 2.0 - 1.0, 1);
+           CoordsNDC = float3(CoordsNDC.xy * float2(1.0, -1.0), NDCDepth);
+
+    float4 CoordsWS = mul(MapViewProjInverseTest, float4(CoordsNDC, 1.0));
+    CoordsWS /= CoordsWS.w;
+
+    return CoordsWS.xyz;
+}
+
+
+float MapRange(float x, float oldMin, float oldMax, float newMin, float newMax){
+    return newMin + ((x - oldMin) / (oldMax - oldMin)) * (newMax - newMin);}
+
+float GetWorldHeight(float2 CoordsUV){
+    float Height = HeightMap.SampleLevel(Point_Sampler, CoordsUV, 0.0).x;
+    return lerp(HeightMapZRange.x, HeightMapZRange.y, Height);
+}
+
+//Map UV(or NDC) -> worldspace point on map
+//worldspace pos -> use pos to sample terrain height map
+
+[numthreads(1, 1, 1)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    float2 Coords = float2(ThreadID.xy);
+    float RadiusPx = FogMapData.z;
+
     float4 CurrValue = FogMap[ThreadID.xy];
+    if(length(Coords - FogMapData.xy) - RadiusPx < 0.0){
+        float FogDensity = (FogMapBlendOpp != -1) ? CurrValue.w + UIFogMapInput.w : CurrValue.w - UIFogMapInput.w;
+              FogDensity = saturate(FogDensity);
 
-    if(length(Coords - FogMapData.xy) - Radius < 0.0){
-        float Density = (FogMapBlendOpp != -1) ? CurrValue.w + FogMapColor.w : CurrValue.w - FogMapColor.w;
-              Density = saturate(Density);
+        float3 UIOutput = float3(1.0 - UIFogMapInput.xy * FogDensity, 1 * FogDensity);
+        UIFogMap[ThreadID.xy] = float4(UIOutput, FogDensity);
 
-        float4 Output = float4(FogMapColor.xyz, Density);
+        float3 WorldPos = GetWorldPosFromMapSS(Coords);
+        float2 HeightUV = WorldPos.xy * HeightMapParams.xy + HeightMapParams.zw;
+        float GroundHeight = GetWorldHeight(HeightUV);
 
-        FogMap[ThreadID.xy] = Output;
+        //float FogGroundHeightBais = UIFogMapInput.x; //MapRange(UIFogMapInput.x, 0.0, 1.0, 0.0, 35000.0);
+        float FogHeightUI = UIFogMapInput.y;
+        float FogHeight = FogHeightUI + GroundHeight;//GroundHeight + FogHeightUI;
+        float FogFalloff = UIFogMapInput.z;
+
+        FogMap[ThreadID.xy] = float4(FogHeight, FogFalloff, 1.0, FogDensity);
     }
+    else{
+        if(CurrValue.w == 0.0)
+            FogMap[ThreadID.xy] = float4(WorldMap.Load(int3(ThreadID.xy, 0.0)).xyz, 0.0);
+        }
 
+     //UIFogMap[ThreadID.xy] = float4(GetWorldHeight(HeightUV).xxx, 1);
+     //FogMap[ThreadID.xy] = float4(0,0,0,0);
+     //UIFogMap[ThreadID.xy] = float4(0,0,0,0);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -969,3 +1033,125 @@ VertexShaderOutput main(VertexShaderInput input)
 
 
 
+
+
+//// Cloud Shadow Map ///////////////////////////////////////////////////////////////////
+
+struct VertexShaderInputV
+{
+	float4 Position : POSITION0;
+	float2 TexCoord : TEXCOORD0;
+	float4 Color : COLOR0;
+};
+
+struct VertexShaderOutputV
+{
+	float4 Position : SV_POSITION0;
+	float2 TexCoord : TEXCOORD0;
+	float4 Color : COLOR0;
+};
+
+
+#ifdef CLOUD_ESM_VETEX
+
+cbuffer PerGeometry : register(b2)
+{
+	row_major float4x4 WorldViewProj[1] : packoffset(c0);
+	row_major float4x4 World[1] : packoffset(c4);
+	row_major float4x4 PreviousWorld[1] : packoffset(c8);
+	float3 EyePosition[1] : packoffset(c12);
+	float VParams : packoffset(c12.w);
+	float4 BlendColor[3] : packoffset(c13);
+	float2 TexCoordOff : packoffset(c16);
+};
+
+
+
+VertexShaderOutputV main(VertexShaderInputV input)
+{
+    VertexShaderOutputV output;
+    output.TexCoord = input.TexCoord + TexCoordOff;
+    output.Color = float4(1.0, 1.0, 1.0, BlendColor[0].w * input.Color.w);
+
+    float3 WorldPosition = mul(World[0], float4(input.Position.xyz, 1.0));
+    output.Position = mul(CloudShadowViewProj, float4(WorldPosition, 1.0));
+
+    return output;
+}
+#endif
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+#ifdef CLOUD_ESM_PIXEL
+
+Texture2D CloudTexture : register(t0);
+Texture2D TexDepthSampler : register(t17);
+
+float4 main(VertexShaderOutputV input) : SV_Target
+{
+    float4 Color = CloudTexture.Sample(Point_Sampler, input.TexCoord.xy);
+    Color.w = input.Color.w * Color.w;
+
+    Color.xyz = float3(dot(float3(1.0, 1.0, 1.0), Color.xyz) * 0.33, 0.0, 0.0);
+
+    return Color;
+}
+#endif
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+#ifdef CLOUD_ESM_COMPUTE
+
+Texture2D CloudShadowMap : register(t0);
+RWTexture2D<float4> CloudESM : register(u0);
+
+
+// Reconstruct world-space ray from UV
+void BuildRay(float2 UV, out float3 RayOrigin, out float3 RayDirection)
+{
+    float2 ndc = float2(UV.x * 2 - 1, 1 - UV.y * 2); // D3D Y flip
+    float4 nearH = mul(ViewProjInverse, float4(ndc, 0, 1));
+    float4 farH  = mul(ViewProjInverse, float4(ndc, 1, 1));
+    float3 Pn = nearH.xyz / nearH.w;
+    float3 Pf = farH.xyz  / farH.w;
+    RayOrigin    = CameraWS;
+    RayDirection = normalize(Pf - Pn);
+}
+
+
+[numthreads(16, 16, 1)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    float3 Coords = float3((float2(ThreadID.xy) + 0.5) / EVSMData.xy, ThreadID.z);
+
+    float Output = CloudShadowMap.Load(int4(ThreadID.xyz, 0)).x;
+
+
+    float3 RayOrigin, RayDir;
+    BuildRay(In.UV, RayOrigin, RayDir);
+
+    float RayDist = 0.0;
+    float Transmittance = 1.0;
+
+    int MaxSteps = 2
+    [loop]for (int StepIndex = 0; StepIndex < MaxSteps && RayDist < MaxDistance; ++StepIndex)
+    {
+        float3 SamplePositionWS = RayOrigin + RayDir * RayDist;
+
+        float StepLength = GameUnitToMeter(CurrDepth - PrevDepth);
+
+        float Extinction = max(ScatteringSlice.w, EPSILON);
+        Transmittance = exp(-Extinction * StepLength);
+
+
+        RayT += DistanceToSurface;
+    }
+
+
+    CloudESM[ThreadID.xy] = Output;
+}
+
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////

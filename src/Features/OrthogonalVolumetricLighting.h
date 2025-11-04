@@ -145,7 +145,11 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11ShaderResourceView* PerlinSRV = nullptr;
 
 	ID3D11Texture2D* WorldMapTexture = nullptr;
-	ID3D11ShaderResourceView* WorldMapSRV = nullptr;
+	ID3D11ShaderResourceView* staticWorldMapSRV = nullptr;
+
+	ID3D11Texture2D* UIFogMapTexture = nullptr;
+	ID3D11ShaderResourceView* UIFogMapSRV = nullptr;
+	ID3D11UnorderedAccessView* UIFogMapUAV = nullptr;
 
 	ID3D11Texture2D* FogMapTexture = nullptr;
 	ID3D11ShaderResourceView* FogMapSRV = nullptr;
@@ -170,11 +174,10 @@ struct OrthogonalVolumetricLighting : Feature
 	static constexpr float4 noiseDimensions = float4(64, 64, 32, 0);
 	float2 fogMapSize;
 	DirectX::XMFLOAT4X4 fogMapViewProj = DirectX::XMFLOAT4X4(
-		1.19175, 1.01186E-07, -0.00029, 0.00,
-		0.00, 2.11867, 0.00065, 0.00,
+		1.19175, 0.00, 0.00, 0.00,
+		0.00, 2.11867, 0.00073, 0.00,
 		0.00, 0.00035, -1.00036, -128.04633,
 		0.00, 0.00035, -1.00, 0.00);
-
 	float2 screenSize;
 	uint frameCounter = 0;
 	bool overrideShader = false;
@@ -196,10 +199,10 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
 
-	float globalFogDensity = 0.1f;
-	float4 fogMapColor;
-	float globalFogStartHeight = 0.0f;
-	float globalFogFalloffHeight = 0.0f;
+	//float localFogDensity = 0.1f;
+	//float4 fogMapColor;
+	//float globalFogStartHeight = 0.0f;
+	//float globalFogFalloffHeight = 0.0f;
 	float brushRadius = 24.0f;
 	float brushFeather = 0.5;
 	float fogErase = false;
@@ -224,7 +227,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float blendOpp = false;
 		float _pad[3];
 		float4 fogMapData;
-		float4 fogMapColor;
+		float4 UIfogMapParams;
 	};
 	Settings settings;
 
@@ -233,13 +236,18 @@ struct OrthogonalVolumetricLighting : Feature
 		REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4];
 		REX::W32::XMFLOAT4X4 localShadowCascadeMatrices[16];
 		DirectX::XMFLOAT4X4 fogMapMatrix;
+
 		float4 shadowCascadeEndSplit;
-		float4 EVSMData;
 		float4 frustumNearFar;
-		float4 PlayerWSPos;
+		float4 CameraWSPos;
+
+		float4 EVSMData;
+		float4 heightMapParams;
+		float4 heightMapZRange;
+
 		float4 VolumeSize;
 		float4 NoiseSize;
-		float4 Jitter;
+
 		uint frameCounter;
 		uint boardCondition;
 		float _pad[2];
