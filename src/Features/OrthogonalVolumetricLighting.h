@@ -166,6 +166,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	float4 frustumNearFar;
 	float3 eyePositionWS;
+	float4 cameraData;
 	REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4] = {};
 	REX::W32::XMFLOAT4X4 localShadowCascadeMatrices[16] = {};
 	float4 shadowCascadeEndSplit = float4(0, 0, 0, 0);
@@ -178,6 +179,7 @@ struct OrthogonalVolumetricLighting : Feature
 		0.00, 2.11867, 0.00073, 0.00,
 		0.00, 0.00035, -1.00036, -128.04633,
 		0.00, 0.00035, -1.00, 0.00);
+
 	float2 screenSize;
 	uint frameCounter = 0;
 	bool overrideShader = false;
@@ -240,6 +242,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float4 shadowCascadeEndSplit;
 		float4 frustumNearFar;
 		float4 CameraWSPos;
+		float4 cameraData;
 
 		float4 EVSMData;
 		float4 heightMapParams;

@@ -26,6 +26,7 @@ cbuffer VolumeBuffer : register(b0)
     float4 ShadowCascadeEndSplit;
     float4 FrustumNearFar;
     float4 CameraWS;
+    float4 CameraData;
 
     float4 EVSMData;
     float4 HeightMapParams;
@@ -134,6 +135,20 @@ StructuredBuffer<ShadowDataStruct> ShadowDataSB : register(t10);
 #define kPhi 1.61803398875
 
 
+//View depth to Froxel SS  (FrustumNearFar.w * log2(CoordZ / FrustumNearFar.x) - 0.5);
+
+float ViewDepthToUV(float ViewDepth){ //includes 0.5 tex offset
+    return log(ViewDepth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x); //CPU
+}
+
+float NDCDepthToView(float depth){
+    return (CameraData.w / (-depth * CameraData.z + CameraData.x));
+}
+
+float VolumeDepthToView(float Froxel){
+     return exp2(Froxel / FrustumNearFar.w) / FrustumNearFar.z;
+}
+
 float3 FroxelWorldDirection(float3 Froxel, float ViewZ)
 {
     float3 CoordsNDC = float3(((Froxel.xy + 0.5) / VolumeSize.xy) * 2.0 - 1.0, 1);
@@ -145,21 +160,22 @@ float3 FroxelWorldDirection(float3 Froxel, float ViewZ)
     return CoordsWS;
 }
 
+//float ValidViewZ = float(PrevClip.w > 0.0);
+//float ValidDepth = float(PrevUVZ.z >= 0.0 && PrevUVZ.z <= 1.0);
+//Confidence = (any(abs(PrevNDC.xyz) > 1.0)) ? float2(0.0, 0.0) : float2(ValidViewZ, ValidViewZ * ValidDepth);
 
-float3 GetHistoryValue(float3 CoordsWS, out float2 Confidence)
+
+float3 GetHistoryValue(float3 CoordsWS, out float Confidence)
 {
     float4 PrevClip = mul(PrevCameraViewProj[0], float4(CoordsWS, 1.0));
     float3 PrevNDC = PrevClip.xyz / PrevClip.w;
-    float2 PrevUV = PrevNDC.xy * float2(0.5, -0.5) + 0.5;
-    float PrevZ = log(PrevClip.w / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x);
+    float3 PrevUVZ = float3(PrevNDC.xy * float2(0.5, -0.5) + 0.5, ViewDepthToUV(PrevClip.w));
 
-    float ValidViewZ = float(PrevClip.w > 0.0);
-    float ValidDepth = float(PrevZ >= 0.0 && PrevZ <= 1.0);
+    Confidence = (any(abs(PrevNDC.xyz) > 1.0)) ? 0.0 : float((PrevClip.w > 0.0) * (PrevUVZ.z >= 0.0 && PrevUVZ.z <= 1.0));
 
-    Confidence = (any(abs(PrevNDC.xyz) > 1.0)) ? float2(0.0, 0.0) : float2(ValidViewZ, ValidViewZ * ValidDepth);
-
-    return float3(PrevUV, PrevZ);
+    return PrevUVZ;
 }
+
 
 
 #ifdef SHADOW_COMPUTE
@@ -175,20 +191,12 @@ RWTexture3D<float> ShadowVolume : register(u0);
 Texture2DArray STBNFloat3 : register(t4);
 Texture2DArray EVSMCascade2 : register(t5); // non blurred
 
-float GetFroxelSlice(float Depth){
-    float FroxelSlice = log(Depth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x);
-    return FroxelSlice;
-}
-
-float DepthVS(float depth){
-    return (SharedData::CameraData.w / (-depth * SharedData::CameraData.z + SharedData::CameraData.x));
-}
 
 float EVSM_Visibility(float3 CoordsLS, float2 Moments){
     float Offset = 8388888;
     float BiasVal = 0.0005;
 
-    float Depth = exp(UIEVSMExponent * (CoordsLS.z+0.0));
+    float Depth = exp(UIEVSMExponent * CoordsLS.z);
     float DepthBias = BiasVal * Depth;
     float Delta = Depth - Moments.x;
 
@@ -213,7 +221,9 @@ float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float Thic
 
         Result += Visibility;
 
-        float ViewZNoise = frac(BNoise + (FrameCounter * (i+2)) * kPhi);
+        float Value = ((FrameCounter + 17) % 33);
+        float ViewZNoise = frac(BNoise + ((Value + i + 1) % 16) * kPhi);
+
         ViewZ = CoordZ + ThicknessZ * ViewZNoise;
     }
     Result /= Samples;
@@ -221,39 +231,48 @@ float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float Thic
     return Result;
 }
 
+//float ViewZNoise = frac(BNoise + (FrameCounter * (i+2)) * kPhi);
+//float ViewZNoise = frac(BNoise + (FrameCounter * (i+2) & 17) * kPhi); BAD
+//float ViewZNoise = frac(BNoise + (FrameCounter & (17 * (i+2))) * kPhi); BAD
+
+//float ViewZNoise = frac(BNoise + (FrameCounter & 31) * kPhi); BAD
+//float ViewZNoise = frac(BNoise + frac(FrameCounter * 17) * kPhi);
+//float ViewZNoise = frac(BNoise + (FrameCounter & 17) * kPhi);
+//float ViewZNoise = frac(BNoise + ((FrameCounter + 17) % 33) * frac(kPhi));
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float3 Froxel = ThreadID;
 
-    float CoordZ = exp2((Froxel.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
-    float ThicknessZ = exp2((Froxel.z + 1.5) / FrustumNearFar.w) / FrustumNearFar.z - CoordZ;
+    float CoordZ = VolumeDepthToView(Froxel.z - 1); //bias to avoid leaks
+    float ThicknessZ = VolumeDepthToView(Froxel.z) - CoordZ;
 
-    float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x; //true vec4 STBN from SSGI
-    float ViewZNoise = frac(BNoise + FrameCounter * kPhi);
+    float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x; //try vec4 STBN from SSGI
+
+    float ViewZNoise = frac(BNoise + ((FrameCounter + 17) % 33) * kPhi);
 
     float ViewZ = CoordZ + ThicknessZ * ViewZNoise;
     float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ);
     float3 WorldPosition = RayPosition * ViewZ + CameraWS.xyz;
 
-    float CascadeShadow = GetCascadeShadow(RayPosition, ViewZ, CoordZ, ThicknessZ, BNoise);
 
+    float CascadeShadow = GetCascadeShadow(RayPosition, ViewZ, CoordZ, ThicknessZ, BNoise);
 
     float UICloudShadowContrib = 1.0;
     float CloudShadow = CloudShadows::GetCloudShadowMult(WorldPosition, Linear_Sampler) * UICloudShadowContrib;
-
     float TerrainShadow = TerrainShadows::GetTerrainShadow(WorldPosition, Linear_Sampler);
 
-    float Shadow = CascadeShadow;// + CloudShadow + TerrainShadow;
+    float Shadow = CascadeShadow;// * TerrainShadow * CloudShadow;
 
 
-    float2 Confidence;
-    float ViewZCenter = exp2(max(Froxel.z + 0.5, 0.1) / FrustumNearFar.w) / FrustumNearFar.z;
+    float Confidence;
+    float ViewZCenter = VolumeDepthToView(Froxel.z + 0.5);
     float3 PrevCoordsUV = GetHistoryValue(RayPosition * ViewZCenter, Confidence);
 
     float BaseValue = 0.85;
-    float ShadowHistory = HistoryVolume.SampleLevel(AnisoClampSampler, PrevCoordsUV, 0).x;
+    float ReporjectValue = BaseValue * Confidence;
+    float ShadowHistory = HistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0).x;
     Shadow = lerp(Shadow, ShadowHistory, BaseValue);
 
     ShadowVolume[ThreadID] = Shadow;
@@ -341,7 +360,13 @@ RWTexture3D<float4> MediaVolume : register(u0);
 float4 GetLocalFogData(float3 CoordsWS){
     float MapCameraDepth = -249920.0;
 
-    float4 MapCoordsNDC = mul(FogViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z + MapCameraDepth, 1.0));
+    row_major float4x4 MapViewProj = float4x4(
+    float4( 1.19175, 0.00, 0.00, 0.00),
+    float4(0.00, 2.11867, 0.00073, 0.00),
+    float4(0.00, 0.00035, -1.00036, -128.04633),
+    float4(0.00, 0.00035, -1.00, 0.00));
+
+    float4 MapCoordsNDC = mul(MapViewProj, float4(CoordsWS.xy, CoordsWS.z + MapCameraDepth, 1.0));
     float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
 
     return FogMap.SampleLevel(Point_Sampler, MapCoordsUV, 0);
@@ -370,9 +395,9 @@ float TestLocalFog(float FroxelWorldHeight){
 
 }
 
-    //float Falloff = MaxHeight - (MaxHeight - FalloffDistance);
-    //float LocalFog = 1.0 - saturate((FroxelWorldHeight - (MaxHeight - FalloffDistance)) / Falloff);
-     //LocalFog = LocalFog * LocalFog * LocalFog * UIGlobalFogDensity;
+//float Falloff = MaxHeight - (MaxHeight - FalloffDistance);
+//float LocalFog = 1.0 - saturate((FroxelWorldHeight - (MaxHeight - FalloffDistance)) / Falloff);
+    //LocalFog = LocalFog * LocalFog * LocalFog * UIGlobalFogDensity;
 
 //function takes a current height, fog start height, fog maximum height and falloff distance
 //start height = worldHeight + Bias
@@ -381,6 +406,12 @@ float TestLocalFog(float FroxelWorldHeight){
 
 //1.0 - LinearStep(MaxHeight - falloff, MaxHeight,
 //(FroxelWorldHeight - (WorldHeight + UIBias)) /
+
+
+//float NoisePart1 = float((Buffer1._m51.x + i + 1) % 16);
+//float ViewNoise = fract(Noise + NoisePart1 * 1.618);
+//float ViewZ = (CoordZ + (ThicknessZ * ViewNoise));
+//NextSampleCoords = RayWS * ViewZ;
 
 
 float GetFogDensity(float FroxelWorldHeight, float Density, float Height, float Falloff){
@@ -394,15 +425,15 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float3 Froxel = ThreadID;
 
-    float ViewZ = exp2((Froxel.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
-    //float ThicknessZ = exp2((Froxel.z + 1.5) / FrustumNearFar.w) / FrustumNearFar.z - ViewZ;
+    float CoordZ = VolumeDepthToView(Froxel.z + 0.5);
+    float ThicknessZ = VolumeDepthToView(Froxel.z + 1.5) - CoordZ;
 
-    //float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
-    //      BNoise = frac(BNoise + (FrameCounter & 31) * kPhi);
+    float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+          BNoise = frac(BNoise + (FrameCounter & 17) * kPhi);
 
-    float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ) * ViewZ;
-
-    float3 WorldPosition = RayPosition + CameraWS.xyz;
+    float ViewZ = CoordZ + ThicknessZ * BNoise;
+    float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ);
+    float3 WorldPosition = RayPosition * ViewZ + CameraWS.xyz;
 
 
     float GlobalFog = GetFogDensity(WorldPosition.z, UIGlobalFogDensity, UIGlobalFogHeight, UIGobalFogFalloff);
@@ -411,14 +442,14 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float LocalFog =  GetFogDensity(WorldPosition.z, LocalFogData.w, LocalFogData.x, LocalFogData.y);
 
     float DensityAtFroxel = LocalFog + GlobalFog;
-
-
+    DensityAtFroxel = 1.0;
 
 
     float MediaExt = UIExtinction * DensityAtFroxel;
     float3 MediaScat = UIScatterRatio.xxx * DensityAtFroxel;
 
     float4 Output = float4(MediaScat, MediaExt);
+    //Output = 1.0;
     //Output.xyz = WorldPosition;
 
 //// Wind Vectoring
@@ -437,15 +468,20 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 */
 
 //// Reprojection
-/*
-    float2 Confidence;
-    float3 PrevCoordWS = RayDirection * ViewZ + CameraWS.xyz;
-    float3 PrevCoordsUV = GetHistoryValue(PrevCoordWS, Confidence);
-    float4 MediaHistory = HistoryVolume.SampleLevel(AnisoClampSampler, PrevCoordsUV, 0);
-    float BaseValue = 0.90;
-    Output = lerp(Output, MediaHistory, BaseValue);
-*/
 
+    float Confidence;
+    float3 PrevCoordsUV = GetHistoryValue(RayPosition * CoordZ, Confidence);
+
+    float4 MediaHistory = HistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0);
+    float BaseValue = 0.90;
+    float ReprojectionValue = BaseValue * Confidence;
+    Output = lerp(Output, MediaHistory, BaseValue);
+
+    //ViewZCenter = CameraProj[0][2][2] + CameraProj[0][2][3] / ViewZCenter;
+    //float CoordZA = exp2((PrevCoordsUV.z * VolumeSize.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
+
+    //float Part1 = (FrustumNearFar.w * log2(CoordZ / FrustumNearFar.x) - 0.5);
+    //float Part2 = log(CoordZ / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x); // * VolumeSize.z;
 
     MediaVolume[ThreadID] = Output;
 }
@@ -627,7 +663,7 @@ void main(uint3 Froxel : SV_DispatchThreadID)
     for(int Slice=0; Slice < VolumeSize.z; Slice++){
         float4 ScatteredSlice = ScatterVolume.Load(int4(Froxel.xy, Slice, 0));
 
-        float CurrDepth = exp2((Slice + 1.0) / FrustumNearFar.w) / FrustumNearFar.z;
+        float CurrDepth = VolumeDepthToView(Slice + 1.0);
         float StepLength = GameUnitToMeter(CurrDepth - PrevDepth);
 
         AccumulateScattering(Accumulation, ScatteredSlice, StepLength);
@@ -666,38 +702,52 @@ Texture2DArray STBNoise : register(t2);
 Texture3D ShadowVolume : register(t3);
 //Texture2D EVSMCascade : register(t4);
 
-float GetFroxelSlice(float Depth){
-    float FroxelSlice = log(Depth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x);
-    return FroxelSlice;
-}
-
-float DepthVS(float depth){
-    return (SharedData::CameraData.w / (-depth * SharedData::CameraData.z + SharedData::CameraData.x));
-}
 
 float4 main(VertexShaderOutput input) : SV_Target
 {
+    float Depth = DepthTex.Sample(Point_Sampler, input.TexCoord.xy).x;
+    float FroxelDepth = saturate(ViewDepthToUV(NDCDepthToView(Depth)));
+
     float2 Noise;
     Noise.x = STBNoise.Load(int4(int2(input.Position.xy) & 63, 0, 0)).x;
     Noise.y = STBNoise.Load(int4(int2(input.Position.yx) & 63, 0, 0)).x;
-    Noise = frac(Noise + (float(FrameCounter & 16) * kPhi)) * 2.0 - 1.0;
+    Noise = frac(Noise.xy + (FrameCounter % 16) * kPhi) * 2.0 - 1.0;
 
-    float Depth = DepthTex.Sample(Point_Sampler, input.TexCoord.xy).x;
-    float FroxelDepth = GetFroxelSlice(DepthVS(Depth));
+    float2 rcpVolumeSize = rcp(VolumeSize.xy); //CPU
 
-    float3 SamplePosition = float3(input.TexCoord.xy + (rcp(VolumeSize.xy) * Noise), FroxelDepth);
+    float2 CoordsUV = input.TexCoord.xy + (rcpVolumeSize * Noise);
 
-    float4 Output = IntergrationVolume.SampleLevel(Linear_Sampler, SamplePosition, 0.0);
+    float4 Output = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV, FroxelDepth), 0.0);
     Output = saturate(Output);
 
     //Output.xyz = ShadowVolume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, FroxelDepth), 0.0).xxx;
     //Output.xy = EVSM.SampleLevel(Linear_Sampler, input.TexCoord.xy, 0.0).xy;
     //Output.z = 0;
 
+    //float MaxFroxelView = exp2((67.0 + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
+	//float Depth2 = (CameraData.w / (-Depth * CameraData.z + CameraData.x));
+
+    //float FroxelViewDepth = VolumePixelToView(FroxelDepth * VolumeSize.z - 0.5);
+    //float SceneViewDepth = NDCDepthToView(Depth);
+
+    //Output.x = ShadowVolume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, FroxelDepth), 0.0).xxx;
+    //return float4(FroxelDepth, Output.x, 0.0, 1.0);
+
+
     return float4(Output.xyz, 0.0);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
+
+//Output.x = ShadowVolume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, FroxelDepth), 0.0).xxx;  shadow = Froxel.z;
+// return float4(FroxelDepth, Output.x, 0.0, 1.0);
+
+
+
+
+
+
+
 
 
 
@@ -816,7 +866,7 @@ float3 GetMapSSFromWorldPos(float3 CoordsWS){
     float4(0.00, 0.00035, -1.00036, -128.04633),
     float4(0.00, 0.00035, -1.00, 0.00));
 
-    float4 MapCoordsNDC = mul(FogViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
+    float4 MapCoordsNDC = mul(MapViewProjTest, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
     float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
 
     return float3(MapCoordsUV * float2(2560.0, 1440.0), MapCoordsNDC.z / MapCoordsNDC.w);

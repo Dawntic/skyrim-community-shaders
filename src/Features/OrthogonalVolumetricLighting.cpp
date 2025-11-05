@@ -680,6 +680,7 @@ OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateV
 	data.shadowCascadeEndSplit = shadowCascadeEndSplit;
 	data.frustumNearFar = frustumNearFar;
 	data.CameraWSPos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
+	data.cameraData = Util::GetCameraData();
 
 	data.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
 	data.heightMapParams = float4(mapScale.x, mapScale.y, mapOffset.x, mapOffset.y);
@@ -837,7 +838,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 	ImGui::SeparatorText("Media properties");
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
-	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.0001, 0.25);
+	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.0001, 0.5);
 	ImGui::SliderFloat("Scatter to Absorption Ratio", &settings.albedo, 0.0, 1.0);
 	ImGui::Spacing();
 
