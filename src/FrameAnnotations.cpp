@@ -133,6 +133,9 @@ namespace FrameAnnotations
 		{
 			globals::state->BeginPerfEvent("Directional Light Shadowmaps");
 
+			logger::info("Render shadow maps");
+
+			globals::features::orthogonalVolumetricLighting.BuildShadowCascade(light);
 			//globals::features::orthogonalVolumetricLighting.shadowLight = light;
 			//globals::features::orthogonalVolumetricLighting.SetupShadowCascade();
 
@@ -205,6 +208,9 @@ namespace FrameAnnotations
 		static void thunk(bool a1, bool a2)
 		{
 			globals::state->BeginPerfEvent("Depth");
+
+			auto& lens = globals::features::orthogonalVolumetricLighting;
+			lens.CSMFinished = true;
 
 			func(a1, a2);
 

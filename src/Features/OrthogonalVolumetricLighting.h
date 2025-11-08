@@ -52,21 +52,28 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupShadowCascade();
 	virtual REX::W32::XMFLOAT4X4 GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightTransform);
 	void UpdateShadowLightMatrices();
-	virtual void BuildCloudShadowMatrix();
+	//virtual void BuildCloudShadowMatrix();
+
+	void BuildShadowCascade(RE::BSShadowLight* light);
+	virtual void LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix);
+	virtual void LogVector(std::string desc, DirectX::XMVECTOR vec);
+	//	virtual DirectX::XMFLOAT4X4 ConvertTransMatrix(DirectX::XMFLOAT4X4& m);
 
 	virtual void SetupBypass();
 	virtual void SetupScatteringVolume();
 	virtual void SetupFilterPass();
 	virtual void SetupSliceMarch();
 	virtual void SetupApplyPass();
-	virtual void SetupCloudShadowMap();
+	//virtual void SetupCloudShadowMap();
 	virtual void SetupEVSM();
 	virtual void SetupShadowVolume();
 	virtual void SetupMediaVolume();
 	virtual void SetupPerlinNoise();
 	virtual void SetupEVSMBlur();
 	virtual void DrawFogMap();
-	virtual void SetupCloudESM();
+	//virtual void SetupCloudESM();
+	virtual void RenderShadowMap();
+	virtual void RenderShadowMapDebug();
 
 	D3D11_VIEWPORT viewPort[4];
 	ID3D11RasterizerState* Rasterizer = nullptr;
@@ -135,6 +142,15 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11UnorderedAccessView* ShadowVolumeUAV[2] = {};
 	ID3D11ShaderResourceView* ShadowVolumeSRV[2] = {};
 
+	////
+	ID3D11VertexShader* ShadowMapVS = nullptr;
+	ID3D11PixelShader* ShadowMapPS = nullptr;
+	ID3D11ComputeShader* ShadowMapDebugCS = nullptr;
+
+	ID3D11Texture2D* ShadowVarianceDebugTex = nullptr;
+	ID3D11UnorderedAccessView* ShadowVarianceDebugUAV = nullptr;
+	ID3D11ShaderResourceView* ShadowVarianceDebugSRV = nullptr;
+
 	//// Util /////////////
 	ID3D11ComputeShader* GeneratePerlinCS = nullptr;
 	ID3D11ComputeShader* DrawFogMapCS = nullptr;
@@ -163,6 +179,21 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11Texture2D* OutputTexture = nullptr;
 	ID3D11ShaderResourceView* OutputSRV = nullptr;
 	ID3D11RenderTargetView* OutputRTV = nullptr;
+
+	bool swapShadowMapShader = false;
+	bool CSMFinished = false;
+	bool resetVariance = false;
+	uint varianceFrames = 32;
+
+	struct CascadeData
+	{
+		DirectX::XMVECTOR worldCorners[8];
+		float3 cameraWorldPosition;
+		DirectX::XMFLOAT4X4 lightView;
+		RE::NiFrustum frustum;
+	};
+	CascadeData cascadeData[2];
+	int cascadeIt = 0;
 
 	float4 frustumNearFar;
 	float3 eyePositionWS;
@@ -227,7 +258,12 @@ struct OrthogonalVolumetricLighting : Feature
 		float globalFogFalloffHeight = 0;
 
 		float blendOpp = false;
-		float _pad[3];
+
+		uint VarienceFrameIndex;
+		uint RunVarienceMapping;
+		uint DebugCascadeSplit;
+
+		//float _pad[3];
 		float4 fogMapData;
 		float4 UIfogMapParams;
 	};
@@ -253,6 +289,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 		uint frameCounter;
 		uint boardCondition;
+
 		float _pad[2];
 	};
 	virtual VolumeBuffer UpdateVolumeBuffer();
@@ -279,7 +316,9 @@ struct OrthogonalVolumetricLighting : Feature
 			RenderCloudMap = 11,
 			MediaVolume = 12,
 			Perlin = 13,
-			CloudESM = 14
+			CloudESM = 14,
+			RenderShadowMap = 15,
+			RenderShadowMapDebug = 16
 		};
 	};
 	Shaders::Enum shaderdesc;
@@ -478,15 +517,51 @@ struct OrthogonalVolumetricLighting : Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		struct BSSkyShader_GetRenderPasses
+		{
+			static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSGeometry* a_geometry, std::uint32_t a_arg2, RE::BSShaderAccumulator* a_accumulator);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		struct SetShadowMapCount
 		{
 			static void thunk(RE::BSShadowLight* light, uint64_t numLights);
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-		struct BSSkyShader_GetRenderPasses
+		struct BSShadowDirectionalLight_RenderShadowmaps
 		{
-			static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSGeometry* a_geometry, std::uint32_t a_arg2, RE::BSShaderAccumulator* a_accumulator);
+			static void thunk(RE::BSShadowLight* light, void* unk);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct BSShadowDirectionalLight_SetFrameCamera
+		{
+			static bool thunk(RE::BSShadowDirectionalLight* a_light, RE::NiCamera& a_camera);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes
+		{
+			struct FrustumSplit
+			{
+				RE::NiPoint3 nearFace[4];
+				RE::NiPoint3 farFace[4];
+			};
+
+			static void thunk(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumSplit& frustumSplit, uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct BSShadowDirectionalLight_SetCameraRuntimeData2
+		{
+			static void thunk(RE::NiCamera* cascadeCamera, RE::NiFrustum& frustum);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct BSShadowDirectionalLight_CreateFrustum
+		{
+			static void thunk(RE::NiFrustum& frustum, float left, float right, float top, float farP, float bottom, float nearP, bool ortho);
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
@@ -501,10 +576,20 @@ struct OrthogonalVolumetricLighting : Feature
 
 			stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>>(RE::VTABLE_BSImagespaceShaderLensFlare[3]);
 			stl::write_vfunc<0x6, BSSkyShader_SetupMaterial>(RE::VTABLE_BSSkyShader[0]);
-
 			//stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
 
 			//stl::detour_thunk<SetShadowMapCount>(REL::RelocationID(107599, 107599));
+			stl::write_vfunc<0xA, BSShadowDirectionalLight_RenderShadowmaps>(RE::VTABLE_BSShadowDirectionalLight[0]);
+
+			//Hook SetFrameCamera to modify shadow split distances
+			stl::write_vfunc<0x10, BSShadowDirectionalLight_SetFrameCamera>(RE::VTABLE_BSShadowDirectionalLight[0]);
+
+			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));
+			stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));  //view, trans
+			stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustum>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23E5, 0x23E5));          //frustum
+
+			//REL::safe_fill(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1856, 0x1856), REL::NOP, 107);  //update camera trans, rot
+			//REL::safe_fill(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x19B0, 0x19B0), REL::NOP, 407);  //Loop_1
 		}
 	};
 };

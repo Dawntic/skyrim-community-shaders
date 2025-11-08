@@ -52,10 +52,13 @@ cbuffer SettingsBuffer : register(b1)
     float UIGobalFogFalloff;
 
     float FogMapBlendOpp;
+
+    uint VarianceFrameIndex;
+    uint RunVarienceMapping;
+    uint DebugCascadeSplit;
+
     float4 FogMapData;
     float4 UIFogMapInput;
-
-    uint CheckerBoard;
 }
 
 cbuffer PerFrame : register(b10)
@@ -248,6 +251,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float CoordZ = VolumeDepthToView(Froxel.z - 1); //bias to avoid leaks
     float ThicknessZ = VolumeDepthToView(Froxel.z) - CoordZ;
 
+    //frac(BNoise + frac(FrameCounter * (1.0 / kPhi)));
     float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x; //try vec4 STBN from SSGI
 
     float ViewZNoise = frac(BNoise + ((FrameCounter + 17) % 33) * kPhi);
@@ -677,21 +681,6 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 
 
 
-//// Raymarch ///////////////////////////////////////////////////////////////////////////
-
-#ifdef RAYMARCH_COMPUTE
-
-
-[numthreads(8, 8, 1)]
-void main(uint3 Froxel : SV_DispatchThreadID)
-{
-
-}
-#endif
-/////////////////////////////////////////////////////////////////////////////////////////
-
-
-
 //// Apply //////////////////////////////////////////////////////////////////////////////
 
 #ifdef APPLY_PIXEL
@@ -751,6 +740,21 @@ float4 main(VertexShaderOutput input) : SV_Target
 
 
 
+//// Raymarch ///////////////////////////////////////////////////////////////////////////
+
+#ifdef RAYMARCH_COMPUTE
+
+
+[numthreads(8, 8, 1)]
+void main(uint3 Froxel : SV_DispatchThreadID)
+{
+
+}
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
+
+
+
 //// Fog Map ////////////////////////////////////////////////////////////////////////////
 
 #ifdef DRAW_FOGMAP
@@ -760,96 +764,7 @@ RWTexture2D<float4> FogMap : register(u1);
 Texture2D WorldMap : register(t0);
 Texture2D HeightMap : register(t1);
 
-  //  float3 CoordsNDC = float3(((Froxel.xy + 0.5) / VolumeSize.xy) * 2.0 - 1.0, 1);
-  //         CoordsNDC = float3(CoordsNDC.xy * float2(1.0, -1.0), CameraProj[0][2][2] + CameraProj[0][2][3] / ViewZ);
 
-  //  float4 CoordsVS = mul(CameraProjInverse[0], float4(CoordsNDC, 1.0));
-  //  float3 CoordsWS = mul((float3x3)CameraViewInverse[0], CoordsVS.xyz / CoordsVS.z);
-
-//float ClipZ =  CameraProj[0][2][2] + CameraProj[0][2][3] / MapCameraDepth;
-//float2 CoordsUV = (CoordsPx + 0.5) / float2(2560.0, 1440.0);
-//float2 CoordsNDC = (CoordsUV * 2.0 - 1.0) * float2(1.0, -1.0);
-
-
-   // float depth = 0.99986;
-   // depth = (SharedData::CameraData.w / (-depth * SharedData::CameraData.z + SharedData::CameraData.x));
-
- //float4 MapCoordsNDC = mul(MapViewProj, float4(CoordsWS.xy, CoordsWS.z + MapCameraDepth, 1.0));
-
-/*
-    row_major float4x4 MapProjInverse = float4x4(
-    float4(0.8391, 0.00, 0.00, -0.00025),
-    float4(0.00, 0.47199, 0.00, -0.00004),
-    float4(0.00, 0.00, 0.00, 1.00),
-    float4(0.00, 0.00, -0.00781, 0.00781));
-
-    row_major float4x4 MapViewInverse = float4x4(
-    float4(1.00, 0.00, 0.00, 0.00),
-    float4(0.00, 1.00, 0.00035, 0.00),
-    float4(0.00, 0.00035, -1.00, 0.00),
-    float4(0.00, 0.00, 0.00, 1.00));
-
-
-    float ViewZ = abs(MapCameraDepth);
-    float3 CoordsNDC = float3(((CoordsSS.xy + 0.5) / float2(2560.0, 1440.0)) * 2.0 - 1.0, 1);
-           CoordsNDC = float3(CoordsNDC.xy * float2(1.0, -1.0), MapProj[2][2] + MapProj[2][3] / ViewZ);
-
-    float4 CoordsVS = mul(MapProjInverse, float4(CoordsNDC, 1.0));
-    float3 CoordsWS = mul((float3x3)MapViewInverse, CoordsVS.xyz / CoordsVS.z);
-
-
-float GetInterpolatedHeight(float2 pxCoord, bool isVertical)
-{
-	uint2 dims;
-	TexHeight.GetDimensions(dims.x, dims.y);
-
-	// oob is fine
-	int2 lerpPxCoordA = int2(pxCoord - .5 * float2(isVertical, !isVertical));
-	int2 lerpPxCoordB = int2(pxCoord + .5 * float2(isVertical, !isVertical));
-	float heightA = TexHeight[lerpPxCoordA];
-	float heightB = TexHeight[lerpPxCoordB];
-
-	// normalize
-	heightA = lerp(PosRange.x, PosRange.y, heightA);
-	heightB = lerp(PosRange.x, PosRange.y, heightB);
-	heightA = (heightA - ZRange.x) / (ZRange.y - ZRange.x);
-	heightB = (heightB - ZRange.x) / (ZRange.y - ZRange.x);
-
-	bool inBoundA = all(lerpPxCoordA > 0);
-	bool inBoundB = all(lerpPxCoordB < int2(dims));
-	if (inBoundA && inBoundB)
-		return lerp(heightA, heightB, frac((isVertical ? pxCoord.x : pxCoord.y) - .5));
-	else if (!inBoundA)
-		return heightB;
-	else
-		return heightA;
-}
-
-    float CameraDepth = -249920.0;
-
-    row_major float4x4 MapViewProj = float4x4(
-    float4(1.19175, 1.01186E-07, -0.00029, 0.00),
-    float4(0.00, 2.11867, 0.00065, 0.00),
-    float4(0.00, 0.00035, -1.00036, -128.04633),
-    float4(0.00, 0.00035, -1.00, 0.00));
-
-    float3 PlayerWSPosition = CameraWS.xyz;
-           PlayerWSPosition.z += CameraDepth;
-
-    float4 MapCoordsNDC = mul(MapViewProj, float4(PlayerWSPosition, 1.0));
-    float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
-    float2 MapCoordsSS = MapCoordsUV * float2(2560.0, 1440.0);
-
-
-
-   // float3 MapSS = GetMapSSFromWorldPos(CameraWS.xyz); //for testing,  is correct: 1480, 815   cameraZ only = 1490, 815
-   // float3 FogWorldPoint = GetWorldPosFromMapSS(MapSS);
-   // float3 SSPoint = GetMapSSFromWorldPos(FogWorldPoint);
-
-    FogMap[ThreadID.xy] = float4(FogWorldPoint.xy, 0, 1);
-*/
-
-//get world xy from from map ss
 
 float3 GetMapSSFromWorldPos(float3 CoordsWS){
     float MapCameraDepth = 249920.0;
@@ -1079,6 +994,143 @@ VertexShaderOutput main(VertexShaderInput input)
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
+
+
+#ifdef SHADOWMAPDEBUG
+
+
+Texture2DArray ShadowMap : register(t0);
+Texture2D DepthTex : register(t1);
+RWTexture2DArray<float4> VarianceTex : register(u0);
+RWTexture2D<float4> CascadeSplitTex : register(u1);
+
+#define MaxSamples 30
+#define CascadeSize 2048
+#define ScreenSize float2(2560, 1440)
+
+void UpdateVarienceMap(uint3 ThreadID, float Sample){
+    if (VarianceFrameIndex >= MaxSamples)  //freeze after full
+        return;
+
+    if (VarianceFrameIndex == 0) {
+        VarianceTex[ThreadID.xyz] = float4(Sample, 0.0, 0.0, 0.0);
+        return;
+    }
+
+    float SamplesNew = min(VarianceFrameIndex + 1, MaxSamples);
+    float2 PrevValues = VarianceTex[ThreadID.xyz].xy;
+
+    //Welford update (gives exact mean/variance
+    float Delta    = Sample - PrevValues.x;
+    float MeanNew  = PrevValues.x + Delta / SamplesNew;
+    float Delta2   = Sample - MeanNew;
+    float M2New    = PrevValues.y + Delta * Delta2;
+
+    float Variance = (SamplesNew > 1.0) ? (M2New / (SamplesNew - 1.0)) : 0.0;
+
+    VarianceTex[ThreadID.xyz] = float4(MeanNew, M2New, Variance, VarianceFrameIndex);
+}
+
+void UpdateCascadeSplit(uint3 ThreadID, float ViewZ){ // no texture setup on cpu side yet
+    float4 Split = float4(0,0,0,0);
+
+    uint CascadeIndex = (ViewZ < ShadowCascadeEndSplit.x) ? 0 : 1;
+    Split[CascadeIndex] = 1.0;
+
+    CascadeSplitTex[ThreadID.xy] = Split;
+}
+
+
+float3 GetWorldPosition(float2 CoordsUV, float NDCDepth){
+    float3 CoordsNDC = float3((CoordsUV * 2.0 - 1.0) * float2(1.0, -1.0), NDCDepth);
+    float4 CoordsWS = mul(CameraViewProjInverse[0], float4(CoordsNDC, 1.0));
+    return CoordsWS.xyz;
+}
+
+float4 WorldToLightSpace(float3 CoordsWS, float ViewZ){
+    uint CascadeIndex = (ViewZ < ShadowCascadeEndSplit.x) ? 0 : 1;
+    float3 CoordsLS = mul(DirectionalShadowCascadeMatrix[CascadeIndex], float4(CoordsWS, 1.0)).xyz;
+    return float4(CoordsLS, CascadeIndex);
+}
+
+
+[numthreads(16,16,1)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+    if (ThreadID.x >= CascadeSize || ThreadID.y >= CascadeSize) return;
+
+    float2 CoordsUV = ((ThreadID.xy + 0.5) / ScreenSize.xy);
+    float NDCDepth = DepthTex.SampleLevel(Point_Sampler, CoordsUV, 0.0).x;
+    float ViewDepth = NDCDepthToView(NDCDepth);
+    float3 CoordsWS = GetWorldPosition(CoordsUV, NDCDepth);
+
+    float ShadowSample = ShadowMap.Load(int4(ThreadID.xyz, 0.0)).x;
+
+    UpdateVarienceMap(ThreadID, ShadowSample);
+
+    //if(DebugCascadeSplit){ //would this work in dispatch size? buffer != csm size
+    //    if(ThreadID.z == 0)
+     //       UpdateCascadeSplit(ThreadID, ViewDepth);
+    //}
+
+
+/*
+    float4 CoordsLS = WorldToLightSpace(CoordsWS, ViewDepth);
+
+    float4 Output = float4(0,0,0,0);
+    if(RunVarienceMapping)
+        Output.x = VarianceTex.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CoordsLS.w), 0).x;
+
+    if(DebugCascadeSplit)
+        Output.xyz = CascadeSplitTex.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CoordsLS.w), 0).xyz;
+ */
+}
+#endif
+
+
+#ifdef SHADOWMAPVS ////BUFFER VALUES NOT UPDATED YET
+
+cbuffer PerMaterial : register(b1)
+{
+	float4 TexcoordOffset : packoffset(c0);
+};
+
+cbuffer PerGeometry : register(b2)
+{
+	float4 ShadowFadeParam : packoffset(c0);
+	row_major float4x4 World[1] : packoffset(c1);
+	float4 EyePos[1] : packoffset(c5);
+	float4 WaterParams : packoffset(c6);
+	float4 TreeParams : packoffset(c7);
+};
+
+VertexShaderOutput main(VertexShaderInput input)
+{
+    VertexShaderOutput output;
+    output.TexCoord = input.TexCoord;
+
+    precise float4x4 modelViewProj = mul(FrameBuffer::CameraViewProj[0], World[0]);
+    float4 positionCS = mul(modelViewProj, float4(input.Position.xyz, 1.0));
+    positionCS.z = max(0, positionCS.z);
+
+    output.Position = positionCS;
+
+
+    return output;
+}
+#endif
+
+
+
+#ifdef SHADOWMAPPS
+
+float4 main(VertexShaderOutput input) : SV_Target
+{
+   float4 Output = float4(1,1,1,1);
+
+   return Output;
+}
+#endif
 
 
 
