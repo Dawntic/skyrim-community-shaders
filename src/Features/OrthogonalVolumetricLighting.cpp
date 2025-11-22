@@ -1091,94 +1091,6 @@ void OrthogonalVolumetricLighting::Hooks::SetShadowMapCount::thunk(RE::BSShadowL
 	func(light, numCascades);
 }
 
-//which cams get passed in?
-bool OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSShadowDirectionalLight* light, RE::NiCamera& inputCamera)
-{
-	//*reinterpret_cast<float*>(REL::RelocationID(255468, 255468).address()) = 1.0f;  // shadow render distance or shadow Z scale factor
-	//*reinterpret_cast<float*>(REL::RelocationID(470027, 470027).address()) = 0.0f;  //near
-
-	//auto& lens = globals::features::orthogonalVolumetricLighting;
-	//logger::info("Func");
-	using namespace DirectX;
-	//	auto& test = this[1];
-	//logger::info("this: {:p}", static_cast<void*>(&test));
-	/*
-	logger::info("Input Camera: {:p}", static_cast<void*>(&inputCamera));
-
-	auto WorldRotEntry = inputCamera.world.rotate.entry;
-	logger::info("WorldRotEntry: {},{},{}", WorldRotEntry[0][0], WorldRotEntry[1][1], WorldRotEntry[2][2]);
-
-	if (light->GetShadowDirectionalLightRuntimeData().cullingCamera) {
-		RE::NiCamera& cullingCamera = *light->GetShadowDirectionalLightRuntimeData().cullingCamera;
-		logger::info("culling camera: {:p}", static_cast<void*>(&cullingCamera));
-	}
-
-	auto& dirLightData = light->GetRuntimeData();
-	auto& dirCascadeList = dirLightData.shadowmapDescriptors;
-	logger::info("Cascade Descriptor List: {:p}", static_cast<void*>(&dirCascadeList));
-	//logger::info("Cascade Descriptor List: {:p}", static_cast<void*>(dirCascadeList));
-	for (uint it = 0; it < dirCascadeList.size() && it < 4; it++) {
-		logger::info("Cascade Descriptor lightTransform: {:p}", static_cast<void*>(&dirCascadeList[it].lightTransform));
-		logger::info("Cascade Descriptor camera: {:p}", static_cast<void*>(&dirCascadeList[it].camera));
-		logger::info("Cascade Descriptor shaderAccumulator: {:p}", static_cast<void*>(&dirCascadeList[it].shaderAccumulator));
-		logger::info("Cascade Descriptor clipPlanes: {:p}", static_cast<void*>(&dirCascadeList[it].clipPlanes));
-		logger::info("Cascade Descriptor cullingProcess: {:p}", static_cast<void*>(&dirCascadeList[it].cullingProcess));
-
-		//logger::info("Cascade Descriptor unk50: {:p}", static_cast<void*>(&dirCascadeList[it].unk50));
-		//logger::info("Cascade Descriptor port: {:p}", static_cast<void*>(&dirCascadeList[it].port));
-
-		//	auto planes = dirCascadeList[it].clipPlanes;
-		//	auto nearplane = planes.cullingPlanes[0].normal;
-		//	auto farplane = planes.cullingPlanes[1].normal;
-
-		//logger::info("clip planes near: {},{},{}, {} ", nearplane.x, nearplane.y, nearplane.z, planes.cullingPlanes[0].constant);
-		//logger::info("clip planes far:  {},{},{}, {}", farplane.x, farplane.y, farplane.z, planes.cullingPlanes[1].constant);
-
-		//if (dirCascadeList[it].camera.get()) {
-		//	logger::info("Cascade Descriptor clipPlanes: {:p}", static_cast<void*>(&dirCascadeList[it].clipPlanes));
-		//	RE::NiCamera& cascadeCamera_I = *dirCascadeList[it].camera;
-		//	logger::info("cascade camera {}: {:p}", it, static_cast<void*>(&cascadeCamera_I));
-		//	auto frustum = cascadeCamera_I.GetRuntimeData2().viewFrustum;
-		//	logger::info("before frustum: {},{},{},{},{},{}", frustum.fBottom, frustum.fTop, frustum.fLeft, frustum.fRight, frustum.fFar, frustum.fNear);
-		//	XMFLOAT4X4 tmp2{};
-		//	auto& worldToCam = cascadeCamera_I.GetRuntimeData().worldToCam;
-		//	std::memcpy(&tmp2, &worldToCam, sizeof(tmp2));
-		//	XMMATRIX rootViewProj = XMMatrixTranspose(XMLoadFloat4x4(&tmp2));
-		//	lens.LogMatrix("before viewProj", rootViewProj);
-		//}
-	}
-*/
-	bool returnValue = func(light, inputCamera);
-	/*
-	{
-		for (uint ita = 0; ita < dirCascadeList.size() && ita < 4; ita++) {
-			auto planes = dirCascadeList[ita].clipPlanes;
-			auto nearplane = planes.cullingPlanes[0].normal;
-			auto farplane = planes.cullingPlanes[1].normal;
-
-			logger::info("clip planes near: {},{},{}, {} ", nearplane.x, nearplane.y, nearplane.z, planes.cullingPlanes[0].constant);
-			logger::info("clip planes far:  {},{},{}, {}", farplane.x, farplane.y, farplane.z, planes.cullingPlanes[1].constant);
-
-			//auto& testList = dirLightData.shadowmapDescriptors;
-			//if (testList[ita].camera.get()){
-			//RE::NiCamera& cascadeCamera_I = *testList[ita].camera;
-			//logger::info("cascade camera {}: {:p}", ita, static_cast<void*>(&cascadeCamera_I));
-
-			//auto frustum = cascadeCamera_I.GetRuntimeData2().viewFrustum;
-			//logger::info("after frustum: {},{},{},{},{},{}", frustum.fBottom, frustum.fTop, frustum.fLeft, frustum.fRight, frustum.fFar, frustum.fNear);
-
-			//XMFLOAT4X4 tmp{};
-			//auto& worldToCam = cascadeCamera_I.GetRuntimeData().worldToCam;
-			//std::memcpy(&tmp, &worldToCam, sizeof(tmp));
-			//XMMATRIX rootViewProj = XMMatrixTranspose(XMLoadFloat4x4(&tmp));
-			//lens.LogMatrix("after viewProj", rootViewProj);
-			//}
-		}
-	}
-*/
-	return returnValue;
-}
-
 void OrthogonalVolumetricLighting::LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix)
 {
 	DirectX::XMFLOAT4X4 matrix;
@@ -1207,7 +1119,38 @@ void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_RenderShadowm
 	func(light, unk);
 }
 
-//First override we set basic values
+bool OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSShadowDirectionalLight* light, RE::NiCamera& inputCamera)
+{
+	auto& lens = globals::features::orthogonalVolumetricLighting;
+	bool returnValue = true;
+
+	if (!lens.swapOutputRT)
+		returnValue = func(light, inputCamera);
+
+	else {
+		for (int cascade = 0; cascade < int(lens.lightCascades); ++cascade) {
+			auto matrix = lens.cascadeData[cascade].cascadeRotation;
+			auto row0 = RE::NiPoint3(matrix._13, matrix._12, matrix._11);
+			auto row1 = RE::NiPoint3(matrix._23, matrix._22, matrix._21);
+			auto row2 = RE::NiPoint3(matrix._33, matrix._32, matrix._31);
+
+			RE::NiMatrix3 rotation = RE::NiMatrix3(row0, row1, row2);
+
+			auto viewProj = lens.cascadeData[cascade].viewProj;
+			auto translation = RE::NiPoint3(lens.cascadeData[cascade].cascadeTranslation.x, lens.cascadeData[cascade].cascadeTranslation.y, lens.cascadeData[cascade].cascadeTranslation.z);
+
+			auto& runtime = light->GetRuntimeData();
+			auto& desc = runtime.shadowmapDescriptors[cascade];
+			memcpy(desc.camera->GetRuntimeData().worldToCam, &viewProj, sizeof(float) * 16);
+			desc.camera->world.rotate = rotation;
+			desc.camera->world.translate = translation;
+		}
+	}
+
+	return returnValue;
+}
+
+//First override
 void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_SetCameraRuntimeData2::thunk(RE::NiCamera* cascadeCamera, RE::NiFrustum& frustum)
 {
 	auto& OVL = globals::features::orthogonalVolumetricLighting;
@@ -1222,6 +1165,7 @@ void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_SetCameraRunt
 	cascadeCamera->local.rotate = rotation;
 	cascadeCamera->local.translate = RE::NiPoint3(OVL.cascadeData[OVL.cascadeIt].cascadeTranslation.x, OVL.cascadeData[OVL.cascadeIt].cascadeTranslation.y, OVL.cascadeData[OVL.cascadeIt].cascadeTranslation.z);
 
+	/*
 	{
 		auto rotX = cascadeCamera->local.rotate.GetVectorX();
 		auto rotY = cascadeCamera->local.rotate.GetVectorY();
@@ -1231,6 +1175,7 @@ void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_SetCameraRunt
 		logger::info("My GAME rotation Z: {}, {}, {}", rotZ.x, rotZ.y, rotZ.z);
 		logger::info("My GAME: translate {}, {}, {}", cascadeCamera->local.translate.x, cascadeCamera->local.translate.y, cascadeCamera->local.translate.z);
 	}
+	*/
 
 	func(cascadeCamera, frustum);
 }
@@ -1261,14 +1206,12 @@ void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_SetFrameCamer
 	outPlanes.activePlanes = static_cast<RE::NiFrustumPlanes::ActivePlane>(0);
 }
 
-//Second override we set
 #pragma warning(push)
 #pragma warning(disable: 4100)
 void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_CreateFrustum::thunk(RE::NiFrustum& frustum, float left, float right, float top, float bottom, float nearP, float farP, bool ortho)
 {
 	auto& OVL = globals::features::orthogonalVolumetricLighting;
 	auto frust = OVL.cascadeData[OVL.cascadeIt].frustum;
-
 	//logger::info("GAME: left:{}  right:{}  top:{}  bottom:{}  near:{}  far:{}", left, right, top, bottom, nearP, farP);
 	//logger::info("My GAME: left:{}  right:{}  top:{}  bottom:{}  near:{}  far:{}", frust.fLeft, frust.fRight, frust.fTop, frust.fBottom, frust.fNear, frust.fFar);
 
@@ -1277,6 +1220,28 @@ void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_CreateFrustum
 	OVL.cascadeIt = (++OVL.cascadeIt < 2) ? OVL.cascadeIt : 0;
 }
 #pragma warning(pop)
+
+//Quantize to discrete angle steps
+DirectX::XMVECTOR OrthogonalVolumetricLighting::QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees)  //0.05 - 0.1 works nicely
+{
+	using namespace DirectX;
+
+	float stepRadians = XMConvertToRadians(stepDegrees);
+
+	// Calculate azimuth (horizontal angle) and elevation (vertical angle)
+	float azimuth = atan2f(XMVectorGetX(lightDir), XMVectorGetZ(lightDir));
+	float elevation = asinf(XMVectorGetY(lightDir));
+
+	// Quantize angles to nearest step
+	azimuth = roundf(azimuth / stepRadians) * stepRadians;
+	elevation = roundf(elevation / stepRadians) * stepRadians;
+
+	// Convert back to Cartesian coordinates
+	float cosElev = cosf(elevation);
+	XMVECTOR quantized = XMVectorSet(sinf(azimuth) * cosElev, sinf(elevation), cosf(azimuth) * cosElev, 0.0f);
+
+	return XMVector3Normalize(quantized);
+}
 
 #pragma warning(push)
 #pragma warning(disable: 4100)
@@ -1308,9 +1273,25 @@ void OrthogonalVolumetricLighting::BuildShadowCascade(RE::BSShadowLight* light)
 	float cascadeSplits[2] = { 1000, 3500 };
 	int ind[8] = { 7, 3, 5, 1, 8, 4, 6, 2 };
 
-	auto dirLight = skyrim_cast<RE::BSShadowDirectionalLight*>(light);
-	auto lightDir = dirLight->GetShadowDirectionalLightRuntimeData().lightDirection;
-	XMVECTOR lightDirection = { lightDir.x, lightDir.y, lightDir.z, 0 };
+	//auto dirLight = skyrim_cast<RE::BSShadowDirectionalLight*>(light);
+	//auto lightDir = dirLight->GetShadowDirectionalLightRuntimeData().lightDirection;
+
+	//XMVECTOR lightDirection = { lightDir.x, lightDir.y, lightDir.z, 0 };
+
+	auto lightDir = *skyrim_SunPosition;
+
+	//static XMVECTOR lightDirection = XMVectorNegate(XMVector3Normalize(XMVectorSet(lightDir.x, lightDir.y, lightDir.z, 0)));
+	XMVECTOR lightDirection = XMVectorNegate(XMVector3Normalize(XMVectorSet(lightDir.x, lightDir.y, lightDir.z, 0)));
+	lightDirection = QuantizeLightDirection(lightDirection, settings.albedo);
+	LogVector("lightDirection", lightDirection);
+
+	//static int counter = 0;
+	//auto UpdateTimer = brushRadius;
+	//if (counter >= UpdateTimer) {
+	//	lightDirection = XMVectorNegate(XMVector3Normalize(XMVectorSet(lightDir.x, lightDir.y, lightDir.z, 0)));
+	//	counter = 0;
+	//}
+	//counter++;
 
 	const XMVECTOR frustum_corners[] = {
 		XMVector3TransformCoord(XMVectorSet(-1, -1, 0, 1), rootInvViewProj),  // near
@@ -1326,6 +1307,8 @@ void OrthogonalVolumetricLighting::BuildShadowCascade(RE::BSShadowLight* light)
 	for (int cascade = 0; cascade < int(lightCascades); ++cascade) {
 		const float split_near = (cascade == 0) ? 0 : LinearStep(nearPlane, farPlane, cascadeSplits[cascade - 1]);
 		const float split_far = LinearStep(nearPlane, farPlane, cascadeSplits[cascade]);
+		logger::info("split_far: {}", split_far);
+		logger::info("split_far v2: {}", cascadeSplits[cascade] / farPlane);
 
 		XMVECTOR corners[] = {
 			XMVectorLerp(frustum_corners[0], frustum_corners[1], split_near),
@@ -1338,239 +1321,97 @@ void OrthogonalVolumetricLighting::BuildShadowCascade(RE::BSShadowLight* light)
 			XMVectorLerp(frustum_corners[6], frustum_corners[7], split_far)
 		};
 
-		for (int i = 0; i < 8; ++i)
-			cascadeData[cascade].worldCorners[i] = corners[ind[i] - 1];
-		//if (cascade == 1) {
-		//	cascadeData[cascade].worldCorners[0] = cornersFirst[ind[4] - 1];
-		//	cascadeData[cascade].worldCorners[1] = cornersFirst[ind[5] - 1];
-		//	cascadeData[cascade].worldCorners[2] = cornersFirst[ind[6] - 1];
-		//	cascadeData[cascade].worldCorners[3] = cornersFirst[ind[7] - 1];
-		//}
+		XMVECTOR up = XMVectorSet(0, 1, 0, 0);
+		XMVECTOR forward = lightDirection;
+		XMVECTOR right = XMVector3Normalize(XMVector3Cross(forward, up));
+		up = XMVector3Cross(right, forward);
 
-		{
-			XMVECTOR up = XMVectorSet(0, 1, 0, 0);
-			XMVECTOR forward = lightDirection;
-			XMVECTOR right = XMVector3Normalize(XMVector3Cross(forward, up));
-			up = XMVector3Cross(right, forward);
+		XMMATRIX worldRotation = XMMatrixTranspose(XMMATRIX(right, up, forward, XMVectorSet(0, 0, 0, 1)));  //inverse
 
-			XMMATRIX worldRotation = XMMatrixTranspose(XMMATRIX(right, up, forward, XMVectorSet(0, 0, 0, 1)));
-			XMStoreFloat4x4(&cascadeData[cascade].cascadeRotation, worldRotation);
-			cascadeData[cascade].cascadeTranslation = XMVectorZero();
-
-			XMVECTOR worldCenter = XMVectorZero();
-			for (int j = 0; j < 8; ++j) {
-				worldCenter = XMVectorAdd(worldCenter, corners[j]);
-			}
-			worldCenter = worldCenter / 8.0f;
-
-			XMVECTOR cornerMin = XMVectorReplicate(1e6f);
-			XMVECTOR cornerMax = XMVectorNegate(cornerMin);
-			for (int j = 0; j < 8; ++j) {
-				XMVECTOR CascadeCameraPosition = XMVector3Transform(corners[j], worldRotation);
-
-				//XMVECTOR centered = XMVectorSubtract(corners[j], worldCenter);
-				//CascadeCameraPosition = XMVector3Transform(centered, worldRotation);
-
-				cornerMin = XMVectorMin(cornerMin, CascadeCameraPosition);
-				cornerMax = XMVectorMax(cornerMax, CascadeCameraPosition);
-			}
-			float3 minValues = cornerMin;
-			float3 maxValues = cornerMax;
-			minValues.z += 15000;
-			maxValues.z += 15000;
-
-			float3 center = (minValues + maxValues) * 0.5;
-			logger::info("center: {}, {}, {}", center.x, center.y, center.z);
-
-			//XMVECTOR worldSpaceCenter = XMVector3TransformNormal(center, XMMatrixTranspose(worldRotation));
-			//LogVector("worldSpaceCenter___", worldSpaceCenter);
-			//LogVector("worldSpaceCenter", XMVectorSubtract(rootCameraPos, worldSpaceCenter));
-
-			XMVECTOR worldSpaceCenter = XMVector3TransformNormal(center, worldRotation);
-			LogVector("world Space Center", worldSpaceCenter);
-			//LogVector("worldSpaceCenter 2", XMVectorSubtract(rootCameraPos, worldSpaceCenter));
-
-			XMMATRIX lightProjection = XMMatrixOrthographicOffCenterLH(minValues.x, maxValues.x, minValues.y, maxValues.y, minValues.z, maxValues.z);
-			XMMATRIX lightViewProj = XMMatrixMultiply(worldRotation, lightProjection);
-
-			XMMATRIX lightInvViewProj = XMMatrixInverse(nullptr, lightViewProj);
-
-			//XMStoreFloat4x4(&cascadeData[cascade].cascadeRotation, lightInvViewProj);
-			cascadeData[cascade].cascadeTranslation = XMVectorSubtract(rootCameraPos, worldSpaceCenter);
-			//cascadeData[cascade].cascadeTranslation = XMVectorSubtract(rootCameraPos, XMVectorMultiply(lightDirection, XMVectorReplicate(15000)));
-
-			cascadeData[cascade].frustum.fLeft = minValues.x;
-			cascadeData[cascade].frustum.fRight = maxValues.x;
-			cascadeData[cascade].frustum.fTop = maxValues.y;
-			cascadeData[cascade].frustum.fBottom = minValues.y;
-			cascadeData[cascade].frustum.fNear = minValues.z;
-			cascadeData[cascade].frustum.fFar = maxValues.z;
-
-			LogVector("New Min", cornerMin);
-			LogVector("New Max", cornerMax);
-			LogMatrix("New ViewProj", lightViewProj);
-			LogMatrix("InvViewProj", lightInvViewProj);
+		XMVECTOR cornerMin = XMVectorReplicate(1e6f);
+		XMVECTOR cornerMax = XMVectorNegate(cornerMin);
+		for (int j = 0; j < 8; ++j) {
+			XMVECTOR cascadeCorner = XMVector3Transform(corners[j], worldRotation);
+			cornerMin = XMVectorMin(cornerMin, cascadeCorner);
+			cornerMax = XMVectorMax(cornerMax, cascadeCorner);
 		}
+		////////////////////////////////////////////////////
 
-		//XMVECTOR localTranslation = XMVectorSubtract(rootCameraPos, XMVectorMultiply(lightDirection, XMVectorReplicate(15000)));   //this causes shadows everywhere
-		//localTranslation = XMVectorSubtract(rootCameraPos, XMVectorMultiply(lightDirection, XMVectorReplicate(1)));          //this causes 0 dist towards light
+		////
+		XMVECTOR cornersV2[] = {
+			XMVector3Transform(XMVectorLerp(frustum_corners[0], frustum_corners[1], split_near), worldRotation),
+			XMVector3Transform(XMVectorLerp(frustum_corners[0], frustum_corners[1], split_far), worldRotation),
+			XMVector3Transform(XMVectorLerp(frustum_corners[2], frustum_corners[3], split_near), worldRotation),
+			XMVector3Transform(XMVectorLerp(frustum_corners[2], frustum_corners[3], split_far), worldRotation),
+			XMVector3Transform(XMVectorLerp(frustum_corners[4], frustum_corners[5], split_near), worldRotation),
+			XMVector3Transform(XMVectorLerp(frustum_corners[4], frustum_corners[5], split_far), worldRotation),
+			XMVector3Transform(XMVectorLerp(frustum_corners[6], frustum_corners[7], split_near), worldRotation),
+			XMVector3Transform(XMVectorLerp(frustum_corners[6], frustum_corners[7], split_far), worldRotation),
+		};
+		////////////////////////////////////////////////////
 
-		//cornerMin = XMVectorSubtract(cornerMin, center);
-		//cornerMax = XMVectorSubtract(cornerMax, center);
-
-		//XMVECTOR vMin = XMVectorSubtract(center, vRadius);
-		//XMVECTOR vMax = XMVectorAdd(center, vRadius);
-
-		//float radius;
+		//// Bound Sphere //////////////////////////////////
+		float radius = 0;
+		XMVECTOR center = {};
 		// Compute cascade bounding sphere center:
-		//for (int j = 0; j < 8; ++j) {
-		//	center = XMVectorAdd(center, corners[j]);
-		//}
-		//center = center / 8;
-		//LogVector("center", center);
+		for (int j = 0; j < 8; ++j)
+			center = XMVectorAdd(center, cornersV2[j]);
+		center = center / 8;
 
 		// Compute cascade bounding sphere radius:
-		//for (int j = 0; j < 8; ++j) {
-		//	radius = std::max(radius, XMVectorGetX(XMVector3Length(XMVectorSubtract(corners[j], center))));
-		//}
-		//}
+		for (int j = 0; j < 8; ++j)
+			radius = std::max(radius, XMVectorGetX(XMVector3Length(XMVectorSubtract(cornersV2[j], center))));
 
-		//XMVECTOR vRadius = XMVectorReplicate(radius);
-		//XMVECTOR vMin = XMVectorSubtract(center, minValues);
-		//XMVECTOR vMax = XMVectorAdd(center, vRadius);
+		LogVector("center", center);
+		logger::info("radius: {}", radius);
 
-		/*
+		LogVector("old Min", cornerMin);
+		LogVector("old Max", cornerMax);
+		// Fit AABB onto bounding sphere
+		XMVECTOR vRadius = XMVectorReplicate(radius);
+		cornerMin = XMVectorSubtract(center, vRadius);
+		cornerMax = XMVectorAdd(center, vRadius);
+		LogVector("new Min", cornerMin);
+		LogVector("new Max", cornerMax);
+		/////////////////////////////////////////////////////
 
-		const float split_farV2 = LinearStep(nearPlane, farPlane, cascadeSplits[0]);
-		const XMVECTOR cornersFirst[] = {
-			XMVectorLerp(frustum_corners[0], frustum_corners[1], 0),
-			XMVectorLerp(frustum_corners[0], frustum_corners[1], split_farV2),
-			XMVectorLerp(frustum_corners[2], frustum_corners[3], 0),
-			XMVectorLerp(frustum_corners[2], frustum_corners[3], split_farV2),
-			XMVectorLerp(frustum_corners[4], frustum_corners[5], 0),
-			XMVectorLerp(frustum_corners[4], frustum_corners[5], split_farV2),
-			XMVectorLerp(frustum_corners[6], frustum_corners[7], 0),
-			XMVectorLerp(frustum_corners[6], frustum_corners[7], split_farV2)
-		};
+		//// Snap cascade to texel grid ///////////////////
+		XMVECTOR extent = XMVectorSubtract(cornerMax, cornerMin);
+		XMVECTOR texelSize = extent / float(CSM_Size);
+		cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
+		cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
+		//center = (cornerMin + cornerMax) * 0.5f;
 
-		//for (int i = 0; i < 8; ++i)
-		//	cascadeData[cascade].worldCorners[i] = corners[ind[i] - 1];
-		//if (cascade == 1) {
-		//	cascadeData[cascade].worldCorners[0] = cornersFirst[ind[4] - 1];
-		//	cascadeData[cascade].worldCorners[1] = cornersFirst[ind[5] - 1];
-		//	cascadeData[cascade].worldCorners[2] = cornersFirst[ind[6] - 1];
-		//	cascadeData[cascade].worldCorners[3] = cornersFirst[ind[7] - 1];
-		//}
-		//for (int i = 0; i < 8; ++i)
-		//	LogVector("Corners", cascadeData[cascade].worldCorners[i]);
+		LogVector("Effective Res", XMVectorMultiply(texelSize, XMVectorReplicate(0.01427)));
+		LogVector("After Min", cornerMin);
+		LogVector("After Max", cornerMax);
+		/////////////////////////////////////////////////////
 
-		{
-			XMVECTOR up = XMVectorSet(0, 1, 0, 0); //bgs basis is a gta cheat code
-			XMVECTOR forward = lightDirection;
-			XMVECTOR right = XMVector3Normalize(XMVector3Cross(forward, up));
-			up = XMVector3Cross(right, forward);
+		cornerMin = XMVectorSetZ(cornerMin, XMVectorGetZ(cornerMin) + 15000);  //game expects it like this, (15,000 is the maximum shadow distance supported i think)
+		cornerMax = XMVectorSetZ(cornerMax, XMVectorGetZ(cornerMax) + 15000);
+		float3 minValues = cornerMin;
+		float3 maxValues = cornerMax;
 
-			XMVECTOR localTranslation = XMVectorSubtract(rootCameraPos, XMVectorMultiply(lightDirection, XMVectorReplicate(15000)));
-			//cascadeData[cascade].cascadeTranslation = localTranslation;
+		XMMATRIX lightProjection = XMMatrixOrthographicOffCenterLH(minValues.x, maxValues.x, minValues.y, maxValues.y, minValues.z, maxValues.z);
+		XMMATRIX lightViewProj = XMMatrixMultiply(worldRotation, lightProjection);
 
-			XMMATRIX localRotation = XMMATRIX(right, up, forward, XMVectorSet(0, 0, 0, 1));
-			//XMStoreFloat4x4(&cascadeData[cascade].cascadeRotation, XMMatrixTranspose(localRotation));
+		XMStoreFloat4x4(&cascadeData[cascade].viewProj, lightViewProj);
 
+		XMStoreFloat4x4(&cascadeData[cascade].cascadeRotation, worldRotation);
+		cascadeData[cascade].cascadeTranslation = XMVectorSubtract(rootCameraPos, XMVectorMultiply(lightDirection, XMVectorReplicate(15000)));  //only thing that seems to work
 
-			XMMATRIX viewMatrix = XMMatrixInverse(nullptr, XMMATRIX(localRotation.r[0], localRotation.r[1], localRotation.r[2], localTranslation));
-			XMMATRIX baseProj = XMMatrixOrthographicOffCenterLH(0.0, 1.0, 0.0, 1.0, 10, 15000); //get rid of this in game. set at frustum clear
-			XMMATRIX cascadeViewProj = XMMatrixMultiply(viewMatrix, baseProj);
-
-
-			XMVECTOR cornerMin = XMVectorReplicate(1e6f);
-			XMVECTOR cornerMax = XMVectorNegate(cornerMin);
-			for (int i = 0; i < 8; i++) {
-				XMVECTOR cameraCornerPos = XMVectorAdd(rootCameraPos, cascadeData[cascade].worldCorners[i]);
-				XMVECTOR CascadeCameraPosition = XMVector3TransformCoord(cameraCornerPos, cascadeViewProj);
-				CascadeCameraPosition = XMVectorMultiply(CascadeCameraPosition, XMVectorSet(0.5, 0.5, 1.0, 1.0));
-				//LogVector("Transformed Pos", CascadeCameraPosition);
-
-				cornerMin = XMVectorMin(cornerMin, CascadeCameraPosition);
-				cornerMax = XMVectorMax(cornerMax, CascadeCameraPosition);
-			}
-			float3 clipMin = cornerMin;  //left, bottom, near
-			float3 clipMax = cornerMax;  //right, top, far
-			clipMax.z = clipMax.z * 14980 - 20;
-			clipMin.z = clipMin.z * 14980 + 20;
-
-
-			//cascadeData[cascade].frustum.fLeft = clipMin.x;  //correct
-			//cascadeData[cascade].frustum.fRight = clipMax.x;
-			//cascadeData[cascade].frustum.fTop = clipMax.y;
-			//cascadeData[cascade].frustum.fBottom = clipMin.y;
-			///cascadeData[cascade].frustum.fNear = clipMin.z;
-			//cascadeData[cascade].frustum.fFar = clipMax.z;
-
-
-
-			XMMATRIX lightProjection = XMMatrixOrthographicOffCenterLH(clipMin.x, clipMax.x, clipMin.y, clipMax.y, clipMin.z, clipMax.z);
-			XMMATRIX lightViewProj = XMMatrixMultiply(viewMatrix, lightProjection);
-
-
-			LogVector("Min", XMVectorSetZ(cornerMin, XMVectorGetZ(cornerMin) * 14980));
-			LogVector("Max", XMVectorSetZ(cornerMax, XMVectorGetZ(cornerMax) * 14980));
-			LogMatrix("View", viewMatrix);
-			LogMatrix("Projection", lightProjection);
-			LogMatrix("ViewProj", lightViewProj);
-		}
-			*/
-
-		// Snap cascade to texel grid:
-		//const XMVECTOR extent = XMVectorSubtract(vMax, vMin);
-		//const XMVECTOR texelSize = extent / float(shadow_rect.w);
-		//vMin = XMVectorFloor(vMin / texelSize) * texelSize;
-		//vMax = XMVectorFloor(vMax / texelSize) * texelSize;
-
-		//XMVECTOR center = (cornerMin + cornerMax) * 0.5f;
-		//float Zadjust = abs(XMVectorGetZ(center) - XMVectorGetZ(cornerMin));
-		//Zadjust *= 4;
-		//cornerMin = XMVectorSetZ(XMVectorGetZ(center) - Zadjust);
-		//cornerMax = XMVectorSetZ(XMVectorGetZ(center) + Zadjust);
-
-		//XMFLOAT3 _center;
-		//XMStoreFloat3(&_center, center);
-
-		// clipping extrusion for projection:
-		//	Tight Z distribution for precision (16-bit unorm especially) but allowing some extra room for cascade blending in Z
-		/*
-			{
-				XMFLOAT3 _min;
-				XMFLOAT3 _max;
-				XMStoreFloat3(&_min, cornerMin);
-				XMStoreFloat3(&_max, cornerMax);
-				XMMATRIX lightProjection = XMMatrixOrthographicOffCenterLH(_min.x, _max.x, _min.y, _max.y, _min.z, _max.z);
-				XMMATRIX lightViewProj = XMMatrixMultiply(cascadeView, lightProjection);
-				LogMatrix("New cascadeViewProj", lightViewProj);
-				float ext = abs(_center.z - _min.z);
-				ext *= 4;
-				_min.z = _center.z - ext;
-				_max.z = _center.z + ext;
-
-				//logger::info("New Min 3: {}, {}, {}", _min.x, _min.y, _min.z);
-				//logger::info("New Max 3: {}, {}, {}", _max.x, _max.y, _max.z);
-
-				lightProjection = XMMatrixOrthographicOffCenterLH(_min.x, _max.x, _min.y, _max.y, _min.z, _max.z);
-				lightViewProj = XMMatrixMultiply(cascadeView, lightProjection);
-				LogMatrix("New cascadeViewProj 2", lightViewProj);
-			}
-			*/
-
-		//}
+		cascadeData[cascade].frustum.fLeft = minValues.x;
+		cascadeData[cascade].frustum.fRight = maxValues.x;
+		cascadeData[cascade].frustum.fTop = maxValues.y;
+		cascadeData[cascade].frustum.fBottom = minValues.y;
+		cascadeData[cascade].frustum.fNear = minValues.z;
+		cascadeData[cascade].frustum.fFar = maxValues.z;
 	}
 }
 
 /*
 inline void CreateDirLightShadowCams(const LightComponent& light, CameraComponent camera, SHCAM* shcams, size_t shcam_count, const wi::rectpacker::Rect& shadow_rect, const Sphere* dedicated_shadows = nullptr, size_t dedicated_shadow_count = 0)
 {
-	// remove camera jittering
-	camera.jitter = XMFLOAT2(0, 0);
-	camera.UpdateCamera();
-
 	const XMMATRIX lightRotation = XMMatrixRotationQuaternion(XMLoadFloat4(&light.rotation));
 	const XMVECTOR to = XMVector3TransformNormal(XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f), lightRotation);
 	const XMVECTOR up = XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), lightRotation);
@@ -1589,8 +1430,6 @@ inline void CreateDirLightShadowCams(const LightComponent& light, CameraComponen
 		XMVector3TransformCoord(XMVectorSet(1, 1, 1, 1), unproj),    // near
 		XMVector3TransformCoord(XMVectorSet(1, 1, 0, 1), unproj),    // far
 	};
-
-
 
 	// Compute shadow cameras:
 	for (int cascade = 0; cascade < shcam_count; ++cascade) {
@@ -1687,6 +1526,162 @@ inline void CreateDirLightShadowCams(const LightComponent& light, CameraComponen
 	}
 }
 
+
+
+
+
+
+
+		//XMMATRIX lightInvViewProj = XMMatrixInverse(nullptr, lightViewProj);
+
+		//float3 center = (minValues + maxValues) * 0.5;
+		//XMVECTOR worldSpaceCenter = XMVector3TransformNormal(center, worldRotation);
+		//cascadeData[cascade].cascadeTranslation = XMVectorSubtract(rootCameraPos, worldSpaceCenter);
+		//cascadeData[cascade].cascadeTranslation = XMVectorZero();
+		//logger::info("center: {}, {}, {}", center.x, center.y, center.z);
+		//LogVector("world Space Center", worldSpaceCenter);
+
+		//LogMatrix("New ViewProj", lightViewProj);
+		//LogMatrix("InvViewProj", lightInvViewProj);
+	//}
+
+
+
+			//for (int i = 0; i < 8; ++i)
+	//	cascadeData[cascade].worldCorners[i] = corners[ind[i] - 1];
+	//if (cascade == 1) {
+	//	cascadeData[cascade].worldCorners[0] = cornersFirst[ind[4] - 1];
+	//	cascadeData[cascade].worldCorners[1] = cornersFirst[ind[5] - 1];
+	//	cascadeData[cascade].worldCorners[2] = cornersFirst[ind[6] - 1];
+	//	cascadeData[cascade].worldCorners[3] = cornersFirst[ind[7] - 1];
+	//}
+
+		//XMVECTOR localTranslation = XMVectorSubtract(rootCameraPos, XMVectorMultiply(lightDirection, XMVectorReplicate(15000)));   //this causes shadows everywhere
+		//localTranslation = XMVectorSubtract(rootCameraPos, XMVectorMultiply(lightDirection, XMVectorReplicate(1)));          //this causes 0 dist towards light
+
+		//cornerMin = XMVectorSubtract(cornerMin, center);
+		//cornerMax = XMVectorSubtract(cornerMax, center);
+
+		//XMVECTOR vMin = XMVectorSubtract(center, vRadius);
+		//XMVECTOR vMax = XMVectorAdd(center, vRadius);
+
+
+		/*
+
+		const float split_farV2 = LinearStep(nearPlane, farPlane, cascadeSplits[0]);
+		const XMVECTOR cornersFirst[] = {
+			XMVectorLerp(frustum_corners[0], frustum_corners[1], 0),
+			XMVectorLerp(frustum_corners[0], frustum_corners[1], split_farV2),
+			XMVectorLerp(frustum_corners[2], frustum_corners[3], 0),
+			XMVectorLerp(frustum_corners[2], frustum_corners[3], split_farV2),
+			XMVectorLerp(frustum_corners[4], frustum_corners[5], 0),
+			XMVectorLerp(frustum_corners[4], frustum_corners[5], split_farV2),
+			XMVectorLerp(frustum_corners[6], frustum_corners[7], 0),
+			XMVectorLerp(frustum_corners[6], frustum_corners[7], split_farV2)
+		};
+
+		//for (int i = 0; i < 8; ++i)
+		//	cascadeData[cascade].worldCorners[i] = corners[ind[i] - 1];
+		//if (cascade == 1) {
+		//	cascadeData[cascade].worldCorners[0] = cornersFirst[ind[4] - 1];
+		//	cascadeData[cascade].worldCorners[1] = cornersFirst[ind[5] - 1];
+		//	cascadeData[cascade].worldCorners[2] = cornersFirst[ind[6] - 1];
+		//	cascadeData[cascade].worldCorners[3] = cornersFirst[ind[7] - 1];
+		//}
+		//for (int i = 0; i < 8; ++i)
+		//	LogVector("Corners", cascadeData[cascade].worldCorners[i]);
+
+		{
+			XMVECTOR up = XMVectorSet(0, 1, 0, 0); //bgs basis is a gta cheat code
+			XMVECTOR forward = lightDirection;
+			XMVECTOR right = XMVector3Normalize(XMVector3Cross(forward, up));
+			up = XMVector3Cross(right, forward);
+
+			XMVECTOR localTranslation = XMVectorSubtract(rootCameraPos, XMVectorMultiply(lightDirection, XMVectorReplicate(15000)));
+			//cascadeData[cascade].cascadeTranslation = localTranslation;
+
+			XMMATRIX localRotation = XMMATRIX(right, up, forward, XMVectorSet(0, 0, 0, 1));
+			//XMStoreFloat4x4(&cascadeData[cascade].cascadeRotation, XMMatrixTranspose(localRotation));
+
+
+			XMMATRIX viewMatrix = XMMatrixInverse(nullptr, XMMATRIX(localRotation.r[0], localRotation.r[1], localRotation.r[2], localTranslation));
+			XMMATRIX baseProj = XMMatrixOrthographicOffCenterLH(0.0, 1.0, 0.0, 1.0, 10, 15000); //get rid of this in game. set at frustum clear
+			XMMATRIX cascadeViewProj = XMMatrixMultiply(viewMatrix, baseProj);
+
+
+			XMVECTOR cornerMin = XMVectorReplicate(1e6f);
+			XMVECTOR cornerMax = XMVectorNegate(cornerMin);
+			for (int i = 0; i < 8; i++) {
+				XMVECTOR cameraCornerPos = XMVectorAdd(rootCameraPos, cascadeData[cascade].worldCorners[i]);
+				XMVECTOR CascadeCameraPosition = XMVector3TransformCoord(cameraCornerPos, cascadeViewProj);
+				CascadeCameraPosition = XMVectorMultiply(CascadeCameraPosition, XMVectorSet(0.5, 0.5, 1.0, 1.0));
+				//LogVector("Transformed Pos", CascadeCameraPosition);
+
+				cornerMin = XMVectorMin(cornerMin, CascadeCameraPosition);
+				cornerMax = XMVectorMax(cornerMax, CascadeCameraPosition);
+			}
+			float3 clipMin = cornerMin;  //left, bottom, near
+			float3 clipMax = cornerMax;  //right, top, far
+			clipMax.z = clipMax.z * 14980 - 20;
+			clipMin.z = clipMin.z * 14980 + 20;
+
+
+			//cascadeData[cascade].frustum.fLeft = clipMin.x;  //correct
+			//cascadeData[cascade].frustum.fRight = clipMax.x;
+			//cascadeData[cascade].frustum.fTop = clipMax.y;
+			//cascadeData[cascade].frustum.fBottom = clipMin.y;
+			///cascadeData[cascade].frustum.fNear = clipMin.z;
+			//cascadeData[cascade].frustum.fFar = clipMax.z;
+
+
+
+			XMMATRIX lightProjection = XMMatrixOrthographicOffCenterLH(clipMin.x, clipMax.x, clipMin.y, clipMax.y, clipMin.z, clipMax.z);
+			XMMATRIX lightViewProj = XMMatrixMultiply(viewMatrix, lightProjection);
+
+
+			LogVector("Min", XMVectorSetZ(cornerMin, XMVectorGetZ(cornerMin) * 14980));
+			LogVector("Max", XMVectorSetZ(cornerMax, XMVectorGetZ(cornerMax) * 14980));
+			LogMatrix("View", viewMatrix);
+			LogMatrix("Projection", lightProjection);
+			LogMatrix("ViewProj", lightViewProj);
+		}
+			*/
+
+//XMVECTOR center = (cornerMin + cornerMax) * 0.5f;
+//float Zadjust = abs(XMVectorGetZ(center) - XMVectorGetZ(cornerMin));
+//Zadjust *= 4;
+//cornerMin = XMVectorSetZ(XMVectorGetZ(center) - Zadjust);
+//cornerMax = XMVectorSetZ(XMVectorGetZ(center) + Zadjust);
+
+//XMFLOAT3 _center;
+//XMStoreFloat3(&_center, center);
+
+// clipping extrusion for projection:
+//	Tight Z distribution for precision (16-bit unorm especially) but allowing some extra room for cascade blending in Z
+/*
+			{
+				XMFLOAT3 _min;
+				XMFLOAT3 _max;
+				XMStoreFloat3(&_min, cornerMin);
+				XMStoreFloat3(&_max, cornerMax);
+				XMMATRIX lightProjection = XMMatrixOrthographicOffCenterLH(_min.x, _max.x, _min.y, _max.y, _min.z, _max.z);
+				XMMATRIX lightViewProj = XMMatrixMultiply(cascadeView, lightProjection);
+				LogMatrix("New cascadeViewProj", lightViewProj);
+				float ext = abs(_center.z - _min.z);
+				ext *= 4;
+				_min.z = _center.z - ext;
+				_max.z = _center.z + ext;
+
+				//logger::info("New Min 3: {}, {}, {}", _min.x, _min.y, _min.z);
+				//logger::info("New Max 3: {}, {}, {}", _max.x, _max.y, _max.z);
+
+				lightProjection = XMMatrixOrthographicOffCenterLH(_min.x, _max.x, _min.y, _max.y, _min.z, _max.z);
+				lightViewProj = XMMatrixMultiply(cascadeView, lightProjection);
+				LogMatrix("New cascadeViewProj 2", lightViewProj);
+			}
+
+
+//}
 
 
 struct WindParams

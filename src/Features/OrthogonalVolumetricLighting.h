@@ -52,6 +52,7 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupShadowCascade();
 	virtual REX::W32::XMFLOAT4X4 GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightTransform);
 	void UpdateShadowLightMatrices();
+	DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
 	//virtual void BuildCloudShadowMatrix();
 
 	void BuildShadowCascade(RE::BSShadowLight* light);
@@ -191,6 +192,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float3 cascadeTranslation;
 		DirectX::XMFLOAT4X4 cascadeRotation;
 		RE::NiFrustum frustum;
+		DirectX::XMFLOAT4X4 viewProj;
 	};
 	CascadeData cascadeData[2];
 	int cascadeIt = 0;
@@ -601,15 +603,12 @@ struct OrthogonalVolumetricLighting : Feature
 			//stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
 
 			//stl::detour_thunk<SetShadowMapCount>(REL::RelocationID(107599, 107599));
-			stl::write_vfunc<0xA, BSShadowDirectionalLight_RenderShadowmaps>(RE::VTABLE_BSShadowDirectionalLight[0]);
-
-			//Hook SetFrameCamera to modify shadow split distances
+			//stl::write_vfunc<0xA, BSShadowDirectionalLight_RenderShadowmaps>(RE::VTABLE_BSShadowDirectionalLight[0]);
 			stl::write_vfunc<0x10, BSShadowDirectionalLight_SetFrameCamera>(RE::VTABLE_BSShadowDirectionalLight[0]);
 
-			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));
-
-			stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));  //set view, trans   -after clear frust
-			stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustum>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23E5, 0x23E5));          //frustum
+			stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));                                   //set rotation and translation
+			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //override corners
+			stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustum>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23E5, 0x23E5));                                           //write new frustum
 
 			//stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2_AA>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23FD, 0x23FD)); //second ---
 			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59, 0xC59));  ///FIRST ---------------------
