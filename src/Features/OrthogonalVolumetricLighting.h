@@ -31,6 +31,10 @@ struct OrthogonalVolumetricLighting : Feature
 	uint lightCascades = 2;
 	void SetupCascadeTextures();
 
+	float lightUpdateAngle = 0.1f;
+	float cascadeSplit0 = 1000.0f;
+	float cascadeSplit1 = 3500.0f;
+
 	virtual inline void DataLoaded() override
 	{
 		RE::GetINISetting("bLensFlare:Imagespace")->data.b = true;
@@ -55,7 +59,7 @@ struct OrthogonalVolumetricLighting : Feature
 	DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
 	//virtual void BuildCloudShadowMatrix();
 
-	void BuildShadowCascade(RE::BSShadowLight* light);
+	void BuildShadowCascade(RE::BSShadowDirectionalLight* light);
 	virtual void LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix);
 	virtual void LogVector(std::string desc, DirectX::XMVECTOR vec);
 	//	virtual DirectX::XMFLOAT4X4 ConvertTransMatrix(DirectX::XMFLOAT4X4& m);
@@ -189,8 +193,8 @@ struct OrthogonalVolumetricLighting : Feature
 	struct CascadeData
 	{
 		DirectX::XMVECTOR worldCorners[8];
-		float3 cascadeTranslation;
-		DirectX::XMFLOAT4X4 cascadeRotation;
+		float3 worldTranslation;
+		DirectX::XMFLOAT4X4 world;
 		RE::NiFrustum frustum;
 		DirectX::XMFLOAT4X4 viewProj;
 	};
@@ -606,14 +610,14 @@ struct OrthogonalVolumetricLighting : Feature
 			//stl::write_vfunc<0xA, BSShadowDirectionalLight_RenderShadowmaps>(RE::VTABLE_BSShadowDirectionalLight[0]);
 			stl::write_vfunc<0x10, BSShadowDirectionalLight_SetFrameCamera>(RE::VTABLE_BSShadowDirectionalLight[0]);
 
-			stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));                                   //set rotation and translation
-			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //override corners
-			stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustum>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23E5, 0x23E5));                                           //write new frustum
+			//stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));                                   //set rotation and translation
+			//stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //override corners
+			//stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustum>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23E5, 0x23E5));                                           //write new frustum
 
 			//stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2_AA>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23FD, 0x23FD)); //second ---
-			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59, 0xC59));  ///FIRST ---------------------
-																																															   //stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustumBASE>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x9B5, 0x9B5));  //culling frustum
-																																															   //stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustumBASE>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1900, 0x1900));  //clear frustum
+			//stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59, 0xC59));  ///FIRST ---------------------
+			//stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustumBASE>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x9B5, 0x9B5));  //culling frustum
+			//stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustumBASE>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1900, 0x1900));  //clear frustum
 
 			//REL::safe_fill(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1856, 0x1856), REL::NOP, 107);  //update camera trans, rot
 			//REL::safe_fill(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x19B0, 0x19B0), REL::NOP, 407);  //Loop_1

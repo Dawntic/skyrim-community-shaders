@@ -133,9 +133,9 @@ namespace FrameAnnotations
 		{
 			globals::state->BeginPerfEvent("Directional Light Shadowmaps");
 
-			logger::info("Render shadow maps");
+			//logger::info("Render shadow maps");
 
-			globals::features::orthogonalVolumetricLighting.BuildShadowCascade(light);
+			//globals::features::orthogonalVolumetricLighting.BuildShadowCascade(light);
 			//globals::features::orthogonalVolumetricLighting.shadowLight = light;
 			//globals::features::orthogonalVolumetricLighting.SetupShadowCascade();
 
