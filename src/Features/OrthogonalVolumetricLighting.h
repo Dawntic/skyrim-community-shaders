@@ -193,8 +193,8 @@ struct OrthogonalVolumetricLighting : Feature
 	struct CascadeData
 	{
 		DirectX::XMVECTOR worldCorners[8];
-		float3 worldTranslation;
-		DirectX::XMFLOAT4X4 world;
+		float3 cascadeTranslation;
+		DirectX::XMFLOAT4X4 viewRotation;
 		RE::NiFrustum frustum;
 		DirectX::XMFLOAT4X4 viewProj;
 	};
@@ -571,28 +571,6 @@ struct OrthogonalVolumetricLighting : Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-#pragma warning(push)
-#pragma warning(disable: 4100)
-		struct BSShadowDirectionalLight_CreateFrustumBASE
-		{
-			static void thunk(RE::NiFrustum& frustum, float left, float right, float top, float farP, float bottom, float nearP, bool ortho)
-			{
-				func(frustum, 0, 1, 1, 0, 0, 1, true);
-			}
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-
-		struct BSShadowDirectionalLight_SetCameraRuntimeData2_AA
-		{
-			static void thunk(RE::NiCamera* cascadeCamera, RE::NiFrustum& frustum)
-			{
-				func(cascadeCamera, frustum);
-				cascadeCamera->GetRuntimeData2().viewFrustum = frustum;
-			}
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-#pragma warning(pop)
-
 		static void Install()
 		{
 			logger::info("[Lens Effects] Installed hooks");
@@ -612,15 +590,9 @@ struct OrthogonalVolumetricLighting : Feature
 
 			//stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));                                   //set rotation and translation
 			//stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //override corners
-			//stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustum>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23E5, 0x23E5));                                           //write new frustum
+			stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustum>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23E5, 0x23E5));  //write new frustum
 
-			//stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2_AA>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23FD, 0x23FD)); //second ---
 			//stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59, 0xC59));  ///FIRST ---------------------
-			//stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustumBASE>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x9B5, 0x9B5));  //culling frustum
-			//stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustumBASE>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1900, 0x1900));  //clear frustum
-
-			//REL::safe_fill(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1856, 0x1856), REL::NOP, 107);  //update camera trans, rot
-			//REL::safe_fill(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x19B0, 0x19B0), REL::NOP, 407);  //Loop_1
 		}
 	};
 };
