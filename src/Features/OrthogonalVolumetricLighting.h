@@ -31,10 +31,15 @@ struct OrthogonalVolumetricLighting : Feature
 	uint lightCascades = 2;
 	void SetupCascadeTextures();
 	bool patchCascade = false;
+	bool patchCulling = false;
 
-	float lightUpdateAngle = 1.0f;
+	float lightUpdateAngle = 0.02f;
 	float cascadeSplit0 = 1000.0f;
 	float cascadeSplit1 = 3500.0f;
+
+	//void(__fastcall* BuildPlaneFromPointsCallBack)(RE::NiPlane&, RE::NiPoint3&, RE::NiPoint3&, RE::NiPoint3&) = nullptr;
+	//void(__fastcall* SetPlaneFromPointAndNormal)(RE::NiPlane&, RE::NiPoint3&, RE::NiPoint3&) = nullptr;
+	//void BuildPlaneFromPoints(RE::NiPlane& planeOut, const RE::NiPoint3& p1, const RE::NiPoint3& p2, const RE::NiPoint3& p3);
 
 	virtual inline void DataLoaded() override
 	{
@@ -59,11 +64,30 @@ struct OrthogonalVolumetricLighting : Feature
 	void UpdateShadowLightMatrices();
 	DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
 	//virtual void BuildCloudShadowMatrix();
-
-	void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& camera);
+	//void ExtractFrustumPlanes(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
+	//DirectX::XMMATRIX GameViewProj;
+	//DirectX::XMMATRIX GameViewProjTransed;
+	//void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& camera);
 	virtual void LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix);
 	virtual void LogVector(std::string desc, DirectX::XMVECTOR vec);
-	//	virtual DirectX::XMFLOAT4X4 ConvertTransMatrix(DirectX::XMFLOAT4X4& m);
+	//virtual DirectX::XMFLOAT4X4 ConvertTransMatrix(DirectX::XMFLOAT4X4& m);
+	struct FrustumCorners
+	{
+		float3 corners[8];
+	};
+	//void BuildCascadeCameraCullingPlanes(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumCorners& frustumCorners, uint32_t splitCornerIndices[8],
+	//	uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex);
+
+	struct CascadeData
+	{
+		float3 worldCorners[8];
+		float3 cascadeTranslation;
+		DirectX::XMFLOAT4X4 viewRotation;
+		RE::NiFrustum frustum;
+		DirectX::XMFLOAT4X4 viewProj;
+	};
+	CascadeData cascadeData[2];
+	int cascadeIt = 0;
 
 	virtual void SetupBypass();
 	virtual void SetupScatteringVolume();
@@ -191,17 +215,6 @@ struct OrthogonalVolumetricLighting : Feature
 	bool resetVariance = false;
 	uint varianceFrames = 32;
 
-	struct CascadeData
-	{
-		DirectX::XMVECTOR worldCorners[8];
-		float3 cascadeTranslation;
-		DirectX::XMFLOAT4X4 viewRotation;
-		RE::NiFrustum frustum;
-		DirectX::XMFLOAT4X4 viewProj;
-	};
-	CascadeData cascadeData[2];
-	int cascadeIt = 0;
-
 	float4 frustumNearFar;
 	float3 eyePositionWS;
 	float4 cameraData;
@@ -258,19 +271,20 @@ struct OrthogonalVolumetricLighting : Feature
 		float anisotropy = 0.85;
 		uint esmExponent = 2;
 		float albedo = 1.0;
+
 		float color_saturation = 1.0;
 
 		float globalFogDensity = 0;
 		float globalFogStartHeight = 0;
 		float globalFogFalloffHeight = 0;
 
+		//uint VarienceFrameIndex;
+		//uint RunVarienceMapping;
+		//uint DebugCascadeSplit;
+
 		float blendOpp = false;
 
-		uint VarienceFrameIndex;
-		uint RunVarienceMapping;
-		uint DebugCascadeSplit;
-
-		//float _pad[3];
+		float _pad[3];
 		float4 fogMapData;
 		float4 UIfogMapParams;
 	};
@@ -550,6 +564,11 @@ struct OrthogonalVolumetricLighting : Feature
 
 		struct BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes
 		{
+			static void thunk(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumCorners& frustumCorners, uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+		struct BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond
+		{
 			struct FrustumSplit
 			{
 				RE::NiPoint3 nearFace[4];
@@ -588,8 +607,8 @@ struct OrthogonalVolumetricLighting : Feature
 			stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustum>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23E5, 0x23E5));
 			stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));
 
-			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59, 0xC59));     //First call
-			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //Second call
+			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59, 0xC59));           //First call
+			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //Second call
 		}
 	};
 };

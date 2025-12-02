@@ -45,18 +45,18 @@ cbuffer SettingsBuffer : register(b1)
     float UIAnisotropy;
     uint UIEVSMExponent;
     float UIScatterRatio;
+
     float UISaturation;
 
     float UIGlobalFogDensity;
     float UIGlobalFogHeight;
     float UIGobalFogFalloff;
 
+    //uint VarianceFrameIndex;
+    //uint RunVarienceMapping;
+    //uint DebugCascadeSplit;
+
     float FogMapBlendOpp;
-
-    uint VarianceFrameIndex;
-    uint RunVarienceMapping;
-    uint DebugCascadeSplit;
-
     float4 FogMapData;
     float4 UIFogMapInput;
 }
