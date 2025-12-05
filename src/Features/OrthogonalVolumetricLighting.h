@@ -29,197 +29,134 @@ struct OrthogonalVolumetricLighting : Feature
 
 	uint CSM_Size;
 	uint EVSM_Size;
-	uint lightCascades = 2;
-	void SetupCascadeTextures();
-	bool patchCascade = false;
-	bool patchCulling = false;
-
-	float lightUpdateAngle = 0.02f;
-	float cascadeSplit0 = 1000.0f;
-	float cascadeSplit1 = 3500.0f;
-
-	//void(__fastcall* BuildPlaneFromPointsCallBack)(RE::NiPlane&, RE::NiPoint3&, RE::NiPoint3&, RE::NiPoint3&) = nullptr;
-	//void(__fastcall* SetPlaneFromPointAndNormal)(RE::NiPlane&, RE::NiPoint3&, RE::NiPoint3&) = nullptr;
-	//void BuildPlaneFromPoints(RE::NiPlane& planeOut, const RE::NiPoint3& p1, const RE::NiPoint3& p2, const RE::NiPoint3& p3);
+	uint nCascades = 2;
+	void SetupPostLoadResources();
 
 	virtual inline void DataLoaded() override
 	{
 		RE::GetINISetting("bLensFlare:Imagespace")->data.b = true;
 		CSM_Size = RE::GetINISetting("iShadowMapResolution:Display")->data.u;
 		EVSM_Size = CSM_Size / 4;
-
-		SetupCascadeTextures();
+		SetupPostLoadResources();
 	}
 
 	virtual inline void PostPostLoad() override { Hooks::Install(); }
 	virtual void SetupResources() override;
-	virtual void CompileShaders();
+	void CompileShaders();
 
-	virtual void CheckOverride();
-	virtual void LookupShader(int desc);
-	virtual void PerFrameUpdate();
-	virtual int UpdateMatrixCache();
-	virtual bool CheckFrameBuffer();
-	virtual void SetupShadowCascade();
-	virtual REX::W32::XMFLOAT4X4 GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightTransform);
-	void UpdateShadowLightMatrices();
-	DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
-	//virtual void BuildCloudShadowMatrix();
-	//void ExtractFrustumPlanes(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
-	//DirectX::XMMATRIX GameViewProj;
-	//DirectX::XMMATRIX GameViewProjTransed;
-	void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& camera);
-	virtual void LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix);
-	virtual void LogVector(std::string desc, DirectX::XMVECTOR vec);
-	//virtual DirectX::XMFLOAT4X4 ConvertTransMatrix(DirectX::XMFLOAT4X4& m);
-	struct FrustumCorners
-	{
-		float3 corners[8];
-	};
-	//void BuildCascadeCameraCullingPlanes(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumCorners& frustumCorners, uint32_t splitCornerIndices[8],
-	//	uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex);
+	void CheckOverride();
+	void LookupShader(int desc);
+	void UpdateAndSetupResources();
+	void SetupApplyPassResources();
+	void VLightingRenderChain();
 
-	struct CascadeData
-	{
-		float3 worldCorners[8];
-		float3 cascadeTranslation;
-		DirectX::XMFLOAT4X4 viewRotation;
-		RE::NiFrustum frustum;
-		DirectX::XMFLOAT4X4 viewProj;
-	};
-	CascadeData cascadeData[2];
-	int cascadeIt = 0;
+	void UpdateShadowBuffer();
+	void UpdateFroxelBuffer();
+	void UpdateGeneralBuffers();
 
-	virtual void SetupBypass();
-	virtual void SetupScatteringVolume();
-	virtual void SetupFilterPass();
-	virtual void SetupSliceMarch();
-	virtual void SetupApplyPass();
-	//virtual void SetupCloudShadowMap();
-	virtual void SetupEVSM();
-	virtual void SetupShadowVolume();
-	virtual void SetupMediaVolume();
-	virtual void SetupPerlinNoise();
-	virtual void SetupEVSMBlur();
-	virtual void DrawFogMap();
-	//virtual void SetupCloudESM();
-	virtual void RenderShadowMap();
-	virtual void RenderShadowMapDebug();
+	void RenderEVSM();
+	void RenderEVSMBlur();
+	void GenerateShadowVolume();
+	void GenerateMediaVolume();
+	void GenerateScatteringVolume();
+	void RunIntergrationPass();
+	void SetupApplyPass();
+	void SetupBypass();
+	void DrawFogMap();
+	void SetupPerlinNoise();
+	//void SetupFilterPass();
 
-	D3D11_VIEWPORT viewPort[4];
-	ID3D11RasterizerState* Rasterizer = nullptr;
-	Microsoft::WRL::ComPtr<ID3D11Buffer> FrameBuffer[2];
-	ConstantBuffer* VolumeCB = nullptr;
-	ConstantBuffer* SettingsCB = nullptr;
-	ConstantBuffer* ESMCBuffer = nullptr;
-	ID3D11BlendState* AddBlend = nullptr;
-	ID3D11SamplerState* LinearSampler = nullptr;
-	ID3D11SamplerState* LinearMinSampler = nullptr;
-	ID3D11SamplerState* PointSampler = nullptr;
-	ID3D11SamplerState* AnisoLinear = nullptr;
-	ID3D11SamplerState* AnisoWrapLinear = nullptr;
+	REX::W32::XMFLOAT4X4 GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightTransform);
+
+	ConstantBuffer* shadowDataCB = nullptr;
+	ConstantBuffer* froxelGridCB = nullptr;
+	ConstantBuffer* volumeCB = nullptr;
+	ConstantBuffer* settingsCB = nullptr;
+
+	ID3D11SamplerState* linearSampler = nullptr;
+	ID3D11SamplerState* pointSampler = nullptr;
+	ID3D11SamplerState* anisoLinear = nullptr;
+	ID3D11SamplerState* anisoWrapLinear = nullptr;
+
+	ID3D11BlendState* additiveBlend = nullptr;
 
 	//// Volumes ////////////
-	ID3D11ComputeShader* GenerateScatteringVolumeCS = nullptr;
-	ID3D11ComputeShader* FilterVolumeCS = nullptr;
-	ID3D11ComputeShader* SliceMarchCS = nullptr;
-	ID3D11ComputeShader* GenerateMediaVolumeCS = nullptr;
+	ID3D11ComputeShader* generateMediaVolumeCS = nullptr;
+	ID3D11ComputeShader* generateScatteringVolumeCS = nullptr;
+	ID3D11ComputeShader* intergrationSliceMarchCS = nullptr;
 
-	ID3D11Texture3D* MediaVolume[2] = {};
-	ID3D11UnorderedAccessView* MediaVolumeUAV[2] = {};
-	ID3D11ShaderResourceView* MediaVolumeSRV[2] = {};
+	ID3D11Texture3D* mediaVolume[2] = {};
+	ID3D11UnorderedAccessView* mediaVolumeUAV[2] = {};
+	ID3D11ShaderResourceView* mediaVolumeSRV[2] = {};
 
-	ID3D11Texture3D* ScatteringVolume = nullptr;
-	ID3D11UnorderedAccessView* ScatteringVolumeUAV = nullptr;
-	ID3D11ShaderResourceView* ScatteringVolumeSRV = nullptr;
+	ID3D11Texture3D* scatteringVolume = nullptr;
+	ID3D11UnorderedAccessView* scatteringVolumeUAV = nullptr;
+	ID3D11ShaderResourceView* scatteringVolumeSRV = nullptr;
 
-	ID3D11Texture3D* IntergrationVolume = nullptr;
-	ID3D11UnorderedAccessView* IntergrationVolumeUAV = nullptr;
-	ID3D11ShaderResourceView* IntergrationVolumeSRV = nullptr;
+	ID3D11Texture3D* intergrationVolume = nullptr;
+	ID3D11UnorderedAccessView* intergrationVolumeUAV = nullptr;
+	ID3D11ShaderResourceView* intergrationVolumeSRV = nullptr;
 
-	ID3D11Texture3D* FilteringVolume[2] = {};
-	ID3D11UnorderedAccessView* FilterVolumeUAV[2] = {};
-	ID3D11ShaderResourceView* FilterVolumeSRV[2] = {};
+	//ID3D11ComputeShader* FilterVolumeCS = nullptr;
+	//ID3D11Texture3D* FilteringVolume[2] = {};
+	//ID3D11UnorderedAccessView* FilterVolumeUAV[2] = {};
+	//ID3D11ShaderResourceView* FilterVolumeSRV[2] = {};
 
 	//// Shadows /////////////
-	ID3D11ComputeShader* GenerateEVSMCS = nullptr;
-	ID3D11ComputeShader* BlurEVSMCS = nullptr;
-	ID3D11ComputeShader* GenerateShadowVolumeCS = nullptr;
-	ID3D11ComputeShader* CloudShadowCS = nullptr;
-	ID3D11VertexShader* CloudShadowVS = nullptr;
-	ID3D11PixelShader* CloudShadowPS = nullptr;
+	ID3D11ComputeShader* EVSMComputeShader = nullptr;
+	ID3D11ComputeShader* blurEVSMComputeShader = nullptr;
+	ID3D11ComputeShader* generateShadowVolumeCS = nullptr;
 
-	ID3D11Texture2D* CascadeTex = nullptr;
-	ID3D11ShaderResourceView* CascadeSRV = nullptr;
-	ID3D11DepthStencilView* CascadeDSV[4] = {};
-
-	ID3D11Texture2D* CloudShadowTexture = nullptr;
-	ID3D11RenderTargetView* CloudShadowRTV = nullptr;
-	ID3D11ShaderResourceView* CloudShadowSRV = nullptr;
-
-	ID3D11Texture2D* CloudShadowESMTexture = nullptr;
-	ID3D11ShaderResourceView* CloudShadowESMSRV = nullptr;
-	ID3D11UnorderedAccessView* CloudShadowESMUAV = nullptr;
-
-	ID3D11Texture2D* EVSMTexture = nullptr;
-	ID3D11UnorderedAccessView* EVSMUAV = nullptr;
-	ID3D11ShaderResourceView* EVSMSRV = nullptr;
+	ID3D11Texture2D* expVarianceMapTex = nullptr;
+	ID3D11UnorderedAccessView* expVarianceMapUAV = nullptr;
+	ID3D11ShaderResourceView* expVarianceMapSRV = nullptr;
 
 	ID3D11Texture2D* EVSMBlurTexture = nullptr;
 	ID3D11UnorderedAccessView* EVSMBlurUAV = nullptr;
 	ID3D11ShaderResourceView* EVSMBlurSRV = nullptr;
 
-	ID3D11Texture3D* ShadowVolume[2] = {};
-	ID3D11UnorderedAccessView* ShadowVolumeUAV[2] = {};
-	ID3D11ShaderResourceView* ShadowVolumeSRV[2] = {};
-
-	////
-	ID3D11VertexShader* ShadowMapVS = nullptr;
-	ID3D11PixelShader* ShadowMapPS = nullptr;
-	ID3D11ComputeShader* ShadowMapDebugCS = nullptr;
-
-	ID3D11Texture2D* ShadowVarianceDebugTex = nullptr;
-	ID3D11UnorderedAccessView* ShadowVarianceDebugUAV = nullptr;
-	ID3D11ShaderResourceView* ShadowVarianceDebugSRV = nullptr;
+	ID3D11Texture3D* shadowVolume[2] = {};
+	ID3D11UnorderedAccessView* shadowVolumeUAV[2] = {};
+	ID3D11ShaderResourceView* shadowVolumeSRV[2] = {};
 
 	//// Util /////////////
-	ID3D11ComputeShader* GeneratePerlinCS = nullptr;
-	ID3D11ComputeShader* DrawFogMapCS = nullptr;
-	ID3D11VertexShader* BypassVertexShader = nullptr;
+	ID3D11ComputeShader* generatePerlinCS = nullptr;
+	ID3D11ComputeShader* drawFogMapCS = nullptr;
+	ID3D11VertexShader* bypassVS = nullptr;
 
-	ID3D11Texture3D* PerlinTex = nullptr;
-	ID3D11UnorderedAccessView* PerlinUAV = nullptr;
-	ID3D11ShaderResourceView* PerlinSRV = nullptr;
+	ID3D11Texture3D* perlinTex = nullptr;
+	ID3D11UnorderedAccessView* perlinUAV = nullptr;
+	ID3D11ShaderResourceView* perlinSRV = nullptr;
 
-	ID3D11Texture2D* WorldMapTexture = nullptr;
+	ID3D11Texture2D* worldMapTexture = nullptr;
 	ID3D11ShaderResourceView* staticWorldMapSRV = nullptr;
 
 	ID3D11Texture2D* UIFogMapTexture = nullptr;
 	ID3D11ShaderResourceView* UIFogMapSRV = nullptr;
 	ID3D11UnorderedAccessView* UIFogMapUAV = nullptr;
 
-	ID3D11Texture2D* FogMapTexture = nullptr;
-	ID3D11ShaderResourceView* FogMapSRV = nullptr;
-	ID3D11UnorderedAccessView* FogMapUAV = nullptr;
+	ID3D11Texture2D* fogMapTexture = nullptr;
+	ID3D11ShaderResourceView* fogMapSRV = nullptr;
+	ID3D11UnorderedAccessView* fogMapUAV = nullptr;
 
 	//// Misc /////////
-	ID3D11PixelShader* ApplyVolumePS = nullptr;
-	ID3D11PixelShader* OutputPS = nullptr;
-	ID3D11ShaderResourceView* STBNoiseSRV = nullptr;
+	ID3D11PixelShader* applyVolumetricLightingPS = nullptr;
+	ID3D11PixelShader* outputPS = nullptr;
+	ID3D11ShaderResourceView* blueNoiseSRV = nullptr;
 
-	ID3D11Texture2D* OutputTexture = nullptr;
-	ID3D11ShaderResourceView* OutputSRV = nullptr;
-	ID3D11RenderTargetView* OutputRTV = nullptr;
+	ID3D11Texture2D* outputTexture = nullptr;
+	ID3D11ShaderResourceView* outputSRV = nullptr;
+	ID3D11RenderTargetView* outputRTV = nullptr;
 
-	bool swapShadowMapShader = false;
-	bool CSMFinished = false;
-	bool resetVariance = false;
-	uint varianceFrames = 32;
+	//// Frustum and Shadow Data //////////
+	static constexpr float4 volumeDimensions = float4(240, 136, 68, 0);
+	static constexpr float4 noiseDimensions = float4(64, 64, 32, 0);
 
-	float4 frustumNearFar;
-	float3 eyePositionWS;
-	float4 cameraData;
-	REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4] = {};
+	float2 screenSize;
+	uint frameCounter = 0;
+	bool overrideShader = false;
+	bool swapOutputRT = false;
+	uint historyParity = 0;
 
 	struct LocalShadowLightTransform
 	{
@@ -228,12 +165,11 @@ struct OrthogonalVolumetricLighting : Feature
 		uint _pad[3] = {};
 	};
 	LocalShadowLightTransform localShadowLightMatrices[8];
-
-	//REX::W32::XMFLOAT4X4 localShadowLightMatrices[16] = {};
+	REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4] = {};
 	float4 shadowCascadeEndSplit = float4(0, 0, 0, 0);
+	float4 frustumNearFar;
+	float3 eyePositionWS;
 
-	static constexpr float4 volumeDimensions = float4(240, 136, 68, 0);
-	static constexpr float4 noiseDimensions = float4(64, 64, 32, 0);
 	float2 fogMapSize;
 	DirectX::XMFLOAT4X4 fogMapViewProj = DirectX::XMFLOAT4X4(
 		1.19175, 0.00, 0.00, 0.00,
@@ -241,20 +177,15 @@ struct OrthogonalVolumetricLighting : Feature
 		0.00, 0.00035, -1.00036, -128.04633,
 		0.00, 0.00035, -1.00, 0.00);
 
-	float2 screenSize;
-	uint frameCounter = 0;
-	bool overrideShader = false;
-	bool swapOutputRT = false;
-
 	int PrevMatrixIdx;
-	bool FilterVolParity;
+	//bool FilterVolParity;
 	bool shadowVolParity;
 	bool mediaVolParity;
 
 	uintptr_t* skyrim_FlareData = nullptr;
 	uint32_t* skyrim_RunFlarePtr = nullptr;
-	//RE::NiPoint3* skyrim_SunPosition = nullptr;
 	inline static RE::NiPoint3* skyrim_SunPosition = nullptr;
+	//RE::NiPoint3* skyrim_SunPosition = nullptr;
 	//RE::BSShadowLight* shadowLight;
 
 	virtual void RestoreDefaultSettings() override;
@@ -269,11 +200,6 @@ struct OrthogonalVolumetricLighting : Feature
 	float brushRadius = 24.0f;
 	float brushFeather = 0.5;
 	float fogErase = false;
-
-	float2 CloudESM_Size = float2(2560, 1440);
-	DirectX::XMFLOAT4X4 cloudShadowLSViewProj;
-	DirectX::XMFLOAT4X4 cloudShadowLSViewProjInverse;
-	float4 cloudOrigin = float4(1, 1, 1, 1);
 
 	struct Settings
 	{
@@ -300,56 +226,51 @@ struct OrthogonalVolumetricLighting : Feature
 	};
 	Settings settings;
 
-	struct alignas(16) VolumeBuffer
+	struct alignas(16) ShadowDataCB
 	{
 		REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4];
 		LocalShadowLightTransform localShadowLightMatrices[8];
-		DirectX::XMFLOAT4X4 fogMapMatrix;
-
 		float4 shadowCascadeEndSplit;
-		float4 frustumNearFar;
-		float4 CameraWSPos;
-		float4 cameraData;
-
 		float4 EVSMData;
+	};
+
+	struct alignas(16) FroxelGridCB
+	{
+		Matrix cameraView;
+		Matrix cameraProj;
+		Matrix cameraViewInverse;
+		Matrix cameraProjInverse;
+		Matrix prevCameraViewProj;
+
+		float4 cameraPosition;
+		float4 cameraData;
+		float4 volumeSize;
+		float4 frustumNearFar;
+	};
+
+	struct alignas(16) VolumeBuffer
+	{
+		DirectX::XMFLOAT4X4 fogMapMatrix;
 		float4 heightMapParams;
 		float4 heightMapZRange;
-
-		float4 VolumeSize;
 		float4 NoiseSize;
-
 		uint frameCounter;
 		uint boardCondition;
-
 		float _pad[2];
 	};
-	virtual VolumeBuffer UpdateVolumeBuffer();
 
 	struct alignas(16) SettingsBuffer
 	{
 		Settings cbsettings;
 	};
-	virtual SettingsBuffer UpdateSettingsBuffer();
 
 	struct Shaders
 	{
 		enum Enum
 		{
 			Bypass = 0,
-			ShadowEVSM = 1,
-			ShadowEVSMBlur = 2,
-			ShadowVolume = 5,
-			ScatterVolume = 6,
-			IntergrationVolume = 7,
-			FilterVolume = 8,
-			Apply = 9,
-			Output = 10,
-			RenderCloudMap = 11,
-			MediaVolume = 12,
-			Perlin = 13,
-			CloudESM = 14,
-			RenderShadowMap = 15,
-			RenderShadowMapDebug = 16
+			RenderVL = 1,
+			Apply = 2
 		};
 	};
 	Shaders::Enum shaderdesc;
@@ -548,58 +469,11 @@ struct OrthogonalVolumetricLighting : Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-		struct BSSkyShader_GetRenderPasses
-		{
-			static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSGeometry* a_geometry, std::uint32_t a_arg2, RE::BSShaderAccumulator* a_accumulator);
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-
-		struct SetShadowMapCount
-		{
-			static void thunk(RE::BSShadowLight* light, uint64_t numLights);
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-
-		struct BSShadowDirectionalLight_RenderShadowmaps
-		{
-			static void thunk(RE::BSShadowLight* light, void* unk);
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-
-		struct BSShadowDirectionalLight_SetFrameCamera
-		{
-			static bool thunk(RE::BSShadowDirectionalLight* a_light, RE::NiCamera& a_camera);
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-
-		struct BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes
-		{
-			static void thunk(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumCorners& frustumCorners, uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex);
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-		struct BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond
-		{
-			struct FrustumSplit
-			{
-				RE::NiPoint3 nearFace[4];
-				RE::NiPoint3 farFace[4];
-			};
-
-			static void thunk(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumSplit& frustumSplit, uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex);
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-
-		struct BSShadowDirectionalLight_SetCameraRuntimeData2
-		{
-			static void thunk(RE::NiCamera* cascadeCamera, RE::NiFrustum& frustum);
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-
-		struct BSShadowDirectionalLight_CreateFrustum
-		{
-			static void thunk(RE::NiFrustum& frustum, float left, float right, float top, float farP, float bottom, float nearP, bool ortho);
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
+		//struct BSSkyShader_GetRenderPasses
+		//{
+		//	static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSGeometry* a_geometry, std::uint32_t a_arg2, RE::BSShaderAccumulator* a_accumulator);
+		//	static inline REL::Relocation<decltype(thunk)> func;
+		//};
 
 		static void Install()
 		{
@@ -612,20 +486,6 @@ struct OrthogonalVolumetricLighting : Feature
 
 			stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>>(RE::VTABLE_BSImagespaceShaderLensFlare[3]);
 			stl::write_vfunc<0x6, BSSkyShader_SetupMaterial>(RE::VTABLE_BSSkyShader[0]);
-
-			stl::write_vfunc<0x10, BSShadowDirectionalLight_SetFrameCamera>(RE::VTABLE_BSShadowDirectionalLight[0]);
-			stl::write_thunk_call<BSShadowDirectionalLight_CreateFrustum>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x23E5, 0x23E5));
-			stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));
-
-			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59, 0xC59));           //First call
-			stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //Second call
 		}
 	};
 };
-
-//stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
-//stl::detour_thunk<SetShadowMapCount>(REL::RelocationID(107599, 107599));
-//stl::write_vfunc<0xA, BSShadowDirectionalLight_RenderShadowmaps>(RE::VTABLE_BSShadowDirectionalLight[0]);
-//stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));                                   //set rotation and translation
-//stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //override corners
-//stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59, 0xC59));  ///FIRST ---------------------

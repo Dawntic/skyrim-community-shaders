@@ -22,6 +22,57 @@ struct ShadowLightTransform
     uint ShadowMapIndex;
 };
 
+
+cbuffer ShadowBuffer : register(b0)
+{
+    row_major float4x4 DirectionalShadowCascadeMatrix[4];
+    ShadowLightTransform ShadowLightData[8];
+    float4 ShadowCascadeEndSplit;
+    float4 EVSMData;
+};
+
+cbuffer FroxelBuffer : register(b1)
+{
+    row_major float4x4 CameraView;
+    row_major float4x4 CameraProj;
+    row_major float4x4 CameraViewInverse;
+    row_major float4x4 CameraProjInverse;
+    row_major float4x4 PrevCameraViewProj;
+    float4 CameraWS;
+    float4 CameraData;
+    float4 VolumeSize;
+    float4 FrustumNearFar;
+};
+
+cbuffer GeneralBuffer : register(b2)
+{
+    row_major float4x4 FogViewProjMatrix;
+    float4 HeightMapParams;
+    float4 HeightMapZRange;
+    float4 NoiseSize;
+    uint FrameCounter;
+    uint BoardCond;
+};
+
+cbuffer SettingsBuffer : register(b3)
+{
+    float UIExtinction;
+    float UIAnisotropy;
+    uint UIEVSMExponent;
+    float UIScatterRatio;
+
+    float UISaturation;
+
+    float UIGlobalFogDensity;
+    float UIGlobalFogHeight;
+    float UIGobalFogFalloff;
+
+    float FogMapBlendOpp;
+    float4 FogMapData;
+    float4 UIFogMapInput;
+};
+
+/*
 cbuffer VolumeBuffer : register(b0)
 {
     row_major float4x4 DirectionalShadowCascadeMatrix[4];
@@ -43,28 +94,6 @@ cbuffer VolumeBuffer : register(b0)
     uint FrameCounter;
     uint BoardCond;
 };
-
-cbuffer SettingsBuffer : register(b1)
-{
-    float UIExtinction;
-    float UIAnisotropy;
-    uint UIEVSMExponent;
-    float UIScatterRatio;
-
-    float UISaturation;
-
-    float UIGlobalFogDensity;
-    float UIGlobalFogHeight;
-    float UIGobalFogFalloff;
-
-    //uint VarianceFrameIndex;
-    //uint RunVarienceMapping;
-    //uint DebugCascadeSplit;
-
-    float FogMapBlendOpp;
-    float4 FogMapData;
-    float4 UIFogMapInput;
-}
 
 cbuffer PerFrame : register(b10)
 {
@@ -130,14 +159,13 @@ struct ShadowDataStruct
     float4x3 ShadowMapProj[2][3];
     float4x4 CameraViewProjInverseA[2];
 };
+*/
 
 SamplerState Linear_Sampler : register(s10);
 SamplerState Point_Sampler : register(s11);
 SamplerState AnisoClampSampler : register(s13);
 SamplerState AnisoWrapSampler : register(s14);
-SamplerState LinearMinSampler : register(s15);
 
-StructuredBuffer<ShadowDataStruct> ShadowDataSB : register(t10);
 
 #define EPSILON 1e-6
 #define kPhi 1.61803398875
@@ -170,17 +198,17 @@ float FroxelDepthToView(float Froxel){
 float3 FroxelWorldDirection(float3 Froxel, float ViewZ)
 {
     float3 CoordsNDC = float3(((Froxel.xy + 0.5) / VolumeSize.xy) * 2.0 - 1.0, 1);
-           CoordsNDC = float3(CoordsNDC.xy * float2(1.0, -1.0), CameraProj[0][2][2] + CameraProj[0][2][3] / ViewZ);
+           CoordsNDC = float3(CoordsNDC.xy * float2(1.0, -1.0), CameraProj[2][2] + CameraProj[2][3] / ViewZ);
 
-    float4 CoordsVS = mul(CameraProjInverse[0], float4(CoordsNDC, 1.0));
-    float3 CoordsWS = mul((float3x3)CameraViewInverse[0], CoordsVS.xyz / CoordsVS.z);
+    float4 CoordsVS = mul(CameraProjInverse, float4(CoordsNDC, 1.0));
+    float3 CoordsWS = mul((float3x3)CameraViewInverse, CoordsVS.xyz / CoordsVS.z);
 
     return CoordsWS;
 }
 
 float3 GetHistoryValue(float3 CoordsWS, out float Confidence)
 {
-    float4 PrevClip = mul(PrevCameraViewProj[0], float4(CoordsWS, 1.0));
+    float4 PrevClip = mul(PrevCameraViewProj, float4(CoordsWS, 1.0));
     float3 PrevNDC = PrevClip.xyz / PrevClip.w;
     float3 PrevUVZ = float3(PrevNDC.xy * float2(0.5, -0.5) + 0.5, ViewDepthToUV(PrevClip.w));
 
@@ -191,7 +219,6 @@ float3 GetHistoryValue(float3 CoordsWS, out float Confidence)
 //float ValidViewZ = float(PrevClip.w > 0.0);
 //float ValidDepth = float(PrevUVZ.z >= 0.0 && PrevUVZ.z <= 1.0);
 //Confidence = (any(abs(PrevNDC.xyz) > 1.0)) ? float2(0.0, 0.0) : float2(ValidViewZ, ValidViewZ * ValidDepth);
-
 
 
 #ifdef SHADOW_COMPUTE
@@ -281,11 +308,10 @@ float GetLocalLightShadow(float3 WorldPosition, float ViewZ, float2 CoordsUV)
             LightLimitFix::Light light = lights[Index];
 
             //Shadow Lights
-            if (light.lightFlags & LightLimitFix::LightFlags::Shadow) { //light.shadowLightIndex
-                float4 CoordsLS = mul(ShadowLightData[light.shadowLightIndex].ShadowMatrix, float4(WorldPosition, 1.0)); //The index must be incorrect as tex array index starts at 0 and shadowLightIndex starts at 1
+            if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
+                float4 CoordsLS = mul(ShadowLightData[light.shadowLightIndex].ShadowMatrix, float4(WorldPosition, 1.0));
 
-                bool lowerHalf = CoordsLS.z * 0.5 + 0.5 < 0;
-                lowerHalf = CoordsLS.z < 0; ////
+                bool lowerHalf = CoordsLS.z < 0; //bool lowerHalf = CoordsLS.z * 0.5 + 0.5 < 0;
                 float3 PosOffset = float3(0, 0, 1 - 2 * lowerHalf);
                 float3 lightDirection = normalize(normalize(CoordsLS.xyz) + PosOffset);
                 float2 ShadowUV = lightDirection.xy / lightDirection.z * 0.5 + 0.5;
@@ -338,7 +364,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float TerrainShadow = TerrainShadows::GetTerrainShadow(WorldPosition, Linear_Sampler);
 
     float Shadow = CascadeShadow;// * TerrainShadow * CloudShadow;
-    Shadow = LocalShadow;
+    //Shadow = LocalShadow;
 
     float Confidence;
     float ViewZCenter = FroxelDepthToView(Froxel.z + 0.5);
@@ -347,7 +373,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float BaseValue = 0.85;
     float ReporjectValue = BaseValue * Confidence;
     float ShadowHistory = ShadowHistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0).x;
-    Shadow = lerp(Shadow, ShadowHistory, ReporjectValue);
+    //Shadow = lerp(Shadow, ShadowHistory, ReporjectValue);
 
     ShadowVolume[ThreadID] = Shadow;
 }
@@ -651,7 +677,8 @@ float3 GetLocalLights(float3 WorldPosition, float2 CoordsUV, float ViewZ, float3
                 Radiance *= Shadow;// - 1.0; ////
             }
 
-             Lighting += Radiance * HenyeyGreensteinPhase(RayToEye, normalize(LightPosition), UIAnisotropy);
+            //if (light.lightFlags & (LightLimitFix::LightFlags::Shadow || LightLimitFix::LightFlags::Simple || LightLimitFix::LightFlags::PortalStrict))
+            Lighting += Radiance * HenyeyGreensteinPhase(RayToEye, normalize(LightPosition), UIAnisotropy);
 
             //Point Lights
             //if (light.lightFlags & LightLimitFix::LightFlags::Simple) {
@@ -1112,266 +1139,3 @@ VertexShaderOutput main(VertexShaderInput input)
 /////////////////////////////////////////////////////////////////////////////////////////
 
 
-
-#ifdef SHADOWMAPDEBUG
-
-
-Texture2DArray ShadowMap : register(t0);
-Texture2D DepthTex : register(t1);
-RWTexture2DArray<float4> VarianceTex : register(u0);
-RWTexture2D<float4> CascadeSplitTex : register(u1);
-
-#define MaxSamples 30
-#define CascadeSize 2048
-#define ScreenSize float2(2560, 1440)
-
-void UpdateVarienceMap(uint3 ThreadID, float Sample){
-    float VarianceFrameIndex = 0;
-    if (VarianceFrameIndex >= MaxSamples)  //freeze after full
-        return;
-
-    if (VarianceFrameIndex == 0) {
-        VarianceTex[ThreadID.xyz] = float4(Sample, 0.0, 0.0, 0.0);
-        return;
-    }
-
-    float SamplesNew = min(VarianceFrameIndex + 1, MaxSamples);
-    float2 PrevValues = VarianceTex[ThreadID.xyz].xy;
-
-    //Welford update (gives exact mean/variance
-    float Delta    = Sample - PrevValues.x;
-    float MeanNew  = PrevValues.x + Delta / SamplesNew;
-    float Delta2   = Sample - MeanNew;
-    float M2New    = PrevValues.y + Delta * Delta2;
-
-    float Variance = (SamplesNew > 1.0) ? (M2New / (SamplesNew - 1.0)) : 0.0;
-
-    VarianceTex[ThreadID.xyz] = float4(MeanNew, M2New, Variance, VarianceFrameIndex);
-}
-
-void UpdateCascadeSplit(uint3 ThreadID, float ViewZ){ // no texture setup on cpu side yet
-    float4 Split = float4(0,0,0,0);
-
-    uint CascadeIndex = (ViewZ < ShadowCascadeEndSplit.x) ? 0 : 1;
-    Split[CascadeIndex] = 1.0;
-
-    CascadeSplitTex[ThreadID.xy] = Split;
-}
-
-
-float3 GetWorldPosition(float2 CoordsUV, float NDCDepth){
-    float3 CoordsNDC = float3((CoordsUV * 2.0 - 1.0) * float2(1.0, -1.0), NDCDepth);
-    float4 CoordsWS = mul(CameraViewProjInverse[0], float4(CoordsNDC, 1.0));
-    return CoordsWS.xyz;
-}
-
-float4 WorldToLightSpace(float3 CoordsWS, float ViewZ){
-    uint CascadeIndex = (ViewZ < ShadowCascadeEndSplit.x) ? 0 : 1;
-    float3 CoordsLS = mul(DirectionalShadowCascadeMatrix[CascadeIndex], float4(CoordsWS, 1.0)).xyz;
-    return float4(CoordsLS, CascadeIndex);
-}
-
-
-[numthreads(16,16,1)]
-void main(uint3 ThreadID : SV_DispatchThreadID)
-{
-    if (ThreadID.x >= CascadeSize || ThreadID.y >= CascadeSize) return;
-
-    float2 CoordsUV = ((ThreadID.xy + 0.5) / ScreenSize.xy);
-    float NDCDepth = DepthTex.SampleLevel(Point_Sampler, CoordsUV, 0.0).x;
-    float ViewDepth = NDCDepthToView(NDCDepth);
-    float3 CoordsWS = GetWorldPosition(CoordsUV, NDCDepth);
-
-    float ShadowSample = ShadowMap.Load(int4(ThreadID.xyz, 0.0)).x;
-
-    UpdateVarienceMap(ThreadID, ShadowSample);
-
-    //if(DebugCascadeSplit){ //would this work in dispatch size? buffer != csm size
-    //    if(ThreadID.z == 0)
-     //       UpdateCascadeSplit(ThreadID, ViewDepth);
-    //}
-
-
-/*
-    float4 CoordsLS = WorldToLightSpace(CoordsWS, ViewDepth);
-
-    float4 Output = float4(0,0,0,0);
-    if(RunVarienceMapping)
-        Output.x = VarianceTex.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CoordsLS.w), 0).x;
-
-    if(DebugCascadeSplit)
-        Output.xyz = CascadeSplitTex.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CoordsLS.w), 0).xyz;
- */
-}
-#endif
-
-
-#ifdef SHADOWMAPVS ////BUFFER VALUES NOT UPDATED YET
-
-cbuffer PerMaterial : register(b1)
-{
-	float4 TexcoordOffset : packoffset(c0);
-};
-
-cbuffer PerGeometry : register(b2)
-{
-	float4 ShadowFadeParam : packoffset(c0);
-	row_major float4x4 World[1] : packoffset(c1);
-	float4 EyePos[1] : packoffset(c5);
-	float4 WaterParams : packoffset(c6);
-	float4 TreeParams : packoffset(c7);
-};
-
-VertexShaderOutput main(VertexShaderInput input)
-{
-    VertexShaderOutput output;
-    output.TexCoord = input.TexCoord;
-
-   // precise float4x4 modelViewProj = mul(FrameBuffer::CameraViewProj[0], World[0]);
- //   float4 positionCS = mul(modelViewProj, float4(input.Position.xyz, 1.0));
- //   positionCS.z = max(0, positionCS.z);
-//
-    output.Position = float4(1,1,1,1);//positionCS;
-
-
-    return output;
-}
-#endif
-
-
-
-#ifdef SHADOWMAPPS
-
-float4 main(VertexShaderOutput input) : SV_Target
-{
-   float4 Output = float4(1,1,1,1);
-
-   return Output;
-}
-#endif
-
-
-
-
-
-
-//// Cloud Shadow Map ///////////////////////////////////////////////////////////////////
-
-struct VertexShaderInputV
-{
-	float4 Position : POSITION0;
-	float2 TexCoord : TEXCOORD0;
-	float4 Color : COLOR0;
-};
-
-struct VertexShaderOutputV
-{
-	float4 Position : SV_POSITION0;
-	float2 TexCoord : TEXCOORD0;
-	float4 Color : COLOR0;
-};
-
-
-#ifdef CLOUD_ESM_VETEX
-
-cbuffer PerGeometry : register(b2)
-{
-	row_major float4x4 WorldViewProj[1] : packoffset(c0);
-	row_major float4x4 World[1] : packoffset(c4);
-	row_major float4x4 PreviousWorld[1] : packoffset(c8);
-	float3 EyePosition[1] : packoffset(c12);
-	float VParams : packoffset(c12.w);
-	float4 BlendColor[3] : packoffset(c13);
-	float2 TexCoordOff : packoffset(c16);
-};
-
-
-
-VertexShaderOutputV main(VertexShaderInputV input)
-{
-    VertexShaderOutputV output;
-    output.TexCoord = input.TexCoord + TexCoordOff;
-    output.Color = float4(1.0, 1.0, 1.0, BlendColor[0].w * input.Color.w);
-
-    float3 WorldPosition = mul(World[0], float4(input.Position.xyz, 1.0));
-    output.Position = mul(CloudShadowViewProj, float4(WorldPosition, 1.0));
-
-    return output;
-}
-#endif
-
-/////////////////////////////////////////////////////////////////////////////////////////
-
-#ifdef CLOUD_ESM_PIXEL
-
-Texture2D CloudTexture : register(t0);
-Texture2D TexDepthSampler : register(t17);
-
-float4 main(VertexShaderOutputV input) : SV_Target
-{
-    float4 Color = CloudTexture.Sample(Point_Sampler, input.TexCoord.xy);
-    Color.w = input.Color.w * Color.w;
-
-    Color.xyz = float3(dot(float3(1.0, 1.0, 1.0), Color.xyz) * 0.33, 0.0, 0.0);
-
-    return Color;
-}
-#endif
-
-
-
-/////////////////////////////////////////////////////////////////////////////////////////
-
-#ifdef CLOUD_ESM_COMPUTE
-
-Texture2D CloudShadowMap : register(t0);
-RWTexture2D<float4> CloudESM : register(u0);
-
-
-// Reconstruct world-space ray from UV
-void BuildRay(float2 UV, out float3 RayOrigin, out float3 RayDirection)
-{
-    float2 ndc = float2(UV.x * 2 - 1, 1 - UV.y * 2); // D3D Y flip
-    float4 nearH = mul(ViewProjInverse, float4(ndc, 0, 1));
-    float4 farH  = mul(ViewProjInverse, float4(ndc, 1, 1));
-    float3 Pn = nearH.xyz / nearH.w;
-    float3 Pf = farH.xyz  / farH.w;
-    RayOrigin    = CameraWS;
-    RayDirection = normalize(Pf - Pn);
-}
-
-
-[numthreads(16, 16, 1)]
-void main(uint3 ThreadID : SV_DispatchThreadID)
-{
-    float3 Coords = float3((float2(ThreadID.xy) + 0.5) / EVSMData.xy, ThreadID.z);
-
-    float Output = CloudShadowMap.Load(int4(ThreadID.xyz, 0)).x;
-
-
-    float3 RayOrigin, RayDir;
-    BuildRay(In.UV, RayOrigin, RayDir);
-
-    float RayDist = 0.0;
-    float Transmittance = 1.0;
-
-    int MaxSteps = 2
-    [loop]for (int StepIndex = 0; StepIndex < MaxSteps && RayDist < MaxDistance; ++StepIndex)
-    {
-        float3 SamplePositionWS = RayOrigin + RayDir * RayDist;
-
-        float StepLength = GameUnitToMeter(CurrDepth - PrevDepth);
-
-        float Extinction = max(ScatteringSlice.w, EPSILON);
-        Transmittance = exp(-Extinction * StepLength);
-
-
-        RayT += DistanceToSurface;
-    }
-
-
-    CloudESM[ThreadID.xy] = Output;
-}
-
-#endif
-/////////////////////////////////////////////////////////////////////////////////////////

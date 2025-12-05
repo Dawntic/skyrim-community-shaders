@@ -209,8 +209,8 @@ namespace FrameAnnotations
 		{
 			globals::state->BeginPerfEvent("Depth");
 
-			auto& lens = globals::features::orthogonalVolumetricLighting;
-			lens.CSMFinished = true;
+			//auto& lens = globals::features::orthogonalVolumetricLighting;
+			//lens.CSMFinished = true;
 
 			func(a1, a2);
 
@@ -541,8 +541,8 @@ namespace FrameAnnotations
 			RE::VTABLE_BSImagespaceShaderLocalMap[3]);
 		stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISAlphaBlend>>(
 			RE::VTABLE_BSImagespaceShaderAlphaBlend[3]);
-		stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>>(
-			RE::VTABLE_BSImagespaceShaderLensFlare[3]);
+		//stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>>(
+		//	RE::VTABLE_BSImagespaceShaderLensFlare[3]);
 		stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlareVisibility>>(
 			RE::VTABLE_BSImagespaceShaderLensFlareVisibility[3]);
 		stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISApplyReflections>>(

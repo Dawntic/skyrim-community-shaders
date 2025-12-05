@@ -7,109 +7,49 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 void OrthogonalVolumetricLighting::CompileShaders()
 {
-	BypassVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "BYPASS_VSSHADER", "" } }, "vs_5_0");
+	bypassVS = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "BYPASS_VSSHADER", "" } }, "vs_5_0");
+	generatePerlinCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "PERLIN_COMPUTE", "" } }, "cs_5_0");
+	drawFogMapCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "DRAW_FOGMAP", "" } }, "cs_5_0");
 
-	GeneratePerlinCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "PERLIN_COMPUTE", "" } }, "cs_5_0");
-	DrawFogMapCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "DRAW_FOGMAP", "" } }, "cs_5_0");
-	GenerateEVSMCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "EVSM_COMPUTE", "" } }, "cs_5_0");
-	BlurEVSMCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "EVSMBLUR_COMPUTE", "" } }, "cs_5_0");
-	GenerateShadowVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SHADOW_COMPUTE", "" } }, "cs_5_0");
-	GenerateMediaVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "MEDIA_COMPUTE", "" } }, "cs_5_0");
-	GenerateScatteringVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SCATTER_COMPUTE", "" } }, "cs_5_0");
-	SliceMarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "MARCH_COMPUTE", "" } }, "cs_5_0");
-
-	ApplyVolumePS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "APPLY_PIXEL", "" } }, "ps_5_0");
-
-	ShadowMapVS = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SHADOWMAPVS", "" } }, "vs_5_0");
-	ShadowMapPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SHADOWMAPPS", "" } }, "ps_5_0");
-	ShadowMapDebugCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SHADOWMAPDEBUG", "" } }, "cs_5_0");
-
-	//CloudShadowVS = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_VETEX", "" } }, "vs_5_0");
-	//CloudShadowPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_PIXEL", "" } }, "ps_5_0");
-	//CloudShadowCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "CLOUD_ESM_COMPUTE", "" } }, "cs_5_0");
+	EVSMComputeShader = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "EVSM_COMPUTE", "" } }, "cs_5_0");
+	blurEVSMComputeShader = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "EVSMBLUR_COMPUTE", "" } }, "cs_5_0");
+	generateShadowVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SHADOW_COMPUTE", "" } }, "cs_5_0");
+	generateMediaVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "MEDIA_COMPUTE", "" } }, "cs_5_0");
+	generateScatteringVolumeCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "SCATTER_COMPUTE", "" } }, "cs_5_0");
+	intergrationSliceMarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "MARCH_COMPUTE", "" } }, "cs_5_0");
+	applyVolumetricLightingPS = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\OrthogonalVolumetricLighting\\Volumetric Lighting.hlsl", { { "APPLY_PIXEL", "" } }, "ps_5_0");
 }
 
-void OrthogonalVolumetricLighting::SetupCascadeTextures()
+void OrthogonalVolumetricLighting::SetupPostLoadResources()
 {
 	auto device = globals::d3d::device;
 
-	D3D11_TEXTURE2D_DESC CascadeDesc{};
-	CascadeDesc.Width = CSM_Size;
-	CascadeDesc.Height = CSM_Size;
-	CascadeDesc.MipLevels = 1;
-	CascadeDesc.ArraySize = lightCascades;
-	CascadeDesc.Format = DXGI_FORMAT_R16_TYPELESS;
-	CascadeDesc.Usage = D3D11_USAGE_DEFAULT;
-	CascadeDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
-	CascadeDesc.SampleDesc.Count = 1;
-	CascadeDesc.SampleDesc.Quality = 0;
-	CascadeDesc.CPUAccessFlags = 0;
-	CascadeDesc.MiscFlags = 0;
-	D3D11_DEPTH_STENCIL_VIEW_DESC CascadeDSVDesc{};
-	CascadeDSVDesc.Format = DXGI_FORMAT_D16_UNORM;
-	CascadeDSVDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
-	CascadeDSVDesc.Texture2DArray.MipSlice = 0;
-	CascadeDSVDesc.Texture2DArray.FirstArraySlice = 0;
-	CascadeDSVDesc.Texture2DArray.ArraySize = lightCascades;
-	D3D11_SHADER_RESOURCE_VIEW_DESC CascadeSRVDesc{};
-	CascadeSRVDesc.Format = DXGI_FORMAT_R16_UNORM;
-	CascadeSRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-	CascadeSRVDesc.Texture2DArray.MostDetailedMip = 0;
-	CascadeSRVDesc.Texture2DArray.MipLevels = 1;
-	CascadeSRVDesc.Texture2DArray.FirstArraySlice = 0;
-	CascadeSRVDesc.Texture2DArray.ArraySize = lightCascades;
+	D3D11_TEXTURE2D_DESC EVSMDesc{};
+	EVSMDesc.Width = EVSMDesc.Height = EVSM_Size;
+	EVSMDesc.MipLevels = 1;
+	EVSMDesc.ArraySize = nCascades;
+	EVSMDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	EVSMDesc.Usage = D3D11_USAGE_DEFAULT;
+	EVSMDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+	EVSMDesc.SampleDesc.Count = 1;
+	EVSMDesc.SampleDesc.Quality = 0;
+	EVSMDesc.CPUAccessFlags = 0;
+	EVSMDesc.MiscFlags = 0;
 
-	DX::ThrowIfFailed(device->CreateTexture2D(&CascadeDesc, nullptr, &CascadeTex));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(CascadeTex, &CascadeSRVDesc, &CascadeSRV));
+	D3D11_UNORDERED_ACCESS_VIEW_DESC EVSMDescUAV{};
+	EVSMDescUAV.Format = EVSMDesc.Format;
+	EVSMDescUAV.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
+	EVSMDescUAV.Texture2DArray.MipSlice = 0;
+	EVSMDescUAV.Texture2DArray.FirstArraySlice = 0;
+	EVSMDescUAV.Texture2DArray.ArraySize = EVSMDesc.ArraySize;
 
-	for (UINT i = 0; i < 4; ++i) {
-		CascadeDSVDesc.Texture2DArray.FirstArraySlice = i;
-		CascadeDSVDesc.Texture2DArray.ArraySize = 1;
-		device->CreateDepthStencilView(CascadeTex, &CascadeDSVDesc, &CascadeDSV[i]);
-	}
+	DX::ThrowIfFailed(device->CreateTexture2D(&EVSMDesc, nullptr, &expVarianceMapTex));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(expVarianceMapTex, &EVSMDescUAV, &expVarianceMapUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(expVarianceMapTex, nullptr, &expVarianceMapSRV));
 
-	//// EVSM //////////////////////////////
-	D3D11_TEXTURE2D_DESC ExpoDesc{};
-	ExpoDesc.Width = EVSM_Size;
-	ExpoDesc.Height = EVSM_Size;
-	ExpoDesc.MipLevels = 1;
-	ExpoDesc.ArraySize = lightCascades;
-	ExpoDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-	ExpoDesc.Usage = D3D11_USAGE_DEFAULT;
-	ExpoDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
-	ExpoDesc.SampleDesc.Count = 1;
-	ExpoDesc.SampleDesc.Quality = 0;
-	ExpoDesc.CPUAccessFlags = 0;
-	ExpoDesc.MiscFlags = 0;
-	D3D11_UNORDERED_ACCESS_VIEW_DESC ExpoUAVDesc{};
-	ExpoUAVDesc.Format = ExpoDesc.Format;
-	ExpoUAVDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
-	ExpoUAVDesc.Texture2DArray.MipSlice = 0;
-	ExpoUAVDesc.Texture2DArray.FirstArraySlice = 0;
-	ExpoUAVDesc.Texture2DArray.ArraySize = lightCascades;
-
-	DX::ThrowIfFailed(device->CreateTexture2D(&ExpoDesc, nullptr, &EVSMTexture));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(EVSMTexture, &ExpoUAVDesc, &EVSMUAV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(EVSMTexture, nullptr, &EVSMSRV));
-
-	D3D11_TEXTURE2D_DESC ExpoBlurDesc{ ExpoDesc };
-	D3D11_UNORDERED_ACCESS_VIEW_DESC ExpoBlurUAVDesc{ ExpoUAVDesc };
-
-	DX::ThrowIfFailed(device->CreateTexture2D(&ExpoBlurDesc, nullptr, &EVSMBlurTexture));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(EVSMBlurTexture, &ExpoBlurUAVDesc, &EVSMBlurUAV));
+	DX::ThrowIfFailed(device->CreateTexture2D(&EVSMDesc, nullptr, &EVSMBlurTexture));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(EVSMBlurTexture, &EVSMDescUAV, &EVSMBlurUAV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(EVSMBlurTexture, nullptr, &EVSMBlurSRV));
-
-	//// DEBUG ///////////////////////////////
-	D3D11_TEXTURE2D_DESC VarianceDesc{ CascadeDesc };
-	VarianceDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-	VarianceDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
-
-	D3D11_UNORDERED_ACCESS_VIEW_DESC VarianceUAVDesc{ ExpoUAVDesc };
-	VarianceUAVDesc.Format = VarianceDesc.Format;
-
-	DX::ThrowIfFailed(device->CreateTexture2D(&VarianceDesc, nullptr, &ShadowVarianceDebugTex));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ShadowVarianceDebugTex, &VarianceUAVDesc, &ShadowVarianceDebugUAV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(ShadowVarianceDebugTex, nullptr, &ShadowVarianceDebugSRV));
 }
 
 void OrthogonalVolumetricLighting::SetupResources()
@@ -125,15 +65,12 @@ void OrthogonalVolumetricLighting::SetupResources()
 	linearSamplerDesc.MinLOD = 0;
 	linearSamplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
 
-	D3D11_SAMPLER_DESC linearMinDesc{ linearSamplerDesc };
-	linearMinDesc.Filter = D3D11_FILTER_MINIMUM_MIN_MAG_LINEAR_MIP_POINT;
+	D3D11_SAMPLER_DESC pointSamplerDesc{ linearSamplerDesc };
+	pointSamplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
 
 	D3D11_SAMPLER_DESC anisoLinearDesc{ linearSamplerDesc };
 	anisoLinearDesc.Filter = D3D11_FILTER_ANISOTROPIC;
 	anisoLinearDesc.MaxAnisotropy = 4;
-
-	D3D11_SAMPLER_DESC pointSamplerDesc{ linearSamplerDesc };
-	pointSamplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
 
 	D3D11_SAMPLER_DESC anisoWrapSamplerDesc{ linearSamplerDesc };
 	anisoWrapSamplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
@@ -142,47 +79,34 @@ void OrthogonalVolumetricLighting::SetupResources()
 	anisoWrapSamplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
 	anisoWrapSamplerDesc.MaxAnisotropy = 4;
 
-	DX::ThrowIfFailed(device->CreateSamplerState(&linearSamplerDesc, &LinearSampler));
-	DX::ThrowIfFailed(device->CreateSamplerState(&linearMinDesc, &LinearMinSampler));
-	DX::ThrowIfFailed(device->CreateSamplerState(&pointSamplerDesc, &PointSampler));
-	DX::ThrowIfFailed(device->CreateSamplerState(&anisoLinearDesc, &AnisoLinear));
-	DX::ThrowIfFailed(device->CreateSamplerState(&anisoWrapSamplerDesc, &AnisoWrapLinear));
+	DX::ThrowIfFailed(device->CreateSamplerState(&linearSamplerDesc, &linearSampler));
+	DX::ThrowIfFailed(device->CreateSamplerState(&pointSamplerDesc, &pointSampler));
+	DX::ThrowIfFailed(device->CreateSamplerState(&anisoLinearDesc, &anisoLinear));
+	DX::ThrowIfFailed(device->CreateSamplerState(&anisoWrapSamplerDesc, &anisoWrapLinear));
 
 	D3D11_BLEND_DESC addBlendDesc = {};
 	addBlendDesc.AlphaToCoverageEnable = FALSE;
 	addBlendDesc.IndependentBlendEnable = FALSE;
-	auto& rt = addBlendDesc.RenderTarget[0];
-	rt.BlendEnable = TRUE;
-	rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-	rt.SrcBlend = D3D11_BLEND_ONE;
-	rt.DestBlend = D3D11_BLEND_ONE;
-	rt.BlendOp = D3D11_BLEND_OP_ADD;
-	rt.SrcBlendAlpha = D3D11_BLEND_ONE;
-	rt.DestBlendAlpha = D3D11_BLEND_ONE;
-	rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+	auto& rtDesc = addBlendDesc.RenderTarget[0];
+	rtDesc.BlendEnable = TRUE;
+	rtDesc.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+	rtDesc.SrcBlend = D3D11_BLEND_ONE;
+	rtDesc.DestBlend = D3D11_BLEND_ONE;
+	rtDesc.BlendOp = D3D11_BLEND_OP_ADD;
+	rtDesc.SrcBlendAlpha = D3D11_BLEND_ONE;
+	rtDesc.DestBlendAlpha = D3D11_BLEND_ONE;
+	rtDesc.BlendOpAlpha = D3D11_BLEND_OP_ADD;
 
-	DX::ThrowIfFailed(device->CreateBlendState(&addBlendDesc, &AddBlend));
+	DX::ThrowIfFailed(device->CreateBlendState(&addBlendDesc, &additiveBlend));
 
-	D3D11_RASTERIZER_DESC RasterizerDesc{};
-	RasterizerDesc.FillMode = D3D11_FILL_SOLID;
-	RasterizerDesc.CullMode = D3D11_CULL_NONE;  //D3D11_CULL_BACK;
-	RasterizerDesc.FrontCounterClockwise = TRUE;
-	RasterizerDesc.DepthBias = 0;
-	RasterizerDesc.SlopeScaledDepthBias = 1.0f;
-	RasterizerDesc.DepthBiasClamp = 0.0f;
-	RasterizerDesc.DepthClipEnable = TRUE;
-	RasterizerDesc.ScissorEnable = FALSE;
-	RasterizerDesc.MultisampleEnable = FALSE;
-	RasterizerDesc.AntialiasedLineEnable = FALSE;
+	shadowDataCB = new ConstantBuffer(ConstantBufferDesc<ShadowDataCB>());
+	froxelGridCB = new ConstantBuffer(ConstantBufferDesc<FroxelGridCB>());
+	volumeCB = new ConstantBuffer(ConstantBufferDesc<VolumeBuffer>());
+	settingsCB = new ConstantBuffer(ConstantBufferDesc<SettingsBuffer>());
 
-	DX::ThrowIfFailed(device->CreateRasterizerState(&RasterizerDesc, &Rasterizer));
-
-	SettingsCB = new ConstantBuffer(ConstantBufferDesc<SettingsBuffer>());
-	VolumeCB = new ConstantBuffer(ConstantBufferDesc<VolumeBuffer>());
 	screenSize = (float2)Util::ConvertToDynamic(globals::state->screenSize);
 
-	//// VOLUMES /////////////////////////////////////////////////////
-
+	//// VOLUMES //////////////////////////////////////////
 	D3D11_TEXTURE3D_DESC R16VolumeDesc{};
 	R16VolumeDesc.Width = (UINT)volumeDimensions.x;
 	R16VolumeDesc.Height = (UINT)volumeDimensions.y;
@@ -195,13 +119,6 @@ void OrthogonalVolumetricLighting::SetupResources()
 	R16VolumeDesc.MiscFlags = 0;
 	D3D11_TEXTURE3D_DESC RGBA16VolumeDesc{ R16VolumeDesc };
 	RGBA16VolumeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-	D3D11_TEXTURE3D_DESC ScatterVolumeDesc{ R16VolumeDesc };
-	ScatterVolumeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-
-	//if (settings.useCheckerBoard)
-	//	ScatterVolumeDesc.Depth = (UINT)std::ceil(volumeDimensions.z / 2);
-	//else
-	ScatterVolumeDesc.Depth = (UINT)volumeDimensions.z;
 
 	D3D11_UNORDERED_ACCESS_VIEW_DESC R16VolumeUAVdesc{};
 	R16VolumeUAVdesc.Format = R16VolumeDesc.Format;
@@ -211,54 +128,57 @@ void OrthogonalVolumetricLighting::SetupResources()
 	R16VolumeUAVdesc.Texture3D.WSize = R16VolumeDesc.Depth;
 	D3D11_UNORDERED_ACCESS_VIEW_DESC RGBA16VolumeUAVDesc{ R16VolumeUAVdesc };
 	RGBA16VolumeUAVDesc.Format = RGBA16VolumeDesc.Format;
-	D3D11_UNORDERED_ACCESS_VIEW_DESC ScatterVolumeUAVDesc{ R16VolumeUAVdesc };
-	ScatterVolumeUAVDesc.Format = ScatterVolumeDesc.Format;
-	ScatterVolumeUAVDesc.Texture3D.WSize = ScatterVolumeDesc.Depth;
 
-	D3D11_TEXTURE3D_DESC PerlinVolumeDesc{ R16VolumeDesc };
-	PerlinVolumeDesc.Width = 32;
-	PerlinVolumeDesc.Height = 32;
-	PerlinVolumeDesc.Depth = 32;
-
+	D3D11_TEXTURE3D_DESC PerlinDesc{ R16VolumeDesc };
+	PerlinDesc.Width = PerlinDesc.Height = PerlinDesc.Depth = 32;
 	D3D11_UNORDERED_ACCESS_VIEW_DESC PerlinUAVDesc{ R16VolumeUAVdesc };
-	PerlinUAVDesc.Format = PerlinVolumeDesc.Format;
-	PerlinUAVDesc.Texture3D.WSize = PerlinVolumeDesc.Depth;
+	PerlinUAVDesc.Texture3D.WSize = PerlinDesc.Depth;
 
-	DX::ThrowIfFailed(device->CreateTexture3D(&PerlinVolumeDesc, nullptr, &PerlinTex));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(PerlinTex, &PerlinUAVDesc, &PerlinUAV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(PerlinTex, nullptr, &PerlinSRV));
-
-	DX::ThrowIfFailed(device->CreateTexture3D(&R16VolumeDesc, nullptr, &ShadowVolume[0]));
-	DX::ThrowIfFailed(device->CreateTexture3D(&R16VolumeDesc, nullptr, &ShadowVolume[1]));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ShadowVolume[0], &R16VolumeUAVdesc, &ShadowVolumeUAV[0]));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ShadowVolume[1], &R16VolumeUAVdesc, &ShadowVolumeUAV[1]));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(ShadowVolume[0], nullptr, &ShadowVolumeSRV[0]));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(ShadowVolume[1], nullptr, &ShadowVolumeSRV[1]));
-
-	DX::ThrowIfFailed(device->CreateTexture3D(&ScatterVolumeDesc, nullptr, &ScatteringVolume));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(ScatteringVolume, &ScatterVolumeUAVDesc, &ScatteringVolumeUAV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(ScatteringVolume, nullptr, &ScatteringVolumeSRV));
-
+	//D3D11_TEXTURE3D_DESC ScatterVolumeDesc{ R16VolumeDesc };
+	//ScatterVolumeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	//if (settings.useCheckerBoard)
+	//	ScatterVolumeDesc.Depth = (UINT)std::ceil(volumeDimensions.z / 2);
+	//else
+	//ScatterVolumeDesc.Depth = (UINT)volumeDimensions.z;
+	//D3D11_UNORDERED_ACCESS_VIEW_DESC ScatterVolumeUAVDesc{ R16VolumeUAVdesc };
+	//ScatterVolumeUAVDesc.Format = ScatterVolumeDesc.Format;
+	//ScatterVolumeUAVDesc.Texture3D.WSize = ScatterVolumeDesc.Depth;
+	/*
 	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &FilteringVolume[0]));
 	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &FilteringVolume[1]));
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(FilteringVolume[0], &RGBA16VolumeUAVDesc, &FilterVolumeUAV[0]));
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(FilteringVolume[1], &RGBA16VolumeUAVDesc, &FilterVolumeUAV[1]));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(FilteringVolume[0], nullptr, &FilterVolumeSRV[0]));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(FilteringVolume[1], nullptr, &FilterVolumeSRV[1]));
+	*/
 
-	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &MediaVolume[0]));
-	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &MediaVolume[1]));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(MediaVolume[0], &RGBA16VolumeUAVDesc, &MediaVolumeUAV[0]));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(MediaVolume[1], &RGBA16VolumeUAVDesc, &MediaVolumeUAV[1]));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(MediaVolume[0], nullptr, &MediaVolumeSRV[0]));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(MediaVolume[1], nullptr, &MediaVolumeSRV[1]));
+	DX::ThrowIfFailed(device->CreateTexture3D(&PerlinDesc, nullptr, &perlinTex));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(perlinTex, &PerlinUAVDesc, &perlinUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(perlinTex, nullptr, &perlinSRV));
 
-	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &IntergrationVolume));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(IntergrationVolume, &RGBA16VolumeUAVDesc, &IntergrationVolumeUAV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(IntergrationVolume, nullptr, &IntergrationVolumeSRV));
+	DX::ThrowIfFailed(device->CreateTexture3D(&R16VolumeDesc, nullptr, &shadowVolume[0]));
+	DX::ThrowIfFailed(device->CreateTexture3D(&R16VolumeDesc, nullptr, &shadowVolume[1]));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(shadowVolume[0], &R16VolumeUAVdesc, &shadowVolumeUAV[0]));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(shadowVolume[1], &R16VolumeUAVdesc, &shadowVolumeUAV[1]));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(shadowVolume[0], nullptr, &shadowVolumeSRV[0]));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(shadowVolume[1], nullptr, &shadowVolumeSRV[1]));
+
+	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &mediaVolume[0]));
+	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &mediaVolume[1]));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(mediaVolume[0], &RGBA16VolumeUAVDesc, &mediaVolumeUAV[0]));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(mediaVolume[1], &RGBA16VolumeUAVDesc, &mediaVolumeUAV[1]));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(mediaVolume[0], nullptr, &mediaVolumeSRV[0]));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(mediaVolume[1], nullptr, &mediaVolumeSRV[1]));
+
+	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &scatteringVolume));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(scatteringVolume, &RGBA16VolumeUAVDesc, &scatteringVolumeUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(scatteringVolume, nullptr, &scatteringVolumeSRV));
+
+	DX::ThrowIfFailed(device->CreateTexture3D(&RGBA16VolumeDesc, nullptr, &intergrationVolume));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(intergrationVolume, &RGBA16VolumeUAVDesc, &intergrationVolumeUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(intergrationVolume, nullptr, &intergrationVolumeSRV));
 
 	//// MISC ///////////////////////////////////////////////////////////////////////////
-
 	D3D11_TEXTURE2D_DESC outputDesc{};
 	outputDesc.Width = (UINT)screenSize.x;
 	outputDesc.Height = (UINT)screenSize.y;
@@ -272,23 +192,20 @@ void OrthogonalVolumetricLighting::SetupResources()
 	outputDesc.CPUAccessFlags = 0;
 	outputDesc.MiscFlags = 0;
 
-	DX::ThrowIfFailed(device->CreateTexture2D(&outputDesc, nullptr, &OutputTexture));
-	DX::ThrowIfFailed(device->CreateRenderTargetView(OutputTexture, nullptr, &OutputRTV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(OutputTexture, nullptr, &OutputSRV));
+	DX::ThrowIfFailed(device->CreateTexture2D(&outputDesc, nullptr, &outputTexture));
+	DX::ThrowIfFailed(device->CreateRenderTargetView(outputTexture, nullptr, &outputRTV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(outputTexture, nullptr, &outputSRV));
 
-	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\STBN.dds", nullptr, &STBNoiseSRV));
-
+	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\STBN.dds", nullptr, &blueNoiseSRV));
 	ID3D11Resource* Resource;
 	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\WorldMap.dds", &Resource, &staticWorldMapSRV));
-	DX::ThrowIfFailed(Resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&WorldMapTexture)));
+	DX::ThrowIfFailed(Resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&worldMapTexture)));
 
 	D3D11_TEXTURE2D_DESC FogMapDesc{};
-	WorldMapTexture->GetDesc(&FogMapDesc);
+	worldMapTexture->GetDesc(&FogMapDesc);
 	outputDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	FogMapDesc.Usage = D3D11_USAGE_DEFAULT;
 	FogMapDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-
-	fogMapSize = float2((float)FogMapDesc.Width, (float)FogMapDesc.Height);
 
 	D3D11_UNORDERED_ACCESS_VIEW_DESC FogMapUAVDesc{};
 	FogMapUAVDesc.Format = FogMapDesc.Format;
@@ -299,12 +216,13 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateUnorderedAccessView(UIFogMapTexture, &FogMapUAVDesc, &UIFogMapUAV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(UIFogMapTexture, nullptr, &UIFogMapSRV));
 
-	DX::ThrowIfFailed(device->CreateTexture2D(&FogMapDesc, nullptr, &FogMapTexture));
-	DX::ThrowIfFailed(device->CreateUnorderedAccessView(FogMapTexture, &FogMapUAVDesc, &FogMapUAV));
-	DX::ThrowIfFailed(device->CreateShaderResourceView(FogMapTexture, nullptr, &FogMapSRV));
+	DX::ThrowIfFailed(device->CreateTexture2D(&FogMapDesc, nullptr, &fogMapTexture));
+	DX::ThrowIfFailed(device->CreateUnorderedAccessView(fogMapTexture, &FogMapUAVDesc, &fogMapUAV));
+	DX::ThrowIfFailed(device->CreateShaderResourceView(fogMapTexture, nullptr, &fogMapSRV));
+
+	fogMapSize = float2((float)FogMapDesc.Width, (float)FogMapDesc.Height);
 
 	//// GENERAL /////////////////////////////////////////////////////////////
-
 	skyrim_FlareData = reinterpret_cast<uintptr_t*>(REL::RelocationID(527915, 414867).address());
 	skyrim_RunFlarePtr = reinterpret_cast<uint32_t*>(REL::RelocationID(527916, 414862).address());
 
@@ -313,44 +231,19 @@ void OrthogonalVolumetricLighting::SetupResources()
 	skyrim_SunPosition = reinterpret_cast<RE::NiPoint3*>(REL::RelocationID(527924, 414871).address());
 
 	renderdata = new Setup::LF_RenderData;
-
-	renderdata->SetupPass(Shaders::Perlin, true, 1, { .uncond_pass = true });
-	//renderdata->SetupPass(Shaders::RenderShadowMapDebug, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::ShadowEVSM, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::ShadowEVSMBlur, true, 1, { .uncond_pass = true });
-	//renderdata->SetupPass(Shaders::CloudESM, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::ShadowVolume, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::MediaVolume, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::ScatterVolume, true, 1, { .uncond_pass = true });
-
-	//renderdata->SetupPass(Shaders::FilterVolume, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::IntergrationVolume, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
-
+	renderdata->SetupPass(Shaders::RenderVL, true, 1, { .uncond_pass = true });
+	//renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
 	renderdata->SetupRenderData();
 
 	CompileShaders();
-
-	//BuildPlaneFromPointsCallBack = reinterpret_cast<decltype(BuildPlaneFromPointsCallBack)>(REL::RelocationID(70804, 70804).address());
-	//SetPlaneFromPointAndNormal = reinterpret_cast<decltype(SetPlaneFromPointAndNormal)>(REL::RelocationID(70803, 70803).address());
 }
 
 void OrthogonalVolumetricLighting::LookupShader(int desc)
 {
 	static const std::unordered_map<int, void (OrthogonalVolumetricLighting::*)()> effects{
-		{ Shaders::ShadowVolume, &OrthogonalVolumetricLighting::SetupShadowVolume },
-		{ Shaders::ScatterVolume, &OrthogonalVolumetricLighting::SetupScatteringVolume },
-		{ Shaders::FilterVolume, &OrthogonalVolumetricLighting::SetupFilterPass },
-		{ Shaders::IntergrationVolume, &OrthogonalVolumetricLighting::SetupSliceMarch },
-		{ Shaders::Apply, &OrthogonalVolumetricLighting::SetupApplyPass },
-		{ Shaders::ShadowEVSM, &OrthogonalVolumetricLighting::SetupEVSM },
-		{ Shaders::MediaVolume, &OrthogonalVolumetricLighting::SetupMediaVolume },
-		{ Shaders::Perlin, &OrthogonalVolumetricLighting::SetupPerlinNoise },
-		{ Shaders::ShadowEVSMBlur, &OrthogonalVolumetricLighting::SetupEVSMBlur },
 		{ Shaders::Bypass, &OrthogonalVolumetricLighting::SetupBypass },
-		{ Shaders::RenderShadowMap, &OrthogonalVolumetricLighting::RenderShadowMap },
-		{ Shaders::RenderShadowMapDebug, &OrthogonalVolumetricLighting::RenderShadowMapDebug }
-
+		{ Shaders::RenderVL, &OrthogonalVolumetricLighting::VLightingRenderChain },
+		{ Shaders::Apply, &OrthogonalVolumetricLighting::SetupApplyPass },
 	};
 	auto it = effects.find(desc);
 	if (it != effects.cend())
@@ -363,114 +256,220 @@ void OrthogonalVolumetricLighting::CheckOverride()
 
 	if (overrideShader) {
 		if (frame_checker.IsNewFrame()) {
-			PerFrameUpdate();
+			UpdateAndSetupResources();
+			frameCounter++;
+			historyParity = frameCounter & 1;
 		}
 		LookupShader(shaderdesc);
 	}
 }
 
-void OrthogonalVolumetricLighting::PerFrameUpdate()
+void OrthogonalVolumetricLighting::VLightingRenderChain()
+{
+	static bool renderPerlin = true;
+	if (std::exchange(renderPerlin, false)) {
+		SetupPerlinNoise();
+	}
+
+	RenderEVSM();
+	RenderEVSMBlur();
+	GenerateShadowVolume();
+	GenerateMediaVolume();
+	GenerateScatteringVolume();
+	RunIntergrationPass();
+
+	SetupApplyPassResources();
+	SetupApplyPass();
+}
+
+//// Per Frame ////////////////////////////////////////////
+void OrthogonalVolumetricLighting::UpdateAndSetupResources()
+{
+	UpdateShadowBuffer();
+	UpdateFroxelBuffer();
+	UpdateGeneralBuffers();
+
+	auto shadowBuffer = shadowDataCB->CB();
+	auto froxelBuffer = froxelGridCB->CB();
+	auto generalBuffer = volumeCB->CB();
+	auto settingsBuffer = settingsCB->CB();
+
+	auto context = globals::d3d::context;
+	context->CSSetConstantBuffers(0, 1, &shadowBuffer);
+	context->CSSetConstantBuffers(1, 1, &froxelBuffer);
+	context->CSSetConstantBuffers(2, 1, &generalBuffer);
+	context->CSSetConstantBuffers(3, 1, &settingsBuffer);
+
+	context->CSSetSamplers(10, 1, &linearSampler);
+	context->CSSetSamplers(11, 1, &pointSampler);
+	context->CSSetSamplers(13, 1, &anisoLinear);
+	context->CSSetSamplers(14, 1, &anisoWrapLinear);
+}
+
+void OrthogonalVolumetricLighting::UpdateShadowBuffer()
+{
+	auto smState = globals::game::smState;
+
+	if (auto shadowSceneNode = smState->shadowSceneNode[0]) {
+		auto& shadowNodeRuntime = shadowSceneNode->GetRuntimeData();
+
+		if (shadowNodeRuntime.shadowDirLight) {
+			auto& dirLight = shadowNodeRuntime.shadowDirLight;
+			auto& dirCascadeList = dirLight->GetRuntimeData().shadowmapDescriptors;
+			for (uint it = 0; it < dirCascadeList.size() && it < 4; it++) {
+				directionalShadowCascadeMatrices[it] = GetCascadeMatrix(dirCascadeList[it].lightTransform);
+			}
+			auto& dirLightData2 = dirLight->GetShadowDirectionalLightRuntimeData();
+			shadowCascadeEndSplit = float4(dirLightData2.endSplitDistances[0], dirLightData2.endSplitDistances[1], dirLightData2.endSplitDistances[2], 0.0);
+		}
+
+		uint matrixArraySize = 8;
+		auto& shadowLightList = shadowNodeRuntime.activeShadowLights;
+		for (uint i = 0; i < shadowLightList.size() && i < matrixArraySize; i++) {
+			auto& SLRuntime = shadowLightList[i]->GetRuntimeData();
+			auto& SLDesc = SLRuntime.shadowmapDescriptors;
+			auto SLIndex = SLRuntime.shadowLightIndex;
+
+			if (SLIndex < matrixArraySize && SLIndex != 255) {
+				localShadowLightMatrices[SLIndex].matrix = GetCascadeMatrix(SLDesc[0].lightTransform);
+				localShadowLightMatrices[SLIndex].shadowmapIndex = SLDesc[0].shadowmapIndex;
+			}
+		}
+	}
+
+	ShadowDataCB shadowData{};
+	std::memcpy(shadowData.directionalShadowCascadeMatrices, directionalShadowCascadeMatrices, sizeof(shadowData.directionalShadowCascadeMatrices));
+	std::memcpy(shadowData.localShadowLightMatrices, localShadowLightMatrices, sizeof(shadowData.localShadowLightMatrices));
+	shadowData.shadowCascadeEndSplit = shadowCascadeEndSplit;
+	shadowData.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
+
+	shadowDataCB->Update(shadowData);
+}
+
+void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
 {
 	float nearPlane = Util::GetCameraData().y;
 	float farPlane = 11200.0f;
 	frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
-
 	auto eyePos = Util::GetEyePosition(0);
 	if (eyePos.x > 1.0 || eyePos.x < -1.0) {
 		eyePositionWS = float3(eyePos.x, eyePos.y, eyePos.z);
 	}
 
-	PrevMatrixIdx = UpdateMatrixCache();
-	UpdateShadowLightMatrices();
+	FroxelGridCB froxelData{};
+	froxelData.cameraView = globals::game::frameBufferCached.GetCameraView(0);
+	froxelData.cameraProj = globals::game::frameBufferCached.GetCameraProj(0);
+	froxelData.cameraViewInverse = globals::game::frameBufferCached.GetCameraViewInverse(0);
+	froxelData.cameraProjInverse = globals::game::frameBufferCached.GetCameraProjInverse(0);
+	froxelData.prevCameraViewProj = globals::game::frameBufferCached.GetCameraViewProjInverse(0);
+	froxelData.cameraPosition = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
+	froxelData.cameraData = Util::GetCameraData();
+	froxelData.volumeSize = volumeDimensions;
+	froxelData.frustumNearFar = frustumNearFar;
 
-	VolumeCB->Update(UpdateVolumeBuffer());
-	SettingsCB->Update(UpdateSettingsBuffer());
-
-	//delete
-	float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-	globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
-	//globals::d3d::context->ClearRenderTargetView(CloudShadowRTV, clear);
-
-	frameCounter++;
+	froxelGridCB->Update(froxelData);
 }
 
-//// SHADOWS //////////////////////////////////////////////////////////////////////////////////////////////////////////
-void OrthogonalVolumetricLighting::SetupEVSM()
+void OrthogonalVolumetricLighting::UpdateGeneralBuffers()
 {
+	float3 mapScale = float3(0, 0, 0);
+	float2 mapOffset = float2(0, 0);
+	float2 mapRange = float2(0, 0);
+	if (globals::features::terrainShadows.IsHeightMapReady()) {
+		auto& heightMap = globals::features::terrainShadows.cachedHeightmap;
+		mapScale = float3(1.0f, 1.0f, 1.0f) / float3(heightMap->pos1 - heightMap->pos0);
+		mapOffset = -heightMap->pos0 * float2{ mapScale.x, mapScale.y };
+		mapRange = float2(heightMap->pos0.z, heightMap->pos1.z);
+	}
+
+	VolumeBuffer generalData{};
+	generalData.fogMapMatrix = fogMapViewProj;
+	generalData.heightMapParams = float4(mapScale.x, mapScale.y, mapOffset.x, mapOffset.y);
+	generalData.heightMapZRange = float4(mapRange.x, mapRange.y, 0.0, 0.0);
+	generalData.NoiseSize = noiseDimensions;
+	generalData.frameCounter = frameCounter;
+	generalData.boardCondition = frameCounter & 1;
+	volumeCB->Update(generalData);
+
+	SettingsBuffer settingsData{};
+	settingsData.cbsettings = settings;
+	settingsCB->Update(settingsData);
+}
+///////////////////////////////////////////////////////////
+
+//// Shadows //////////////////////////////////////////////
+void OrthogonalVolumetricLighting::RenderEVSM()
+{
+	ZoneScoped;
 	auto context = globals::d3d::context;
 
-	UpdateShadowLightMatrices();
+	TracyD3D11Zone(state->tracyCtx, "Generate EVSM");
 
-	context->CSSetUnorderedAccessViews(0, 1, &EVSMUAV, nullptr);
-	context->CSSetShader(GenerateEVSMCS, nullptr, 0);
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Generate EVSM");
 
-	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
-	context->CSSetShaderResources(0, 1, &shadowMap);
+	context->CSSetShader(EVSMComputeShader, nullptr, 0);
+	context->CSSetUnorderedAccessViews(0, 1, &expVarianceMapUAV, nullptr);
 
-	ID3D11Buffer* terrainShadowBuffer = globals::features::terrainShadows.shadowUpdateCB.get()->CB();
+	auto shadowCascade = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
+	context->CSSetShaderResources(0, 1, &shadowCascade);
 
-	auto volumeBuff = VolumeCB->CB();
-	auto settingsBuff = SettingsCB->CB();
-	ID3D11Buffer* prevFrameBuff = FrameBuffer[PrevMatrixIdx].Get();
-	ID3D11Buffer* FrameBuff = FrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
-	context->CSSetConstantBuffers(0, 1, &volumeBuff);
-	context->CSSetConstantBuffers(1, 1, &settingsBuff);
-	context->CSSetConstantBuffers(10, 1, &FrameBuff);
-	context->CSSetConstantBuffers(3, 1, &prevFrameBuff);
-	context->CSSetConstantBuffers(4, 1, &terrainShadowBuffer);
-
-	context->CSSetSamplers(10, 1, &LinearSampler);
-	context->CSSetSamplers(11, 1, &PointSampler);
-	context->CSSetSamplers(13, 1, &AnisoLinear);
-	context->CSSetSamplers(14, 1, &AnisoWrapLinear);
-	context->CSSetSamplers(15, 1, &LinearMinSampler);
-
-	auto shadowBuff = globals::deferred->perShadow->srv.get();
-	context->CSSetShaderResources(10, 1, &shadowBuff);
-	context->CSSetShaderResources(11, 1, &STBNoiseSRV);
-
-	auto groups = EVSM_Size / 16;
-	context->Dispatch(groups, groups, lightCascades);
+	auto waveGroups = EVSM_Size / 16;
+	context->Dispatch(waveGroups, waveGroups, nCascades);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 
 	overrideShader = false;
 }
 
-void OrthogonalVolumetricLighting::SetupEVSMBlur()
+void OrthogonalVolumetricLighting::RenderEVSMBlur()
 {
+	ZoneScoped;
 	auto context = globals::d3d::context;
 
+	TracyD3D11Zone(state->tracyCtx, "Blur EVSM");
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Blur EVSM");
+
+	context->CSSetShader(blurEVSMComputeShader, nullptr, 0);
 	context->CSSetUnorderedAccessViews(0, 1, &EVSMBlurUAV, nullptr);
-	context->CSSetShader(BlurEVSMCS, nullptr, 0);
 
-	context->CSSetShaderResources(0, 1, &EVSMSRV);
+	context->CSSetShaderResources(0, 1, &expVarianceMapSRV);
 
-	auto groups = EVSM_Size / 16;
-	context->Dispatch(groups, groups, lightCascades);
+	auto waveGroups = EVSM_Size / 16;
+	context->Dispatch(waveGroups, waveGroups, nCascades);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 
 	overrideShader = false;
 }
 
-void OrthogonalVolumetricLighting::SetupShadowVolume()
+void OrthogonalVolumetricLighting::GenerateShadowVolume()
 {
+	ZoneScoped;
 	auto context = globals::d3d::context;
 	auto& LLF = globals::features::lightLimitFix;
 	static int passCount = 1;
 
-	shadowVolParity = passCount & 1;
-	auto volumeUAV = ShadowVolumeUAV[!shadowVolParity];
-	auto prevVolumeSRV = ShadowVolumeSRV[shadowVolParity];
+	TracyD3D11Zone(state->tracyCtx, "Generate Shadow Volume");
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Generate Shadow Volume");
 
+	shadowVolParity = passCount & 1;
+	auto volumeUAV = shadowVolumeUAV[!shadowVolParity];
+	auto prevVolumeSRV = shadowVolumeSRV[shadowVolParity];
+
+	context->CSSetShader(generateShadowVolumeCS, nullptr, 0);
 	context->CSSetUnorderedAccessViews(0, 1, &volumeUAV, nullptr);
-	context->CSSetShader(GenerateShadowVolumeCS, nullptr, 0);
 
 	context->CSSetShaderResources(0, 1, &prevVolumeSRV);
-	context->CSSetShaderResources(1, 1, &STBNoiseSRV);
+	context->CSSetShaderResources(1, 1, &blueNoiseSRV);
 	context->CSSetShaderResources(2, 1, &EVSMBlurSRV);
 	auto localShadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS].depthSRV;
 	context->CSSetShaderResources(3, 1, &localShadowMap);
@@ -485,84 +484,61 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
-
-	passCount++;
-	overrideShader = false;
-}
-
-void OrthogonalVolumetricLighting::RenderShadowMap()
-{
-	//auto context = globals::d3d::context;
-
-	//context->VSSetShader(ShadowMapVS, 0, 0);
-	//context->PSSetShader(ShadowMapPS, 0, 0);
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 
 	overrideShader = false;
 }
 
-void OrthogonalVolumetricLighting::RenderShadowMapDebug()
+//// Render Passes ////////////////////////////////////////
+void OrthogonalVolumetricLighting::GenerateMediaVolume()
 {
-	auto context = globals::d3d::context;
-	auto renderer = globals::game::renderer;
-
-	context->CSSetUnorderedAccessViews(0, 1, &ShadowVarianceDebugUAV, nullptr);
-
-	context->CSSetShader(ShadowMapDebugCS, 0, 0);
-
-	auto volumeBuff = VolumeCB->CB();
-	context->CSSetConstantBuffers(0, 1, &volumeBuff);
-	auto settingsBuff = SettingsCB->CB();
-	context->CSSetConstantBuffers(1, 1, &settingsBuff);
-
-	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
-	context->CSSetShaderResources(0, 1, &shadowMap);
-	auto& DepthSRV = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN_COPY].depthSRV;
-	context->CSSetShaderResources(1, 1, &DepthSRV);
-
-	auto groups = CSM_Size / 16;
-	context->Dispatch(groups, groups, lightCascades);
-
-	overrideShader = false;
-}
-
-//// VOLUMES //////////////////////////////////////////////////////////////////////////////////////////////////////////
-void OrthogonalVolumetricLighting::SetupMediaVolume()
-{
+	ZoneScoped;
 	auto context = globals::d3d::context;
 	static int passCount = 1;
 
+	TracyD3D11Zone(state->tracyCtx, "Generate Media Volume");
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Generate Media Volume");
+
 	mediaVolParity = passCount & 1;
-	auto mediaUAV = MediaVolumeUAV[!mediaVolParity];
-	auto prevMediaSRV = MediaVolumeSRV[mediaVolParity];
+	auto mediaUAV = mediaVolumeUAV[!mediaVolParity];
+	auto prevMediaSRV = mediaVolumeSRV[mediaVolParity];
 
 	//ID3D11UnorderedAccessView* UAVs[2] = { mediaUAV, FogMapUAV };
 	context->CSSetUnorderedAccessViews(0, 1, &mediaUAV, nullptr);
-	context->CSSetShader(GenerateMediaVolumeCS, nullptr, 0);
+	context->CSSetShader(generateMediaVolumeCS, nullptr, 0);
 
 	context->CSSetShaderResources(0, 1, &prevMediaSRV);
-	context->CSSetShaderResources(1, 1, &PerlinSRV);
-	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
-	context->CSSetShaderResources(3, 1, &FogMapSRV);
+	context->CSSetShaderResources(1, 1, &perlinSRV);
+	context->CSSetShaderResources(2, 1, &blueNoiseSRV);
+	context->CSSetShaderResources(3, 1, &fogMapSRV);
 
 	context->Dispatch(60, 34, 17);
 
 	ID3D11UnorderedAccessView* nullUAVs[2] = { nullptr, nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 
-	passCount++;
 	overrideShader = false;
 }
 
-void OrthogonalVolumetricLighting::SetupScatteringVolume()
+void OrthogonalVolumetricLighting::GenerateScatteringVolume()
 {
+	ZoneScoped;
 	auto context = globals::d3d::context;
 	auto& LLF = globals::features::lightLimitFix;
 
-	context->CSSetUnorderedAccessViews(0, 1, &ScatteringVolumeUAV, nullptr);
-	context->CSSetShader(GenerateScatteringVolumeCS, nullptr, 0);
+	TracyD3D11Zone(state->tracyCtx, "Generate Scattering Volume");
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Generate Scattering Volume");
 
-	context->CSSetShaderResources(0, 1, &ShadowVolumeSRV[!shadowVolParity]);
-	context->CSSetShaderResources(1, 1, &MediaVolumeSRV[!mediaVolParity]);
+	context->CSSetUnorderedAccessViews(0, 1, &scatteringVolumeUAV, nullptr);
+	context->CSSetShader(generateScatteringVolumeCS, nullptr, 0);
+
+	context->CSSetShaderResources(0, 1, &shadowVolumeSRV[!shadowVolParity]);
+	context->CSSetShaderResources(1, 1, &mediaVolumeSRV[!mediaVolParity]);
 
 	auto lightsSB = LLF.lights->srv.get();
 	context->CSSetShaderResources(2, 1, &lightsSB);
@@ -573,25 +549,99 @@ void OrthogonalVolumetricLighting::SetupScatteringVolume()
 	auto localShadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS].depthSRV;
 	context->CSSetShaderResources(5, 1, &localShadowMap);
 
-	//D3D11Buffer* prevFrameBuff = FrameBuffer[PrevMatrixIdx].Get();
-	//ID3D11Buffer* FrameBuff = FrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
-	//context->CSSetConstantBuffers(2, 1, &FrameBuff);
-	//context->CSSetConstantBuffers(3, 1, &prevFrameBuff);
-	//context->Dispatch(40, 23, 8);
-	//if (settings.useCheckerBoard)
-	//	context->Dispatch(40, 23, 11);
-	//else
 	context->Dispatch(60, 34, 17);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
+
+	overrideShader = false;
+}
+void OrthogonalVolumetricLighting::RunIntergrationPass()
+{
+	ZoneScoped;
+	auto context = globals::d3d::context;
+
+	TracyD3D11Zone(state->tracyCtx, "Volumetric Intergration Pass");
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Volumetric Intergration Pass");
+
+	context->CSSetUnorderedAccessViews(0, 1, &intergrationVolumeUAV, nullptr);
+	context->CSSetShader(intergrationSliceMarchCS, nullptr, 0);
+
+	//context->CSSetShaderResources(0, 1, &FilterVolumeSRV[!FilterVolParity]);
+	context->CSSetShaderResources(0, 1, &scatteringVolumeSRV);
+
+	context->Dispatch(30, 17, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 
 	overrideShader = false;
 }
 
+void OrthogonalVolumetricLighting::SetupApplyPassResources()
+{
+	auto shadowBuffer = shadowDataCB->CB();
+	auto froxelBuffer = froxelGridCB->CB();
+	auto generalBuffer = volumeCB->CB();
+	auto settingsBuffer = settingsCB->CB();
+
+	auto context = globals::d3d::context;
+	context->PSSetConstantBuffers(0, 1, &shadowBuffer);
+	context->PSSetConstantBuffers(1, 1, &froxelBuffer);
+	context->PSSetConstantBuffers(2, 1, &generalBuffer);
+	context->PSSetConstantBuffers(3, 1, &settingsBuffer);
+
+	context->PSSetSamplers(10, 1, &linearSampler);
+	context->PSSetSamplers(11, 1, &pointSampler);
+	context->PSSetSamplers(12, 1, &anisoLinear);
+	context->PSSetSamplers(13, 1, &anisoWrapLinear);
+}
+
+void OrthogonalVolumetricLighting::SetupApplyPass()
+{
+	ZoneScoped;
+	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
+
+	TracyD3D11Zone(state->tracyCtx, "Apply Volumetric Lighting");
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Apply Volumetric Lighting");
+
+	auto& mainRTV = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].RTV;
+
+	if (!swapOutputRT)
+		context->OMSetRenderTargets(1, &mainRTV, nullptr);
+	else
+		context->OMSetRenderTargets(1, &outputRTV, nullptr);
+
+	context->VSSetShader(bypassVS, NULL, NULL);
+	context->PSSetShader(applyVolumetricLightingPS, NULL, NULL);
+
+	context->PSSetShaderResources(1, 1, &intergrationVolumeSRV);
+	context->PSSetShaderResources(2, 1, &blueNoiseSRV);
+	context->PSSetShaderResources(3, 1, &shadowVolumeSRV[!shadowVolParity]);
+
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
+
+	overrideShader = false;
+}
+
+/*
 void OrthogonalVolumetricLighting::SetupFilterPass()
 {
+	ZoneScoped;
 	auto context = globals::d3d::context;
+
+	TracyD3D11Zone(state->tracyCtx, "Volumetric Lighting");
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Volumetric Lighting");
+
 	static int passCount = 1;
 
 	FilterVolParity = passCount & 1;
@@ -609,78 +659,29 @@ void OrthogonalVolumetricLighting::SetupFilterPass()
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
 
-	passCount++;
-	overrideShader = false;
-}
-
-void OrthogonalVolumetricLighting::SetupSliceMarch()
-{
-	auto context = globals::d3d::context;
-
-	context->CSSetUnorderedAccessViews(0, 1, &IntergrationVolumeUAV, nullptr);
-	context->CSSetShader(SliceMarchCS, nullptr, 0);
-
-	//context->CSSetShaderResources(0, 1, &FilterVolumeSRV[!FilterVolParity]);
-	context->CSSetShaderResources(0, 1, &ScatteringVolumeSRV);
-
-	context->Dispatch(30, 17, 1);
-
-	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
-	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 
 	overrideShader = false;
 }
+*/
 
-void OrthogonalVolumetricLighting::SetupApplyPass()
-{
-	auto context = globals::d3d::context;
-	auto renderer = globals::game::renderer;
-
-	auto& mainRTV = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].RTV;
-
-	//auto& DepthSRV = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN].depthSRV;
-	//context->CopyResource(, srcTexture);
-
-	if (!swapOutputRT)
-		context->OMSetRenderTargets(1, &mainRTV, nullptr);
-	else
-		context->OMSetRenderTargets(1, &OutputRTV, nullptr);
-
-	context->VSSetShader(BypassVertexShader, NULL, NULL);
-	context->PSSetShader(ApplyVolumePS, NULL, NULL);
-
-	context->PSSetSamplers(10, 1, &LinearSampler);
-	context->PSSetSamplers(11, 1, &PointSampler);
-	context->CSSetSamplers(13, 1, &AnisoLinear);
-	context->CSSetSamplers(14, 1, &AnisoWrapLinear);
-	//context->PSSetSamplers(12, 1, &DepthSampler);
-
-	auto volumeBuff = VolumeCB->CB();
-	context->PSSetConstantBuffers(0, 1, &volumeBuff);
-
-	context->PSSetShaderResources(1, 1, &IntergrationVolumeSRV);
-	//context->PSSetShaderResources(0, 1, &DepthSRV);
-	context->PSSetShaderResources(2, 1, &STBNoiseSRV);
-
-	context->PSSetShaderResources(3, 1, &ShadowVolumeSRV[!shadowVolParity]);
-	//context->PSSetShaderResources(4, 1, &ExpoBlurSRV);
-	//context->PSSetShaderResources(3, 1, &ScatteringVolumeSRV);
-	//context->PSSetShaderResources(4, 1, &FilterVolumeSRV[!FilterVolParity]);
-
-	overrideShader = false;
-}
-
-//// UTIL /////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//// Utility //////////////////////////////////////////////
 void OrthogonalVolumetricLighting::DrawFogMap()
 {
+	ZoneScoped;
 	auto context = globals::d3d::context;
 
+	TracyD3D11Zone(state->tracyCtx, "Draw Fog Map");
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Draw Fog Map");
+
 	context->CSSetUnorderedAccessViews(0, 1, &UIFogMapUAV, nullptr);
-	context->CSSetUnorderedAccessViews(1, 1, &FogMapUAV, nullptr);
+	context->CSSetUnorderedAccessViews(1, 1, &fogMapUAV, nullptr);
 
-	context->CSSetShader(DrawFogMapCS, nullptr, 0);
+	context->CSSetShader(drawFogMapCS, nullptr, 0);
 
-	auto volumeBuff = VolumeCB->CB();
+	auto volumeBuff = volumeCB->CB();
 	context->CSSetConstantBuffers(0, 1, &volumeBuff);
 
 	context->CSSetShaderResources(0, 1, &staticWorldMapSRV);
@@ -692,23 +693,30 @@ void OrthogonalVolumetricLighting::DrawFogMap()
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 
 	overrideShader = false;
 }
 
 void OrthogonalVolumetricLighting::SetupPerlinNoise()
 {
+	ZoneScoped;
 	auto context = globals::d3d::context;
-	static bool run = true;
 
-	if (run) {
-		context->CSSetUnorderedAccessViews(0, 1, &PerlinUAV, nullptr);
-		context->CSSetShader(GeneratePerlinCS, nullptr, 0);
-		context->Dispatch(4, 4, 4);
-		ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
-		context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
-		run = false;
-	}
+	TracyD3D11Zone(state->tracyCtx, "Render Perlin Noise");
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Render Perlin Noise");
+
+	context->CSSetUnorderedAccessViews(0, 1, &perlinUAV, nullptr);
+	context->CSSetShader(generatePerlinCS, nullptr, 0);
+
+	context->Dispatch(4, 4, 4);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 
 	overrideShader = false;
 }
@@ -722,152 +730,11 @@ void OrthogonalVolumetricLighting::SetupBypass()
 	overrideShader = false;
 }
 
-///// BUFFER UPDATE /////////////////////////////////////////////////////
-OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateVolumeBuffer()
-{
-	float3 mapScale = float3(0, 0, 0);
-	float2 mapOffset = float2(0, 0);
-	float2 mapRange = float2(0, 0);
-	if (globals::features::terrainShadows.IsHeightMapReady()) {
-		auto& heightMap = globals::features::terrainShadows.cachedHeightmap;
-		mapScale = float3(1.0f, 1.0f, 1.0f) / float3(heightMap->pos1 - heightMap->pos0);
-		mapOffset = -heightMap->pos0 * float2{ mapScale.x, mapScale.y };
-		mapRange = float2(heightMap->pos0.z, heightMap->pos1.z);
-	}
-
-	VolumeBuffer data{};
-	std::memcpy(data.directionalShadowCascadeMatrices, directionalShadowCascadeMatrices, sizeof(data.directionalShadowCascadeMatrices));
-	std::memcpy(data.localShadowLightMatrices, localShadowLightMatrices, sizeof(data.localShadowLightMatrices));
-	data.fogMapMatrix = fogMapViewProj;
-
-	data.shadowCascadeEndSplit = shadowCascadeEndSplit;
-	data.frustumNearFar = frustumNearFar;
-	data.CameraWSPos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
-	data.cameraData = Util::GetCameraData();
-
-	data.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
-	data.heightMapParams = float4(mapScale.x, mapScale.y, mapOffset.x, mapOffset.y);
-	data.heightMapZRange = float4(mapRange.x, mapRange.y, 0.0, 0.0);
-
-	data.VolumeSize = volumeDimensions;
-	data.NoiseSize = noiseDimensions;
-
-	data.frameCounter = frameCounter;
-	data.boardCondition = frameCounter & 1;
-	return data;
-}
-
-OrthogonalVolumetricLighting::SettingsBuffer OrthogonalVolumetricLighting::UpdateSettingsBuffer()
-{
-	SettingsBuffer data{};
-	data.cbsettings = settings;
-	return data;
-}
-
-int OrthogonalVolumetricLighting::UpdateMatrixCache()
-{
-	int outValue = 0;
-	if (CheckFrameBuffer()) {
-		auto buffer = *globals::game::perFrame.get();
-		static int PrevFrameWrite = 0;
-		static bool PrevFrameValid = false;
-		if (!PrevFrameValid) {
-			globals::d3d::context->CopyResource(FrameBuffer[0].Get(), buffer);
-			globals::d3d::context->CopyResource(FrameBuffer[1].Get(), buffer);
-			PrevFrameValid = true;
-			PrevFrameWrite = 0;
-		}
-		outValue = PrevFrameWrite ^ 1;
-		globals::d3d::context->CopyResource(FrameBuffer[PrevFrameWrite].Get(), buffer);
-		PrevFrameWrite ^= 1;
-	}
-
-	return outValue;
-}
-
-bool OrthogonalVolumetricLighting::CheckFrameBuffer()
-{
-	if (ID3D11Buffer* buffer = *globals::game::perFrame.get()) {
-		if (!FrameBuffer[0] || !FrameBuffer[1]) {
-			D3D11_BUFFER_DESC srcDesc{};
-			buffer->GetDesc(&srcDesc);
-			D3D11_BUFFER_DESC dstDesc = srcDesc;
-			dstDesc.Usage = D3D11_USAGE_DEFAULT;
-			dstDesc.CPUAccessFlags = 0;
-			dstDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-			DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&dstDesc, nullptr, FrameBuffer[0].GetAddressOf()));
-			DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&dstDesc, nullptr, FrameBuffer[1].GetAddressOf()));
-		}
-		if (FrameBuffer[0] || FrameBuffer[1])
-			return true;
-	}
-
-	return false;
-}
-
-///// SHADOW FUNCS //////////////////////////////////////////////////////////////
-void OrthogonalVolumetricLighting::UpdateShadowLightMatrices()
-{
-	auto smState = globals::game::smState;
-
-	if (auto shadowSceneNode = smState->shadowSceneNode[0]) {
-		auto& shadowNodeRuntime = shadowSceneNode->GetRuntimeData();
-
-		if (shadowNodeRuntime.shadowDirLight) {
-			auto& dirLight = shadowNodeRuntime.shadowDirLight;
-			auto& dirLightData = dirLight->GetRuntimeData();
-			auto& dirCascadeList = dirLightData.shadowmapDescriptors;
-			for (uint it = 0; it < dirCascadeList.size() && it < 4; it++) {
-				directionalShadowCascadeMatrices[it] = GetCascadeMatrix(dirCascadeList[it].lightTransform);
-			}
-			auto& dirLightData2 = dirLight->GetShadowDirectionalLightRuntimeData();
-			shadowCascadeEndSplit = float4(dirLightData2.endSplitDistances[0], dirLightData2.endSplitDistances[1], dirLightData2.endSplitDistances[2], 0.0);
-		}
-
-		//int index = 0;
-		uint matrixArraySize = 16;  //
-		auto& shadowLightList = shadowNodeRuntime.activeShadowLights;
-		for (uint i = 0; i < shadowLightList.size() && i < matrixArraySize; i++) {
-			auto& shadowLightData = shadowLightList[i]->GetRuntimeData();
-			auto& shadowLightDesc = shadowLightData.shadowmapDescriptors;
-			auto shadowLightIndex = shadowLightData.shadowLightIndex;
-			//logger::info("shadowLightIndex: {}", shadowLightIndex);
-
-			if (shadowLightIndex < matrixArraySize && shadowLightIndex != 255) {
-				localShadowLightMatrices[shadowLightIndex].matrix = GetCascadeMatrix(shadowLightDesc[0].lightTransform);
-				localShadowLightMatrices[shadowLightIndex].shadowmapIndex = shadowLightDesc[0].shadowmapIndex;
-			}
-
-			/*
-			auto lightMatrix = shadowLightDesc[0].lightTransform;
-			auto desc = "Matrix One";
-			logger::info("{} row 1: {}, {}, {}, {}", desc, lightMatrix.m[0][0], lightMatrix.m[0][1], lightMatrix.m[0][2], lightMatrix.m[0][3]);
-			logger::info("{} row 2: {}, {}, {}, {}", desc, lightMatrix.m[1][0], lightMatrix.m[1][1], lightMatrix.m[1][2], lightMatrix.m[1][3]);
-			logger::info("{} row 3: {}, {}, {}, {}", desc, lightMatrix.m[2][0], lightMatrix.m[2][1], lightMatrix.m[2][2], lightMatrix.m[2][3]);
-			logger::info("{} row 4: {}, {}, {}, {}", desc, lightMatrix.m[3][0], lightMatrix.m[3][1], lightMatrix.m[3][2], lightMatrix.m[3][3]);
-
-			lightMatrix = shadowLightDesc[1].lightTransform;
-			desc = "Matrix Two";
-			logger::info("{} row 1: {}, {}, {}, {}", desc, lightMatrix.m[0][0], lightMatrix.m[0][1], lightMatrix.m[0][2], lightMatrix.m[0][3]);
-			logger::info("{} row 2: {}, {}, {}, {}", desc, lightMatrix.m[1][0], lightMatrix.m[1][1], lightMatrix.m[1][2], lightMatrix.m[1][3]);
-			logger::info("{} row 3: {}, {}, {}, {}", desc, lightMatrix.m[2][0], lightMatrix.m[2][1], lightMatrix.m[2][2], lightMatrix.m[2][3]);
-			logger::info("{} row 4: {}, {}, {}, {}", desc, lightMatrix.m[3][0], lightMatrix.m[3][1], lightMatrix.m[3][2], lightMatrix.m[3][3]);
-			*/
-		}
-	}
-}
-
+///// Shadow Misc /////////////////////////////////////////
 REX::W32::XMFLOAT4X4 OrthogonalVolumetricLighting::GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightMatrix)
 {
 	float4 pos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0);
 	float4 transform = mul(pos, lightMatrix);
-	//DirectX::XMVECTOR transform = XMVector4Transform(XMVectorSetW(eyePositionWS, 1), lightMatrix);
-
-	//auto desc = "light InvViewProj";
-	//logger::info("{} row 1: {}, {}, {}, {}", desc, lightMatrix.m[0][0], lightMatrix.m[0][1], lightMatrix.m[0][2], lightMatrix.m[0][3]);
-	//logger::info("{} row 2: {}, {}, {}, {}", desc, lightMatrix.m[1][0], lightMatrix.m[1][1], lightMatrix.m[1][2], lightMatrix.m[1][3]);
-	//logger::info("{} row 3: {}, {}, {}, {}", desc, lightMatrix.m[2][0], lightMatrix.m[2][1], lightMatrix.m[2][2], lightMatrix.m[2][3]);
-	//logger::info("{} row 4: {}, {}, {}, {}", desc, lightMatrix.m[3][0], lightMatrix.m[3][1], lightMatrix.m[3][2], lightMatrix.m[3][3]);
 
 	REX::W32::XMFLOAT4X4 matrix = lightMatrix;
 	matrix.m[3][0] = transform.x;
@@ -881,63 +748,25 @@ REX::W32::XMFLOAT4X4 OrthogonalVolumetricLighting::GetCascadeMatrix(REX::W32::XM
 	return outMatrix;
 }
 
-void OrthogonalVolumetricLighting::SetupShadowCascade()
-{
-	//	static auto firstRun = true;
-
-	//if (shadowLight && firstRun) {
-	//	auto& shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM];
-	//	shadowMap.texture = CascadeTex;
-	//	shadowMap.depthSRV = CascadeSRV;
-	//	std::copy_n(CascadeDSV, 4, shadowMap.views);
-
-	//auto& runtime = shadowLight->GetRuntimeData();
-	//runtime.shadowmapDescriptors[2].shadowmapIndex = 2;
-	//runtime.shadowmapDescriptors[3].shadowmapIndex = 3;
-
-	//	firstRun = false;
-	//	}
-}
-
-///// SETTINGS //////////////////////////////////////////////////
+///// Settings ////////////////////////////////////////////
 void OrthogonalVolumetricLighting::DrawSettings()
 {
-	ImGui::SeparatorText("Reload");  ///////////////
+	ImGui::SeparatorText("Reload");
 	ImGui::Button("Reload Flare");
 	if (ImGui::IsItemClicked()) {
-		GenerateShadowVolumeCS = nullptr;
-		GenerateScatteringVolumeCS = nullptr;
-		SliceMarchCS = nullptr;
-		ApplyVolumePS = nullptr;
-		OutputPS = nullptr;
-		DrawFogMapCS = nullptr;
-		BlurEVSMCS = nullptr;
+		generateShadowVolumeCS = nullptr;
+		generateScatteringVolumeCS = nullptr;
+		intergrationSliceMarchCS = nullptr;
+		applyVolumetricLightingPS = nullptr;
+		outputPS = nullptr;
+		drawFogMapCS = nullptr;
+		blurEVSMComputeShader = nullptr;
 
 		CompileShaders();
 	}
 
 	ImGui::Spacing();
 	ImGui::Checkbox("Swap Output RT", (bool*)&swapOutputRT);
-	//ImGui::Checkbox("Swap shadow map shader", (bool*)&swapShadowMapShader);
-
-	//ImGui::Checkbox("Run Variance", (bool*)&settings.RunVarienceMapping);
-	//ImGui::Checkbox("Run Split", (bool*)&settings.DebugCascadeSplit);
-
-	//ImGui::Button("Reset Variance");
-	//if (ImGui::IsItemClicked()) {
-	//	resetVariance = true;
-	//}
-
-	//ImGui::Button("Render Debug Pass");
-	//if (ImGui::IsItemClicked()) {
-	//	RenderShadowMapDebug();
-	//}
-
-	ImGui::Checkbox("Patch Cascade", (bool*)&patchCascade);
-	ImGui::Checkbox("Patch Culling", (bool*)&patchCulling);
-	ImGui::SliderFloat("Light Update Angle", &lightUpdateAngle, 0.01, 1.0);
-	//ImGui::SliderFloat("Split 1", &cascadeSplit0, 0, 3000);
-	//ImGui::SliderFloat("Split 2", &cascadeSplit1, 0, 10000);
 
 	ImGui::SeparatorText("Media properties");
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
@@ -1024,8 +853,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::EndChild();
 }
 
-//// GENERAL HOOKS ///////////////////////////////////////////////////////////////////
-
+//// GENERAL HOOKS ////////////////////////////////////////
 void OrthogonalVolumetricLighting::Hooks::BSSkyShader_SetupMaterial::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 {
 	auto& OVL = globals::features::orthogonalVolumetricLighting;
@@ -1038,25 +866,6 @@ void OrthogonalVolumetricLighting::Hooks::BSSkyShader_SetupMaterial::thunk(RE::B
 			OVL.shaderdesc = Shaders::Bypass;
 		}
 	}
-
-	//auto skyProperty = reinterpret_cast<RE::BSSkyShaderProperty*>(Pass->shaderProperty);
-	//if (skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_CLOUDS) {
-	//	if ((Pass->passEnum == 0x5C000062 || Pass->passEnum == 0x5C000063 || Pass->passEnum == 0x5C000064) && RenderFlags == 65) {
-	//OVL.overrideShader = true;
-	//OVL.shaderdesc = Shaders::RenderCloudMap;
-
-	//auto rot = Pass->geometry->world.rotate;
-
-	//if (frame_checker.IsNewFrame()) {
-	//	counter = 0;
-	//}
-	//counter++;
-	//if ((counter % 2) == 0) {
-	//	OVL.overrideShader = true;
-	//	OVL.shaderdesc = Shaders::RenderCloudMap;
-	//}
-	//}
-	//	}
 
 	func(This, Pass, RenderFlags);
 }
@@ -1095,303 +904,7 @@ void OrthogonalVolumetricLighting::Hooks::BSImagespaceShader_Render<RE::ImageSpa
 
 	func(shader, shape, param);
 }
-
-void OrthogonalVolumetricLighting::Hooks::SetShadowMapCount::thunk(RE::BSShadowLight* light, uint64_t numCascades)
-{
-	if (light->IsDirectionalLight())
-		numCascades = 4;
-	logger::info("Set shadow map count");
-	func(light, numCascades);
-}
-
-void OrthogonalVolumetricLighting::LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix)
-{
-	DirectX::XMFLOAT4X4 matrix;
-	XMStoreFloat4x4(&matrix, XMMatrixTranspose(inMatrix));  //convert to column vector to match shaders
-	logger::info("{} row 1: {}, {}, {}, {}", desc, matrix.m[0][0], matrix.m[0][1], matrix.m[0][2], matrix.m[0][3]);
-	logger::info("{} row 2: {}, {}, {}, {}", desc, matrix.m[1][0], matrix.m[1][1], matrix.m[1][2], matrix.m[1][3]);
-	logger::info("{} row 3: {}, {}, {}, {}", desc, matrix.m[2][0], matrix.m[2][1], matrix.m[2][2], matrix.m[2][3]);
-	logger::info("{} row 4: {}, {}, {}, {}", desc, matrix.m[3][0], matrix.m[3][1], matrix.m[3][2], matrix.m[3][3]);
-}
-
-void OrthogonalVolumetricLighting::LogVector(std::string desc, DirectX::XMVECTOR vec)
-{
-	logger::info("{}: {}, {}, {}, {}", desc, DirectX::XMVectorGetX(vec), DirectX::XMVectorGetY(vec), DirectX::XMVectorGetZ(vec), DirectX::XMVectorGetW(vec));
-}
-
-void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_RenderShadowmaps::thunk(RE::BSShadowLight* light, void* unk)
-{
-	//auto& lens = globals::features::orthogonalVolumetricLighting;
-
-	//lens.CSMFinished = false;
-
-	//if (lens.swapShadowMapShader) {
-	//	lens.CSMFinished = false;
-	//	lens.overrideShader = true;
-	//	lens.shaderdesc = Shaders::RenderShadowMap;
-	//}
-
-	func(light, unk);
-}
-
-#pragma warning(push)
-#pragma warning(disable: 4100 4456)
-
-bool OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSShadowDirectionalLight* light, RE::NiCamera& inputCamera)
-{
-	auto& lens = globals::features::orthogonalVolumetricLighting;
-	bool returnValue = true;
-
-	lens.BuildShadowCascade(light, inputCamera);
-
-	returnValue = func(light, inputCamera);
-
-	return returnValue;
-}
-
-//2,6,7,5,1,0
-void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes::thunk(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumCorners& frustumCorners, uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex)
-{
-	using namespace DirectX;
-	auto& OVL = globals::features::orthogonalVolumetricLighting;
-
-	int firstCullOrder[8] = { 7, 3, 5, 1, 6, 2, 4, 0 };
-	if (OVL.patchCascade && OVL.patchCulling) {
-		for (int i = 0; i < 8; i++)                                                                                                                         // Set frustum corners as the far planes of the final cascade and the near plane of the 0th cascade
-			frustumCorners.corners[i] = (i < 4) ? OVL.cascadeData[1].worldCorners[firstCullOrder[i]] : OVL.cascadeData[0].worldCorners[firstCullOrder[i]];  //dirLight->shadowMapCount - 1
-	}
-
-	func(dirLight, outPlanes, frustumCorners, splitCornerIndices, numSplitCornerIndices, lightDir, cameraPos, cornerOffsetIndex);
-}
-
-struct FrustumSplit
-{
-	RE::NiPoint3 nearFace[4];
-	RE::NiPoint3 farFace[4];
-};
-//both cascades use: 6,2,0,1,5,7
-void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond::thunk(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumSplit& frustumCorners, uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex)
-{
-	using namespace DirectX;
-	auto& OVL = globals::features::orthogonalVolumetricLighting;
-
-	auto float3ToNiPoint3 = [](const float3& vec) -> RE::NiPoint3 {
-		return RE::NiPoint3(vec.x, vec.y, vec.z);
-	};
-	auto NiPoint3ToFloat3 = [](const RE::NiPoint3& vec) -> float3 {
-		return float3(vec.x, vec.y, vec.z);
-	};
-
-	int SecondCullOrder[8] = { 6, 2, 4, 0, 7, 3, 5, 1 };
-	if (OVL.patchCascade && OVL.patchCulling) {
-		for (int i = 0; i < 4; i++) {
-			frustumCorners.nearFace[i] = float3ToNiPoint3(OVL.cascadeData[OVL.cascadeIt].worldCorners[SecondCullOrder[i]]);
-		}
-		for (int i = 0; i < 4; i++) {
-			frustumCorners.farFace[i] = float3ToNiPoint3(OVL.cascadeData[OVL.cascadeIt].worldCorners[SecondCullOrder[i + 4]]);
-		}
-	}
-
-	func(dirLight, outPlanes, frustumCorners, splitCornerIndices, numSplitCornerIndices, lightDir, cameraPos, cornerOffsetIndex);
-}
-
-// Subsequent call propagates local changes to the rest of the camera
-void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_SetCameraRuntimeData2::thunk(RE::NiCamera* cascadeCamera, RE::NiFrustum& frustum)
-{
-	auto& OVL = globals::features::orthogonalVolumetricLighting;
-
-	if (OVL.patchCascade) {
-		auto matrix = OVL.cascadeData[OVL.cascadeIt].viewRotation;
-		auto row0Mat = RE::NiPoint3(matrix._13, matrix._12, matrix._11);
-		auto row1Mat = RE::NiPoint3(matrix._23, matrix._22, matrix._21);
-		auto row2Mat = RE::NiPoint3(matrix._33, matrix._32, matrix._31);
-		RE::NiMatrix3 rotation = RE::NiMatrix3(row0Mat, row1Mat, row2Mat);
-
-		cascadeCamera->local.rotate = rotation;
-		cascadeCamera->local.translate = RE::NiPoint3(OVL.cascadeData[OVL.cascadeIt].cascadeTranslation.x, OVL.cascadeData[OVL.cascadeIt].cascadeTranslation.y, OVL.cascadeData[OVL.cascadeIt].cascadeTranslation.z);
-	}
-
-	func(cascadeCamera, frustum);
-}
-
-// Override the final cascade frustum input
-void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_CreateFrustum::thunk(RE::NiFrustum& frustum, float left, float right, float top, float bottom, float nearP, float farP, bool ortho)
-{
-	auto& OVL = globals::features::orthogonalVolumetricLighting;
-	auto frust = OVL.cascadeData[OVL.cascadeIt].frustum;
-
-	if (OVL.patchCascade)
-		func(frustum, frust.fLeft, frust.fRight, frust.fTop, frust.fBottom, frust.fNear, frust.fFar, ortho);
-	else {
-		func(frustum, left, right, top, bottom, nearP, farP, ortho);
-	}
-
-	//if (OVL.cascadeIt == 0) {
-	//OVL.LogVector("frustum(left, right, top, bottom)", DirectX::XMVectorSet(frustum.fLeft, frustum.fRight, frustum.fTop, frustum.fBottom));
-	//OVL.LogVector("frustum(near, far)", DirectX::XMVectorSet(frustum.fNear, frustum.fFar, 0, 0));
-	//}
-
-	OVL.cascadeIt = (++OVL.cascadeIt < 2) ? OVL.cascadeIt : 0;
-}
-
-DirectX::XMVECTOR OrthogonalVolumetricLighting::QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees)  //0.05 - 0.1 works well
-{
-	using namespace DirectX;
-
-	float stepRadians = XMConvertToRadians(stepDegrees);
-
-	//Calculate azimuth and elevation
-	float azimuth = atan2f(XMVectorGetX(lightDir), XMVectorGetZ(lightDir));
-	float elevation = asinf(XMVectorGetY(lightDir));
-
-	//Quantize angles to nearest step
-	azimuth = roundf(azimuth / stepRadians) * stepRadians;
-	elevation = roundf(elevation / stepRadians) * stepRadians;
-
-	//Convert back to cart coords
-	float cosElev = cosf(elevation);
-	XMVECTOR quantized = XMVectorSet(sinf(azimuth) * cosElev, sinf(elevation), cosf(azimuth) * cosElev, 0.0f);
-
-	return XMVector3Normalize(quantized);
-}
-
-void OrthogonalVolumetricLighting::BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCameraNew)
-{
-	using namespace DirectX;
-
-	const float farPlane = Util::GetCameraData().x;
-	const float nearPlane = Util::GetCameraData().y;
-
-	auto tmp = Util::GetEyePosition(0);
-	XMVECTOR rootCameraPos = XMVectorSet(tmp.x, tmp.y, tmp.z, 1.0);
-
-	XMMATRIX rootViewProj = {};
-	XMMATRIX rootInvViewProj = {};
-	auto rootCamera = RE::Main::WorldRootCamera();  //correct
-	if (rootCamera) {
-		XMFLOAT4X4 tmp2{};
-		auto& worldToCam = rootCamera->GetRuntimeData().worldToCam;
-		std::memcpy(&tmp2, &worldToCam, sizeof(tmp2));
-		rootViewProj = XMMatrixTranspose(XMLoadFloat4x4(&tmp2));
-		rootViewProj.r[3] = XMVector4Transform(rootCameraPos, rootViewProj);
-		rootInvViewProj = XMMatrixInverse(nullptr, rootViewProj);
-	}
-
-	float cascadeSplits[2] = { 1000, 3500 };
-	auto splits = light->GetShadowDirectionalLightRuntimeData().endSplitDistances;
-	cascadeSplits[0] = splits[0];
-	cascadeSplits[1] = splits[1];
-
-	int nearFaces[4] = { 0, 2, 4, 6 };
-	int farFaces[4] = { 1, 3, 5, 7 };
-
-	// Due to the game time scale the cascade grid carries high natural temporal variance.
-	// One way to mitegate this is to quantize light direction to discrete angle steps.
-	// Once we accept the scaling will still cause some shadow creep, we can leavage(make the best of) this to squash the variance period by synchronising it with the update of the projection matrix and view translation.  //Novel fix
-
-	// Main issues:
-	// Games natural cascade center varies +- 500
-	// Must encode translation in camera to avoid breaking culling(?)
-
-	// Getting rid of the downstream translational dependance is probably a good idea.
-	// What happens if we zero out player camera until cascade is finished rendering
-	// OR just set cascade trans to -player pos
-
-	// Minimal fix:
-	// quantize light dir
-	// sync update of matrices
-
-	auto lightDir = *skyrim_SunPosition;
-	XMVECTOR lightDirection = XMVectorNegate(XMVector3Normalize(XMVectorSet(lightDir.x, lightDir.y, lightDir.z, 0)));
-	//auto test = light->GetShadowDirectionalLightRuntimeData().lightDirection;
-	//lightDirection = XMVectorSet(test.x, test.y, test.z, 0);
-	lightDirection = QuantizeLightDirection(lightDirection, lightUpdateAngle);
-
-	static XMVECTOR PrevlightDirection = lightDirection;
-	static bool updateProj = true;
-	if (XMVector3NotEqual(lightDirection, PrevlightDirection)) {
-		PrevlightDirection = lightDirection;  //update light dir
-		updateProj = true;
-	} else {
-		updateProj = false;
-	}
-
-	if (patchCascade) {
-		light->GetShadowDirectionalLightRuntimeData().lightDirectionUpdateTimer = 1;
-		light->GetShadowDirectionalLightRuntimeData().previousLightDirection = light->GetShadowDirectionalLightRuntimeData().lightDirection;
-		light->GetShadowDirectionalLightRuntimeData().lightDirection = { XMVectorGetX(lightDirection), XMVectorGetY(lightDirection), XMVectorGetZ(lightDirection) };
-	}
-
-	XMVECTOR frustum_corners[] = {
-		XMVector3TransformCoord(XMVectorSet(-1, -1, 0, 1), rootInvViewProj),  // near
-		XMVector3TransformCoord(XMVectorSet(-1, -1, 1, 1), rootInvViewProj),  // far
-		XMVector3TransformCoord(XMVectorSet(-1, 1, 0, 1), rootInvViewProj),   // near
-		XMVector3TransformCoord(XMVectorSet(-1, 1, 1, 1), rootInvViewProj),   // far
-		XMVector3TransformCoord(XMVectorSet(1, -1, 0, 1), rootInvViewProj),   // near
-		XMVector3TransformCoord(XMVectorSet(1, -1, 1, 1), rootInvViewProj),   // far
-		XMVector3TransformCoord(XMVectorSet(1, 1, 0, 1), rootInvViewProj),    // near
-		XMVector3TransformCoord(XMVectorSet(1, 1, 1, 1), rootInvViewProj),    // far
-	};
-
-	for (int cascade = 0; cascade < int(lightCascades); ++cascade) {
-		const float split_near = (cascade == 0) ? 0 : LinearStep(nearPlane, farPlane, cascadeSplits[cascade - 1]);
-		const float split_far = LinearStep(nearPlane, farPlane, cascadeSplits[cascade]);
-
-		XMVECTOR up = XMVectorSet(0, 1, 0, 0);
-		XMVECTOR forward = lightDirection;
-		XMVECTOR right = XMVector3Normalize(XMVector3Cross(forward, up));
-		up = XMVector3Cross(right, forward);
-
-		const XMVECTOR corners[] = {
-			XMVectorLerp(frustum_corners[0], frustum_corners[1], split_near),
-			XMVectorLerp(frustum_corners[0], frustum_corners[1], split_far),
-			XMVectorLerp(frustum_corners[2], frustum_corners[3], split_near),
-			XMVectorLerp(frustum_corners[2], frustum_corners[3], split_far),
-			XMVectorLerp(frustum_corners[4], frustum_corners[5], split_near),
-			XMVectorLerp(frustum_corners[4], frustum_corners[5], split_far),
-			XMVectorLerp(frustum_corners[6], frustum_corners[7], split_near),
-			XMVectorLerp(frustum_corners[6], frustum_corners[7], split_far)
-		};
-
-		XMVECTOR localTranslation = XMVectorSubtract(rootCameraPos, XMVectorMultiply(lightDirection, XMVectorReplicate(15000)));
-		XMMATRIX localRotation = XMMATRIX(right, up, forward, XMVectorSet(0, 0, 0, 1));
-
-		XMMATRIX viewMatrix = XMMatrixInverse(nullptr, XMMATRIX(localRotation.r[0], localRotation.r[1], localRotation.r[2], localTranslation));
-		XMMATRIX baseProj = XMMatrixOrthographicOffCenterLH(0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
-		XMMATRIX cascadeViewProj = XMMatrixMultiply(viewMatrix, baseProj);
-
-		XMVECTOR cornerMin = XMVectorReplicate(1e6f);
-		XMVECTOR cornerMax = XMVectorNegate(cornerMin);
-		for (int i = 0; i < 8; i++) {
-			XMVECTOR cameraCornerPos = XMVectorAdd(rootCameraPos, corners[i]);
-			XMVECTOR CascadeCameraPosition = XMVector3TransformCoord(cameraCornerPos, cascadeViewProj);
-			CascadeCameraPosition = XMVectorMultiply(CascadeCameraPosition, XMVectorSet(0.5, 0.5, 1.0, 1.0));
-
-			cornerMin = XMVectorMin(cornerMin, CascadeCameraPosition);
-			cornerMax = XMVectorMax(cornerMax, CascadeCameraPosition);
-		}
-		cornerMin = XMVectorSetZ(cornerMin, XMVectorGetZ(cornerMin) - 600);
-		cornerMax = XMVectorSetZ(cornerMax, XMVectorGetZ(cornerMax) + 600);
-
-		for (int i = 0; i < 8; i++) {
-			cascadeData[cascade].worldCorners[i] = corners[i];
-		}
-
-		if (updateProj) {
-			XMStoreFloat4x4(&cascadeData[cascade].viewRotation, XMMatrixTranspose(localRotation));
-			cascadeData[cascade].cascadeTranslation = localTranslation;
-
-			float3 clipMin = cornerMin;  //left, bottom, near
-			float3 clipMax = cornerMax;  //right, top, far
-			cascadeData[cascade].frustum.fLeft = clipMin.x;
-			cascadeData[cascade].frustum.fRight = clipMax.x;
-			cascadeData[cascade].frustum.fTop = clipMax.y;
-			cascadeData[cascade].frustum.fBottom = clipMin.y;
-			cascadeData[cascade].frustum.fNear = clipMin.z;
-			cascadeData[cascade].frustum.fFar = clipMax.z;
-		}
-	}
-}
+///////////////////////////////////////////////////////////
 
 void OrthogonalVolumetricLighting::LoadSettings(json& o_json)
 {
