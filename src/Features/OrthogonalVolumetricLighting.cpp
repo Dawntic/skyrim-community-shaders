@@ -389,7 +389,7 @@ void OrthogonalVolumetricLighting::PerFrameUpdate()
 	//delete
 	float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 	globals::d3d::context->ClearRenderTargetView(OutputRTV, clear);
-	globals::d3d::context->ClearRenderTargetView(CloudShadowRTV, clear);
+	//globals::d3d::context->ClearRenderTargetView(CloudShadowRTV, clear);
 
 	frameCounter++;
 }
@@ -459,6 +459,7 @@ void OrthogonalVolumetricLighting::SetupEVSMBlur()
 void OrthogonalVolumetricLighting::SetupShadowVolume()
 {
 	auto context = globals::d3d::context;
+	auto& LLF = globals::features::lightLimitFix;
 	static int passCount = 1;
 
 	shadowVolParity = passCount & 1;
@@ -469,15 +470,16 @@ void OrthogonalVolumetricLighting::SetupShadowVolume()
 	context->CSSetShader(GenerateShadowVolumeCS, nullptr, 0);
 
 	context->CSSetShaderResources(0, 1, &prevVolumeSRV);
-	context->CSSetShaderResources(1, 1, &EVSMBlurSRV);
-	context->CSSetShaderResources(2, 1, &STBNoiseSRV);
-	context->CSSetShaderResources(5, 1, &EVSMSRV);
-
-	auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
-	context->CSSetShaderResources(3, 1, &shadowMap);
-
-	auto skylightstbn = globals::features::skylighting.stbn_vec3_2Dx1D_128x128x64.get();
-	context->CSSetShaderResources(4, 1, &skylightstbn);
+	context->CSSetShaderResources(1, 1, &STBNoiseSRV);
+	context->CSSetShaderResources(2, 1, &EVSMBlurSRV);
+	auto localShadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS].depthSRV;
+	context->CSSetShaderResources(3, 1, &localShadowMap);
+	auto lightsSB = LLF.lights->srv.get();
+	context->CSSetShaderResources(4, 1, &lightsSB);
+	auto lightListSB = LLF.lightIndexList->srv.get();
+	context->CSSetShaderResources(5, 1, &lightListSB);
+	auto lightGridSB = LLF.lightGrid->srv.get();
+	context->CSSetShaderResources(6, 1, &lightGridSB);
 
 	context->Dispatch(60, 34, 16);
 
@@ -554,6 +556,7 @@ void OrthogonalVolumetricLighting::SetupMediaVolume()
 void OrthogonalVolumetricLighting::SetupScatteringVolume()
 {
 	auto context = globals::d3d::context;
+	auto& LLF = globals::features::lightLimitFix;
 
 	context->CSSetUnorderedAccessViews(0, 1, &ScatteringVolumeUAV, nullptr);
 	context->CSSetShader(GenerateScatteringVolumeCS, nullptr, 0);
@@ -561,18 +564,20 @@ void OrthogonalVolumetricLighting::SetupScatteringVolume()
 	context->CSSetShaderResources(0, 1, &ShadowVolumeSRV[!shadowVolParity]);
 	context->CSSetShaderResources(1, 1, &MediaVolumeSRV[!mediaVolParity]);
 
-	//context->CSSetShaderResources(0, 1, &ExpoSRV);
-
-	//auto shadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV;
-	//context->CSSetShaderResources(1, 1, &shadowMap);
+	auto lightsSB = LLF.lights->srv.get();
+	context->CSSetShaderResources(2, 1, &lightsSB);
+	auto lightListSB = LLF.lightIndexList->srv.get();
+	context->CSSetShaderResources(3, 1, &lightListSB);
+	auto lightGridSB = LLF.lightGrid->srv.get();
+	context->CSSetShaderResources(4, 1, &lightGridSB);
+	auto localShadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS].depthSRV;
+	context->CSSetShaderResources(5, 1, &localShadowMap);
 
 	//D3D11Buffer* prevFrameBuff = FrameBuffer[PrevMatrixIdx].Get();
 	//ID3D11Buffer* FrameBuff = FrameBuffer[(PrevMatrixIdx == 0) ? 1 : 0].Get();
 	//context->CSSetConstantBuffers(2, 1, &FrameBuff);
 	//context->CSSetConstantBuffers(3, 1, &prevFrameBuff);
-
 	//context->Dispatch(40, 23, 8);
-
 	//if (settings.useCheckerBoard)
 	//	context->Dispatch(40, 23, 11);
 	//else
@@ -633,6 +638,9 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 
 	auto& mainRTV = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].RTV;
 
+	//auto& DepthSRV = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN].depthSRV;
+	//context->CopyResource(, srcTexture);
+
 	if (!swapOutputRT)
 		context->OMSetRenderTargets(1, &mainRTV, nullptr);
 	else
@@ -650,9 +658,8 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 	auto volumeBuff = VolumeCB->CB();
 	context->PSSetConstantBuffers(0, 1, &volumeBuff);
 
-	auto& DepthSRV = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN_COPY].depthSRV;
-	context->PSSetShaderResources(0, 1, &IntergrationVolumeSRV);
-	context->PSSetShaderResources(1, 1, &DepthSRV);
+	context->PSSetShaderResources(1, 1, &IntergrationVolumeSRV);
+	//context->PSSetShaderResources(0, 1, &DepthSRV);
 	context->PSSetShaderResources(2, 1, &STBNoiseSRV);
 
 	context->PSSetShaderResources(3, 1, &ShadowVolumeSRV[!shadowVolParity]);
@@ -730,7 +737,7 @@ OrthogonalVolumetricLighting::VolumeBuffer OrthogonalVolumetricLighting::UpdateV
 
 	VolumeBuffer data{};
 	std::memcpy(data.directionalShadowCascadeMatrices, directionalShadowCascadeMatrices, sizeof(data.directionalShadowCascadeMatrices));
-	std::memcpy(data.localShadowCascadeMatrices, localShadowCascadeMatrices, sizeof(data.localShadowCascadeMatrices));
+	std::memcpy(data.localShadowLightMatrices, localShadowLightMatrices, sizeof(data.localShadowLightMatrices));
 	data.fogMapMatrix = fogMapViewProj;
 
 	data.shadowCascadeEndSplit = shadowCascadeEndSplit;
@@ -817,13 +824,35 @@ void OrthogonalVolumetricLighting::UpdateShadowLightMatrices()
 			shadowCascadeEndSplit = float4(dirLightData2.endSplitDistances[0], dirLightData2.endSplitDistances[1], dirLightData2.endSplitDistances[2], 0.0);
 		}
 
-		int index = 0;
+		//int index = 0;
+		uint matrixArraySize = 16;  //
 		auto& shadowLightList = shadowNodeRuntime.activeShadowLights;
-		for (uint i = 0; i < shadowLightList.size(); i++) {
-			auto& lightData = shadowLightList[i]->GetRuntimeData();
-			auto& cascadeList = lightData.shadowmapDescriptors;
-			localShadowCascadeMatrices[index++] = GetCascadeMatrix(cascadeList[0].lightTransform);
-			localShadowCascadeMatrices[index++] = GetCascadeMatrix(cascadeList[1].lightTransform);
+		for (uint i = 0; i < shadowLightList.size() && i < matrixArraySize; i++) {
+			auto& shadowLightData = shadowLightList[i]->GetRuntimeData();
+			auto& shadowLightDesc = shadowLightData.shadowmapDescriptors;
+			auto shadowLightIndex = shadowLightData.shadowLightIndex;
+			//logger::info("shadowLightIndex: {}", shadowLightIndex);
+
+			if (shadowLightIndex < matrixArraySize && shadowLightIndex != 255) {
+				localShadowLightMatrices[shadowLightIndex].matrix = GetCascadeMatrix(shadowLightDesc[0].lightTransform);
+				localShadowLightMatrices[shadowLightIndex].shadowmapIndex = shadowLightDesc[0].shadowmapIndex;
+			}
+
+			/*
+			auto lightMatrix = shadowLightDesc[0].lightTransform;
+			auto desc = "Matrix One";
+			logger::info("{} row 1: {}, {}, {}, {}", desc, lightMatrix.m[0][0], lightMatrix.m[0][1], lightMatrix.m[0][2], lightMatrix.m[0][3]);
+			logger::info("{} row 2: {}, {}, {}, {}", desc, lightMatrix.m[1][0], lightMatrix.m[1][1], lightMatrix.m[1][2], lightMatrix.m[1][3]);
+			logger::info("{} row 3: {}, {}, {}, {}", desc, lightMatrix.m[2][0], lightMatrix.m[2][1], lightMatrix.m[2][2], lightMatrix.m[2][3]);
+			logger::info("{} row 4: {}, {}, {}, {}", desc, lightMatrix.m[3][0], lightMatrix.m[3][1], lightMatrix.m[3][2], lightMatrix.m[3][3]);
+
+			lightMatrix = shadowLightDesc[1].lightTransform;
+			desc = "Matrix Two";
+			logger::info("{} row 1: {}, {}, {}, {}", desc, lightMatrix.m[0][0], lightMatrix.m[0][1], lightMatrix.m[0][2], lightMatrix.m[0][3]);
+			logger::info("{} row 2: {}, {}, {}, {}", desc, lightMatrix.m[1][0], lightMatrix.m[1][1], lightMatrix.m[1][2], lightMatrix.m[1][3]);
+			logger::info("{} row 3: {}, {}, {}, {}", desc, lightMatrix.m[2][0], lightMatrix.m[2][1], lightMatrix.m[2][2], lightMatrix.m[2][3]);
+			logger::info("{} row 4: {}, {}, {}, {}", desc, lightMatrix.m[3][0], lightMatrix.m[3][1], lightMatrix.m[3][2], lightMatrix.m[3][3]);
+			*/
 		}
 	}
 }
@@ -889,15 +918,15 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 	ImGui::Spacing();
 	ImGui::Checkbox("Swap Output RT", (bool*)&swapOutputRT);
-	ImGui::Checkbox("Swap shadow map shader", (bool*)&swapShadowMapShader);
+	//ImGui::Checkbox("Swap shadow map shader", (bool*)&swapShadowMapShader);
 
-	ImGui::Checkbox("Run Variance", (bool*)&settings.RunVarienceMapping);
+	//ImGui::Checkbox("Run Variance", (bool*)&settings.RunVarienceMapping);
 	//ImGui::Checkbox("Run Split", (bool*)&settings.DebugCascadeSplit);
 
-	ImGui::Button("Reset Variance");
-	if (ImGui::IsItemClicked()) {
-		resetVariance = true;
-	}
+	//ImGui::Button("Reset Variance");
+	//if (ImGui::IsItemClicked()) {
+	//	resetVariance = true;
+	//}
 
 	//ImGui::Button("Render Debug Pass");
 	//if (ImGui::IsItemClicked()) {
@@ -907,8 +936,8 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::Checkbox("Patch Cascade", (bool*)&patchCascade);
 	ImGui::Checkbox("Patch Culling", (bool*)&patchCulling);
 	ImGui::SliderFloat("Light Update Angle", &lightUpdateAngle, 0.01, 1.0);
-	ImGui::SliderFloat("Split 1", &cascadeSplit0, 0, 3000);
-	ImGui::SliderFloat("Split 2", &cascadeSplit1, 0, 10000);
+	//ImGui::SliderFloat("Split 1", &cascadeSplit0, 0, 3000);
+	//ImGui::SliderFloat("Split 2", &cascadeSplit1, 0, 10000);
 
 	ImGui::SeparatorText("Media properties");
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
@@ -1092,7 +1121,7 @@ void OrthogonalVolumetricLighting::LogVector(std::string desc, DirectX::XMVECTOR
 
 void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_RenderShadowmaps::thunk(RE::BSShadowLight* light, void* unk)
 {
-	auto& lens = globals::features::orthogonalVolumetricLighting;
+	//auto& lens = globals::features::orthogonalVolumetricLighting;
 
 	//lens.CSMFinished = false;
 
@@ -1197,10 +1226,10 @@ void OrthogonalVolumetricLighting::Hooks::BSShadowDirectionalLight_CreateFrustum
 		func(frustum, left, right, top, bottom, nearP, farP, ortho);
 	}
 
-	if (OVL.cascadeIt == 0) {
-		OVL.LogVector("frustum(left, right, top, bottom)", DirectX::XMVectorSet(frustum.fLeft, frustum.fRight, frustum.fTop, frustum.fBottom));
-		OVL.LogVector("frustum(near, far)", DirectX::XMVectorSet(frustum.fNear, frustum.fFar, 0, 0));
-	}
+	//if (OVL.cascadeIt == 0) {
+	//OVL.LogVector("frustum(left, right, top, bottom)", DirectX::XMVectorSet(frustum.fLeft, frustum.fRight, frustum.fTop, frustum.fBottom));
+	//OVL.LogVector("frustum(near, far)", DirectX::XMVectorSet(frustum.fNear, frustum.fFar, 0, 0));
+	//}
 
 	OVL.cascadeIt = (++OVL.cascadeIt < 2) ? OVL.cascadeIt : 0;
 }

@@ -1,6 +1,7 @@
 #pragma once
 #include "../Deferred.h"
 #include "Feature.h"
+#include "LightLimitFix.h"
 #include "Skylighting.h"
 #include "State.h"
 #include "TerrainShadows.h"
@@ -67,7 +68,7 @@ struct OrthogonalVolumetricLighting : Feature
 	//void ExtractFrustumPlanes(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
 	//DirectX::XMMATRIX GameViewProj;
 	//DirectX::XMMATRIX GameViewProjTransed;
-	//void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& camera);
+	void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& camera);
 	virtual void LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix);
 	virtual void LogVector(std::string desc, DirectX::XMVECTOR vec);
 	//virtual DirectX::XMFLOAT4X4 ConvertTransMatrix(DirectX::XMFLOAT4X4& m);
@@ -219,7 +220,16 @@ struct OrthogonalVolumetricLighting : Feature
 	float3 eyePositionWS;
 	float4 cameraData;
 	REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4] = {};
-	REX::W32::XMFLOAT4X4 localShadowCascadeMatrices[16] = {};
+
+	struct LocalShadowLightTransform
+	{
+		REX::W32::XMFLOAT4X4 matrix = {};
+		uint shadowmapIndex = 0;
+		uint _pad[3] = {};
+	};
+	LocalShadowLightTransform localShadowLightMatrices[8];
+
+	//REX::W32::XMFLOAT4X4 localShadowLightMatrices[16] = {};
 	float4 shadowCascadeEndSplit = float4(0, 0, 0, 0);
 
 	static constexpr float4 volumeDimensions = float4(240, 136, 68, 0);
@@ -293,7 +303,7 @@ struct OrthogonalVolumetricLighting : Feature
 	struct alignas(16) VolumeBuffer
 	{
 		REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4];
-		REX::W32::XMFLOAT4X4 localShadowCascadeMatrices[16];
+		LocalShadowLightTransform localShadowLightMatrices[8];
 		DirectX::XMFLOAT4X4 fogMapMatrix;
 
 		float4 shadowCascadeEndSplit;
