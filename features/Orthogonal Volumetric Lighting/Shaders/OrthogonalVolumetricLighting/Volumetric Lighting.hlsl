@@ -26,7 +26,7 @@ struct ShadowLightTransform
 cbuffer ShadowBuffer : register(b0)
 {
     row_major float4x4 DirectionalShadowCascadeMatrix[4];
-    ShadowLightTransform ShadowLightData[8];
+    ShadowLightTransform ShadowLightData[4];
     float4 ShadowCascadeEndSplit;
     float4 EVSMData;
 };
@@ -38,10 +38,12 @@ cbuffer FroxelBuffer : register(b1)
     row_major float4x4 CameraViewInverse;
     row_major float4x4 CameraProjInverse;
     row_major float4x4 PrevCameraViewProj;
-    float4 CameraWS;
+    float4 CameraPosition;
     float4 CameraData;
     float4 VolumeSize;
     float4 FrustumNearFar;
+    float4 LightDirection;
+    float4 FrameParams;
 };
 
 cbuffer GeneralBuffer : register(b2)
@@ -81,7 +83,7 @@ cbuffer VolumeBuffer : register(b0)
 
     float4 ShadowCascadeEndSplit;
     float4 FrustumNearFar;
-    float4 CameraWS;
+    float4 CameraPosition;
     float4 CameraData;
 
     float4 EVSMData;
@@ -210,11 +212,11 @@ float3 GetHistoryValue(float3 CoordsWS, out float Confidence)
 {
     float4 PrevClip = mul(PrevCameraViewProj, float4(CoordsWS, 1.0));
     float3 PrevNDC = PrevClip.xyz / PrevClip.w;
-    float3 PrevUVZ = float3(PrevNDC.xy * float2(0.5, -0.5) + 0.5, ViewDepthToUV(PrevClip.w));
+    float3 PrevUV = float3(PrevNDC.xy * float2(0.5, -0.5) + 0.5, ViewDepthToUV(PrevClip.w));
 
-    Confidence = (any(abs(PrevNDC.xyz) > 1.0)) ? 0.0 : float((PrevClip.w > 0.0) * (PrevUVZ.z >= 0.0 && PrevUVZ.z <= 1.0));
+    Confidence = all(abs(PrevNDC.xy) <= 1.0) && PrevClip.w > 0.0 && PrevUV.z >= 0.0 && PrevUV.z <= 1.0;
 
-    return PrevUVZ;
+    return PrevUV;
 }
 //float ValidViewZ = float(PrevClip.w > 0.0);
 //float ValidDepth = float(PrevUVZ.z >= 0.0 && PrevUVZ.z <= 1.0);
@@ -353,7 +355,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ViewZ = CoordZ + ThicknessZ * ZJitterSequ;
     float3 RayDirection = FroxelWorldDirection(Froxel, ViewZ);
     float3 RayPosition = RayDirection * ViewZ;
-    float3 WorldPosition = RayPosition + CameraWS.xyz;
+    float3 WorldPosition = RayPosition + CameraPosition.xyz;
 
     float CascadeShadow = GetCascadeShadow(RayDirection, ViewZ, CoordZ, ThicknessZ, Noise);
 
@@ -364,16 +366,17 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float TerrainShadow = TerrainShadows::GetTerrainShadow(WorldPosition, Linear_Sampler);
 
     float Shadow = CascadeShadow;// * TerrainShadow * CloudShadow;
-    //Shadow = LocalShadow;
+    //Shadow = LocalShadow; // --wrong?
 
     float Confidence;
     float ViewZCenter = FroxelDepthToView(Froxel.z + 0.5);
     float3 PrevCoordsUV = GetHistoryValue(RayDirection * ViewZCenter, Confidence);
 
     float BaseValue = 0.85;
-    float ReporjectValue = BaseValue * Confidence;
+    float ReprojectionValue = BaseValue * Confidence;
     float ShadowHistory = ShadowHistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0).x;
-    //Shadow = lerp(Shadow, ShadowHistory, ReporjectValue);
+    //Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
+    Shadow = CoordZ;
 
     ShadowVolume[ThreadID] = Shadow;
 }
@@ -533,7 +536,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float ViewZ = CoordZ + ThicknessZ * BNoise;
     float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ);
-    float3 WorldPosition = RayPosition * ViewZ + CameraWS.xyz;
+    float3 WorldPosition = RayPosition * ViewZ + CameraPosition.xyz;
 
 
     float GlobalFog = GetFogDensity(WorldPosition.z, UIGlobalFogDensity, UIGlobalFogHeight, UIGobalFogFalloff);
@@ -575,7 +578,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float4 MediaHistory = HistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0);
     float BaseValue = 0.90;
     float ReprojectionValue = BaseValue * Confidence;
-    Output = lerp(Output, MediaHistory, ReprojectionValue);
+    //Output = lerp(Output, MediaHistory, ReprojectionValue);
 
     //ViewZCenter = CameraProj[0][2][2] + CameraProj[0][2][3] / ViewZCenter;
     //float CoordZA = exp2((PrevCoordsUV.z * VolumeSize.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
@@ -593,13 +596,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 #ifdef SCATTER_COMPUTE
 
-//#if defined(LIGHT_LIMIT_FIX)
-    #include "LightLimitFix/LightLimitFix.hlsli"
-//#endif
-
-//#if defined(ISL) && defined(LIGHT_LIMIT_FIX)
+#include "LightLimitFix/LightLimitFix.hlsli"
 #include "InverseSquareLighting/InverseSquareLighting.hlsli"
-//#endif
 
 Texture3D ShadowVolume : register(t0);
 Texture3D MediaVolume : register(t1);
@@ -609,6 +607,16 @@ StructuredBuffer<LightLimitFix::LightGrid> lightGrid : register(t4);
 Texture2DArray ParaboloidShadowMaps : register(t5);
 RWTexture3D<float4> ScatteringVolume : register(u0);
 
+
+cbuffer StrictLightData : register(b9)
+{
+    uint NumStrictLights;
+    int RoomIndex;
+    uint ShadowBitMask;
+    uint pad0;
+    LightLimitFix::Light StrictLights[15];
+};
+
 float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
     Anisotropy = clamp(Anisotropy, -0.999, 0.999);
 	float AnisotropySq = Anisotropy * Anisotropy;
@@ -617,6 +625,7 @@ float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
     return (1.0 - AnisotropySq) / (4.0 * Math::PI * (phase * sqrt(phase)));
 }
 
+/*
 float HenyeyGreensteinPhase(float3 RayDirection, float3 LightDirection, float Anisotropy){
     float ScatteringAngle = dot(LightDirection, RayDirection);
     Anisotropy = clamp(Anisotropy, -0.999, 0.999);
@@ -625,15 +634,17 @@ float HenyeyGreensteinPhase(float3 RayDirection, float3 LightDirection, float An
 
     return (1.0 - AnisotropySq) / (4.0 * Math::PI * (phase * sqrt(phase)));
 }
-
-bool GetClusterIndex(in float2 uv, in float z, inout uint clusterIndex){
-    const uint3 clusterSize = SharedData::lightLimitFixSettings.ClusterSize.xyz;
+*/
     //if (!FrameParams.y) // Fix first person lights ///////////////////////////////////////////
         //uv = 0.5;
 
-    z = max(z, CameraData.y);
-    uint clusterZ = log(z / CameraData.y) * clusterSize.z / log(CameraData.x / CameraData.y);
-    uint3 cluster = uint3(uint2(uv * clusterSize.xy), clusterZ);
+//CameraData = Far, Near, Far - Near, Far * Near
+bool GetClusterIndex(in float2 CoordsUV, in float ViewZ, inout uint clusterIndex){
+    const uint3 clusterSize = SharedData::lightLimitFixSettings.ClusterSize.xyz; //uint3(40,23,32);
+
+    ViewZ = max(ViewZ, CameraData.y);
+    uint clusterZ = log(ViewZ / CameraData.y) * clusterSize.z / log(CameraData.x / CameraData.y);
+    uint3 cluster = uint3(uint2(CoordsUV * clusterSize.xy), clusterZ);
 
     if (any(cluster >= clusterSize))
         return false;
@@ -642,66 +653,53 @@ bool GetClusterIndex(in float2 uv, in float z, inout uint clusterIndex){
     return true;
 }
 
-#define ScreenSize float2(2560, 1440)
-float3 GetLocalLights(float3 WorldPosition, float2 CoordsUV, float ViewZ, float3 RayToEye, float Shadow)
+/*
+float shadowComponent = 1.0;
+if (Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow) {
+    if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
+        shadowComponent = shadowColor[light.shadowLightIndex];
+        lightShadow *= shadowComponent;
+    }
+}
+
+//if (Attenuation < 0.95) continue;
+//if (IsLightIgnored(light))  // This is bugged and makes lights disapear and appear
+    //continue;
+//LightLimitFix::LightFlags::Simple ||
+// * HenyeyGreensteinPhase(RayToEye, normalize(LightPosition), UIAnisotropy);  // Phase function is broken - causes a duplicate orb
+*/
+
+float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, float3 RayToEye, float Shadow)
 {
     float3 Lighting = float3(0,0,0);
     uint clusterIdx = 0;
-    uint lightCount = 0; //LightLimitFix::NumStrictLights;  //still 65k. what is a strict light?
 
     if (GetClusterIndex(CoordsUV, ViewZ, clusterIdx)){
-        uint numClusteredLights = lightGrid[clusterIdx].lightCount;
-        lightCount += numClusteredLights;
         uint lightOffset = lightGrid[clusterIdx].offset;
+        [loop] for(uint i = 0; i < lightGrid[clusterIdx].lightCount; i++){
+            LightLimitFix::Light light = lights[lightList[lightOffset + i]];
+            float3 LightPosition = WorldPosition.xyz - light.positionWS[0].xyz;
 
-        [loop] for(uint i = 0; i < lightCount; i++){
-            uint Index = lightList[lightOffset + i];
-            LightLimitFix::Light light = lights[Index];
-
-            float3 LightPosition = light.positionWS[0].xyz - WorldPosition.xyz;
-
-            //ISL
             float Attenuation;
-            //#if defined(ISL)
-                Attenuation = InverseSquareLighting::GetAttenuation(length(LightPosition), light);
-                if (Attenuation < 1e-5) continue;
-            //#else
-            //    float intensityFactor = saturate(length(LightPosition) / light.radius);  //KEEP
-            //    if (intensityFactor == 1.0) continue;
-             //   Attenuation = 1.0 - intensityFactor * intensityFactor;
-            //#endif
+            Attenuation = InverseSquareLighting::GetAttenuation(length(LightPosition), light);
+            if (Attenuation < 1e-5) continue;
 
             float3 Radiance = light.color.xyz * Attenuation;
 
-            if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
-                Radiance *= Shadow;// - 1.0; ////
+            if (light.lightFlags & (LightLimitFix::LightFlags::PortalStrict)){
+                float3 LightToRay = normalize(LightPosition);
+                float ScatterCos = dot(LightToRay, RayToEye);
+                Lighting += Radiance * HenyeyGreensteinPhase(ScatterCos, UIAnisotropy);
             }
-
-            //if (light.lightFlags & (LightLimitFix::LightFlags::Shadow || LightLimitFix::LightFlags::Simple || LightLimitFix::LightFlags::PortalStrict))
-            Lighting += Radiance * HenyeyGreensteinPhase(RayToEye, normalize(LightPosition), UIAnisotropy);
-
-            //Point Lights
-            //if (light.lightFlags & LightLimitFix::LightFlags::Simple) {
-             //   float3 Radiance = light.color.xyz * Attenuation;
-                //Lighting += Radiance * HenyeyGreensteinPhase(RayToEye, normalize(LightPosition), UIAnisotropy);
-            //}
-
-            //Shadow Point Lights
-            //if (light.lightFlags & LightLimitFix::LightFlags::Shadow) { //light.shadowLightIndex
-            //    float3 Radiance = light.color.xyz * Attenuation;
-             //  Lighting += Radiance * HenyeyGreensteinPhase(RayToEye, normalize(LightPosition), UIAnisotropy);
-            //}
-
-            //if (light.lightFlags & LightLimitFix::LightFlags::PortalStrict) {
-             //   float3 Radiance = light.color.xyz * Attenuation;
-                //Lighting += Radiance * HenyeyGreensteinPhase(RayToEye, normalize(LightPosition), UIAnisotropy);
-            //}
         }
     }
-
     return Lighting;
 }
 
+// At slice 63 of 67 we are depth of 7228 of 10664
+//Problems:
+//lack of info a high slices - could be from be or from light grid
+//Check if given light index is still returned when its not visible  - Yes it is
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -710,20 +708,18 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float2 CoordsUV = (Froxel.xy + 0.5) / VolumeSize.xy;
 
     float ViewZ = FroxelDepthToView(Froxel.z + 0.5);
-    float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ) * ViewZ;
+    float3 RayDirection = FroxelWorldDirection(Froxel, ViewZ);
+    float3 RayPosition = RayDirection * ViewZ;
 
     float4 Scattering_Extinction = MediaVolume.Load(int4(Froxel, 0));
     float3 MediaScattering = Scattering_Extinction.xyz;
     float MediaExtinction = Scattering_Extinction.w;
 
-    float3 ViewerPosition = FroxelWorldDirection(Froxel, 1.0); //can use -RayPos without ViewZ mult?
+    float3 RayToEye = -normalize(RayDirection);
+    float3 DirLightToEye = LightDirection.xyz; //-normalize(SharedData::DirLightDirection.xyz); //Eye to sun
 
-    float3 IncomingDir = -normalize(SharedData::DirLightDirection.xyz); //Eye to sun
-    float3 RayToEye = normalize(ViewerPosition - RayPosition); //can this be -normalize(RayPosition);
-    float ScatterCos = dot(IncomingDir, RayToEye);
-
-    float Phase = HenyeyGreensteinPhase(ScatterCos, UIAnisotropy);
-
+    float ScatteringCosine = dot(DirLightToEye, RayToEye);
+    float Phase = HenyeyGreensteinPhase(ScatteringCosine, UIAnisotropy);
     float Shadow = ShadowVolume.Load(int4(Froxel, 0)).x;
 
 
@@ -731,12 +727,18 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //float3 Ambient = rcp(Math::PI) / (4.0 * Math::PI);
     //Lighting += Ambient;
 
-    float3 DirectionalLight = SharedData::DirLightColor.xyz * Phase;// * Shadow;
-    //DirectionalLight = float3(1,1,1) * Phase;
-    //Lighting += DirectionalLight;
+    float3 DirLightRadiance = SharedData::DirLightColor.xyz * Phase * Shadow;
+    //Lighting += DirLightRadiance;
 
-    Lighting += GetLocalLights(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
-    //Lighting *= Shadow;
+    Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
+
+
+    for(int j=-1; j<=1;j++){ // For full coverage use +-2 and 0.25
+        ViewZ = FroxelDepthToView(Froxel.z + 0.5 * j);
+        RayPosition = FroxelWorldDirection(Froxel, ViewZ) * ViewZ;
+        Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
+    }
+
 
 
     Lighting *= MediaScattering;
@@ -801,7 +803,7 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 
     for(int Slice=0; Slice < VolumeSize.z; Slice++){
         float4 ScatteredSlice = ScatterVolume.Load(int4(Froxel.xy, Slice, 0));
-
+        //ScatteredSlice.w = 0; /////////////
         float CurrDepth = FroxelDepthToView(Slice + 1.0);
         float StepLength = GameUnitToMeter(CurrDepth - PrevDepth);
 
@@ -1029,6 +1031,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 RWTexture3D<float> PerlinVolume : register(u0);
 
+
 uint hash_uint(uint x){
     uint h = x;
     h ^= (h >> 16);
@@ -1077,6 +1080,9 @@ float grad(uint h, float3 p){
     return dot(g, p);
 }
 
+#pragma warning(push)
+#pragma warning(disable : 3556) // Disable integer modulus speed warning since this is a run once shader
+
 [numthreads(8, 8, 8)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
@@ -1118,6 +1124,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     PerlinVolume[ThreadID] = Output * 0.5 + 0.5;
 }
+#pragma warning(pop)
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 

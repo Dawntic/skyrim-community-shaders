@@ -153,10 +153,14 @@ struct OrthogonalVolumetricLighting : Feature
 	static constexpr float4 noiseDimensions = float4(64, 64, 32, 0);
 
 	float2 screenSize;
-	uint frameCounter = 0;
 	bool overrideShader = false;
 	bool swapOutputRT = false;
-	uint historyParity = 0;
+	uint frameCounter = 0;
+	uint currentVolume = 0;
+	uint historyVolume = 1;
+
+	bool updateLightDir = true;
+	float4 lightDir = float4(0, 0, 0, 0);
 
 	struct LocalShadowLightTransform
 	{
@@ -164,7 +168,7 @@ struct OrthogonalVolumetricLighting : Feature
 		uint shadowmapIndex = 0;
 		uint _pad[3] = {};
 	};
-	LocalShadowLightTransform localShadowLightMatrices[8];
+	LocalShadowLightTransform localShadowLightMatrices[4];
 	REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4] = {};
 	float4 shadowCascadeEndSplit = float4(0, 0, 0, 0);
 	float4 frustumNearFar;
@@ -176,11 +180,6 @@ struct OrthogonalVolumetricLighting : Feature
 		0.00, 2.11867, 0.00073, 0.00,
 		0.00, 0.00035, -1.00036, -128.04633,
 		0.00, 0.00035, -1.00, 0.00);
-
-	int PrevMatrixIdx;
-	//bool FilterVolParity;
-	bool shadowVolParity;
-	bool mediaVolParity;
 
 	uintptr_t* skyrim_FlareData = nullptr;
 	uint32_t* skyrim_RunFlarePtr = nullptr;
@@ -229,7 +228,7 @@ struct OrthogonalVolumetricLighting : Feature
 	struct alignas(16) ShadowDataCB
 	{
 		REX::W32::XMFLOAT4X4 directionalShadowCascadeMatrices[4];
-		LocalShadowLightTransform localShadowLightMatrices[8];
+		LocalShadowLightTransform localShadowLightMatrices[4];
 		float4 shadowCascadeEndSplit;
 		float4 EVSMData;
 	};
@@ -246,6 +245,9 @@ struct OrthogonalVolumetricLighting : Feature
 		float4 cameraData;
 		float4 volumeSize;
 		float4 frustumNearFar;
+
+		float4 lightDirection;
+		float4 frameparams;
 	};
 
 	struct alignas(16) VolumeBuffer
