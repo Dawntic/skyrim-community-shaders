@@ -45,6 +45,7 @@ cbuffer FroxelBuffer : register(b1)
     float4 FrustumNearFar;
     float4 LightDirection;
     float4 FrameParams;
+    uint4 LightGridClusterSize;
 };
 
 cbuffer GeneralBuffer : register(b2)
@@ -84,7 +85,7 @@ SamplerState AnisoWrapSampler : register(s14);
 #define EPSILON 1e-6
 #define kPhi 1.61803398875
 
-//frustumNearFar = nearPlane  :  farPlane  :  1.0f / nearPlane  :  volumeDimensions.z / log2(farPlane / nearPlane)
+
 
 float NDCDepthToView(float depth){
     return (CameraData.w / (-depth * CameraData.z + CameraData.x));
@@ -94,6 +95,7 @@ float NDCDepthToView(float depth){
 //    return (FrustumNearFar.w * log2(Froxel / FrustumNearFar.x) - 0.5);
 //}
 
+//frustumNearFar = nearPlane  :  farPlane  :  1.0f / nearPlane  :  volumeDimensions.z / log2(farPlane / nearPlane)
 float ViewDepthToUV(float ViewDepth){ //includes 0.5 tex offset
     return log(ViewDepth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x); //CPU
 }
@@ -108,10 +110,6 @@ float FroxelDepthToView(float Froxel){
      return exp2(Froxel / FrustumNearFar.w) / FrustumNearFar.z;
 }
 
-//CoordsWS = mul(CameraViewProjInverse, float4(CoordsNDC, 1.0));
-//CoordsWS.xyz /= CoordsWS.w;
-
-//returns froxel worldspace per unit view space
 float3 FroxelWorldDirection(float3 Froxel, float ViewZ)
 {
     float3 CoordsNDC = float3(((Froxel.xy + 0.5) / VolumeSize.xy) * 2.0 - 1.0, 1);
@@ -123,7 +121,7 @@ float3 FroxelWorldDirection(float3 Froxel, float ViewZ)
     return CoordsWS;
 }
 
-float3 GetHistoryValue(float3 CoordsWS, out float Confidence)
+float3 GetHistoryUV(float3 CoordsWS, out float Confidence)
 {
     float4 PrevClip = mul(PrevCameraViewProj, float4(CoordsWS, 1.0));
     float3 PrevNDC = PrevClip.xyz / PrevClip.w;
@@ -136,6 +134,24 @@ float3 GetHistoryValue(float3 CoordsWS, out float Confidence)
 //float ValidViewZ = float(PrevClip.w > 0.0);
 //float ValidDepth = float(PrevUVZ.z >= 0.0 && PrevUVZ.z <= 1.0);
 //Confidence = (any(abs(PrevNDC.xyz) > 1.0)) ? float2(0.0, 0.0) : float2(ValidViewZ, ValidViewZ * ValidDepth);
+
+//CameraData = Far, Near, Far - Near, Far * Near
+bool GetClusterIndex(in float2 CoordsUV, in float ViewZ, inout uint clusterIndex){
+   // const uint3 clusterSize = SharedData::lightLimitFixSettings.ClusterSize.xyz; //uint3(40,23,32);
+
+   //if (!FrameParams.y) // Fix first person lights ///////////////////////////////////////////
+    //uv = 0.5;
+
+    ViewZ = max(ViewZ, CameraData.y);
+    uint clusterZ = log(ViewZ / CameraData.y) * LightGridClusterSize.z / log(CameraData.x / CameraData.y);
+    uint3 cluster = uint3(uint2(CoordsUV * LightGridClusterSize.xy), clusterZ);
+
+    if (any(cluster >= LightGridClusterSize.xyz))
+        return false;
+
+    clusterIndex = cluster.x + (LightGridClusterSize.x * cluster.y) + (LightGridClusterSize.x * LightGridClusterSize.y * cluster.z);
+    return true;
+}
 
 
 #ifdef SHADOW_COMPUTE
@@ -169,13 +185,13 @@ float EVSM_Visibility(float3 CoordsLS, float2 Moments){
     return (Depth <= Moments.x) ? 1.0 : saturate(Visibility * Offset + -Offset);
 }
 
-float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float ThicknessZ, float BNoise){
+float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float ThicknessZ, float BNoise){
 
     int Samples = 4;
 
     float Result = 0;
     for(int i=0; i<Samples; i++){
-        float3 RaySampleCoords = RayPosition * ViewZ;
+        float3 RaySampleCoords = RayDirection * ViewZ;
 
         uint CascadeIndex = (ViewZ < ShadowCascadeEndSplit.x) ? 0 : 1;
         float3 CoordsLS = mul(DirectionalShadowCascadeMatrix[CascadeIndex], float4(RaySampleCoords, 1.0)).xyz;
@@ -192,20 +208,6 @@ float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float Thic
     Result /= Samples;
 
     return Result;
-}
-
-bool GetClusterIndex(in float2 uv, in float z, inout uint clusterIndex){
-    const uint3 clusterSize = SharedData::lightLimitFixSettings.ClusterSize.xyz;
-
-    z = max(z, CameraData.y);
-    uint clusterZ = log(z / CameraData.y) * clusterSize.z / log(CameraData.x / CameraData.y);
-    uint3 cluster = uint3(uint2(uv * clusterSize.xy), clusterZ);
-
-    if (any(cluster >= clusterSize))
-        return false;
-
-    clusterIndex = cluster.x + (clusterSize.x * cluster.y) + (clusterSize.x * clusterSize.y * cluster.z);
-    return true;
 }
 
 float GetLocalLightShadow(float3 WorldPosition, float ViewZ, float2 CoordsUV)
@@ -289,7 +291,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float Confidence;
     float ViewZCenter = FroxelDepthToView(Froxel.z + 0.5);
-    float3 PrevCoordsUV = GetHistoryValue(RayDirection * ViewZCenter, Confidence);
+    float3 PrevCoordsUV = GetHistoryUV(RayDirection * ViewZCenter, Confidence);
     float ShadowHistory = ShadowHistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0).x;
 
     float DeltaLimit = max(0.1, EPSILON); //Shadow diff below which 100% history will be used
@@ -362,8 +364,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
-//Player at slice 20 - 23
-//Higher is further
+
 
 //// Media Volume ///////////////////////////////////////////////////////////////////////
 
@@ -427,16 +428,6 @@ float TestLocalFog(float FroxelWorldHeight){
 //max height = max height
 //falloff = max height - falloff ??
 
-//1.0 - LinearStep(MaxHeight - falloff, MaxHeight,
-//(FroxelWorldHeight - (WorldHeight + UIBias)) /
-
-
-//float NoisePart1 = float((Buffer1._m51.x + i + 1) % 16);
-//float ViewNoise = fract(Noise + NoisePart1 * 1.618);
-//float ViewZ = (CoordZ + (ThicknessZ * ViewNoise));
-//NextSampleCoords = RayWS * ViewZ;
-
-
 float GetFogDensity(float FroxelWorldHeight, float Density, float Height, float Falloff){
     float Fog = 1.0 - clamp((FroxelWorldHeight - Height) / Falloff, 0.0, 1.0);
     return Fog * Fog * Fog * Density;
@@ -493,17 +484,12 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 //// Reprojection
 
     float Confidence;
-    float3 PrevCoordsUV = GetHistoryValue(RayPosition * CoordZ, Confidence);
+    float3 PrevCoordsUV = GetHistoryUV(RayPosition * CoordZ, Confidence);
 
     float4 MediaHistory = HistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0);
     float BaseValue = 0.90;
     float ReprojectionValue = BaseValue * Confidence;
     //Output = lerp(Output, MediaHistory, ReprojectionValue);
-
-    //ViewZCenter = CameraProj[0][2][2] + CameraProj[0][2][3] / ViewZCenter;
-    //float CoordZA = exp2((PrevCoordsUV.z * VolumeSize.z + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
-    //float Part1 = (FrustumNearFar.w * log2(CoordZ / FrustumNearFar.x) - 0.5);
-    //float Part2 = log(CoordZ / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x); // * VolumeSize.z;
 
     MediaVolume[ThreadID] = Output;
 }
@@ -545,30 +531,6 @@ float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
     return (1.0 - AnisotropySq) / (4.0 * Math::PI * (phase * sqrt(phase)));
 }
 
-//if (!FrameParams.y) // Fix first person lights ///////////////////////////////////////////
-    //uv = 0.5;
-
-//CameraData = Far, Near, Far - Near, Far * Near
-bool GetClusterIndex(in float2 CoordsUV, in float ViewZ, inout uint clusterIndex){
-    const uint3 clusterSize = SharedData::lightLimitFixSettings.ClusterSize.xyz; //uint3(40,23,32);
-
-    ViewZ = max(ViewZ, CameraData.y);
-    uint clusterZ = log(ViewZ / CameraData.y) * clusterSize.z / log(CameraData.x / CameraData.y);
-    uint3 cluster = uint3(uint2(CoordsUV * clusterSize.xy), clusterZ);
-
-    if (any(cluster >= clusterSize))
-        return false;
-
-    clusterIndex = cluster.x + (clusterSize.x * cluster.y) + (clusterSize.x * clusterSize.y * cluster.z);
-    return true;
-}
-
-
-//if (IsLightIgnored(light))  // This is bugged and makes lights disapear and appear
-    //continue;
-//if (light.lightFlags & (LightLimitFix::LightFlags::PortalStrict)){
-
-
 float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, float3 RayToEye, float Shadow)
 {
     float3 Lighting = float3(0,0,0);
@@ -598,10 +560,6 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
     return Lighting;
 }
 
-// At slice 63 of 67 we are depth of 7228 of 10664
-//Problems:
-//lack of info a high slices - could be from be or from light grid
-//Check if given light index is still returned when its not visible  - Yes it is
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -640,7 +598,6 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     }
 
 
-    //Lighting *= float3(0,0,1);
     Lighting *= MediaScattering;
 
     ScatteringVolume[ThreadID] = float4(Lighting, MediaExtinction);
@@ -726,7 +683,6 @@ Texture2D DepthTex : register(t0);
 Texture3D IntergrationVolume : register(t1);
 Texture2DArray STBNoise : register(t2);
 Texture3D ShadowVolume : register(t3);
-//Texture2D EVSMCascade : register(t4);
 
 float4 main(VertexShaderOutput input) : SV_Target
 {
@@ -745,44 +701,10 @@ float4 main(VertexShaderOutput input) : SV_Target
     float4 Output = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV, FroxelDepth), 0.0);
     Output = saturate(Output);
 
-    //uint clusterIdx = 0;
-    //float Test = 0;
-    //if (LightLimitFix::GetClusterIndex(CoordsUV, NDCDepthToView(Depth), clusterIdx)){
-    //    Test = float(lightGrid[clusterIdx].lightCount).xxx;
-   // }
-    //Output = Test.xxxx;
-    // #if defined(LIGHT_LIMIT_FIX)
-    //    Output = float4(1,1,1,1);
-     //endif
-     //Output = float4(1,1,1,1);
-    //Output.xyz = ShadowVolume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, FroxelDepth), 0.0).xxx;
-    //Output.xy = EVSM.SampleLevel(Linear_Sampler, input.TexCoord.xy, 0.0).xy;
-    //Output.z = 0;
-
-    //float MaxFroxelView = exp2((67.0 + 0.5) / FrustumNearFar.w) / FrustumNearFar.z;
-	//float Depth2 = (CameraData.w / (-Depth * CameraData.z + CameraData.x));
-
-    //float FroxelViewDepth = VolumePixelToView(FroxelDepth * VolumeSize.z - 0.5);
-    //float SceneViewDepth = NDCDepthToView(Depth);
-
-    //Output.x = ShadowVolume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, FroxelDepth), 0.0).xxx;
-    //return float4(FroxelDepth, Output.x, 0.0, 1.0);
-
-
     return float4(Output.xyz, 0.0);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
-
-//Output.x = ShadowVolume.SampleLevel(Linear_Sampler, float3(input.TexCoord.xy, FroxelDepth), 0.0).xxx;  shadow = Froxel.z;
-// return float4(FroxelDepth, Output.x, 0.0, 1.0);
-
-
-
-
-
-
-
 
 
 

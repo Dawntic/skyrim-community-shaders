@@ -66,8 +66,6 @@ struct OrthogonalVolumetricLighting : Feature
 	void SetupPerlinNoise();
 	//void SetupFilterPass();
 
-	REX::W32::XMFLOAT4X4 GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightTransform);
-
 	ConstantBuffer* shadowDataCB = nullptr;
 	ConstantBuffer* froxelGridCB = nullptr;
 	ConstantBuffer* volumeCB = nullptr;
@@ -200,6 +198,23 @@ struct OrthogonalVolumetricLighting : Feature
 	float brushFeather = 0.5;
 	float fogErase = false;
 
+	inline REX::W32::XMFLOAT4X4 GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightMatrix)
+	{
+		float4 pos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0);
+		float4 transform = mul(pos, lightMatrix);
+
+		REX::W32::XMFLOAT4X4 matrix = lightMatrix;
+		matrix.m[3][0] = transform.x;
+		matrix.m[3][1] = transform.y;
+		matrix.m[3][2] = transform.z;
+		matrix.m[3][3] = transform.w;
+
+		REX::W32::XMFLOAT4X4 outMatrix = matrix;
+		transpose(matrix, outMatrix);
+
+		return outMatrix;
+	}
+
 	struct Settings
 	{
 		float extinction = 1;
@@ -249,6 +264,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 		float4 lightDirection;
 		float4 frameparams;
+		uint lightClusterGridSize[4];
 	};
 
 	struct alignas(16) VolumeBuffer

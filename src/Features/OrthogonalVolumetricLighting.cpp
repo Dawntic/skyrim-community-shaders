@@ -344,7 +344,6 @@ void OrthogonalVolumetricLighting::UpdateShadowBuffer()
 	std::memcpy(shadowData.localShadowLightMatrices, localShadowLightMatrices, sizeof(shadowData.localShadowLightMatrices));
 	shadowData.shadowCascadeEndSplit = shadowCascadeEndSplit;
 	shadowData.EVSMData = float4((float)EVSM_Size, (float)EVSM_Size, (float)std::exp(settings.esmExponent), (float)std::exp(settings.esmExponent * 2.0f));
-
 	shadowDataCB->Update(shadowData);
 }
 
@@ -371,7 +370,7 @@ void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
 	froxelData.frustumNearFar = frustumNearFar;
 	froxelData.lightDirection = lightDir;
 	froxelData.frameparams = globals::game::frameBufferCached.GetFrameParams();
-
+	std::copy(globals::features::lightLimitFix.clusterSize, globals::features::lightLimitFix.clusterSize + 3, froxelData.lightClusterGridSize);
 	froxelGridCB->Update(froxelData);
 }
 
@@ -484,6 +483,7 @@ void OrthogonalVolumetricLighting::GenerateShadowVolume()
 	if (globals::state->frameAnnotations)
 		globals::state->EndPerfEvent();
 }
+///////////////////////////////////////////////////////////
 
 //// Render Passes ////////////////////////////////////////
 void OrthogonalVolumetricLighting::GenerateMediaVolume()
@@ -528,17 +528,18 @@ void OrthogonalVolumetricLighting::GenerateScatteringVolume()
 	context->CSSetShaderResources(0, 1, &shadowVolumeSRV[currentVolumeIdx]);
 	context->CSSetShaderResources(1, 1, &mediaVolumeSRV[currentVolumeIdx]);
 
-	auto lightsSB = LLF.lights->srv.get();
-	context->CSSetShaderResources(2, 1, &lightsSB);
-	auto lightListSB = LLF.lightIndexList->srv.get();
-	context->CSSetShaderResources(3, 1, &lightListSB);
-	auto lightGridSB = LLF.lightGrid->srv.get();
-	context->CSSetShaderResources(4, 1, &lightGridSB);
 	auto localShadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS].depthSRV;
 	context->CSSetShaderResources(5, 1, &localShadowMap);
 
+	auto lightsSB = LLF.lights->srv.get();
+	auto lightListSB = LLF.lightIndexList->srv.get();
+	auto lightGridSB = LLF.lightGrid->srv.get();
+	context->CSSetShaderResources(2, 1, &lightsSB);
+	context->CSSetShaderResources(3, 1, &lightListSB);
+	context->CSSetShaderResources(4, 1, &lightGridSB);
+
 	auto strictLightDataCB = LLF.strictLightDataCB->CB();
-	context->CSSetConstantBuffers(9, 1, &strictLightDataCB);
+	context->CSSetConstantBuffers(9, 1, &strictLightDataCB);  //Do i need this for anything?
 
 	context->Dispatch(60, 34, 17);
 
@@ -617,7 +618,6 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 	if (globals::state->frameAnnotations)
 		globals::state->EndPerfEvent();
 }
-
 /*
 void OrthogonalVolumetricLighting::SetupFilterPass()
 {
@@ -651,6 +651,7 @@ void OrthogonalVolumetricLighting::SetupFilterPass()
 	overrideShader = false;
 }
 */
+///////////////////////////////////////////////////////////
 
 //// Utility //////////////////////////////////////////////
 void OrthogonalVolumetricLighting::DrawFogMap()
@@ -711,24 +712,7 @@ void OrthogonalVolumetricLighting::SetupBypass()
 	context->PSSetShader(nullptr, nullptr, 0);
 	overrideShader = false;
 }
-
-///// Shadow Misc /////////////////////////////////////////
-REX::W32::XMFLOAT4X4 OrthogonalVolumetricLighting::GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightMatrix)
-{
-	float4 pos = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0);
-	float4 transform = mul(pos, lightMatrix);
-
-	REX::W32::XMFLOAT4X4 matrix = lightMatrix;
-	matrix.m[3][0] = transform.x;
-	matrix.m[3][1] = transform.y;
-	matrix.m[3][2] = transform.z;
-	matrix.m[3][3] = transform.w;
-
-	REX::W32::XMFLOAT4X4 outMatrix = matrix;
-	transpose(matrix, outMatrix);
-
-	return outMatrix;
-}
+///////////////////////////////////////////////////////////
 
 ///// Settings ////////////////////////////////////////////
 void OrthogonalVolumetricLighting::DrawSettings()
@@ -837,7 +821,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::EndChild();
 }
 
-//// GENERAL HOOKS ////////////////////////////////////////
+//// General Hooks ////////////////////////////////////////
 void OrthogonalVolumetricLighting::Hooks::BSSkyShader_SetupMaterial::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 {
 	auto& OVL = globals::features::orthogonalVolumetricLighting;
