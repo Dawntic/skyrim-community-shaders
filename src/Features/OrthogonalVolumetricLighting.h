@@ -156,8 +156,8 @@ struct OrthogonalVolumetricLighting : Feature
 	bool overrideShader = false;
 	bool swapOutputRT = false;
 	uint frameCounter = 0;
-	uint currentVolume = 0;
-	uint historyVolume = 1;
+	uint currentVolumeIdx = 0;
+	uint historyVolumeIdx = 1;
 
 	bool updateLightDir = true;
 	float4 lightDir = float4(0, 0, 0, 0);
@@ -240,6 +240,7 @@ struct OrthogonalVolumetricLighting : Feature
 		Matrix cameraViewInverse;
 		Matrix cameraProjInverse;
 		Matrix prevCameraViewProj;
+		Matrix cameraViewProjInverse;
 
 		float4 cameraPosition;
 		float4 cameraData;

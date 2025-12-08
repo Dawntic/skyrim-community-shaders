@@ -38,6 +38,7 @@ cbuffer FroxelBuffer : register(b1)
     row_major float4x4 CameraViewInverse;
     row_major float4x4 CameraProjInverse;
     row_major float4x4 PrevCameraViewProj;
+    row_major float4x4 CameraViewProjInverse;
     float4 CameraPosition;
     float4 CameraData;
     float4 VolumeSize;
@@ -74,95 +75,6 @@ cbuffer SettingsBuffer : register(b3)
     float4 UIFogMapInput;
 };
 
-/*
-cbuffer VolumeBuffer : register(b0)
-{
-    row_major float4x4 DirectionalShadowCascadeMatrix[4];
-    ShadowLightTransform ShadowLightData[8];
-    row_major float4x4 FogViewProjMatrix;
-
-    float4 ShadowCascadeEndSplit;
-    float4 FrustumNearFar;
-    float4 CameraPosition;
-    float4 CameraData;
-
-    float4 EVSMData;
-    float4 HeightMapParams;
-    float4 HeightMapZRange;
-
-    float4 VolumeSize;
-	float4 NoiseSize;
-
-    uint FrameCounter;
-    uint BoardCond;
-};
-
-cbuffer PerFrame : register(b10)
-{
-    row_major float4x4 CameraView[1] : packoffset(c0);
-    row_major float4x4 CameraProj[1] : packoffset(c4);
-    row_major float4x4 CameraViewProjA[1] : packoffset(c8);
-    row_major float4x4 CameraViewProjUnjittered[1] : packoffset(c12);
-    row_major float4x4 CameraPreviousViewProjUnjittered[1] : packoffset(c16);
-    row_major float4x4 CameraProjUnjittered[1] : packoffset(c20);
-    row_major float4x4 CameraProjUnjitteredInverse[1] : packoffset(c24);
-    row_major float4x4 CameraViewInverse[1] : packoffset(c28);
-    row_major float4x4 CameraViewProjInverse[1] : packoffset(c32);
-    row_major float4x4 CameraProjInverse[1] : packoffset(c36);
-    float4 CameraPosAdjust[1] : packoffset(c40);
-    float4 CameraPreviousPosAdjust[1] : packoffset(c41);
-    float4 FrameParams : packoffset(c42);
-    float4 DynamicResolutionParams1 : packoffset(c43);
-    float4 DynamicResolutionParams2 : packoffset(c44);
-};
-
-cbuffer PrevPerFrame : register(b3)
-{
-    row_major float4x4 PrevCameraView[1] : packoffset(c0);
-    row_major float4x4 PrevCameraProj[1] : packoffset(c4);
-    row_major float4x4 PrevCameraViewProj[1] : packoffset(c8);
-    row_major float4x4 PrevCameraViewProjUnjittered[1] : packoffset(c12);
-    row_major float4x4 PrevCameraPreviousViewProjUnjittered[1] : packoffset(c16);
-    row_major float4x4 PrevCameraProjUnjittered[1] : packoffset(c20);
-    row_major float4x4 PrevCameraProjUnjitteredInverse[1] : packoffset(c24);
-    row_major float4x4 PrevCameraViewInverse[1] : packoffset(c28);
-    row_major float4x4 PrevCameraViewProjInverse[1] : packoffset(c32);
-    row_major float4x4 PrevCameraProjInverse[1] : packoffset(c36);
-    float4 PrevCameraPosAdjust[1] : packoffset(c40);
-    float4 PrevCameraPreviousPosAdjust[1] : packoffset(c41);
-    float4 PrevFrameParams : packoffset(c42);
-    float4 PrevDynamicResolutionParams1 : packoffset(c43);
-    float4 PrevDynamicResolutionParams2 : packoffset(c44);
-};
-
-cbuffer ShadowUpdateCB : register(b4)
-{
-	float2 LightPxDir : packoffset(c0.x);   // direction on which light descends, from one pixel to next via dda
-	float2 LightDeltaZ : packoffset(c0.z);  // per lightUVDir, normalised, [upper, lower] penumbra, should be negative
-	uint StartPxCoord : packoffset(c1.x);
-	float2 PxSize : packoffset(c1.y);
-	float pad : packoffset(c1.w);
-	float2 TerrainPosRange : packoffset(c2.x);
-	float2 TerrainZRange : packoffset(c2.z);
-}
-
-struct ShadowDataStruct
-{
-    float4 VPOSOffset;
-    float4 ShadowSampleParam;
-    float4 EndSplits;
-    float4 StartSplitDistances;
-    float4 FocusShadowFadeParam;
-    float4 DebugColor;
-    float4 PropertyColor;
-    float4 AlphaTestRef;
-    float4 ShadowLightParam;
-    float4x3 FocusShadowMapProj[4];
-    float4x3 ShadowMapProj[2][3];
-    float4x4 CameraViewProjInverseA[2];
-};
-*/
-
 SamplerState Linear_Sampler : register(s10);
 SamplerState Point_Sampler : register(s11);
 SamplerState AnisoClampSampler : register(s13);
@@ -195,6 +107,9 @@ float ViewDepthToFroxel(float ViewDepth){
 float FroxelDepthToView(float Froxel){
      return exp2(Froxel / FrustumNearFar.w) / FrustumNearFar.z;
 }
+
+//CoordsWS = mul(CameraViewProjInverse, float4(CoordsNDC, 1.0));
+//CoordsWS.xyz /= CoordsWS.w;
 
 //returns froxel worldspace per unit view space
 float3 FroxelWorldDirection(float3 Froxel, float ViewZ)
@@ -281,8 +196,6 @@ float GetCascadeShadow(float3 RayPosition, float ViewZ, float CoordZ, float Thic
 
 bool GetClusterIndex(in float2 uv, in float z, inout uint clusterIndex){
     const uint3 clusterSize = SharedData::lightLimitFixSettings.ClusterSize.xyz;
-    //if (!FrameParams.y) // Fix first person lights ///////////////////////////////////////////
-        //uv = 0.5;
 
     z = max(z, CameraData.y);
     uint clusterZ = log(z / CameraData.y) * clusterSize.z / log(CameraData.x / CameraData.y);
@@ -314,7 +227,7 @@ float GetLocalLightShadow(float3 WorldPosition, float ViewZ, float2 CoordsUV)
                 float4 CoordsLS = mul(ShadowLightData[light.shadowLightIndex].ShadowMatrix, float4(WorldPosition, 1.0));
 
                 bool lowerHalf = CoordsLS.z < 0; //bool lowerHalf = CoordsLS.z * 0.5 + 0.5 < 0;
-                float3 PosOffset = float3(0, 0, 1 - 2 * lowerHalf);
+                float3 PosOffset = float3(0, 0, 1.0 - 2 * lowerHalf);
                 float3 lightDirection = normalize(normalize(CoordsLS.xyz) + PosOffset);
                 float2 ShadowUV = lightDirection.xy / lightDirection.z * 0.5 + 0.5;
                 ShadowUV.y = lowerHalf ? 1 - 0.5 * ShadowUV.y : 0.5 * ShadowUV.y;
@@ -330,6 +243,10 @@ float GetLocalLightShadow(float3 WorldPosition, float ViewZ, float2 CoordsUV)
 
     return Visibility;
 }
+
+float LinearStep(float edge0, float edge1, float x){
+    return saturate((x - edge0) / (edge1 - edge0));}
+
 //float ViewZNoise = frac(BNoise + (FrameCounter * (i+2)) * kPhi);
 //float ViewZNoise = frac(BNoise + (FrameCounter * (i+2) & 17) * kPhi); BAD
 //float ViewZNoise = frac(BNoise + (FrameCounter & (17 * (i+2))) * kPhi); BAD
@@ -339,6 +256,9 @@ float GetLocalLightShadow(float3 WorldPosition, float ViewZ, float2 CoordsUV)
 //float ViewZNoise = frac(BNoise + (FrameCounter & 17) * kPhi);
 //float ViewZNoise = frac(BNoise + ((FrameCounter + 17) % 33) * frac(kPhi));
 //frac(BNoise + frac(FrameCounter * (1.0 / kPhi)));
+
+#define MaxHistory 0.85
+
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -365,18 +285,18 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float CloudShadow = CloudShadows::GetCloudShadowMult(WorldPosition, Linear_Sampler) * UICloudShadowContrib;
     float TerrainShadow = TerrainShadows::GetTerrainShadow(WorldPosition, Linear_Sampler);
 
-    float Shadow = CascadeShadow;// * TerrainShadow * CloudShadow;
-    //Shadow = LocalShadow; // --wrong?
+    float Shadow = LocalShadow + CascadeShadow;// * TerrainShadow * CloudShadow;
 
     float Confidence;
     float ViewZCenter = FroxelDepthToView(Froxel.z + 0.5);
     float3 PrevCoordsUV = GetHistoryValue(RayDirection * ViewZCenter, Confidence);
-
-    float BaseValue = 0.85;
-    float ReprojectionValue = BaseValue * Confidence;
     float ShadowHistory = ShadowHistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0).x;
-    //Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
-    Shadow = CoordZ;
+
+    float DeltaLimit = max(0.1, EPSILON); //Shadow diff below which 100% history will be used
+    float ReprojectionValue = 1.0 - LinearStep(DeltaLimit, 1.0, abs(Shadow - ShadowHistory)); //saturate((x - edge0) / (edge1 - edge0));
+          ReprojectionValue = Confidence * min(ReprojectionValue, MaxHistory);
+
+    Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
 
     ShadowVolume[ThreadID] = Shadow;
 }
@@ -625,18 +545,8 @@ float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
     return (1.0 - AnisotropySq) / (4.0 * Math::PI * (phase * sqrt(phase)));
 }
 
-/*
-float HenyeyGreensteinPhase(float3 RayDirection, float3 LightDirection, float Anisotropy){
-    float ScatteringAngle = dot(LightDirection, RayDirection);
-    Anisotropy = clamp(Anisotropy, -0.999, 0.999);
-	float AnisotropySq = Anisotropy * Anisotropy;
-	float phase = max(1.0 + AnisotropySq - 2.0 * Anisotropy * ScatteringAngle, EPSILON);
-
-    return (1.0 - AnisotropySq) / (4.0 * Math::PI * (phase * sqrt(phase)));
-}
-*/
-    //if (!FrameParams.y) // Fix first person lights ///////////////////////////////////////////
-        //uv = 0.5;
+//if (!FrameParams.y) // Fix first person lights ///////////////////////////////////////////
+    //uv = 0.5;
 
 //CameraData = Far, Near, Far - Near, Far * Near
 bool GetClusterIndex(in float2 CoordsUV, in float ViewZ, inout uint clusterIndex){
@@ -653,21 +563,11 @@ bool GetClusterIndex(in float2 CoordsUV, in float ViewZ, inout uint clusterIndex
     return true;
 }
 
-/*
-float shadowComponent = 1.0;
-if (Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow) {
-    if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
-        shadowComponent = shadowColor[light.shadowLightIndex];
-        lightShadow *= shadowComponent;
-    }
-}
 
-//if (Attenuation < 0.95) continue;
 //if (IsLightIgnored(light))  // This is bugged and makes lights disapear and appear
     //continue;
-//LightLimitFix::LightFlags::Simple ||
-// * HenyeyGreensteinPhase(RayToEye, normalize(LightPosition), UIAnisotropy);  // Phase function is broken - causes a duplicate orb
-*/
+//if (light.lightFlags & (LightLimitFix::LightFlags::PortalStrict)){
+
 
 float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, float3 RayToEye, float Shadow)
 {
@@ -676,6 +576,7 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
 
     if (GetClusterIndex(CoordsUV, ViewZ, clusterIdx)){
         uint lightOffset = lightGrid[clusterIdx].offset;
+
         [loop] for(uint i = 0; i < lightGrid[clusterIdx].lightCount; i++){
             LightLimitFix::Light light = lights[lightList[lightOffset + i]];
             float3 LightPosition = WorldPosition.xyz - light.positionWS[0].xyz;
@@ -686,11 +587,12 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
 
             float3 Radiance = light.color.xyz * Attenuation;
 
-            if (light.lightFlags & (LightLimitFix::LightFlags::PortalStrict)){
-                float3 LightToRay = normalize(LightPosition);
-                float ScatterCos = dot(LightToRay, RayToEye);
-                Lighting += Radiance * HenyeyGreensteinPhase(ScatterCos, UIAnisotropy);
-            }
+            if (light.lightFlags & LightLimitFix::LightFlags::Shadow)
+                Radiance *= Shadow;
+
+            float3 LightToRay = normalize(LightPosition);
+            float ScatterCos = dot(LightToRay, RayToEye);
+            Lighting += Radiance * HenyeyGreensteinPhase(ScatterCos, UIAnisotropy);
         }
     }
     return Lighting;
@@ -728,19 +630,17 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //Lighting += Ambient;
 
     float3 DirLightRadiance = SharedData::DirLightColor.xyz * Phase * Shadow;
-    //Lighting += DirLightRadiance;
+    Lighting += DirLightRadiance;
 
-    Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
-
-
+    //Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
     for(int j=-1; j<=1;j++){ // For full coverage use +-2 and 0.25
-        ViewZ = FroxelDepthToView(Froxel.z + 0.5 * j);
+        ViewZ = FroxelDepthToView(Froxel.z + 0.5 * j); // Can we directly index the cluster instead?
         RayPosition = FroxelWorldDirection(Froxel, ViewZ) * ViewZ;
         Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
     }
 
 
-
+    //Lighting *= float3(0,0,1);
     Lighting *= MediaScattering;
 
     ScatteringVolume[ThreadID] = float4(Lighting, MediaExtinction);

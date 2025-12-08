@@ -260,7 +260,7 @@ void OrthogonalVolumetricLighting::CheckOverride()
 void OrthogonalVolumetricLighting::VLightingRenderChain()
 {
 	UpdateAndSetupResources();
-	std::swap(currentVolume, historyVolume);
+	std::swap(currentVolumeIdx, historyVolumeIdx);
 	frameCounter++;
 
 	static bool renderPerlin = true;
@@ -364,6 +364,7 @@ void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
 	froxelData.cameraViewInverse = globals::game::frameBufferCached.GetCameraViewInverse(0);
 	froxelData.cameraProjInverse = globals::game::frameBufferCached.GetCameraProjInverse(0);
 	froxelData.prevCameraViewProj = globals::game::frameBufferCached.GetCameraPreviousViewProjUnjittered(0);
+	froxelData.cameraViewProjInverse = globals::game::frameBufferCached.GetCameraViewProjInverse(0);
 	froxelData.cameraPosition = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
 	froxelData.cameraData = Util::GetCameraData();
 	froxelData.volumeSize = volumeDimensions;
@@ -461,9 +462,9 @@ void OrthogonalVolumetricLighting::GenerateShadowVolume()
 		globals::state->BeginPerfEvent("VL - Generate Shadow Volume");
 
 	context->CSSetShader(generateShadowVolumeCS, nullptr, 0);
-	context->CSSetUnorderedAccessViews(0, 1, &shadowVolumeUAV[currentVolume], nullptr);
+	context->CSSetUnorderedAccessViews(0, 1, &shadowVolumeUAV[currentVolumeIdx], nullptr);
 
-	context->CSSetShaderResources(0, 1, &shadowVolumeSRV[historyVolume]);
+	context->CSSetShaderResources(0, 1, &shadowVolumeSRV[historyVolumeIdx]);
 	context->CSSetShaderResources(1, 1, &blueNoiseSRV);
 	context->CSSetShaderResources(2, 1, &EVSMBlurSRV);
 
@@ -495,10 +496,10 @@ void OrthogonalVolumetricLighting::GenerateMediaVolume()
 		globals::state->BeginPerfEvent("VL - Generate Media Volume");
 
 	//ID3D11UnorderedAccessView* UAVs[2] = { mediaUAV, FogMapUAV };
-	context->CSSetUnorderedAccessViews(0, 1, &mediaVolumeUAV[currentVolume], nullptr);
+	context->CSSetUnorderedAccessViews(0, 1, &mediaVolumeUAV[currentVolumeIdx], nullptr);
 	context->CSSetShader(generateMediaVolumeCS, nullptr, 0);
 
-	context->CSSetShaderResources(0, 1, &mediaVolumeSRV[historyVolume]);
+	context->CSSetShaderResources(0, 1, &mediaVolumeSRV[historyVolumeIdx]);
 	context->CSSetShaderResources(1, 1, &perlinSRV);
 	context->CSSetShaderResources(2, 1, &blueNoiseSRV);
 	context->CSSetShaderResources(3, 1, &fogMapSRV);
@@ -524,8 +525,8 @@ void OrthogonalVolumetricLighting::GenerateScatteringVolume()
 	context->CSSetUnorderedAccessViews(0, 1, &scatteringVolumeUAV, nullptr);
 	context->CSSetShader(generateScatteringVolumeCS, nullptr, 0);
 
-	context->CSSetShaderResources(0, 1, &shadowVolumeSRV[currentVolume]);
-	context->CSSetShaderResources(1, 1, &mediaVolumeSRV[currentVolume]);
+	context->CSSetShaderResources(0, 1, &shadowVolumeSRV[currentVolumeIdx]);
+	context->CSSetShaderResources(1, 1, &mediaVolumeSRV[currentVolumeIdx]);
 
 	auto lightsSB = LLF.lights->srv.get();
 	context->CSSetShaderResources(2, 1, &lightsSB);
@@ -611,7 +612,7 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 
 	context->PSSetShaderResources(1, 1, &intergrationVolumeSRV);
 	context->PSSetShaderResources(2, 1, &blueNoiseSRV);
-	context->PSSetShaderResources(3, 1, &shadowVolumeSRV[historyVolume]);
+	context->PSSetShaderResources(3, 1, &shadowVolumeSRV[historyVolumeIdx]);
 
 	if (globals::state->frameAnnotations)
 		globals::state->EndPerfEvent();
