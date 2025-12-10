@@ -1,6 +1,7 @@
 #pragma once
 #include "../Deferred.h"
 #include "Feature.h"
+#include "IBL.h"
 #include "LightLimitFix.h"
 #include "Skylighting.h"
 #include "State.h"
@@ -76,7 +77,7 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11SamplerState* anisoLinear = nullptr;
 	ID3D11SamplerState* anisoWrapLinear = nullptr;
 
-	ID3D11BlendState* additiveBlend = nullptr;
+	ID3D11BlendState* outVolumetricsBlendState = nullptr;
 
 	//// Volumes ////////////
 	ID3D11ComputeShader* generateMediaVolumeCS = nullptr;
@@ -217,24 +218,23 @@ struct OrthogonalVolumetricLighting : Feature
 
 	struct Settings
 	{
-		float extinction = 1;
-		float anisotropy = 0.85;
-		uint esmExponent = 2;
+		float extinction = 0.02;
+		float anisotropy = 0.65;
+		uint esmExponent = 8;
 		float albedo = 1.0;
 
-		float color_saturation = 1.0;
+		float color_saturation = 0.25;
 
 		float globalFogDensity = 0;
 		float globalFogStartHeight = 0;
 		float globalFogFalloffHeight = 0;
 
-		//uint VarienceFrameIndex;
-		//uint RunVarienceMapping;
-		//uint DebugCascadeSplit;
+		uint useHistory = true;
+		float disocclutionThreshold = 0.05;
+		float distanceFadeIn = 1.0;
 
 		float blendOpp = false;
 
-		float _pad[3];
 		float4 fogMapData;
 		float4 UIfogMapParams;
 	};
@@ -273,9 +273,9 @@ struct OrthogonalVolumetricLighting : Feature
 		float4 heightMapParams;
 		float4 heightMapZRange;
 		float4 NoiseSize;
-		uint frameCounter;
-		uint boardCondition;
-		float _pad[2];
+		//uint frameCounter;
+		//uint boardCondition;
+		//float _pad[3];
 	};
 
 	struct alignas(16) SettingsBuffer

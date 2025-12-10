@@ -91,13 +91,13 @@ void OrthogonalVolumetricLighting::SetupResources()
 	rtDesc.BlendEnable = TRUE;
 	rtDesc.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 	rtDesc.SrcBlend = D3D11_BLEND_ONE;
-	rtDesc.DestBlend = D3D11_BLEND_ONE;
+	rtDesc.DestBlend = D3D11_BLEND_SRC_ALPHA;
 	rtDesc.BlendOp = D3D11_BLEND_OP_ADD;
-	rtDesc.SrcBlendAlpha = D3D11_BLEND_ONE;
+	rtDesc.SrcBlendAlpha = D3D11_BLEND_ZERO;
 	rtDesc.DestBlendAlpha = D3D11_BLEND_ONE;
 	rtDesc.BlendOpAlpha = D3D11_BLEND_OP_ADD;
 
-	DX::ThrowIfFailed(device->CreateBlendState(&addBlendDesc, &additiveBlend));
+	DX::ThrowIfFailed(device->CreateBlendState(&addBlendDesc, &outVolumetricsBlendState));
 
 	shadowDataCB = new ConstantBuffer(ConstantBufferDesc<ShadowDataCB>());
 	froxelGridCB = new ConstantBuffer(ConstantBufferDesc<FroxelGridCB>());
@@ -243,7 +243,7 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 	static const std::unordered_map<int, void (OrthogonalVolumetricLighting::*)()> effects{
 		{ Shaders::Bypass, &OrthogonalVolumetricLighting::SetupBypass },
 		{ Shaders::RenderVL, &OrthogonalVolumetricLighting::VLightingRenderChain },
-		{ Shaders::Apply, &OrthogonalVolumetricLighting::SetupApplyPass },
+		//{ Shaders::Apply, &OrthogonalVolumetricLighting::SetupApplyPass },
 	};
 	auto it = effects.find(desc);
 	if (it != effects.cend())
@@ -288,21 +288,44 @@ void OrthogonalVolumetricLighting::UpdateAndSetupResources()
 	UpdateFroxelBuffer();
 	UpdateGeneralBuffers();
 
-	auto shadowBuffer = shadowDataCB->CB();
-	auto froxelBuffer = froxelGridCB->CB();
-	auto generalBuffer = volumeCB->CB();
-	auto settingsBuffer = settingsCB->CB();
-
 	auto context = globals::d3d::context;
-	context->CSSetConstantBuffers(0, 1, &shadowBuffer);
-	context->CSSetConstantBuffers(1, 1, &froxelBuffer);
-	context->CSSetConstantBuffers(2, 1, &generalBuffer);
-	context->CSSetConstantBuffers(3, 1, &settingsBuffer);
+	ID3D11Buffer* buffers[4] = { shadowDataCB->CB(), froxelGridCB->CB(), volumeCB->CB(), settingsCB->CB() };
+	context->CSSetConstantBuffers(0, 4, buffers);
 
+	//std::array<ID3D11SamplerState*, 2> samplers = { Deferred::GetSingleton()->linearSampler, Deferred::GetSingleton()->pointSampler };
+	//context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
 	context->CSSetSamplers(10, 1, &linearSampler);
 	context->CSSetSamplers(11, 1, &pointSampler);
 	context->CSSetSamplers(13, 1, &anisoLinear);
 	context->CSSetSamplers(14, 1, &anisoWrapLinear);
+}
+
+void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
+{
+	float nearPlane = Util::GetCameraData().y;
+	float farPlane = 10000.0f;
+
+	frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
+	auto eyePos = Util::GetEyePosition(0);
+	if (eyePos.x > 1.0 || eyePos.x < -1.0) {
+		eyePositionWS = float3(eyePos.x, eyePos.y, eyePos.z);
+	}
+
+	FroxelGridCB froxelData{};
+	froxelData.cameraView = globals::game::frameBufferCached.GetCameraView(0);
+	froxelData.cameraProj = globals::game::frameBufferCached.GetCameraProj(0);
+	froxelData.cameraViewInverse = globals::game::frameBufferCached.GetCameraViewInverse(0);
+	froxelData.cameraProjInverse = globals::game::frameBufferCached.GetCameraProjInverse(0);
+	froxelData.prevCameraViewProj = globals::game::frameBufferCached.GetCameraPreviousViewProjUnjittered(0);
+	froxelData.cameraViewProjInverse = globals::game::frameBufferCached.GetCameraViewProjInverse(0);
+	froxelData.cameraPosition = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
+	froxelData.cameraData = Util::GetCameraData();
+	froxelData.volumeSize = volumeDimensions;
+	froxelData.frustumNearFar = frustumNearFar;
+	froxelData.lightDirection = lightDir;
+	froxelData.frameparams = globals::game::frameBufferCached.GetFrameParams();
+	std::copy(globals::features::lightLimitFix.clusterSize, globals::features::lightLimitFix.clusterSize + 3, froxelData.lightClusterGridSize);
+	froxelGridCB->Update(froxelData);
 }
 
 void OrthogonalVolumetricLighting::UpdateShadowBuffer()
@@ -347,33 +370,6 @@ void OrthogonalVolumetricLighting::UpdateShadowBuffer()
 	shadowDataCB->Update(shadowData);
 }
 
-void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
-{
-	float nearPlane = Util::GetCameraData().y;
-	float farPlane = 11200.0f;
-	frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
-	auto eyePos = Util::GetEyePosition(0);
-	if (eyePos.x > 1.0 || eyePos.x < -1.0) {
-		eyePositionWS = float3(eyePos.x, eyePos.y, eyePos.z);
-	}
-
-	FroxelGridCB froxelData{};
-	froxelData.cameraView = globals::game::frameBufferCached.GetCameraView(0);
-	froxelData.cameraProj = globals::game::frameBufferCached.GetCameraProj(0);
-	froxelData.cameraViewInverse = globals::game::frameBufferCached.GetCameraViewInverse(0);
-	froxelData.cameraProjInverse = globals::game::frameBufferCached.GetCameraProjInverse(0);
-	froxelData.prevCameraViewProj = globals::game::frameBufferCached.GetCameraPreviousViewProjUnjittered(0);
-	froxelData.cameraViewProjInverse = globals::game::frameBufferCached.GetCameraViewProjInverse(0);
-	froxelData.cameraPosition = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
-	froxelData.cameraData = Util::GetCameraData();
-	froxelData.volumeSize = volumeDimensions;
-	froxelData.frustumNearFar = frustumNearFar;
-	froxelData.lightDirection = lightDir;
-	froxelData.frameparams = globals::game::frameBufferCached.GetFrameParams();
-	std::copy(globals::features::lightLimitFix.clusterSize, globals::features::lightLimitFix.clusterSize + 3, froxelData.lightClusterGridSize);
-	froxelGridCB->Update(froxelData);
-}
-
 void OrthogonalVolumetricLighting::UpdateGeneralBuffers()
 {
 	float3 mapScale = float3(0, 0, 0);
@@ -391,12 +387,13 @@ void OrthogonalVolumetricLighting::UpdateGeneralBuffers()
 	generalData.heightMapParams = float4(mapScale.x, mapScale.y, mapOffset.x, mapOffset.y);
 	generalData.heightMapZRange = float4(mapRange.x, mapRange.y, 0.0, 0.0);
 	generalData.NoiseSize = noiseDimensions;
-	generalData.frameCounter = frameCounter;
-	generalData.boardCondition = frameCounter & 1;
+	//generalData.frameCounter = frameCounter;
+	//generalData.boardCondition = frameCounter & 1;
 	volumeCB->Update(generalData);
 
 	SettingsBuffer settingsData{};
 	settingsData.cbsettings = settings;
+	settingsData.cbsettings.extinction *= Util::Units::GAME_UNIT_TO_M;
 	settingsCB->Update(settingsData);
 }
 ///////////////////////////////////////////////////////////
@@ -517,6 +514,8 @@ void OrthogonalVolumetricLighting::GenerateScatteringVolume()
 	ZoneScoped;
 	auto context = globals::d3d::context;
 	auto& LLF = globals::features::lightLimitFix;
+	auto& skyLighting = globals::features::skylighting;
+	auto& imageBasedLighting = globals::features::ibl;
 
 	TracyD3D11Zone(state->tracyCtx, "VL - Generate Scattering Volume");
 	if (globals::state->frameAnnotations)
@@ -528,15 +527,20 @@ void OrthogonalVolumetricLighting::GenerateScatteringVolume()
 	context->CSSetShaderResources(0, 1, &shadowVolumeSRV[currentVolumeIdx]);
 	context->CSSetShaderResources(1, 1, &mediaVolumeSRV[currentVolumeIdx]);
 
-	auto localShadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS].depthSRV;
-	context->CSSetShaderResources(5, 1, &localShadowMap);
+	auto skylightProbeGrid = skyLighting.texProbeArray->srv.get();
+	context->CSSetShaderResources(2, 1, &skylightProbeGrid);
+
+	auto diffuseIBL = imageBasedLighting.diffuseIBLTexture->srv.get();
+	auto diffuseSkyIBL = imageBasedLighting.diffuseSkyIBLTexture->srv.get();
+	context->CSSetShaderResources(76, 1, &diffuseIBL);
+	context->CSSetShaderResources(77, 1, &diffuseSkyIBL);
 
 	auto lightsSB = LLF.lights->srv.get();
 	auto lightListSB = LLF.lightIndexList->srv.get();
 	auto lightGridSB = LLF.lightGrid->srv.get();
-	context->CSSetShaderResources(2, 1, &lightsSB);
-	context->CSSetShaderResources(3, 1, &lightListSB);
-	context->CSSetShaderResources(4, 1, &lightGridSB);
+	context->CSSetShaderResources(5, 1, &lightsSB);
+	context->CSSetShaderResources(6, 1, &lightListSB);
+	context->CSSetShaderResources(7, 1, &lightGridSB);
 
 	auto strictLightDataCB = LLF.strictLightDataCB->CB();
 	context->CSSetConstantBuffers(9, 1, &strictLightDataCB);  //Do i need this for anything?
@@ -574,16 +578,9 @@ void OrthogonalVolumetricLighting::RunIntergrationPass()
 
 void OrthogonalVolumetricLighting::SetupApplyPassResources()
 {
-	auto shadowBuffer = shadowDataCB->CB();
-	auto froxelBuffer = froxelGridCB->CB();
-	auto generalBuffer = volumeCB->CB();
-	auto settingsBuffer = settingsCB->CB();
-
 	auto context = globals::d3d::context;
-	context->PSSetConstantBuffers(0, 1, &shadowBuffer);
-	context->PSSetConstantBuffers(1, 1, &froxelBuffer);
-	context->PSSetConstantBuffers(2, 1, &generalBuffer);
-	context->PSSetConstantBuffers(3, 1, &settingsBuffer);
+	ID3D11Buffer* buffers[4] = { shadowDataCB->CB(), froxelGridCB->CB(), volumeCB->CB(), settingsCB->CB() };
+	context->PSSetConstantBuffers(0, 4, buffers);
 
 	context->PSSetSamplers(10, 1, &linearSampler);
 	context->PSSetSamplers(11, 1, &pointSampler);
@@ -607,6 +604,8 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 		context->OMSetRenderTargets(1, &mainRTV, nullptr);
 	else
 		context->OMSetRenderTargets(1, &outputRTV, nullptr);
+
+	context->OMSetBlendState(outVolumetricsBlendState, nullptr, 0xffffffff);
 
 	context->VSSetShader(bypassVS, NULL, NULL);
 	context->PSSetShader(applyVolumetricLightingPS, NULL, NULL);
@@ -736,9 +735,14 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::Checkbox("Swap Output RT", (bool*)&swapOutputRT);
 	ImGui::Checkbox("Update Light Dir", &updateLightDir);
 
+	ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
+	ImGui::SliderFloat("Disocclution Threshold", &settings.disocclutionThreshold, 0.0001, 0.2);
+	ImGui::SliderFloat("Distance Fade In", &settings.distanceFadeIn, 0.0, 250.0);
+	ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
+
 	ImGui::SeparatorText("Media properties");
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
-	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.0001, 0.5);
+	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.001, 0.4, "%.4f");
 	ImGui::SliderFloat("Scatter to Absorption Ratio", &settings.albedo, 0.0, 1.0);
 	ImGui::Spacing();
 
@@ -761,7 +765,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	//ImGui::SliderFloat("Weight 1", &settings.weight1, 0.0, 1.0);
 	//ImGui::SliderFloat("Weight 2", &settings.weight2, 0.0, 1.0);
 	//ImGui::SliderFloat("Media Albedo", &settings.albedo, 0.0, 1.0);
-	//ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
+
 	//ImGui::SliderFloat("Shadow Threshold", &settings.shadow_threshold, 0.0, 1.0);
 
 	ImGui::SeparatorText("Fog Maps");
