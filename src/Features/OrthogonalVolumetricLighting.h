@@ -173,6 +173,9 @@ struct OrthogonalVolumetricLighting : Feature
 	float4 frustumNearFar;
 	float3 eyePositionWS;
 
+	float distributionLambda = 2.0f;
+	float nearPlane = 15.0f;
+
 	float2 fogMapSize;
 	DirectX::XMFLOAT4X4 fogMapViewProj = DirectX::XMFLOAT4X4(
 		1.19175, 0.00, 0.00, 0.00,

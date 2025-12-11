@@ -84,10 +84,10 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateSamplerState(&anisoLinearDesc, &anisoLinear));
 	DX::ThrowIfFailed(device->CreateSamplerState(&anisoWrapSamplerDesc, &anisoWrapLinear));
 
-	D3D11_BLEND_DESC addBlendDesc = {};
-	addBlendDesc.AlphaToCoverageEnable = FALSE;
-	addBlendDesc.IndependentBlendEnable = FALSE;
-	auto& rtDesc = addBlendDesc.RenderTarget[0];
+	D3D11_BLEND_DESC outputBlendDesc = {};
+	outputBlendDesc.AlphaToCoverageEnable = FALSE;
+	outputBlendDesc.IndependentBlendEnable = FALSE;
+	auto& rtDesc = outputBlendDesc.RenderTarget[0];
 	rtDesc.BlendEnable = TRUE;
 	rtDesc.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 	rtDesc.SrcBlend = D3D11_BLEND_ONE;
@@ -97,7 +97,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 	rtDesc.DestBlendAlpha = D3D11_BLEND_ONE;
 	rtDesc.BlendOpAlpha = D3D11_BLEND_OP_ADD;
 
-	DX::ThrowIfFailed(device->CreateBlendState(&addBlendDesc, &outVolumetricsBlendState));
+	DX::ThrowIfFailed(device->CreateBlendState(&outputBlendDesc, &outVolumetricsBlendState));
 
 	shadowDataCB = new ConstantBuffer(ConstantBufferDesc<ShadowDataCB>());
 	froxelGridCB = new ConstantBuffer(ConstantBufferDesc<FroxelGridCB>());
@@ -302,10 +302,12 @@ void OrthogonalVolumetricLighting::UpdateAndSetupResources()
 
 void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
 {
-	float nearPlane = Util::GetCameraData().y;
+	//float nearPlane = Util::GetCameraData().y;
 	float farPlane = 10000.0f;
 
-	frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
+	//frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
+	frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, distributionLambda);  //float exponent = 1.5f;  // Lower = more linear (1.0 = fully linear, 2.0 = quadratic)
+
 	auto eyePos = Util::GetEyePosition(0);
 	if (eyePos.x > 1.0 || eyePos.x < -1.0) {
 		eyePositionWS = float3(eyePos.x, eyePos.y, eyePos.z);
@@ -393,7 +395,7 @@ void OrthogonalVolumetricLighting::UpdateGeneralBuffers()
 
 	SettingsBuffer settingsData{};
 	settingsData.cbsettings = settings;
-	settingsData.cbsettings.extinction *= Util::Units::GAME_UNIT_TO_M;
+	settingsData.cbsettings.extinction *= Util::Units::GAME_UNIT_TO_M;  // Multiply since extinction is a rate per unit distance
 	settingsCB->Update(settingsData);
 }
 ///////////////////////////////////////////////////////////
@@ -739,6 +741,9 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Disocclution Threshold", &settings.disocclutionThreshold, 0.0001, 0.2);
 	ImGui::SliderFloat("Distance Fade In", &settings.distanceFadeIn, 0.0, 250.0);
 	ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
+
+	ImGui::SliderFloat("Near Plane", &nearPlane, 1, 250);
+	ImGui::SliderFloat("Distribution Lambda", &distributionLambda, 0.5, 3.0);
 
 	ImGui::SeparatorText("Media properties");
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);

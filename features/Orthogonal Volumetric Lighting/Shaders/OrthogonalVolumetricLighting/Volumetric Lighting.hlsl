@@ -4,6 +4,14 @@
 #include "Common/Color.hlsli"
 #include "Common/Game.hlsli"
 
+
+//https://bartwronski.com/wp-content/uploads/2014/08/bwronski_volumetric_fog_siggraph2014.pdf
+//https://doerriest.github.io/publication/master/master.pdf
+//https://publications.scss.tcd.ie/theses/diss/2022/TCD-SCSS-DISSERTATION-2022-060.pdf
+//https://advances.realtimerendering.com/s2019/slides_public_release.pptx
+//https://books.google.com.au/books?hl=en&lr=&id=30ZOCgAAQBAJ&oi=fnd&pg=PA217&dq=gpu+pro+6+volumetric+wronski&ots=2ZfubWDDFI&sig=P611iciYxczkBTD5LDngvBYPN10&redir_esc=y#v=onepage&q=gpu%20pro%206%20volumetric%20wronski&f=false
+
+
 struct VertexShaderInput
 {
     float4 Position : POSITION;
@@ -98,6 +106,7 @@ float NDCDepthToView(float depth){
 //    return (FrustumNearFar.w * log2(Froxel / FrustumNearFar.x) - 0.5);
 //}
 
+/*
 //frustumNearFar = nearPlane  :  farPlane  :  1.0f / nearPlane  :  volumeDimensions.z / log2(farPlane / nearPlane)
 float ViewDepthToUV(float ViewDepth){ //includes 0.5 tex offset
     return log(ViewDepth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x); //CPU
@@ -112,6 +121,22 @@ float ViewDepthToFroxel(float ViewDepth){
 float FroxelDepthToView(float Froxel){
      return exp2(Froxel / FrustumNearFar.w) / FrustumNearFar.z;
 }
+*/
+
+float ViewDepthToUV(float ViewDepth){
+    return pow(abs(log(ViewDepth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x)), 1.0 / FrustumNearFar.w);
+}
+float UVToViewDepth(float UV){
+    return FrustumNearFar.x * pow(abs(FrustumNearFar.y / FrustumNearFar.x), pow(UV, FrustumNearFar.w));
+}
+
+float FroxelDepthToView(float Froxel){
+    return FrustumNearFar.x * pow(abs(FrustumNearFar.y / FrustumNearFar.x), pow(abs(Froxel / VolumeSize.z), FrustumNearFar.w));
+}
+float ViewDepthToFroxel(float ViewDepth){
+    return pow(abs(log(ViewDepth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x)), 1.0 / FrustumNearFar.w) * VolumeSize.z;
+}
+
 
 float3 FroxelWorldDirection(float3 Froxel, float ViewZ)
 {
@@ -460,18 +485,18 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float LocalFog =  GetFogDensity(WorldPosition.z, LocalFogData.w, LocalFogData.x, LocalFogData.y);
 
     float DensityAtFroxel = LocalFog + GlobalFog;
-    DensityAtFroxel = 1.0;
+    DensityAtFroxel = UIGlobalFogDensity * 10;
+
+    //if(Froxel.z > 30)
+    //    DensityAtFroxel = 10.0;
 
     //Sigma_Extinction = Sigma_Absorbtion + Sigma_OutScatter  per unit length
     float MediaExtinction = UIExtinction * DensityAtFroxel; // multiply since extinction is a rate per meter   // Is the total rate of light removal
-    float3 MediaScattering = UIScatterRatio.xxx * MediaExtinction; ///
+    float3 MediaScattering = UIScatterRatio.xxx * MediaExtinction;
 
     float4 Output = float4(MediaScattering, MediaExtinction);
 
-    //float3 MediaScat = UIScatterRatio.xxx * DensityAtFroxel; //scattering ratio of 0 should cause black media not transparent media...
 
-    //Output = 1.0;
-    //Output.xyz = WorldPosition;
 
 //// Wind Vectoring
 /*
@@ -573,22 +598,110 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
     return Lighting;
 }
 
+// Dir  up(0,0,-1)
+float3 GetDiffuseIBLForVolumetrics(float3 LightToSurface, float skylightingVis)
+{
+    sh2 shR_DALC = DiffuseIBLTexture.Load(int3(0, 0, 0));
+    sh2 shG_DALC = DiffuseIBLTexture.Load(int3(1, 0, 0));
+    sh2 shB_DALC = DiffuseIBLTexture.Load(int3(2, 0, 0));
+
+    sh2 shR_Sky = DiffuseSkyIBLTexture.Load(int3(0, 0, 0));
+    sh2 shG_Sky = DiffuseSkyIBLTexture.Load(int3(1, 0, 0));
+    sh2 shB_Sky = DiffuseSkyIBLTexture.Load(int3(2, 0, 0));
+
+    float3 dalcColor = float3(
+        SphericalHarmonics::Unproject(shR_DALC, LightToSurface),
+        SphericalHarmonics::Unproject(shG_DALC, LightToSurface),
+        SphericalHarmonics::Unproject(shB_DALC, LightToSurface)
+    );
+
+    float3 skyColor = float3(
+        SphericalHarmonics::Unproject(shR_Sky, LightToSurface),
+        SphericalHarmonics::Unproject(shG_Sky, LightToSurface),
+        SphericalHarmonics::Unproject(shB_Sky, LightToSurface)
+    );
+
+    return max(0, lerp(dalcColor, skyColor, skylightingVis));
+}
+
+float3 GetAmbientIBLIsotropicForVolume(float skylightingVis)
+{
+    float scale = 0.282095;
+
+    float3 dalcColor = float3(
+        DiffuseIBLTexture.Load(int3(0, 0, 0)).x,
+        DiffuseIBLTexture.Load(int3(1, 0, 0)).x,
+        DiffuseIBLTexture.Load(int3(2, 0, 0)).x
+    ) * scale;
+
+    float3 skyColor = float3(
+        DiffuseSkyIBLTexture.Load(int3(0, 0, 0)).x,
+        DiffuseSkyIBLTexture.Load(int3(1, 0, 0)).x,
+        DiffuseSkyIBLTexture.Load(int3(2, 0, 0)).x
+    ) * scale;
+
+    return max(0, lerp(dalcColor, skyColor, skylightingVis));
+}
+
 float3 GetIBLColor(float3 rayDir, float skylighting){
     return (SharedData::InInterior) ? ImageBasedLighting::GetDiffuseIBL(rayDir) : lerp(ImageBasedLighting::GetDiffuseIBL(rayDir), ImageBasedLighting::GetSkyDiffuseIBL(rayDir), skylighting);
 }
+
+
+
+float3 GetSceneVolumetricDiffuse(float3 LightToSurface)
+{
+    sh2 SH_R = DiffuseIBLTexture.Load(int3(0, 0, 0));
+    sh2 SH_G = DiffuseIBLTexture.Load(int3(1, 0, 0));
+    sh2 SH_B = DiffuseIBLTexture.Load(int3(2, 0, 0));
+
+    float3 DALC = float3(
+        SphericalHarmonics::Unproject(SH_R, LightToSurface),
+        SphericalHarmonics::Unproject(SH_G, LightToSurface),
+        SphericalHarmonics::Unproject(SH_B, LightToSurface));
+
+    return max(0.0, DALC);
+}
+
+float3 GetSkyVolumetricDiffuse(float3 LightToSurface)
+{
+    sh2 SH_R = DiffuseSkyIBLTexture.Load(int3(0, 0, 0));
+    sh2 SH_G = DiffuseSkyIBLTexture.Load(int3(1, 0, 0));
+    sh2 SH_B = DiffuseSkyIBLTexture.Load(int3(2, 0, 0));
+
+    float3 Sky_Ambient = float3(
+        SphericalHarmonics::Unproject(SH_R, LightToSurface),
+        SphericalHarmonics::Unproject(SH_G, LightToSurface),
+        SphericalHarmonics::Unproject(SH_B, LightToSurface));
+
+    return max(0.0, Sky_Ambient);
+}
+
+
+//GetDiffuseIBLForVolume(-normalize(WorldPosition), 0.0);  // Correct ambient scene color
+//GetAmbientIBLIsotropicForVolume(0.0); // This also kind of works for scene color but darker near plane and sky is black
+//SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, float4(0.282095, 0, 0, 0)); // Omnidirectional average AO
+
 float3 GetAmbientLighting(float3 WorldPosition, float3 DirLightToEye)
 {
-    sh2 SkyLight = Skylighting::sampleNoBias(SharedData::skylightingSettings, SkylightingProbeArray, WorldPosition);
+    sh2 SkyLightVisibility = Skylighting::sampleNoBias(SharedData::skylightingSettings, SkylightingProbeArray, WorldPosition); // Note the use of Skylightings settings
 
-    float SkyDiffuse = SphericalHarmonics::FuncProductIntegral(SkyLight, SphericalHarmonics::EvaluatePhaseHG(DirLightToEye, UIAnisotropy));
+    // Convolve AO SH with rotated phase zonal SH
+    //float SkyDiffuse = SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, SphericalHarmonics::EvaluatePhaseHG(DirLightToEye, UIAnisotropy)); // Seems not stable for highly forward scattering media
+    float SkyDiffuse = SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, float4(0.282095, 0, 0, 0)); //omnidirectional average
           SkyDiffuse = lerp(1.0, saturate(SkyDiffuse), Skylighting::getFadeOutFactor(WorldPosition));
-          SkyDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, SkyDiffuse);
 
-    float3 AmbientLight = GetIBLColor(float3(0, 0, 1), SkyDiffuse); // Diffuse irradiance term
-           AmbientLight = Color::Saturation(AmbientLight, SharedData::iblSettings.IBLSaturation) * SharedData::iblSettings.DiffuseIBLScale;
+    float3 SceneAmbient = GetSceneVolumetricDiffuse(-normalize(WorldPosition)); // add UI contribution scaling
+    float3 SkyAmbient = GetSkyVolumetricDiffuse(float3(0, 0, -1)); // Should weight this dir by phase func or just do light dir maybe? but then its not ambient anymore or is it?
+
+    float3 AmbientLight = (SceneAmbient + SkyAmbient) * SkyDiffuse;
 
     return AmbientLight;
 }
+//const float factor = 0.48860251190291992158638462283836
+ //float4(1.0f, Dir) * float4(1.0f, g, g, g);
+//sh2 SkyIrradianceSH = ScalarFactor * ScatterColor;
+//SkyLighting = max(FuncProductIntegral(SkyIrradianceSH, RotatedHGZonalHarmonic), 0);
 
 
 [numthreads(4, 4, 4)]
@@ -612,8 +725,9 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 
     float3 Lighting = float3(0,0,0);
-    Lighting += 0.25;
-    //Lighting += GetAmbientLighting(RayPosition, DirLightToEye);
+    //Lighting += 0.25;
+    Lighting += GetAmbientLighting(RayPosition, DirLightToEye);
+
 
     float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation) * Shadow;
     float ScatterCosineTheta = dot(DirLightToEye, RayToEye);
@@ -626,8 +740,9 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     }
 
 
+    float Exposure = max(1.0, length(SharedData::DirLightColor.xyz));
 
-    Lighting *= MediaScattering;
+    Lighting = Lighting * MediaScattering * Exposure;
 
     ScatteringVolume[ThreadID] = float4(Lighting, MediaExtinction);
 }
@@ -670,11 +785,11 @@ void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSlice, flo
 void main(uint3 Froxel : SV_DispatchThreadID)
 {
     float4 Accumulation = float4(0.0, 0.0, 0.0, 1.0);
-    float PrevDepth = 15;
+    float PrevDepth = FrustumNearFar.x; //eqiv to FroxelDepthToView(0)
 
     for(int Slice=0; Slice < VolumeSize.z; Slice++){
         float4 ScatteredSlice = ScatterVolume.Load(int4(Froxel.xy, Slice, 0));
-
+        //ScatteredSlice.w = 1.0;/////
         float CurrDepth = FroxelDepthToView(Slice + 1.0);
         float StepLength = CurrDepth - PrevDepth;
 
@@ -716,7 +831,11 @@ float4 main(VertexShaderOutput input) : SV_Target
     float2 CoordsUV = input.TexCoord.xy + (rcpVolumeSize * Noise);
 
     float4 Output = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV, FroxelDepth), 0.0);
-    //Output.xyz *= LinearStep(UIDistanceFadeIn / 250, 1.0, FroxelDepth);
+    //Output.xyz = saturate(Output.xyz) * 0.1;
+    //Output.xyz *= Output.w;
+    //Output.xyz *= LinearStep(UIDistanceFadeIn / 250, 1.0, FroxelDepth); account for extinction
+    //Output.xyz = Color::TrueLinearToGamma(Output.xyz);
+    //Output.w = 1;
 
     return float4(Output.xyz, Output.w);
 }
