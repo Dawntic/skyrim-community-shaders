@@ -325,6 +325,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ReprojectionValue = 1.0 - LinearStep(DeltaLimit, 1.0, abs(Shadow - ShadowHistory)); //saturate((x - edge0) / (edge1 - edge0));
           ReprojectionValue = Confidence * min(ReprojectionValue, MaxHistory) * UIUseHistory;
 
+    //ReprojectionValue = 0.5;
     Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
 
     //Shadow = min(0.12, Shadow);
@@ -485,7 +486,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float LocalFog =  GetFogDensity(WorldPosition.z, LocalFogData.w, LocalFogData.x, LocalFogData.y);
 
     float DensityAtFroxel = LocalFog + GlobalFog;
-    DensityAtFroxel = UIGlobalFogDensity * 10;
+    DensityAtFroxel = 1.0;//UIGlobalFogDensity * 10;
 
     //if(Froxel.z > 30)
     //    DensityAtFroxel = 10.0;
@@ -598,56 +599,6 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
     return Lighting;
 }
 
-// Dir  up(0,0,-1)
-float3 GetDiffuseIBLForVolumetrics(float3 LightToSurface, float skylightingVis)
-{
-    sh2 shR_DALC = DiffuseIBLTexture.Load(int3(0, 0, 0));
-    sh2 shG_DALC = DiffuseIBLTexture.Load(int3(1, 0, 0));
-    sh2 shB_DALC = DiffuseIBLTexture.Load(int3(2, 0, 0));
-
-    sh2 shR_Sky = DiffuseSkyIBLTexture.Load(int3(0, 0, 0));
-    sh2 shG_Sky = DiffuseSkyIBLTexture.Load(int3(1, 0, 0));
-    sh2 shB_Sky = DiffuseSkyIBLTexture.Load(int3(2, 0, 0));
-
-    float3 dalcColor = float3(
-        SphericalHarmonics::Unproject(shR_DALC, LightToSurface),
-        SphericalHarmonics::Unproject(shG_DALC, LightToSurface),
-        SphericalHarmonics::Unproject(shB_DALC, LightToSurface)
-    );
-
-    float3 skyColor = float3(
-        SphericalHarmonics::Unproject(shR_Sky, LightToSurface),
-        SphericalHarmonics::Unproject(shG_Sky, LightToSurface),
-        SphericalHarmonics::Unproject(shB_Sky, LightToSurface)
-    );
-
-    return max(0, lerp(dalcColor, skyColor, skylightingVis));
-}
-
-float3 GetAmbientIBLIsotropicForVolume(float skylightingVis)
-{
-    float scale = 0.282095;
-
-    float3 dalcColor = float3(
-        DiffuseIBLTexture.Load(int3(0, 0, 0)).x,
-        DiffuseIBLTexture.Load(int3(1, 0, 0)).x,
-        DiffuseIBLTexture.Load(int3(2, 0, 0)).x
-    ) * scale;
-
-    float3 skyColor = float3(
-        DiffuseSkyIBLTexture.Load(int3(0, 0, 0)).x,
-        DiffuseSkyIBLTexture.Load(int3(1, 0, 0)).x,
-        DiffuseSkyIBLTexture.Load(int3(2, 0, 0)).x
-    ) * scale;
-
-    return max(0, lerp(dalcColor, skyColor, skylightingVis));
-}
-
-float3 GetIBLColor(float3 rayDir, float skylighting){
-    return (SharedData::InInterior) ? ImageBasedLighting::GetDiffuseIBL(rayDir) : lerp(ImageBasedLighting::GetDiffuseIBL(rayDir), ImageBasedLighting::GetSkyDiffuseIBL(rayDir), skylighting);
-}
-
-
 
 float3 GetSceneVolumetricDiffuse(float3 LightToSurface)
 {
@@ -688,7 +639,7 @@ float3 GetAmbientLighting(float3 WorldPosition, float3 DirLightToEye)
 
     // Convolve AO SH with rotated phase zonal SH
     //float SkyDiffuse = SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, SphericalHarmonics::EvaluatePhaseHG(DirLightToEye, UIAnisotropy)); // Seems not stable for highly forward scattering media
-    float SkyDiffuse = SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, float4(0.282095, 0, 0, 0)); //omnidirectional average
+    float SkyDiffuse = SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, float4(0.282095, 0, 0, 0)); // Omnidirectional average
           SkyDiffuse = lerp(1.0, saturate(SkyDiffuse), Skylighting::getFadeOutFactor(WorldPosition));
 
     float3 SceneAmbient = GetSceneVolumetricDiffuse(-normalize(WorldPosition)); // add UI contribution scaling
@@ -725,9 +676,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 
     float3 Lighting = float3(0,0,0);
-    //Lighting += 0.25;
+    //Lighting += 0.15;// * Shadow;
     Lighting += GetAmbientLighting(RayPosition, DirLightToEye);
-
 
     float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation) * Shadow;
     float ScatterCosineTheta = dot(DirLightToEye, RayToEye);
@@ -806,6 +756,9 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 
 //// Apply //////////////////////////////////////////////////////////////////////////////
 
+// Quadratic polynomials for approximating Tri cubic B spline from https://advances.realtimerendering.com/s2021/jpatry_advances2021.pdf based on https://developer.nvidia.com/gpugems/gpugems2/part-iii-high-quality-rendering/chapter-20-fast-third-order-texture-filtering
+// Graph: https://www.desmos.com/calculator/udlencsh7k
+
 #ifdef APPLY_PIXEL
 
 Texture2D DepthTex : register(t0);
@@ -816,10 +769,81 @@ Texture3D ShadowVolume : register(t3);
 float LinearStep(float edge0, float edge1, float x){
     return saturate((x - edge0) / (edge1 - edge0));}
 
+
+float h0_approx(float t) {
+    return 0.2 + t * (0.24 * t + 0.56);
+}
+float h1_approx(float t) {
+    return 1.0 + t * (0.24 * t - 1.04);
+}
+float g0_exact(float t) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    return 0.8333333 - 0.5 * t - 0.5 * t2 + 0.3333333 * t3;
+}
+
+//float3 Offset_0 = 0.2 + FracUV * (0.24 * FracUV + 0.56);
+//float3 Offset_1 = 1.0 + FracUV * (0.24 * FracUV - 1.04);
+//float3 FracUV2 = FracUV * FracUV;
+//float3 FracUV3 = FracUV2 * FracUV;
+//float3 Weight = 1.0 - (0.83 - 0.5 * FracUV - 0.5 * FracUV2 + 0.33 * FracUV3); // Note the implicit use of non inverted weight
+//float3 Weight = g1; //1.0 - (0.8333333 - 0.5 * FracUV - 0.5 * FracUV2 + 0.3333333 * FracUV3);
+float4 Exact_CubicBasisSpline3(float3 CoordsUV, float3 VolumeSize, Texture3D Volume, SamplerState Sampler){
+    float3 FracUV = frac(CoordsUV * VolumeSize.xyz);
+    float3 a = FracUV;
+    float3 a2 = a * a;
+    float3 a3 = a2 * a;
+
+    // Exact basis functions
+    float3 w0 = (-a3 + 3.0 * a2 - 3.0 * a + 1.0) / 6.0;
+    float3 w1 = (3.0 * a3 - 6.0 * a2 + 4.0) / 6.0;
+    float3 w2 = (-3.0 * a3 + 3.0 * a2 + 3.0 * a + 1.0) / 6.0;
+    float3 w3 = a3 / 6.0;
+
+    float3 g0 = w0 + w1;
+    float3 g1 = w2 + w3;
+
+    float3 Offset_0 = (w1 / g0) - 1.0;
+    float3 Offset_1 = (w3 / g1) + 1.0;
+
+    float3 TexelSize = rcp(VolumeSize.xyz);
+
+    float3 coord_00 = CoordsUV + float3(-Offset_0.x, -Offset_0.y, 0) * TexelSize;
+    float3 coord_10 = CoordsUV + float3(+Offset_1.x, -Offset_0.y, 0) * TexelSize;
+    float3 coord_01 = CoordsUV + float3(-Offset_0.x, +Offset_1.y, 0) * TexelSize;
+    float3 coord_11 = CoordsUV + float3(+Offset_1.x, +Offset_1.y, 0) * TexelSize;
+
+    float3 offset_z0 = float3(0, 0, -Offset_0.z) * TexelSize;
+    float3 offset_z1 = float3(0, 0, +Offset_1.z) * TexelSize;
+
+    float4 Sample0 = Volume.SampleLevel(Sampler, coord_00 + offset_z0, 0);
+    float4 Sample1 = Volume.SampleLevel(Sampler, coord_00 + offset_z1, 0);
+    float4 Sample2 = Volume.SampleLevel(Sampler, coord_01 + offset_z0, 0);
+    float4 Sample3 = Volume.SampleLevel(Sampler, coord_01 + offset_z1, 0);
+    float4 Sample4 = Volume.SampleLevel(Sampler, coord_10 + offset_z0, 0);
+    float4 Sample5 = Volume.SampleLevel(Sampler, coord_10 + offset_z1, 0);
+    float4 Sample6 = Volume.SampleLevel(Sampler, coord_11 + offset_z0, 0);
+    float4 Sample7 = Volume.SampleLevel(Sampler, coord_11 + offset_z1, 0);
+
+    // Blend along Z
+    float4 BlendZ0 = lerp(Sample0, Sample1, g1.z);
+    float4 BlendZ1 = lerp(Sample2, Sample3, g1.z);
+    float4 BlendZ2 = lerp(Sample4, Sample5, g1.z);
+    float4 BlendZ3 = lerp(Sample6, Sample7, g1.z);
+
+    // Compound blend Y then X
+    return lerp(lerp(BlendZ0, BlendZ1, g1.y), lerp(BlendZ2, BlendZ3, g1.y), g1.x);
+}
+
+
 float4 main(VertexShaderOutput input) : SV_Target
 {
     float Depth = DepthTex.Sample(Point_Sampler, input.TexCoord.xy).x;
     float FroxelDepth = saturate(ViewDepthToUV(NDCDepthToView(Depth)));
+
+
+    //float3 CoordsUV = float3(input.TexCoord.xy, FroxelDepth);
+
 
     float2 Noise;
     Noise.x = STBNoise.Load(int4(int2(input.Position.xy) & 63, 0, 0)).x;
@@ -828,14 +852,11 @@ float4 main(VertexShaderOutput input) : SV_Target
 
     float2 rcpVolumeSize = rcp(VolumeSize.xy); //CPU
 
-    float2 CoordsUV = input.TexCoord.xy + (rcpVolumeSize * Noise);
+    float2 CoordsUV2 = input.TexCoord.xy + (rcpVolumeSize * Noise);
 
-    float4 Output = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV, FroxelDepth), 0.0);
-    //Output.xyz = saturate(Output.xyz) * 0.1;
-    //Output.xyz *= Output.w;
-    //Output.xyz *= LinearStep(UIDistanceFadeIn / 250, 1.0, FroxelDepth); account for extinction
-    //Output.xyz = Color::TrueLinearToGamma(Output.xyz);
-    //Output.w = 1;
+    float4 Output = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV2, FroxelDepth), 0.0);
+    //Output.xyz *= LinearStep(UIDistanceFadeIn / 250, 1.0, FroxelDepth); //account for extinction
+
 
     return float4(Output.xyz, Output.w);
 }
