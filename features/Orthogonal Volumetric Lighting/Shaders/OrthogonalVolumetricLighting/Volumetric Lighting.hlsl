@@ -714,8 +714,8 @@ float GameUnitToMeter(float input){
 //Can this be passed by different volume?
 float GetAnalyticOpticalDepth(float3 WorldDirection, float2 PrevCurrDepth)
 {
-    float FroxelStartHeight = WorldDirection.z * PrevCurrDepth.y; // Start at previous Z
-    float FroxelEndHeight = WorldDirection.z * PrevCurrDepth.x;
+    float FroxelStartHeight = WorldDirection.z * PrevCurrDepth.y + CameraPosition.z; // Start at previous Z
+    float FroxelEndHeight = WorldDirection.z * PrevCurrDepth.x + CameraPosition.z;
 
     float InverseFalloff = rcp(max(UIGobalFogFalloff, EPSILON_DIVISION));
     float Density = exp(-FroxelStartHeight * InverseFalloff) - exp(-FroxelEndHeight * InverseFalloff);
@@ -728,13 +728,13 @@ float GetAnalyticOpticalDepth(float3 WorldDirection, float2 PrevCurrDepth)
 //∫ S(t) * e^(-σ*t) dt from 0 to d
 //= S * (1 - e^(-σ*d)) / σ
 //= S * (1 - T) / σ_t
+//float Extinction = ScatteringSlice.w;
+//float Transmittance = exp(-Extinction * StepLength);
 void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSlice, float StepLength, float3 WorldDirection, float2 PrevCurrDepth)
 {
-    //float Extinction = ScatteringSlice.w;
-    //float Transmittance = exp(-Extinction * StepLength);
     float OpticalDepth = GetAnalyticOpticalDepth(WorldDirection, PrevCurrDepth);
     float Transmittance = exp(-OpticalDepth);
-    float Extinction = rcp(max(OpticalDepth * rcp(StepLength), EPSILON_DIVISION)); // Analytical average extinction
+    float Extinction = rcp(max(OpticalDepth * rcp(StepLength), EPSILON_DIVISION)); //Analytical extinction
 
     float3 InScatterIntegral = ScatteringSlice.xyz * (1.0 - Transmittance) * Extinction;
 
@@ -759,16 +759,21 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 
     for(int Slice=0; Slice < VolumeSize.z; Slice++){
         float4 ScatteredSlice = ScatterVolume.Load(int4(Froxel.xy, Slice, 0));
-        //ScatteredSlice.w = 1.0;/////
+        //ScatteredSlice.w = 1.0; /////
 
         float3 WorldDirection = FroxelWorldDirection(Froxel, 1); //arg2 not needed
         float CurrDepth = FroxelDepthToView(Slice + 1.0);
         float StepLength = CurrDepth - PrevDepth;
 
         AccumulateScattering(Accumulation, ScatteredSlice, StepLength, WorldDirection, float2(CurrDepth, PrevDepth));
-
         PrevDepth = CurrDepth;
-        IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
+
+        //Now
+        float3 NormalizedRadiance = Accumulation.xyz / max(1.0 - Accumulation.w, EPSILON_DIVISION);
+        IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(NormalizedRadiance, 0);
+
+        //Was
+        //IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
     }
 }
 #endif
@@ -810,7 +815,7 @@ float g0_exact(float t) {
 //float3 FracUV3 = FracUV2 * FracUV;
 //float3 Weight = 1.0 - (0.83 - 0.5 * FracUV - 0.5 * FracUV2 + 0.33 * FracUV3); // Note the implicit use of non inverted weight
 //float3 Weight = g1; //1.0 - (0.8333333 - 0.5 * FracUV - 0.5 * FracUV2 + 0.3333333 * FracUV3);
-float4 Exact_CubicBasisSpline3(float3 CoordsUV, float3 VolumeSize, Texture3D Volume, SamplerState Sampler){
+float4 CubicBasisSpline3_Exact(float3 CoordsUV, float3 VolumeSize, Texture3D Volume, SamplerState Sampler){
     float3 FracUV = frac(CoordsUV * VolumeSize.xyz);
     float3 a = FracUV;
     float3 a2 = a * a;
@@ -858,14 +863,33 @@ float4 Exact_CubicBasisSpline3(float3 CoordsUV, float3 VolumeSize, Texture3D Vol
 }
 
 
+float GetAnalyticOpticalDepth(float3 WorldDirection, float2 StartEndDepth)
+{
+    float FroxelStartHeight = WorldDirection.z * StartEndDepth.x + CameraPosition.z;
+    float FroxelEndHeight = WorldDirection.z * StartEndDepth.y + CameraPosition.z;
+
+    float InverseFalloff = rcp(max(UIGobalFogFalloff, EPSILON_DIVISION));
+    float Density = exp(-FroxelStartHeight * InverseFalloff) - exp(-FroxelEndHeight * InverseFalloff);
+
+    float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGobalFogFalloff * Density * rcp(WorldDirection.z);
+
+    return OpticalDepth;
+}
+
+float3 GetPixelWorldDirection(float2 TexCoord)
+{
+    float2 CoordsNDC = TexCoord * 2.0 - 1.0;
+    return mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
+}
+
+
 float4 main(VertexShaderOutput input) : SV_Target
 {
     float Depth = DepthTex.Sample(Point_Sampler, input.TexCoord.xy).x;
-    float FroxelDepth = saturate(ViewDepthToUV(NDCDepthToView(Depth)));
-
+    float PixelViewZ = NDCDepthToView(Depth);
+    float FroxelDepth = saturate(ViewDepthToUV(PixelViewZ));
 
     //float3 CoordsUV = float3(input.TexCoord.xy, FroxelDepth);
-
 
     float2 Noise;
     Noise.x = STBNoise.Load(int4(int2(input.Position.xy) & 63, 0, 0)).x;
@@ -874,13 +898,20 @@ float4 main(VertexShaderOutput input) : SV_Target
 
     float2 rcpVolumeSize = rcp(VolumeSize.xy); //CPU
 
-    float2 CoordsUV2 = input.TexCoord.xy + (rcpVolumeSize * Noise);
+    float2 CoordsUV = input.TexCoord.xy + (rcpVolumeSize * Noise);
 
-    float4 Output = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV2, FroxelDepth), 0.0);
-    //Output.xyz *= LinearStep(UIDistanceFadeIn / 250, 1.0, FroxelDepth); //account for extinction
+    float4 NormalizedRadiance = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV, FroxelDepth), 0.0);
+    //NormalizedRadiance.xyz *= LinearStep(UIDistanceFadeIn / 250, 1.0, FroxelDepth); //account for extinction
 
 
-    return float4(Output.xyz, Output.w);
+    float2 CoordsNDC = input.TexCoord.xy * 2.0 - 1.0;
+    float3 CoordsWS = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
+
+    float OpticalDepth = GetAnalyticOpticalDepth(CoordsWS, float2(CameraData.y, PixelViewZ)); //Y = near plane  //PixelViewZ = NDCDepthFromBufferSampleToViewSpace(Depth);
+    float Transmittance = exp(-OpticalDepth);
+    NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance);
+
+    return float4(NormalizedRadiance.xyz, Transmittance);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
