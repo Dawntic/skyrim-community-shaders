@@ -476,8 +476,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
           BNoise = frac(BNoise + (SharedData::FrameCount & 17) * kPhi);
 
     float ViewZ = CoordZ + ThicknessZ * BNoise;
-    float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ);
-    float3 WorldPosition = RayPosition * ViewZ + CameraPosition.xyz;
+    float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ) * ViewZ;
+    float3 WorldPosition = RayPosition + CameraPosition.xyz;
 
 
     float GlobalFog = GetFogDensity(WorldPosition.z, UIGlobalFogDensity, UIGlobalFogHeight, UIGobalFogFalloff);
@@ -486,13 +486,11 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float LocalFog =  GetFogDensity(WorldPosition.z, LocalFogData.w, LocalFogData.x, LocalFogData.y);
 
     float DensityAtFroxel = LocalFog + GlobalFog;
-    DensityAtFroxel = 1.0;//UIGlobalFogDensity * 10;
-
-    //if(Froxel.z > 30)
-    //    DensityAtFroxel = 10.0;
+    //DensityAtFroxel = GlobalFog;//1.0;//UIGlobalFogDensity * 10;
+    DensityAtFroxel = UIGlobalFogDensity * exp(-RayPosition.z / max(UIGobalFogFalloff, EPSILON_DIVISION));
 
     //Sigma_Extinction = Sigma_Absorbtion + Sigma_OutScatter  per unit length
-    float MediaExtinction = UIExtinction * DensityAtFroxel; // multiply since extinction is a rate per meter   // Is the total rate of light removal
+    float MediaExtinction = UIExtinction * DensityAtFroxel; // Is the total rate of light removal
     float3 MediaScattering = UIScatterRatio.xxx * MediaExtinction;
 
     float4 Output = float4(MediaScattering, MediaExtinction);
@@ -690,7 +688,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     }
 
 
-    float Exposure = max(1.0, length(SharedData::DirLightColor.xyz));
+    float Exposure = max(1.0, min(length(SharedData::DirLightColor.xyz), 1.5)); //eh
 
     Lighting = Lighting * MediaScattering * Exposure;
 
@@ -713,14 +711,32 @@ float GameUnitToMeter(float input){
     return input * 0.01428222656;
 }
 
+//Can this be passed by different volume?
+float GetAnalyticOpticalDepth(float3 WorldDirection, float2 PrevCurrDepth)
+{
+    float FroxelStartHeight = WorldDirection.z * PrevCurrDepth.y; // Start at previous Z
+    float FroxelEndHeight = WorldDirection.z * PrevCurrDepth.x;
+
+    float InverseFalloff = rcp(max(UIGobalFogFalloff, EPSILON_DIVISION));
+    float Density = exp(-FroxelStartHeight * InverseFalloff) - exp(-FroxelEndHeight * InverseFalloff);
+
+    float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGobalFogFalloff * Density * rcp(WorldDirection.z);
+
+    return OpticalDepth;
+}
+
 //∫ S(t) * e^(-σ*t) dt from 0 to d
 //= S * (1 - e^(-σ*d)) / σ
 //= S * (1 - T) / σ_t
-void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSlice, float StepLength){
-    float Extinction = ScatteringSlice.w;
-    float Transmittance = exp(-Extinction * StepLength);
+void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSlice, float StepLength, float3 WorldDirection, float2 PrevCurrDepth)
+{
+    //float Extinction = ScatteringSlice.w;
+    //float Transmittance = exp(-Extinction * StepLength);
+    float OpticalDepth = GetAnalyticOpticalDepth(WorldDirection, PrevCurrDepth);
+    float Transmittance = exp(-OpticalDepth);
+    float Extinction = rcp(max(OpticalDepth * rcp(StepLength), EPSILON_DIVISION)); // Analytical average extinction
 
-    float3 InScatterIntegral = ScatteringSlice.xyz * (1.0 - Transmittance) / max(Extinction, EPSILON_DIVISION);
+    float3 InScatterIntegral = ScatteringSlice.xyz * (1.0 - Transmittance) * Extinction;
 
     Accumulation.xyz += InScatterIntegral * Accumulation.w;
     Accumulation.w *= Transmittance;
@@ -731,6 +747,10 @@ void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSlice, flo
 //Sigma_Absorbtion = (1 - Albedo) * Extinction
 
 
+// Local Basis: X Right, Y Up, Z Forward
+// World Basis: X Forward, Y Right, Z Up
+// ViewZ = Forward Depth
+
 [numthreads(8, 8, 1)]
 void main(uint3 Froxel : SV_DispatchThreadID)
 {
@@ -740,10 +760,12 @@ void main(uint3 Froxel : SV_DispatchThreadID)
     for(int Slice=0; Slice < VolumeSize.z; Slice++){
         float4 ScatteredSlice = ScatterVolume.Load(int4(Froxel.xy, Slice, 0));
         //ScatteredSlice.w = 1.0;/////
+
+        float3 WorldDirection = FroxelWorldDirection(Froxel, 1); //arg2 not needed
         float CurrDepth = FroxelDepthToView(Slice + 1.0);
         float StepLength = CurrDepth - PrevDepth;
 
-        AccumulateScattering(Accumulation, ScatteredSlice, StepLength);
+        AccumulateScattering(Accumulation, ScatteredSlice, StepLength, WorldDirection, float2(CurrDepth, PrevDepth));
 
         PrevDepth = CurrDepth;
         IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;

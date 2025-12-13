@@ -303,7 +303,7 @@ void OrthogonalVolumetricLighting::UpdateAndSetupResources()
 void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
 {
 	//float nearPlane = Util::GetCameraData().y;
-	float farPlane = 10000.0f;
+	//float farPlane = 10000.0f;
 
 	//frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
 	frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, distributionLambda);  //float exponent = 1.5f;  // Lower = more linear (1.0 = fully linear, 2.0 = quadratic)
@@ -743,6 +743,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
 
 	ImGui::SliderFloat("Near Plane", &nearPlane, 1, 250);
+	ImGui::SliderFloat("Far Plane", &farPlane, 2000, 300000);
 	ImGui::SliderFloat("Distribution Lambda", &distributionLambda, 0.5, 3.0);
 
 	ImGui::SeparatorText("Media properties");
