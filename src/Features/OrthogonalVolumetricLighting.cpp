@@ -748,23 +748,32 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 	ImGui::SeparatorText("Media properties");
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("How much the amount of light scattering towards the viewer depends on direction");
 	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.001, 0.4, "%.4f");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("The rate of light loss per unit distance (light absorpted + light scattered)");
 	ImGui::SliderFloat("Scatter to Absorption Ratio", &settings.albedo, 0.0, 1.0);
-	ImGui::Spacing();
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("The ratio of light that is scattered compared to absorped");
 
+	ImGui::SliderFloat("Density", &settings.globalFogDensity, 0.0f, 1.0f);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("The amount of media per unit area");
+	ImGui::SliderFloat("Falloff Height", &settings.globalFogFalloffHeight, 1.0f, 10000.0f);
+
+	ImGui::Spacing();
 	ImGui::SeparatorText("Shadow properties");
 	ImGui::SliderInt("VSM Exponent: ", (int*)&settings.esmExponent, 1, 100);
 	ImGui::Spacing();
 
-	ImGui::SeparatorText("Global height fog");
+	//ImGui::SeparatorText("Global height fog");
 	//ImGui::SliderFloat("Fog Density", &settings.globalFogDensity, 0.0f, 1.0f);
 	//ImGui::SliderFloat("Ground Level Bias", &settings.globalFogStartHeight, -2000.0f, 2000.0f);
 	//ImGui::SliderFloat("End Height", &settings.globalFogStartHeight, 0.0f, 50000.0f);
 	//ImGui::SliderFloat("Falloff Distance", &settings.globalFogFalloffHeight, 0.0f, 10000.0f);
 
-	ImGui::SliderFloat("Density", &settings.globalFogDensity, 0.0f, 1.0f);
-	ImGui::SliderFloat("Start Height", &settings.globalFogStartHeight, -20000.0f, 50000.0f);
-	ImGui::SliderFloat("Falloff Height Above Start", &settings.globalFogFalloffHeight, 0.0f, 20000.0f);
+	//ImGui::SliderFloat("Start Height", &settings.globalFogStartHeight, -20000.0f, 50000.0f);
 
 	//ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
 	//ImGui::SliderFloat("History Bias", &settings.historyAlpha, 0.0, 0.5);

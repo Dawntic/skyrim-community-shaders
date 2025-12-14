@@ -10,7 +10,7 @@
 //https://publications.scss.tcd.ie/theses/diss/2022/TCD-SCSS-DISSERTATION-2022-060.pdf
 //https://advances.realtimerendering.com/s2019/slides_public_release.pptx
 //https://books.google.com.au/books?hl=en&lr=&id=30ZOCgAAQBAJ&oi=fnd&pg=PA217&dq=gpu+pro+6+volumetric+wronski&ots=2ZfubWDDFI&sig=P611iciYxczkBTD5LDngvBYPN10&redir_esc=y#v=onepage&q=gpu%20pro%206%20volumetric%20wronski&f=false
-
+//https://renderwonk.com/publications/gdc-2002/rolsirt.pdf
 
 struct VertexShaderInput
 {
@@ -71,7 +71,7 @@ cbuffer SettingsBuffer : register(b3)
     float UIExtinction;
     float UIAnisotropy;
     uint UIEVSMExponent;
-    float UIScatterRatio;
+    float UIScatteringRatio;
 
     float UISaturation;
 
@@ -97,24 +97,27 @@ SamplerState AnisoWrapSampler : register(s14);
 #define kPhi 1.61803398875
 
 
+//CameraData = Far, Near, Far - Near, Far * Near
+//frustumNearFar = nearPlane  :  farPlane  :  1.0f / nearPlane  :  volumeDimensions.z / log2(farPlane / nearPlane)    WRONG
+
+float GameUnitToMeter(float input){
+    return input * 0.01428222656;
+}
 
 float NDCDepthToView(float depth){
     return (CameraData.w / (-depth * CameraData.z + CameraData.x));
 }
 
-//float FroxelDepthToScreen(float Froxel){
-//    return (FrustumNearFar.w * log2(Froxel / FrustumNearFar.x) - 0.5);
-//}
-
 /*
-//frustumNearFar = nearPlane  :  farPlane  :  1.0f / nearPlane  :  volumeDimensions.z / log2(farPlane / nearPlane)
+float FroxelDepthToScreen(float Froxel){
+    return (FrustumNearFar.w * log2(Froxel / FrustumNearFar.x) - 0.5);
+}
 float ViewDepthToUV(float ViewDepth){ //includes 0.5 tex offset
     return log(ViewDepth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x); //CPU
 }
 float UVToViewDepth(float UV){
     return FrustumNearFar.x * pow(FrustumNearFar.y / FrustumNearFar.x, UV);
 }
-
 float ViewDepthToFroxel(float ViewDepth){
     return log2(ViewDepth * FrustumNearFar.z) * FrustumNearFar.w;
 }
@@ -138,7 +141,7 @@ float ViewDepthToFroxel(float ViewDepth){
 }
 
 
-float3 FroxelWorldDirection(float3 Froxel, float ViewZ)
+float3 FroxelWorldDirection(float3 Froxel)
 {
     float3 CoordsNDC = float3(((Froxel.xy + 0.5) / VolumeSize.xy) * 2.0 - 1.0, 1);
            CoordsNDC = float3(CoordsNDC.xy * float2(1.0, -1.0), 1.0);
@@ -162,10 +165,9 @@ float3 GetHistoryUV(float3 CoordsWS, out float Confidence)
 //float ValidDepth = float(PrevUVZ.z >= 0.0 && PrevUVZ.z <= 1.0);
 //Confidence = (any(abs(PrevNDC.xyz) > 1.0)) ? float2(0.0, 0.0) : float2(ValidViewZ, ValidViewZ * ValidDepth);
 
-//CameraData = Far, Near, Far - Near, Far * Near
+
 bool GetClusterIndex(in float2 CoordsUV, in float ViewZ, inout uint clusterIndex){
    // const uint3 clusterSize = SharedData::lightLimitFixSettings.ClusterSize.xyz; //uint3(40,23,32);
-
    //if (!FrameParams.y) // Fix first person lights ///////////////////////////////////////////
     //uv = 0.5;
 
@@ -178,6 +180,21 @@ bool GetClusterIndex(in float2 CoordsUV, in float ViewZ, inout uint clusterIndex
 
     clusterIndex = cluster.x + (LightGridClusterSize.x * cluster.y) + (LightGridClusterSize.x * LightGridClusterSize.y * cluster.z);
     return true;
+}
+
+float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float EndHeight)
+{
+    float UIFogBaseHeight = -5000.0;
+    float WorldStartHeight = StartHeight + CameraPosition.z - UIFogBaseHeight; //Start at previous froxel world height
+    float WorldEndHeight = EndHeight + CameraPosition.z - UIFogBaseHeight; //End at current froxel world height
+
+    float InverseFalloff = rcp(max(UIGobalFogFalloff, EPSILON_DIVISION));
+    float Density = exp(-WorldStartHeight * InverseFalloff) - exp(-WorldEndHeight * InverseFalloff);
+
+    //float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGobalFogFalloff * abs(Density * rcp(WorldUp));
+    float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGobalFogFalloff * Density * rcp(WorldUp);
+
+    return OpticalDepth;
 }
 
 
@@ -302,7 +319,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ZJitterSequ = frac(Noise + ((SharedData::FrameCount + 17) % 33) * kPhi); // Coprime LDS
 
     float ViewZ = CoordZ + ThicknessZ * ZJitterSequ;
-    float3 RayDirection = FroxelWorldDirection(Froxel, ViewZ);
+    float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
     float3 WorldPosition = RayPosition + CameraPosition.xyz;
 
@@ -469,32 +486,44 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float3 Froxel = ThreadID;
 
-    float CoordZ = FroxelDepthToView(Froxel.z + 0.5);
-    float ThicknessZ = FroxelDepthToView(Froxel.z + 1.5) - CoordZ;
+    float ViewZ = FroxelDepthToView(Froxel.z);
+    float ThicknessZ = FroxelDepthToView(Froxel.z + 1.0) - ViewZ;
 
     float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
           BNoise = frac(BNoise + (SharedData::FrameCount & 17) * kPhi);
 
-    float ViewZ = CoordZ + ThicknessZ * BNoise;
-    float3 RayPosition = FroxelWorldDirection(Froxel, ViewZ) * ViewZ;
-    float3 WorldPosition = RayPosition + CameraPosition.xyz;
+    ViewZ += ThicknessZ * BNoise;
+    float3 RayDirection = FroxelWorldDirection(Froxel);
+    float3 RayPosition = RayDirection * ViewZ;
+    //float3 WorldPosition = RayPosition + CameraPosition.xyz;
 
 
-    float GlobalFog = GetFogDensity(WorldPosition.z, UIGlobalFogDensity, UIGlobalFogHeight, UIGobalFogFalloff);
+    //float GlobalFog = GetFogDensity(WorldPosition.z, UIGlobalFogDensity, UIGlobalFogHeight, UIGobalFogFalloff);
+    //float4 LocalFogData = GetLocalFogData(WorldPosition);
+    //float LocalFog =  GetFogDensity(WorldPosition.z, LocalFogData.w, LocalFogData.x, LocalFogData.y);
+    //float DensityAtFroxel = LocalFog + GlobalFog;
 
-    float4 LocalFogData = GetLocalFogData(WorldPosition);
-    float LocalFog =  GetFogDensity(WorldPosition.z, LocalFogData.w, LocalFogData.x, LocalFogData.y);
 
-    float DensityAtFroxel = LocalFog + GlobalFog;
-    //DensityAtFroxel = GlobalFog;//1.0;//UIGlobalFogDensity * 10;
-    DensityAtFroxel = UIGlobalFogDensity * exp(-RayPosition.z / max(UIGobalFogFalloff, EPSILON_DIVISION));
+    float PrevViewZ = FroxelDepthToView(Froxel.z - 1.0) + ThicknessZ * BNoise;
+    float3 PrevRayPosition = FroxelWorldDirection(Froxel) * PrevViewZ;
+    float StepLength = distance(PrevRayPosition, RayPosition);
 
-    //Sigma_Extinction = Sigma_Absorbtion + Sigma_OutScatter  per unit length
-    float MediaExtinction = UIExtinction * DensityAtFroxel; // Is the total rate of light removal
-    float3 MediaScattering = UIScatterRatio.xxx * MediaExtinction;
+    float OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, RayPosition.z);
+    float Extinction = max(OpticalDepth * rcp(StepLength), EPSILON_DIVISION);
 
-    float4 Output = float4(MediaScattering, MediaExtinction);
 
+
+    //Sigma_Extinction = Sigma_Absorbtion + Sigma_Scattering  per unit length
+    //Albedo = ratio of light scattered compared to light absorped
+    //Value of 1.0 means every collision is scattered none are absorped
+
+    //float DensityAtFroxel = UIGlobalFogDensity * exp(-WorldPosition.z / max(UIGobalFogFalloff, EPSILON_DIVISION));
+    //MediaExtinction = UIExtinction * DensityAtFroxel; // Is the total rate of light removal
+
+
+    float3 ScatteringAlbedo = UIScatteringRatio.xxx * Extinction; //
+
+    float4 Output = float4(ScatteringAlbedo, OpticalDepth);
 
 
 //// Wind Vectoring
@@ -515,7 +544,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 //// Reprojection
 
     float Confidence;
-    float3 PrevCoordsUV = GetHistoryUV(RayPosition * CoordZ, Confidence);
+    float CenterViewZ = FroxelDepthToView(Froxel.z + 0.5);
+    float3 PrevCoordsUV = GetHistoryUV(RayPosition * CenterViewZ, Confidence);
 
     float4 MediaHistory = HistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0);
     float BaseValue = 0.90;
@@ -660,14 +690,14 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float2 CoordsUV = (Froxel.xy + 0.5) / VolumeSize.xy;
 
     float ViewZ = FroxelDepthToView(Froxel.z + 0.5);
-    float3 RayDirection = FroxelWorldDirection(Froxel, ViewZ);
+    float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
 
     float Shadow = ShadowVolume.Load(int4(Froxel, 0)).x;
 
     float4 Scattering_Extinction = MediaVolume.Load(int4(Froxel, 0));
     float3 MediaScattering = Scattering_Extinction.xyz;
-    float MediaExtinction = Scattering_Extinction.w;
+    float OpticalDepth = Scattering_Extinction.w;
 
     float3 RayToEye = -normalize(RayDirection);
     float3 DirLightToEye = LightDirection.xyz;
@@ -683,7 +713,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     for(int j=-1; j<=1;j++){ // For full coverage use +-2 and 0.25
         ViewZ = FroxelDepthToView(Froxel.z + 0.5 * j); // Can directly index the cluster instead?
-        RayPosition = FroxelWorldDirection(Froxel, ViewZ) * ViewZ;
+        RayPosition = FroxelWorldDirection(Froxel) * ViewZ;
         //Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
     }
 
@@ -692,7 +722,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     Lighting = Lighting * MediaScattering * Exposure;
 
-    ScatteringVolume[ThreadID] = float4(Lighting, MediaExtinction);
+    ScatteringVolume[ThreadID] = float4(Lighting, OpticalDepth);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -707,73 +737,37 @@ Texture3D ScatterVolume : register(t0);
 RWTexture3D<float4> IntergrationVolume : register(u0);
 
 
-float GameUnitToMeter(float input){
-    return input * 0.01428222656;
-}
-
-//Can this be passed by different volume?
-float GetAnalyticOpticalDepth(float3 WorldDirection, float2 PrevCurrDepth)
+void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSample, float OpticalDepth, float StepLength)
 {
-    float FroxelStartHeight = WorldDirection.z * PrevCurrDepth.y + CameraPosition.z; // Start at previous Z
-    float FroxelEndHeight = WorldDirection.z * PrevCurrDepth.x + CameraPosition.z;
-
-    float InverseFalloff = rcp(max(UIGobalFogFalloff, EPSILON_DIVISION));
-    float Density = exp(-FroxelStartHeight * InverseFalloff) - exp(-FroxelEndHeight * InverseFalloff);
-
-    float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGobalFogFalloff * Density * rcp(WorldDirection.z);
-
-    return OpticalDepth;
-}
-
-//∫ S(t) * e^(-σ*t) dt from 0 to d
-//= S * (1 - e^(-σ*d)) / σ
-//= S * (1 - T) / σ_t
-//float Extinction = ScatteringSlice.w;
-//float Transmittance = exp(-Extinction * StepLength);
-void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSlice, float StepLength, float3 WorldDirection, float2 PrevCurrDepth)
-{
-    float OpticalDepth = GetAnalyticOpticalDepth(WorldDirection, PrevCurrDepth);
     float Transmittance = exp(-OpticalDepth);
-    float Extinction = rcp(max(OpticalDepth * rcp(StepLength), EPSILON_DIVISION)); //Analytical extinction
+    float Extinction = max(OpticalDepth * rcp(StepLength), EPSILON_DIVISION);
 
-    float3 InScatterIntegral = ScatteringSlice.xyz * (1.0 - Transmittance) * Extinction;
+    float3 InScatteredLight = ScatteringSample.xyz * (1.0 - Transmittance) * rcp(Extinction) * Accumulation.w;
 
-    Accumulation.xyz += InScatterIntegral * Accumulation.w;
+    Accumulation.xyz += InScatteredLight;
     Accumulation.w *= Transmittance;
 }
 
-//Albedo is the fraction of extinction that is scattered instead of absorbed
-//Sigma_Scattering = Albedo * Extinction  //removed from ray, goes into scattering
-//Sigma_Absorbtion = (1 - Albedo) * Extinction
-
-
-// Local Basis: X Right, Y Up, Z Forward
-// World Basis: X Forward, Y Right, Z Up
-// ViewZ = Forward Depth
 
 [numthreads(8, 8, 1)]
 void main(uint3 Froxel : SV_DispatchThreadID)
 {
     float4 Accumulation = float4(0.0, 0.0, 0.0, 1.0);
-    float PrevDepth = FrustumNearFar.x; //eqiv to FroxelDepthToView(0)
+    float3 PrevWorldPosition = FroxelWorldDirection(Froxel) * FrustumNearFar.x;
 
     for(int Slice=0; Slice < VolumeSize.z; Slice++){
-        float4 ScatteredSlice = ScatterVolume.Load(int4(Froxel.xy, Slice, 0));
-        //ScatteredSlice.w = 1.0; /////
+        float4 ScatteringSample = ScatterVolume.Load(int4(Froxel.xy, Slice, 0));
+        float OpticalDepth = ScatteringSample.w;
 
-        float3 WorldDirection = FroxelWorldDirection(Froxel, 1); //arg2 not needed
-        float CurrDepth = FroxelDepthToView(Slice + 1.0);
-        float StepLength = CurrDepth - PrevDepth;
+        float ViewZ = FroxelDepthToView(Slice + 1.0);
+        float3 WorldDirection = FroxelWorldDirection(Froxel);
+        float3 WorldPosition = WorldDirection * ViewZ;
+        float StepLength = distance(PrevWorldPosition, WorldPosition);
 
-        AccumulateScattering(Accumulation, ScatteredSlice, StepLength, WorldDirection, float2(CurrDepth, PrevDepth));
-        PrevDepth = CurrDepth;
+        AccumulateScattering(Accumulation, ScatteringSample, OpticalDepth, StepLength);
+        PrevWorldPosition = WorldPosition;
 
-        //Now
-        float3 NormalizedRadiance = Accumulation.xyz / max(1.0 - Accumulation.w, EPSILON_DIVISION);
-        IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(NormalizedRadiance, 0);
-
-        //Was
-        //IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
+        IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), 1.0); // Encode output as normalized radiance for density anti aliasing
     }
 }
 #endif
@@ -783,8 +777,9 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 
 //// Apply //////////////////////////////////////////////////////////////////////////////
 
-// Quadratic polynomials for approximating Tri cubic B spline from https://advances.realtimerendering.com/s2021/jpatry_advances2021.pdf based on https://developer.nvidia.com/gpugems/gpugems2/part-iii-high-quality-rendering/chapter-20-fast-third-order-texture-filtering
-// Graph: https://www.desmos.com/calculator/udlencsh7k
+// Tri cubic B spline: https://developer.nvidia.com/gpugems/gpugems2/part-iii-high-quality-rendering/chapter-20-fast-third-order-texture-filtering
+// Quadratic polynomial approximation: https://advances.realtimerendering.com/s2021/jpatry_advances2021.pdf
+// Function Graph: https://www.desmos.com/calculator/udlencsh7k
 
 #ifdef APPLY_PIXEL
 
@@ -862,34 +857,11 @@ float4 CubicBasisSpline3_Exact(float3 CoordsUV, float3 VolumeSize, Texture3D Vol
     return lerp(lerp(BlendZ0, BlendZ1, g1.y), lerp(BlendZ2, BlendZ3, g1.y), g1.x);
 }
 
-
-float GetAnalyticOpticalDepth(float3 WorldDirection, float2 StartEndDepth)
-{
-    float FroxelStartHeight = WorldDirection.z * StartEndDepth.x + CameraPosition.z;
-    float FroxelEndHeight = WorldDirection.z * StartEndDepth.y + CameraPosition.z;
-
-    float InverseFalloff = rcp(max(UIGobalFogFalloff, EPSILON_DIVISION));
-    float Density = exp(-FroxelStartHeight * InverseFalloff) - exp(-FroxelEndHeight * InverseFalloff);
-
-    float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGobalFogFalloff * Density * rcp(WorldDirection.z);
-
-    return OpticalDepth;
-}
-
-float3 GetPixelWorldDirection(float2 TexCoord)
-{
-    float2 CoordsNDC = TexCoord * 2.0 - 1.0;
-    return mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
-}
-
-
 float4 main(VertexShaderOutput input) : SV_Target
 {
     float Depth = DepthTex.Sample(Point_Sampler, input.TexCoord.xy).x;
     float PixelViewZ = NDCDepthToView(Depth);
     float FroxelDepth = saturate(ViewDepthToUV(PixelViewZ));
-
-    //float3 CoordsUV = float3(input.TexCoord.xy, FroxelDepth);
 
     float2 Noise;
     Noise.x = STBNoise.Load(int4(int2(input.Position.xy) & 63, 0, 0)).x;
@@ -901,14 +873,15 @@ float4 main(VertexShaderOutput input) : SV_Target
     float2 CoordsUV = input.TexCoord.xy + (rcpVolumeSize * Noise);
 
     float4 NormalizedRadiance = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV, FroxelDepth), 0.0);
+    float Transmittance = NormalizedRadiance.w;
     //NormalizedRadiance.xyz *= LinearStep(UIDistanceFadeIn / 250, 1.0, FroxelDepth); //account for extinction
 
-
     float2 CoordsNDC = input.TexCoord.xy * 2.0 - 1.0;
-    float3 CoordsWS = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
+    float3 PixelWorldDirection = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
+    float3 WorldPosition = PixelWorldDirection * PixelViewZ;
 
-    float OpticalDepth = GetAnalyticOpticalDepth(CoordsWS, float2(CameraData.y, PixelViewZ)); //Y = near plane  //PixelViewZ = NDCDepthFromBufferSampleToViewSpace(Depth);
-    float Transmittance = exp(-OpticalDepth);
+    float OpticalDepth = GetAnalyticOpticalDepth(PixelWorldDirection.z, 0.0, WorldPosition.z);
+    Transmittance = exp(-OpticalDepth);
     NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance);
 
     return float4(NormalizedRadiance.xyz, Transmittance);
