@@ -173,9 +173,9 @@ struct OrthogonalVolumetricLighting : Feature
 	float4 frustumNearFar;
 	float3 eyePositionWS;
 
-	float distributionLambda = 2.0f;
+	float distributionLambda = 1.6f;
 	float nearPlane = 15.0f;
-	float farPlane = 10000;
+	float farPlane = 353840.0f;
 
 	float2 fogMapSize;
 	DirectX::XMFLOAT4X4 fogMapViewProj = DirectX::XMFLOAT4X4(
@@ -222,22 +222,29 @@ struct OrthogonalVolumetricLighting : Feature
 
 	struct Settings
 	{
-		float extinction = 0.02;
-		float anisotropy = 0.65;
+		float extinction = 0.1;
+		float anisotropy = 0.1;
+		float localLightsAnisotropy = 0.80;
+		float localLightsMultiplier = 2.0;
+		float scatteringRatio = 1.0;
+
+		float globalFogDensity = 0.3;
+		float globalFogFalloffHeight = 500;
+		float globalFogStartHeight = -4000;
+
+		float skyAmbientContribution = 1.0;
+		float sceneAmbientContribution = 1.0;
+
 		uint esmExponent = 8;
-		float albedo = 1.0;
-
 		float color_saturation = 0.25;
-
-		float globalFogDensity = 0;
-		float globalFogStartHeight = 0;
-		float globalFogFalloffHeight = 0;
+		float preExposure = 1.0;
 
 		uint useHistory = true;
 		float disocclutionThreshold = 0.05;
 		float distanceFadeIn = 1.0;
 
 		float blendOpp = false;
+		float _pad[3];
 
 		float4 fogMapData;
 		float4 UIfogMapParams;

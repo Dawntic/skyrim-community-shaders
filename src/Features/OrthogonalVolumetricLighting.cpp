@@ -2,7 +2,7 @@
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	OrthogonalVolumetricLighting::Settings,
-	anisotropy, extinction, albedo, esmExponent, color_saturation,
+	anisotropy, extinction, scatteringRatio, esmExponent, color_saturation,
 	globalFogDensity, globalFogStartHeight, globalFogFalloffHeight)
 
 void OrthogonalVolumetricLighting::CompileShaders()
@@ -304,14 +304,13 @@ void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
 {
 	//float nearPlane = Util::GetCameraData().y;
 	//float farPlane = 10000.0f;
-
 	//frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
+
 	frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, distributionLambda);  //float exponent = 1.5f;  // Lower = more linear (1.0 = fully linear, 2.0 = quadratic)
 
 	auto eyePos = Util::GetEyePosition(0);
-	if (eyePos.x > 1.0 || eyePos.x < -1.0) {
+	if (eyePos.x > 1.0 || eyePos.x < -1.0)
 		eyePositionWS = float3(eyePos.x, eyePos.y, eyePos.z);
-	}
 
 	FroxelGridCB froxelData{};
 	froxelData.cameraView = globals::game::frameBufferCached.GetCameraView(0);
@@ -528,9 +527,10 @@ void OrthogonalVolumetricLighting::GenerateScatteringVolume()
 
 	context->CSSetShaderResources(0, 1, &shadowVolumeSRV[currentVolumeIdx]);
 	context->CSSetShaderResources(1, 1, &mediaVolumeSRV[currentVolumeIdx]);
+	context->CSSetShaderResources(2, 1, &blueNoiseSRV);
 
 	auto skylightProbeGrid = skyLighting.texProbeArray->srv.get();
-	context->CSSetShaderResources(2, 1, &skylightProbeGrid);
+	context->CSSetShaderResources(3, 1, &skylightProbeGrid);
 
 	auto diffuseIBL = imageBasedLighting.diffuseIBLTexture->srv.get();
 	auto diffuseSkyIBL = imageBasedLighting.diffuseSkyIBLTexture->srv.get();
@@ -540,9 +540,9 @@ void OrthogonalVolumetricLighting::GenerateScatteringVolume()
 	auto lightsSB = LLF.lights->srv.get();
 	auto lightListSB = LLF.lightIndexList->srv.get();
 	auto lightGridSB = LLF.lightGrid->srv.get();
-	context->CSSetShaderResources(5, 1, &lightsSB);
-	context->CSSetShaderResources(6, 1, &lightListSB);
-	context->CSSetShaderResources(7, 1, &lightGridSB);
+	context->CSSetShaderResources(4, 1, &lightsSB);
+	context->CSSetShaderResources(5, 1, &lightListSB);
+	context->CSSetShaderResources(6, 1, &lightGridSB);
 
 	auto strictLightDataCB = LLF.strictLightDataCB->CB();
 	context->CSSetConstantBuffers(9, 1, &strictLightDataCB);  //Do i need this for anything?
@@ -740,27 +740,45 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
 	ImGui::SliderFloat("Disocclution Threshold", &settings.disocclutionThreshold, 0.0001, 0.2);
 	ImGui::SliderFloat("Distance Fade In", &settings.distanceFadeIn, 0.0, 250.0);
-	ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
 
+	//// Frustum Grid ////
 	ImGui::SliderFloat("Near Plane", &nearPlane, 1, 250);
-	ImGui::SliderFloat("Far Plane", &farPlane, 2000, 300000);
+	ImGui::SliderFloat("Far Plane", &farPlane, 2000, 353840);
 	ImGui::SliderFloat("Distribution Lambda", &distributionLambda, 0.5, 3.0);
 
-	ImGui::SeparatorText("Media properties");
+	//// Color Params ////
+	ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
+	ImGui::SliderFloat("Exposure", &settings.preExposure, 0.1, 3.0);
+	ImGui::SliderFloat("Sky Ambient Contribution", &settings.skyAmbientContribution, 0.1, 2.0);
+	ImGui::SliderFloat("Scene Ambient Contribution", &settings.sceneAmbientContribution, 0.1, 2.0);
+
+	//// Scattering Params ////
+	ImGui::SeparatorText("Scattering Properties");
+
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("How much the amount of light scattering towards the viewer depends on direction");
+
+	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
+	ImGui::SliderFloat("Local Light Multiplier", &settings.localLightsMultiplier, 1.0, 5.0);
+
 	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.001, 0.4, "%.4f");
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The rate of light loss per unit distance (light absorpted + light scattered)");
-	ImGui::SliderFloat("Scatter to Absorption Ratio", &settings.albedo, 0.0, 1.0);
+
+	ImGui::SliderFloat("Scatter to Absorption Ratio", &settings.scatteringRatio, 0.0, 1.0);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The ratio of light that is scattered compared to absorped");
+
+	//// Fog Params ////
+	ImGui::SeparatorText("Fog Properties");
 
 	ImGui::SliderFloat("Density", &settings.globalFogDensity, 0.0f, 1.0f);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The amount of media per unit area");
-	ImGui::SliderFloat("Falloff Height", &settings.globalFogFalloffHeight, 1.0f, 10000.0f);
+
+	ImGui::SliderFloat("Fog Falloff Height", &settings.globalFogFalloffHeight, 10.0f, 5000.0f);
+	ImGui::SliderFloat("Fog Base Height", &settings.globalFogStartHeight, -10000.0f, 10000.0f);
 
 	ImGui::Spacing();
 	ImGui::SeparatorText("Shadow properties");

@@ -70,20 +70,27 @@ cbuffer SettingsBuffer : register(b3)
 {
     float UIExtinction;
     float UIAnisotropy;
-    uint UIEVSMExponent;
+    float UILocalLightAnisotropy;
+    float UILocalLightMultiplier;
     float UIScatteringRatio;
 
-    float UISaturation;
-
     float UIGlobalFogDensity;
-    float UIGlobalFogHeight;
     float UIGobalFogFalloff;
+    float UIGlobalFogBaseHeight;
+
+    float UISkyAmbientContribution;
+    float UISceneAmbientContribution;
+
+    uint UIEVSMExponent;
+    float UISaturation;
+    float UIExposure;
 
     uint UIUseHistory;
     float UIDisocclutionThreshold;
     float UIDistanceFadeIn;
 
     float FogMapBlendOpp;
+
     float4 FogMapData;
     float4 UIFogMapInput;
 };
@@ -184,9 +191,8 @@ bool GetClusterIndex(in float2 CoordsUV, in float ViewZ, inout uint clusterIndex
 
 float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float EndHeight)
 {
-    float UIFogBaseHeight = -5000.0;
-    float WorldStartHeight = StartHeight + CameraPosition.z - UIFogBaseHeight; //Start at previous froxel world height
-    float WorldEndHeight = EndHeight + CameraPosition.z - UIFogBaseHeight; //End at current froxel world height
+    float WorldStartHeight = StartHeight + CameraPosition.z - UIGlobalFogBaseHeight; //Start at previous froxel world height
+    float WorldEndHeight = EndHeight + CameraPosition.z - UIGlobalFogBaseHeight; //End at current froxel world height
 
     float InverseFalloff = rcp(max(UIGobalFogFalloff, EPSILON_DIVISION));
     float Density = exp(-WorldStartHeight * InverseFalloff) - exp(-WorldEndHeight * InverseFalloff);
@@ -196,7 +202,6 @@ float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float EndHeight)
 
     return OpticalDepth;
 }
-
 
 #ifdef SHADOW_COMPUTE
 
@@ -445,17 +450,17 @@ float4 GetLocalFogData(float3 CoordsWS){
 
 float GetGlobalHeightFog(float FroxelWorldHeight){
     //method 1
-    float GlobalFog = 1.0 - clamp((FroxelWorldHeight - UIGlobalFogHeight) / UIGobalFogFalloff, 0.0, 1.0);
+    float GlobalFog = 1.0 - clamp((FroxelWorldHeight - UIGlobalFogBaseHeight) / UIGobalFogFalloff, 0.0, 1.0);
     GlobalFog = GlobalFog * GlobalFog * GlobalFog * UIGlobalFogDensity;
 
     //method 2
-	//GlobalFog = exp(-(FroxelWorldHeight - UIGlobalFogHeight) * UIGobalFogFalloff);
+	//GlobalFog = exp(-(FroxelWorldHeight - UIGlobalFogBaseHeight) * UIGobalFogFalloff);
 
     return GlobalFog;
 }
 
 float TestLocalFog(float FroxelWorldHeight){
-    float MaxHeight = UIGlobalFogHeight; //
+    float MaxHeight = UIGlobalFogBaseHeight; //
     float FalloffDistance = UIGobalFogFalloff; //
 
     float Falloff = MaxHeight - (MaxHeight - FalloffDistance);
@@ -498,7 +503,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //float3 WorldPosition = RayPosition + CameraPosition.xyz;
 
 
-    //float GlobalFog = GetFogDensity(WorldPosition.z, UIGlobalFogDensity, UIGlobalFogHeight, UIGobalFogFalloff);
+    //float GlobalFog = GetFogDensity(WorldPosition.z, UIGlobalFogDensity, UIGlobalFogBaseHeight, UIGobalFogFalloff);
     //float4 LocalFogData = GetLocalFogData(WorldPosition);
     //float LocalFog =  GetFogDensity(WorldPosition.z, LocalFogData.w, LocalFogData.x, LocalFogData.y);
     //float DensityAtFroxel = LocalFog + GlobalFog;
@@ -571,12 +576,13 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 Texture3D ShadowVolume : register(t0);
 Texture3D MediaVolume : register(t1);
-Texture3D<sh2> SkylightingProbeArray : register(t2);
+Texture2DArray BlueNoise : register(t2);
+Texture3D<sh2> SkylightingProbeArray : register(t3);
 Texture2D<sh2> DiffuseIBLTexture : register(t76);
 Texture2D<sh2> DiffuseSkyIBLTexture : register(t77);
-StructuredBuffer<LightLimitFix::Light> lights : register(t5);
-StructuredBuffer<uint> lightList : register(t6);
-StructuredBuffer<LightLimitFix::LightGrid> lightGrid : register(t7);
+StructuredBuffer<LightLimitFix::Light> lights : register(t4);
+StructuredBuffer<uint> lightList : register(t5);
+StructuredBuffer<LightLimitFix::LightGrid> lightGrid : register(t6);
 
 RWTexture3D<float4> ScatteringVolume : register(u0);
 
@@ -614,19 +620,18 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
             Attenuation = InverseSquareLighting::GetAttenuation(length(LightPosition), light);
             if (Attenuation < 1e-5) continue;
 
-            float3 Radiance = light.color.xyz * Attenuation;
+            float3 Radiance = light.color.xyz * Attenuation * UILocalLightMultiplier;
 
             if (light.lightFlags & LightLimitFix::LightFlags::Shadow)
                 Radiance *= Shadow;
 
             float3 LightToRay = normalize(LightPosition);
             float ScatterCos = dot(LightToRay, RayToEye);
-            Lighting += Radiance * HenyeyGreensteinPhase(ScatterCos, UIAnisotropy);
+            Lighting += Radiance * HenyeyGreensteinPhase(ScatterCos, UILocalLightAnisotropy);
         }
     }
     return Lighting;
 }
-
 
 float3 GetSceneVolumetricDiffuse(float3 LightToSurface)
 {
@@ -656,31 +661,20 @@ float3 GetSkyVolumetricDiffuse(float3 LightToSurface)
     return max(0.0, Sky_Ambient);
 }
 
-
-//GetDiffuseIBLForVolume(-normalize(WorldPosition), 0.0);  // Correct ambient scene color
-//GetAmbientIBLIsotropicForVolume(0.0); // This also kind of works for scene color but darker near plane and sky is black
-//SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, float4(0.282095, 0, 0, 0)); // Omnidirectional average AO
-
 float3 GetAmbientLighting(float3 WorldPosition, float3 DirLightToEye)
 {
     sh2 SkyLightVisibility = Skylighting::sampleNoBias(SharedData::skylightingSettings, SkylightingProbeArray, WorldPosition); // Note the use of Skylightings settings
 
-    // Convolve AO SH with rotated phase zonal SH
-    //float SkyDiffuse = SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, SphericalHarmonics::EvaluatePhaseHG(DirLightToEye, UIAnisotropy)); // Seems not stable for highly forward scattering media
-    float SkyDiffuse = SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, float4(0.282095, 0, 0, 0)); // Omnidirectional average
+    float SkyDiffuse = SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, float4(0.282095, 0, 0, 0)); // Omnidir average
           SkyDiffuse = lerp(1.0, saturate(SkyDiffuse), Skylighting::getFadeOutFactor(WorldPosition));
 
-    float3 SceneAmbient = GetSceneVolumetricDiffuse(-normalize(WorldPosition)); // add UI contribution scaling
-    float3 SkyAmbient = GetSkyVolumetricDiffuse(float3(0, 0, -1)); // Should weight this dir by phase func or just do light dir maybe? but then its not ambient anymore or is it?
+    float3 SceneAmbient = GetSceneVolumetricDiffuse(-normalize(WorldPosition)) * UISkyAmbientContribution; // add UI contribution scaling
+    float3 SkyAmbient = GetSkyVolumetricDiffuse(float3(0, 0, -1)) * UISceneAmbientContribution; // Should weight this dir by phase func or just do light dir maybe? but then its not ambient anymore or is it?
 
     float3 AmbientLight = (SceneAmbient + SkyAmbient) * SkyDiffuse;
 
     return AmbientLight;
 }
-//const float factor = 0.48860251190291992158638462283836
- //float4(1.0f, Dir) * float4(1.0f, g, g, g);
-//sh2 SkyIrradianceSH = ScalarFactor * ScatterColor;
-//SkyLighting = max(FuncProductIntegral(SkyIrradianceSH, RotatedHGZonalHarmonic), 0);
 
 
 [numthreads(4, 4, 4)]
@@ -689,7 +683,13 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 Froxel = ThreadID;
     float2 CoordsUV = (Froxel.xy + 0.5) / VolumeSize.xy;
 
+    float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+          BNoise = frac(BNoise + (SharedData::FrameCount & 17) * kPhi);
+
     float ViewZ = FroxelDepthToView(Froxel.z + 0.5);
+    float ThicknessZ = FroxelDepthToView(Froxel.z + 1.5) - ViewZ;
+
+    ViewZ += ThicknessZ * BNoise;
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
 
@@ -704,21 +704,18 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 
     float3 Lighting = float3(0,0,0);
-    //Lighting += 0.15;// * Shadow;
     Lighting += GetAmbientLighting(RayPosition, DirLightToEye);
+    //Lighting += 0.25;
 
+    //float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation) * ((1.0 - Shadow) *3);
     float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation) * Shadow;
     float ScatterCosineTheta = dot(DirLightToEye, RayToEye);
     Lighting += DirLightRadiance * HenyeyGreensteinPhase(ScatterCosineTheta, UIAnisotropy);
 
-    for(int j=-1; j<=1;j++){ // For full coverage use +-2 and 0.25
-        ViewZ = FroxelDepthToView(Froxel.z + 0.5 * j); // Can directly index the cluster instead?
-        RayPosition = FroxelWorldDirection(Froxel) * ViewZ;
-        //Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
-    }
+    Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
 
-
-    float Exposure = max(1.0, min(length(SharedData::DirLightColor.xyz), 1.5)); //eh
+    //float Exposure = max(1.0, min(length(SharedData::DirLightColor.xyz), 1.5)); //eh
+    float Exposure = UIExposure;
 
     Lighting = Lighting * MediaScattering * Exposure;
 
@@ -768,6 +765,8 @@ void main(uint3 Froxel : SV_DispatchThreadID)
         PrevWorldPosition = WorldPosition;
 
         IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), 1.0); // Encode output as normalized radiance for density anti aliasing
+
+        //IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
     }
 }
 #endif
@@ -791,72 +790,6 @@ Texture3D ShadowVolume : register(t3);
 float LinearStep(float edge0, float edge1, float x){
     return saturate((x - edge0) / (edge1 - edge0));}
 
-
-float h0_approx(float t) {
-    return 0.2 + t * (0.24 * t + 0.56);
-}
-float h1_approx(float t) {
-    return 1.0 + t * (0.24 * t - 1.04);
-}
-float g0_exact(float t) {
-    float t2 = t * t;
-    float t3 = t2 * t;
-    return 0.8333333 - 0.5 * t - 0.5 * t2 + 0.3333333 * t3;
-}
-
-//float3 Offset_0 = 0.2 + FracUV * (0.24 * FracUV + 0.56);
-//float3 Offset_1 = 1.0 + FracUV * (0.24 * FracUV - 1.04);
-//float3 FracUV2 = FracUV * FracUV;
-//float3 FracUV3 = FracUV2 * FracUV;
-//float3 Weight = 1.0 - (0.83 - 0.5 * FracUV - 0.5 * FracUV2 + 0.33 * FracUV3); // Note the implicit use of non inverted weight
-//float3 Weight = g1; //1.0 - (0.8333333 - 0.5 * FracUV - 0.5 * FracUV2 + 0.3333333 * FracUV3);
-float4 CubicBasisSpline3_Exact(float3 CoordsUV, float3 VolumeSize, Texture3D Volume, SamplerState Sampler){
-    float3 FracUV = frac(CoordsUV * VolumeSize.xyz);
-    float3 a = FracUV;
-    float3 a2 = a * a;
-    float3 a3 = a2 * a;
-
-    // Exact basis functions
-    float3 w0 = (-a3 + 3.0 * a2 - 3.0 * a + 1.0) / 6.0;
-    float3 w1 = (3.0 * a3 - 6.0 * a2 + 4.0) / 6.0;
-    float3 w2 = (-3.0 * a3 + 3.0 * a2 + 3.0 * a + 1.0) / 6.0;
-    float3 w3 = a3 / 6.0;
-
-    float3 g0 = w0 + w1;
-    float3 g1 = w2 + w3;
-
-    float3 Offset_0 = (w1 / g0) - 1.0;
-    float3 Offset_1 = (w3 / g1) + 1.0;
-
-    float3 TexelSize = rcp(VolumeSize.xyz);
-
-    float3 coord_00 = CoordsUV + float3(-Offset_0.x, -Offset_0.y, 0) * TexelSize;
-    float3 coord_10 = CoordsUV + float3(+Offset_1.x, -Offset_0.y, 0) * TexelSize;
-    float3 coord_01 = CoordsUV + float3(-Offset_0.x, +Offset_1.y, 0) * TexelSize;
-    float3 coord_11 = CoordsUV + float3(+Offset_1.x, +Offset_1.y, 0) * TexelSize;
-
-    float3 offset_z0 = float3(0, 0, -Offset_0.z) * TexelSize;
-    float3 offset_z1 = float3(0, 0, +Offset_1.z) * TexelSize;
-
-    float4 Sample0 = Volume.SampleLevel(Sampler, coord_00 + offset_z0, 0);
-    float4 Sample1 = Volume.SampleLevel(Sampler, coord_00 + offset_z1, 0);
-    float4 Sample2 = Volume.SampleLevel(Sampler, coord_01 + offset_z0, 0);
-    float4 Sample3 = Volume.SampleLevel(Sampler, coord_01 + offset_z1, 0);
-    float4 Sample4 = Volume.SampleLevel(Sampler, coord_10 + offset_z0, 0);
-    float4 Sample5 = Volume.SampleLevel(Sampler, coord_10 + offset_z1, 0);
-    float4 Sample6 = Volume.SampleLevel(Sampler, coord_11 + offset_z0, 0);
-    float4 Sample7 = Volume.SampleLevel(Sampler, coord_11 + offset_z1, 0);
-
-    // Blend along Z
-    float4 BlendZ0 = lerp(Sample0, Sample1, g1.z);
-    float4 BlendZ1 = lerp(Sample2, Sample3, g1.z);
-    float4 BlendZ2 = lerp(Sample4, Sample5, g1.z);
-    float4 BlendZ3 = lerp(Sample6, Sample7, g1.z);
-
-    // Compound blend Y then X
-    return lerp(lerp(BlendZ0, BlendZ1, g1.y), lerp(BlendZ2, BlendZ3, g1.y), g1.x);
-}
-
 float4 main(VertexShaderOutput input) : SV_Target
 {
     float Depth = DepthTex.Sample(Point_Sampler, input.TexCoord.xy).x;
@@ -877,10 +810,10 @@ float4 main(VertexShaderOutput input) : SV_Target
     //NormalizedRadiance.xyz *= LinearStep(UIDistanceFadeIn / 250, 1.0, FroxelDepth); //account for extinction
 
     float2 CoordsNDC = input.TexCoord.xy * 2.0 - 1.0;
-    float3 PixelWorldDirection = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
-    float3 WorldPosition = PixelWorldDirection * PixelViewZ;
+    float3 PixelDirectionWS = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
+    float3 PixelPositionWS = PixelDirectionWS * PixelViewZ;
 
-    float OpticalDepth = GetAnalyticOpticalDepth(PixelWorldDirection.z, 0.0, WorldPosition.z);
+    float OpticalDepth = GetAnalyticOpticalDepth(PixelDirectionWS.z, 0.0, PixelPositionWS.z);
     Transmittance = exp(-OpticalDepth);
     NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance);
 
@@ -889,21 +822,9 @@ float4 main(VertexShaderOutput input) : SV_Target
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
-
-
-//// Raymarch ///////////////////////////////////////////////////////////////////////////
-
-#ifdef RAYMARCH_COMPUTE
-
-
-[numthreads(8, 8, 1)]
-void main(uint3 Froxel : SV_DispatchThreadID)
-{
-
-}
-#endif
-/////////////////////////////////////////////////////////////////////////////////////////
-
+//if(PixelPositionWS.y > FrustumNearFar.y){ //FrustumNearFar.y = froxel grid far plane.
+    //  discard;
+//}
 
 
 //// Fog Map ////////////////////////////////////////////////////////////////////////////
