@@ -2,8 +2,25 @@
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	OrthogonalVolumetricLighting::Settings,
-	anisotropy, extinction, scatteringRatio, esmExponent, color_saturation,
-	globalFogDensity, globalFogStartHeight, globalFogFalloffHeight)
+	extinction,
+	anisotropy,
+	localLightsAnisotropy,
+	localLightsMultiplier,
+	scatteringRatio,
+	globalFogDensity,
+	globalFogStartHeight,
+	globalFogFalloffHeight,
+	skyAmbientContribution,
+	sceneAmbientContribution,
+	esmExponent,
+	color_saturation,
+	preExposure,
+	useHistory,
+	disocclutionThreshold,
+	distanceFadeIn,
+	blendOpp,
+	fogMapData,
+	UIfogMapParams)
 
 void OrthogonalVolumetricLighting::CompileShaders()
 {
@@ -766,18 +783,20 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The rate of light loss per unit distance (light absorpted + light scattered)");
 
-	ImGui::SliderFloat("Scatter to Absorption Ratio", &settings.scatteringRatio, 0.0, 1.0);
+	ImGui::SliderFloat("Red Scatter to Absorption Ratio", &settings.scatteringRatio.x, 0.0, 1.0);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("The ratio of light that is scattered compared to absorped");
+	ImGui::SliderFloat("Green Scatter to Absorption Ratio", &settings.scatteringRatio.y, 0.0, 1.0);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("The ratio of light that is scattered compared to absorped");
+	ImGui::SliderFloat("Blue Scatter to Absorption Ratio", &settings.scatteringRatio.z, 0.0, 1.0);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The ratio of light that is scattered compared to absorped");
 
 	//// Fog Params ////
 	ImGui::SeparatorText("Fog Properties");
 
-	ImGui::SliderFloat("Density", &settings.globalFogDensity, 0.0f, 1.0f);
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("The amount of media per unit area");
-
-	ImGui::SliderFloat("Fog Falloff Height", &settings.globalFogFalloffHeight, 10.0f, 5000.0f);
+	ImGui::SliderFloat("Fog Falloff Height", &settings.globalFogFalloffHeight, 250.0f, 10000.0f);  // Lower min values cause aliasing
 	ImGui::SliderFloat("Fog Base Height", &settings.globalFogStartHeight, -10000.0f, 10000.0f);
 
 	ImGui::Spacing();

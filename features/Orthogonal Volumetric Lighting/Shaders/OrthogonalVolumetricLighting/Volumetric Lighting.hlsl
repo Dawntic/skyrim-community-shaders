@@ -72,7 +72,7 @@ cbuffer SettingsBuffer : register(b3)
     float UIAnisotropy;
     float UILocalLightAnisotropy;
     float UILocalLightMultiplier;
-    float UIScatteringRatio;
+    float4 UIScatteringRatio;
 
     float UIGlobalFogDensity;
     float UIGobalFogFalloff;
@@ -100,8 +100,40 @@ SamplerState Point_Sampler : register(s11);
 SamplerState AnisoClampSampler : register(s13);
 SamplerState AnisoWrapSampler : register(s14);
 
-
 #define kPhi 1.61803398875
+
+
+
+/*
+float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float EndHeight)
+{
+    float WorldStartHeight = StartHeight + CameraPosition.z - UIGlobalFogBaseHeight; //Start at previous froxel world height
+    float WorldEndHeight = EndHeight + CameraPosition.z - UIGlobalFogBaseHeight; //End at current froxel world height
+
+    float InverseFalloff = rcp(max(UIGobalFogFalloff, EPSILON_DIVISION));
+    float Density = exp(-WorldStartHeight * InverseFalloff) - exp(-WorldEndHeight * InverseFalloff);
+
+    float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGobalFogFalloff * Density * rcp(WorldUp);
+
+    return max(OpticalDepth, EPSILON_DIVISION);
+}
+
+
+
+    float PrevViewZ = FroxelDepthToView(max(Froxel.z - 1.0, 0.1)) + FroxelZNoise;
+
+    float3 PrevRayPosition = RayDirection * PrevViewZ;
+    float StepLength = distance(PrevRayPosition, RayPosition);
+
+    float OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, RayPosition.z);
+    float Extinction = max(OpticalDepth * rcp(max(StepLength, EPSILON_DIVISION)), EPSILON_DIVISION);
+
+
+	float Transmittance = exp(-OpticalDepth);
+    float Extinction = max(OpticalDepth * rcp(max(EPSILON_DIVISION, StepLength)), EPSILON_DIVISION);
+*/
+
+
 
 
 //CameraData = Far, Near, Far - Near, Far * Near
@@ -189,6 +221,7 @@ bool GetClusterIndex(in float2 CoordsUV, in float ViewZ, inout uint clusterIndex
     return true;
 }
 
+/*
 float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float EndHeight)
 {
     float WorldStartHeight = StartHeight + CameraPosition.z - UIGlobalFogBaseHeight; //Start at previous froxel world height
@@ -197,11 +230,42 @@ float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float EndHeight)
     float InverseFalloff = rcp(max(UIGobalFogFalloff, EPSILON_DIVISION));
     float Density = exp(-WorldStartHeight * InverseFalloff) - exp(-WorldEndHeight * InverseFalloff);
 
-    //float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGobalFogFalloff * abs(Density * rcp(WorldUp));
     float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGobalFogFalloff * Density * rcp(WorldUp);
+
+    return max(OpticalDepth, EPSILON_DIVISION);
+}
+//Density = max(Density, EPSILON_DIVISION);
+//float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGobalFogFalloff * abs(Density * rcp(WorldUp));
+
+*/
+
+float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float StepLength)
+{
+    float InverseFalloff = max(rcp(UIGobalFogFalloff), 1e-9); //CPU
+    WorldUp = (abs(WorldUp) < EPSILON_DIVISION) ? sign(WorldUp) * 0.001 : clamp(WorldUp, -1.0, 1.0); // not needed?
+
+    StartHeight += CameraPosition.z;
+    float EndHeight = StartHeight + StepLength * WorldUp;
+    float BaseHeight = min(StartHeight, EndHeight);
+
+    WorldUp = abs(WorldUp);
+    float InverseWorldUp = rcp(WorldUp);
+
+    float FogBase = clamp((UIGlobalFogBaseHeight - BaseHeight) * InverseWorldUp, 0, StepLength);
+
+    float DensityBase = exp(-max(BaseHeight - UIGlobalFogBaseHeight, 0) * InverseFalloff);
+    float DensityDelta = 1.0 - exp(-(StepLength - FogBase) * WorldUp * InverseFalloff);
+
+    float VerticalCorrection = UIGobalFogFalloff * InverseWorldUp;
+
+    float OpticalDepth = VerticalCorrection * DensityBase * DensityDelta;
+          OpticalDepth = (OpticalDepth + FogBase) * UIExtinction;
 
     return OpticalDepth;
 }
+
+
+
 
 #ifdef SHADOW_COMPUTE
 
@@ -448,17 +512,6 @@ float4 GetLocalFogData(float3 CoordsWS){
     return FogMap.SampleLevel(Point_Sampler, MapCoordsUV, 0);
 }
 
-float GetGlobalHeightFog(float FroxelWorldHeight){
-    //method 1
-    float GlobalFog = 1.0 - clamp((FroxelWorldHeight - UIGlobalFogBaseHeight) / UIGobalFogFalloff, 0.0, 1.0);
-    GlobalFog = GlobalFog * GlobalFog * GlobalFog * UIGlobalFogDensity;
-
-    //method 2
-	//GlobalFog = exp(-(FroxelWorldHeight - UIGlobalFogBaseHeight) * UIGobalFogFalloff);
-
-    return GlobalFog;
-}
-
 float TestLocalFog(float FroxelWorldHeight){
     float MaxHeight = UIGlobalFogBaseHeight; //
     float FalloffDistance = UIGobalFogFalloff; //
@@ -468,21 +521,6 @@ float TestLocalFog(float FroxelWorldHeight){
     float LocalFog = 1.0 - saturate((FroxelWorldHeight - (MaxHeight - FalloffDistance)) / Falloff);
 
     return LocalFog * LocalFog * LocalFog * UIGlobalFogDensity;
-
-}
-
-//float Falloff = MaxHeight - (MaxHeight - FalloffDistance);
-//float LocalFog = 1.0 - saturate((FroxelWorldHeight - (MaxHeight - FalloffDistance)) / Falloff);
-    //LocalFog = LocalFog * LocalFog * LocalFog * UIGlobalFogDensity;
-
-//function takes a current height, fog start height, fog maximum height and falloff distance
-//start height = worldHeight + Bias
-//max height = max height
-//falloff = max height - falloff ??
-
-float GetFogDensity(float FroxelWorldHeight, float Density, float Height, float Falloff){
-    float Fog = 1.0 - clamp((FroxelWorldHeight - Height) / Falloff, 0.0, 1.0);
-    return Fog * Fog * Fog * Density;
 }
 
 
@@ -494,39 +532,33 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ViewZ = FroxelDepthToView(Froxel.z);
     float ThicknessZ = FroxelDepthToView(Froxel.z + 1.0) - ViewZ;
 
-    float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
-          BNoise = frac(BNoise + (SharedData::FrameCount & 17) * kPhi);
+    float FroxelZNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+          FroxelZNoise = ThicknessZ * frac(FroxelZNoise + (SharedData::FrameCount & 17) * kPhi);
 
-    ViewZ += ThicknessZ * BNoise;
+    ViewZ += FroxelZNoise;
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
+
     //float3 WorldPosition = RayPosition + CameraPosition.xyz;
-
-
     //float GlobalFog = GetFogDensity(WorldPosition.z, UIGlobalFogDensity, UIGlobalFogBaseHeight, UIGobalFogFalloff);
     //float4 LocalFogData = GetLocalFogData(WorldPosition);
     //float LocalFog =  GetFogDensity(WorldPosition.z, LocalFogData.w, LocalFogData.x, LocalFogData.y);
-    //float DensityAtFroxel = LocalFog + GlobalFog;
 
 
-    float PrevViewZ = FroxelDepthToView(Froxel.z - 1.0) + ThicknessZ * BNoise;
-    float3 PrevRayPosition = FroxelWorldDirection(Froxel) * PrevViewZ;
+    float PrevViewZ = FroxelDepthToView(max(Froxel.z - 1.0, 0.1)) + FroxelZNoise;
+
+    float3 PrevRayPosition = RayDirection * PrevViewZ;
     float StepLength = distance(PrevRayPosition, RayPosition);
 
-    float OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, RayPosition.z);
-    float Extinction = max(OpticalDepth * rcp(StepLength), EPSILON_DIVISION);
+    //float OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, RayPosition.z);
+    float OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength);
+    float Extinction = max(OpticalDepth * rcp(max(StepLength, EPSILON_DIVISION)), EPSILON_DIVISION);
 
+    //float Density = 1.0;
+    //Extinction = UIExtinction * Density;
+    //OpticalDepth = Extinction;
 
-
-    //Sigma_Extinction = Sigma_Absorbtion + Sigma_Scattering  per unit length
-    //Albedo = ratio of light scattered compared to light absorped
-    //Value of 1.0 means every collision is scattered none are absorped
-
-    //float DensityAtFroxel = UIGlobalFogDensity * exp(-WorldPosition.z / max(UIGobalFogFalloff, EPSILON_DIVISION));
-    //MediaExtinction = UIExtinction * DensityAtFroxel; // Is the total rate of light removal
-
-
-    float3 ScatteringAlbedo = UIScatteringRatio.xxx * Extinction; //
+    float3 ScatteringAlbedo = UIScatteringRatio.xyz * Extinction;
 
     float4 Output = float4(ScatteringAlbedo, OpticalDepth);
 
@@ -598,10 +630,10 @@ cbuffer StrictLightData : register(b9)
 
 float HenyeyGreensteinPhase(float ScatteringAngle, float Anisotropy){
     Anisotropy = clamp(Anisotropy, -0.999, 0.999);
-	float AnisotropySq = Anisotropy * Anisotropy;
-	float phase = max(1.0 + AnisotropySq - 2.0 * Anisotropy * ScatteringAngle, EPSILON_DIVISION);
+	float Anisotropy2 = Anisotropy * Anisotropy;
+	float phase = max(1.0 + Anisotropy2 - 2.0 * Anisotropy * ScatteringAngle, EPSILON_DIVISION);
 
-    return (1.0 - AnisotropySq) / (4.0 * Math::PI * (phase * sqrt(phase)));
+    return (1.0 - Anisotropy2) * rcp(4.0 * Math::PI * (phase * sqrt(phase)));
 }
 
 float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, float3 RayToEye, float Shadow)
@@ -704,15 +736,15 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 
     float3 Lighting = float3(0,0,0);
-    Lighting += GetAmbientLighting(RayPosition, DirLightToEye);
-    //Lighting += 0.25;
+    //Lighting += GetAmbientLighting(RayPosition, DirLightToEye);
+    Lighting += 0.25;
 
     //float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation) * ((1.0 - Shadow) *3);
-    float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation) * Shadow;
+    float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation); // * Shadow;
     float ScatterCosineTheta = dot(DirLightToEye, RayToEye);
     Lighting += DirLightRadiance * HenyeyGreensteinPhase(ScatterCosineTheta, UIAnisotropy);
 
-    Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
+    //Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
 
     //float Exposure = max(1.0, min(length(SharedData::DirLightColor.xyz), 1.5)); //eh
     float Exposure = UIExposure;
@@ -737,7 +769,9 @@ RWTexture3D<float4> IntergrationVolume : register(u0);
 void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSample, float OpticalDepth, float StepLength)
 {
     float Transmittance = exp(-OpticalDepth);
-    float Extinction = max(OpticalDepth * rcp(StepLength), EPSILON_DIVISION);
+    float Extinction = max(OpticalDepth * rcp(max(EPSILON_DIVISION, StepLength)), EPSILON_DIVISION);
+    //float Extinction = OpticalDepth;
+    //float Transmittance = exp(-Extinction * StepLength);
 
     float3 InScatteredLight = ScatteringSample.xyz * (1.0 - Transmittance) * rcp(Extinction) * Accumulation.w;
 
@@ -811,9 +845,8 @@ float4 main(VertexShaderOutput input) : SV_Target
 
     float2 CoordsNDC = input.TexCoord.xy * 2.0 - 1.0;
     float3 PixelDirectionWS = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
-    float3 PixelPositionWS = PixelDirectionWS * PixelViewZ;
 
-    float OpticalDepth = GetAnalyticOpticalDepth(PixelDirectionWS.z, 0.0, PixelPositionWS.z);
+    float OpticalDepth = GetAnalyticOpticalDepth(PixelDirectionWS.z, 0.0, PixelViewZ);
     Transmittance = exp(-OpticalDepth);
     NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance);
 

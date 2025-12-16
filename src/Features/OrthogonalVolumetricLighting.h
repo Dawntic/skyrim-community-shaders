@@ -226,7 +226,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float anisotropy = 0.1;
 		float localLightsAnisotropy = 0.80;
 		float localLightsMultiplier = 2.0;
-		float scatteringRatio = 1.0;
+		float4 scatteringRatio = float4(1.0, 1.0, 1.0, 1.0);
 
 		float globalFogDensity = 0.3;
 		float globalFogFalloffHeight = 500;
@@ -244,7 +244,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float distanceFadeIn = 1.0;
 
 		float blendOpp = false;
-		float _pad[3];
+		//float _pad[3];
 
 		float4 fogMapData;
 		float4 UIfogMapParams;
