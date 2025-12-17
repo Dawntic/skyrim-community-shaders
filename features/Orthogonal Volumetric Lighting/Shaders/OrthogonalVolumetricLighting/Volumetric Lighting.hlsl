@@ -283,22 +283,20 @@ StructuredBuffer<LightLimitFix::LightGrid> lightGrid : register(t6);
 
 float EVSM_Visibility(float3 CoordsLS, float2 Moments)
 {
-    float Offset = 8388888;
-    float BiasVal = 0.0005;
+    float MinVariance = 0.0;
 
     float Depth = exp(UIEVSMExponent * CoordsLS.z);
-    float DepthBias = BiasVal * Depth;
     float Delta = Depth - Moments.x;
 
-    float Variance = max(Moments.y - Moments.x * Moments.x, DepthBias * DepthBias);
+    float Variance = max(Moments.y - Moments.x * Moments.x, MinVariance);
     float Visibility = Variance / (Variance + Delta * Delta);
 
-    return (Depth <= Moments.x) ? 1.0 : saturate(Visibility * Offset + -Offset);
+    return (Depth <= Moments.x) ? 1.0 : Visibility;
 }
 
 float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float ThicknessZ, float BNoise)
 {
-    int Samples = 4;
+    int Samples = 8;
 
     float Result = 0;
     for(int i=0; i<Samples; i++){
@@ -464,11 +462,11 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float2 Coords = (ThreadID.xy + 0.5) / EVSMData.xy;
 
     float2 Result = 1e+10;
-    int SearchRadius = 2;
-    [loop] for (int dy = -1; dy <= SearchRadius; ++dy){
-        [loop] for (int dx = -1; dx <= SearchRadius; ++dx){
-             float3 SampleCoords = float3(clamp(Coords + (float2(dx, dy) / EVSMData.xy), float2(0.0, 0.0), EVSMData.xy - 1), ThreadID.z);
-             float4 Sample = EVSM.SampleLevel(Linear_Sampler, SampleCoords, 0);
+    int SearchRadius = 4;
+    [loop] for (int dy = -SearchRadius; dy <= SearchRadius; ++dy){
+        [loop] for (int dx = -SearchRadius; dx <= SearchRadius; ++dx){
+            int2 SampleCoords = clamp(int2(ThreadID.xy) + int2(dx, dy), int2(0, 0), int2(EVSMData.xy) - 1);
+            float4 Sample = EVSM.Load(int4(SampleCoords, ThreadID.z, 0));
             Result = (Result.x < Sample.x) ? Result.xy : Sample.xy;
         }
     }
