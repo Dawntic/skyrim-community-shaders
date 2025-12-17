@@ -182,10 +182,8 @@ float ViewDepthToFroxel(float ViewDepth){
 
 float3 FroxelWorldDirection(float3 Froxel)
 {
-    float3 CoordsNDC = float3(((Froxel.xy + 0.5) / VolumeSize.xy) * 2.0 - 1.0, 1);
-           CoordsNDC = float3(CoordsNDC.xy * float2(1.0, -1.0), 1.0);
-
-    float3 CoordsWS = mul(CameraViewProjInverse, float4(CoordsNDC, 1.0)).xyz;
+    float2 CoordsNDC = (Froxel.xy + 0.5) / VolumeSize.xy * 2.0 - 1.0;
+    float3 CoordsWS = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
 
     return CoordsWS;
 }
@@ -241,8 +239,9 @@ float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float EndHeight)
 
 float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float StepLength)
 {
-    float InverseFalloff = max(rcp(UIGobalFogFalloff), 1e-9); //CPU
-    WorldUp = (abs(WorldUp) < EPSILON_DIVISION) ? sign(WorldUp) * 0.001 : clamp(WorldUp, -1.0, 1.0); // not needed?
+    float InverseFalloff = max(rcp(UIGobalFogFalloff), 1e-8); //CPU
+
+    WorldUp = (abs(WorldUp) < 1e-4) ? sign(WorldUp) * 0.001 : clamp(WorldUp, -1.0, 1.0);
 
     StartHeight += CameraPosition.z;
     float EndHeight = StartHeight + StepLength * WorldUp;
@@ -261,10 +260,8 @@ float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float StepLength
     float OpticalDepth = VerticalCorrection * DensityBase * DensityDelta;
           OpticalDepth = (OpticalDepth + FogBase) * UIExtinction;
 
-    return OpticalDepth;
+    return max(OpticalDepth, EPSILON_DIVISION);
 }
-
-
 
 
 #ifdef SHADOW_COMPUTE
@@ -284,7 +281,8 @@ StructuredBuffer<uint> lightList : register(t5);
 StructuredBuffer<LightLimitFix::LightGrid> lightGrid : register(t6);
 
 
-float EVSM_Visibility(float3 CoordsLS, float2 Moments){
+float EVSM_Visibility(float3 CoordsLS, float2 Moments)
+{
     float Offset = 8388888;
     float BiasVal = 0.0005;
 
@@ -298,8 +296,8 @@ float EVSM_Visibility(float3 CoordsLS, float2 Moments){
     return (Depth <= Moments.x) ? 1.0 : saturate(Visibility * Offset + -Offset);
 }
 
-float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float ThicknessZ, float BNoise){
-
+float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float ThicknessZ, float BNoise)
+{
     int Samples = 4;
 
     float Result = 0;
@@ -385,9 +383,9 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ThicknessZ = FroxelDepthToView(Froxel.z) - CoordZ;
 
     float Noise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
-    float ZJitterSequ = frac(Noise + ((SharedData::FrameCount + 17) % 33) * kPhi); // Coprime LDS
+    float RayJitter = frac(Noise + ((SharedData::FrameCount + 17) % 33) * kPhi); // Coprime LDS
 
-    float ViewZ = CoordZ + ThicknessZ * ZJitterSequ;
+    float ViewZ = CoordZ + ThicknessZ * RayJitter;
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
     float3 WorldPosition = RayPosition + CameraPosition.xyz;
@@ -412,9 +410,10 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
           ReprojectionValue = Confidence * min(ReprojectionValue, MaxHistory) * UIUseHistory;
 
     //ReprojectionValue = 0.5;
-    Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
+    //Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue)*5;
 
     //Shadow = min(0.12, Shadow);
+    //Shadow *= 5;
 
     ShadowVolume[ThreadID] = Shadow;
 }
@@ -532,10 +531,10 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ViewZ = FroxelDepthToView(Froxel.z);
     float ThicknessZ = FroxelDepthToView(Froxel.z + 1.0) - ViewZ;
 
-    float FroxelZNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
-          FroxelZNoise = ThicknessZ * frac(FroxelZNoise + (SharedData::FrameCount & 17) * kPhi);
+    float RayJitter = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+          RayJitter = ThicknessZ * frac(RayJitter + ((SharedData::FrameCount + 17) % 33) * kPhi);
 
-    ViewZ += FroxelZNoise;
+    //ViewZ += RayJitter;
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
 
@@ -545,18 +544,14 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //float LocalFog =  GetFogDensity(WorldPosition.z, LocalFogData.w, LocalFogData.x, LocalFogData.y);
 
 
-    float PrevViewZ = FroxelDepthToView(max(Froxel.z - 1.0, 0.1)) + FroxelZNoise;
+    float PrevViewZ = FroxelDepthToView(max(Froxel.z - 1.0, 1.0));// + RayJitter;
 
     float3 PrevRayPosition = RayDirection * PrevViewZ;
-    float StepLength = distance(PrevRayPosition, RayPosition);
+    float StepLength = max(distance(PrevRayPosition, RayPosition), 1.0);
 
-    //float OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, RayPosition.z);
     float OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength);
     float Extinction = max(OpticalDepth * rcp(max(StepLength, EPSILON_DIVISION)), EPSILON_DIVISION);
 
-    //float Density = 1.0;
-    //Extinction = UIExtinction * Density;
-    //OpticalDepth = Extinction;
 
     float3 ScatteringAlbedo = UIScatteringRatio.xyz * Extinction;
 
@@ -576,7 +571,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float Noise = saturate((((Perlin1 + Perlin2) * 0.5) - Threshold) * Gain);
           Noise = smoothstep(0.0, 1.0, Noise);
           Noise = lerp(Noise, 1.0, saturate(OffsetZ * FadeRate));
-*/
+
 
 //// Reprojection
 
@@ -588,6 +583,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float BaseValue = 0.90;
     float ReprojectionValue = BaseValue * Confidence;
     //Output = lerp(Output, MediaHistory, ReprojectionValue);
+*/
 
     MediaVolume[ThreadID] = Output;
 }
@@ -708,6 +704,7 @@ float3 GetAmbientLighting(float3 WorldPosition, float3 DirLightToEye)
     return AmbientLight;
 }
 
+//skylighting AO mods the absorption instead of
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -715,13 +712,13 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 Froxel = ThreadID;
     float2 CoordsUV = (Froxel.xy + 0.5) / VolumeSize.xy;
 
-    float BNoise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
-          BNoise = frac(BNoise + (SharedData::FrameCount & 17) * kPhi);
+    float RayJitter = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+          RayJitter = frac(RayJitter + ((SharedData::FrameCount + 17) % 33) * kPhi);
 
     float ViewZ = FroxelDepthToView(Froxel.z + 0.5);
     float ThicknessZ = FroxelDepthToView(Froxel.z + 1.5) - ViewZ;
 
-    ViewZ += ThicknessZ * BNoise;
+    ViewZ += ThicknessZ * RayJitter;
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
 
@@ -736,11 +733,10 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 
     float3 Lighting = float3(0,0,0);
+    //Lighting += 1.0;
     //Lighting += GetAmbientLighting(RayPosition, DirLightToEye);
-    Lighting += 0.25;
 
-    //float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation) * ((1.0 - Shadow) *3);
-    float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation); // * Shadow;
+    float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation) * Shadow;
     float ScatterCosineTheta = dot(DirLightToEye, RayToEye);
     Lighting += DirLightRadiance * HenyeyGreensteinPhase(ScatterCosineTheta, UIAnisotropy);
 
@@ -765,13 +761,12 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 Texture3D ScatterVolume : register(t0);
 RWTexture3D<float4> IntergrationVolume : register(u0);
 
-
+//float Extinction = OpticalDepth;
+//float Transmittance = exp(-Extinction * StepLength);
 void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSample, float OpticalDepth, float StepLength)
 {
     float Transmittance = exp(-OpticalDepth);
     float Extinction = max(OpticalDepth * rcp(max(EPSILON_DIVISION, StepLength)), EPSILON_DIVISION);
-    //float Extinction = OpticalDepth;
-    //float Transmittance = exp(-Extinction * StepLength);
 
     float3 InScatteredLight = ScatteringSample.xyz * (1.0 - Transmittance) * rcp(Extinction) * Accumulation.w;
 
@@ -793,14 +788,14 @@ void main(uint3 Froxel : SV_DispatchThreadID)
         float ViewZ = FroxelDepthToView(Slice + 1.0);
         float3 WorldDirection = FroxelWorldDirection(Froxel);
         float3 WorldPosition = WorldDirection * ViewZ;
-        float StepLength = distance(PrevWorldPosition, WorldPosition);
+        float StepLength = max(distance(PrevWorldPosition, WorldPosition), 1.0);
 
         AccumulateScattering(Accumulation, ScatteringSample, OpticalDepth, StepLength);
         PrevWorldPosition = WorldPosition;
 
-        IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), 1.0); // Encode output as normalized radiance for density anti aliasing
+        //IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), 1.0); // Encode output as normalized radiance for density anti aliasing
 
-        //IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
+        IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
     }
 }
 #endif
@@ -814,12 +809,15 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 // Quadratic polynomial approximation: https://advances.realtimerendering.com/s2021/jpatry_advances2021.pdf
 // Function Graph: https://www.desmos.com/calculator/udlencsh7k
 
+// Blend state is
+
 #ifdef APPLY_PIXEL
 
 Texture2D DepthTex : register(t0);
 Texture3D IntergrationVolume : register(t1);
 Texture2DArray STBNoise : register(t2);
 Texture3D ShadowVolume : register(t3);
+Texture2D MainScene : register(t4);
 
 float LinearStep(float edge0, float edge1, float x){
     return saturate((x - edge0) / (edge1 - edge0));}
@@ -833,11 +831,13 @@ float4 main(VertexShaderOutput input) : SV_Target
     float2 Noise;
     Noise.x = STBNoise.Load(int4(int2(input.Position.xy) & 63, 0, 0)).x;
     Noise.y = STBNoise.Load(int4(int2(input.Position.yx) & 63, 0, 0)).x;
-    Noise = frac(Noise.xy + (SharedData::FrameCount % 16) * kPhi) * 2.0 - 1.0;
+    //Noise = frac(Noise.xy + (SharedData::FrameCount % 16) * kPhi) * 2.0 - 1.0;
+
+    float2 Jitter = frac(Noise + ((SharedData::FrameCount + 17) % 33) * kPhi) * 2.0 - 1.0;
 
     float2 rcpVolumeSize = rcp(VolumeSize.xy); //CPU
 
-    float2 CoordsUV = input.TexCoord.xy + (rcpVolumeSize * Noise);
+    float2 CoordsUV = input.TexCoord.xy + (rcpVolumeSize * Jitter);
 
     float4 NormalizedRadiance = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV, FroxelDepth), 0.0);
     float Transmittance = NormalizedRadiance.w;
@@ -847,8 +847,8 @@ float4 main(VertexShaderOutput input) : SV_Target
     float3 PixelDirectionWS = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
 
     float OpticalDepth = GetAnalyticOpticalDepth(PixelDirectionWS.z, 0.0, PixelViewZ);
-    Transmittance = exp(-OpticalDepth);
-    NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance);
+    //Transmittance = exp(-OpticalDepth);
+    //NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance);
 
     return float4(NormalizedRadiance.xyz, Transmittance);
 }
@@ -1105,3 +1105,4 @@ VertexShaderOutput main(VertexShaderInput input)
 /////////////////////////////////////////////////////////////////////////////////////////
 
 
+`

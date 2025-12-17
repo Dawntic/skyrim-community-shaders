@@ -105,7 +105,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 	outputBlendDesc.AlphaToCoverageEnable = FALSE;
 	outputBlendDesc.IndependentBlendEnable = FALSE;
 	auto& rtDesc = outputBlendDesc.RenderTarget[0];
-	rtDesc.BlendEnable = TRUE;
+	rtDesc.BlendEnable = FALSE;
 	rtDesc.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 	rtDesc.SrcBlend = D3D11_BLEND_ONE;
 	rtDesc.DestBlend = D3D11_BLEND_SRC_ALPHA;
@@ -249,7 +249,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	renderdata = new Setup::LF_RenderData;
 	renderdata->SetupPass(Shaders::RenderVL, true, 1, { .uncond_pass = true });
-	//renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
+	renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
 	renderdata->SetupRenderData();
 
 	CompileShaders();
@@ -260,7 +260,7 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 	static const std::unordered_map<int, void (OrthogonalVolumetricLighting::*)()> effects{
 		{ Shaders::Bypass, &OrthogonalVolumetricLighting::SetupBypass },
 		{ Shaders::RenderVL, &OrthogonalVolumetricLighting::VLightingRenderChain },
-		//{ Shaders::Apply, &OrthogonalVolumetricLighting::SetupApplyPass },
+		{ Shaders::Apply, &OrthogonalVolumetricLighting::RenderToScreen },
 	};
 	auto it = effects.find(desc);
 	if (it != effects.cend())
@@ -617,14 +617,15 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 	if (globals::state->frameAnnotations)
 		globals::state->BeginPerfEvent("VL - Apply Volumetric Lighting");
 
-	auto& mainRTV = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].RTV;
+	//auto& mainRTV = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].RTV;
+	//if (!swapOutputRT)
+	//	context->OMSetRenderTargets(1, &mainRTV, nullptr);
+	//else
+	context->OMSetRenderTargets(1, &outputRTV, nullptr);
 
-	if (!swapOutputRT)
-		context->OMSetRenderTargets(1, &mainRTV, nullptr);
-	else
-		context->OMSetRenderTargets(1, &outputRTV, nullptr);
-
-	context->OMSetBlendState(outVolumetricsBlendState, nullptr, 0xffffffff);
+	context->OMSetBlendState(outVolumetricsBlendState, nullptr, 0xffffffff);  // BLEND DISABLED AT CREATION
+	auto& mainSRV = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].SRV;
+	context->PSSetShaderResources(4, 1, &mainSRV);
 
 	context->VSSetShader(bypassVS, NULL, NULL);
 	context->PSSetShader(applyVolumetricLightingPS, NULL, NULL);
@@ -635,6 +636,17 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 
 	if (globals::state->frameAnnotations)
 		globals::state->EndPerfEvent();
+}
+
+void OrthogonalVolumetricLighting::RenderToScreen()
+{
+	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
+	auto& mainTexture = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture;
+
+	context->CopyResource(mainTexture, outputTexture);
+
+	overrideShader = false;
 }
 /*
 void OrthogonalVolumetricLighting::SetupFilterPass()
@@ -779,7 +791,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
 	ImGui::SliderFloat("Local Light Multiplier", &settings.localLightsMultiplier, 1.0, 5.0);
 
-	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.001, 0.4, "%.4f");
+	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.001, 0.6, "%.4f");
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The rate of light loss per unit distance (light absorpted + light scattered)");
 

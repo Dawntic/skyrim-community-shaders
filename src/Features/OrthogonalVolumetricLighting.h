@@ -67,6 +67,8 @@ struct OrthogonalVolumetricLighting : Feature
 	void SetupPerlinNoise();
 	//void SetupFilterPass();
 
+	void RenderToScreen();
+
 	ConstantBuffer* shadowDataCB = nullptr;
 	ConstantBuffer* froxelGridCB = nullptr;
 	ConstantBuffer* volumeCB = nullptr;
@@ -174,7 +176,7 @@ struct OrthogonalVolumetricLighting : Feature
 	float3 eyePositionWS;
 
 	float distributionLambda = 1.6f;
-	float nearPlane = 15.0f;
+	float nearPlane = 100.0f;
 	float farPlane = 353840.0f;
 
 	float2 fogMapSize;
