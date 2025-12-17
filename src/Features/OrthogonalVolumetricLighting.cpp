@@ -778,8 +778,10 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	//// Color Params ////
 	ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
 	ImGui::SliderFloat("Exposure", &settings.preExposure, 0.1, 3.0);
+	ImGui::SliderFloat("Ambient Light Multiplier", &settings.amibentLightingMultiplier, 0.1, 2.0);
 	ImGui::SliderFloat("Sky Ambient Contribution", &settings.skyAmbientContribution, 0.1, 2.0);
 	ImGui::SliderFloat("Scene Ambient Contribution", &settings.sceneAmbientContribution, 0.1, 2.0);
+	ImGui::SliderFloat("Dir Light Radiance Multiplier", &settings.dirLightRadianceMultiplier, 1.0, 250.0);
 
 	//// Scattering Params ////
 	ImGui::SeparatorText("Scattering Properties");

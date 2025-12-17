@@ -234,8 +234,10 @@ struct OrthogonalVolumetricLighting : Feature
 		float globalFogFalloffHeight = 500;
 		float globalFogStartHeight = -4000;
 
+		float amibentLightingMultiplier = 1.0;
 		float skyAmbientContribution = 1.0;
 		float sceneAmbientContribution = 1.0;
+		float dirLightRadianceMultiplier = 10.0;
 
 		uint esmExponent = 8;
 		float color_saturation = 0.25;
