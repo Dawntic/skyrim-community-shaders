@@ -181,7 +181,7 @@ PS_OUTPUT main(PS_INPUT input)
 	}
 #		endif
 	if (depth < 0.999999) {
-		composedColor.xyz = FogNearColor.w * lerp(composedColor.xyz, fogColor, fogFactor);
+		//composedColor.xyz = FogNearColor.w * lerp(composedColor.xyz, fogColor, fogFactor);
 	}
 #	endif
 

@@ -233,6 +233,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float globalFogDensity = 0.3;
 		float globalFogFalloffHeight = 500;
 		float globalFogStartHeight = -4000;
+		float distantHazeExtinction = 0.5;
 
 		float amibentLightingMultiplier = 1.0;
 		float skyAmbientContribution = 1.0;
@@ -248,7 +249,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float distanceFadeIn = 1.0;
 
 		float blendOpp = false;
-		//float _pad[3];
+		float _pad[1];
 
 		float4 fogMapData;
 		float4 UIfogMapParams;
@@ -288,6 +289,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float4 heightMapParams;
 		float4 heightMapZRange;
 		float4 NoiseSize;
+		float4 gFogParams;
 		//uint frameCounter;
 		//uint boardCondition;
 		//float _pad[3];

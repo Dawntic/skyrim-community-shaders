@@ -405,6 +405,27 @@ void OrthogonalVolumetricLighting::UpdateGeneralBuffers()
 	generalData.heightMapParams = float4(mapScale.x, mapScale.y, mapOffset.x, mapOffset.y);
 	generalData.heightMapZRange = float4(mapRange.x, mapRange.y, 0.0, 0.0);
 	generalData.NoiseSize = noiseDimensions;
+
+	float4 fogParams = float4(0, 0, 0, 0);
+	if (auto sky = globals::game::sky) {
+		fogParams = float4(sky->fogNear / sky->fogFar, 1.0f / sky->fogFar, sky->fogPower, 0);
+
+		if (auto weather = sky->currentWeather) {
+			fogParams.w = 1.0f - ((sky->fogNear - weather->fogData.dayNear) / std::max(weather->fogData.dayFar - weather->fogData.dayNear, 1e-6f));
+
+			if (sky->currentWeatherPct < 1.0) {
+				if (auto lastWeather = sky->lastWeather) {
+					auto& prevData = sky->lastWeather->fogData;
+					float4 Prev = float4(prevData.dayNear / prevData.dayFar, 1.0f / prevData.dayFar, prevData.dayPower, 0);
+					Prev.w = 1.0f - ((sky->fogNear - prevData.dayNear) / std::max(prevData.dayFar - prevData.dayNear, 1e-6f));
+					fogParams = float4::Lerp(Prev, fogParams, 1.0f - sky->currentWeatherPct);
+				}
+			}
+		}
+		logger::info("currentWeatherPct: {}   fogParams: {}, {}, {}, {}", sky->currentWeatherPct, fogParams.x, fogParams.y, fogParams.z, fogParams.w);
+	}
+
+	generalData.gFogParams = fogParams;
 	//generalData.frameCounter = frameCounter;
 	//generalData.boardCondition = frameCounter & 1;
 	volumeCB->Update(generalData);
@@ -776,12 +797,14 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Distribution Lambda", &distributionLambda, 0.5, 3.0);
 
 	//// Color Params ////
+	ImGui::SeparatorText("Lighting Properties");
+
 	ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
 	ImGui::SliderFloat("Exposure", &settings.preExposure, 0.1, 3.0);
 	ImGui::SliderFloat("Ambient Light Multiplier", &settings.amibentLightingMultiplier, 0.1, 2.0);
 	ImGui::SliderFloat("Sky Ambient Contribution", &settings.skyAmbientContribution, 0.1, 2.0);
 	ImGui::SliderFloat("Scene Ambient Contribution", &settings.sceneAmbientContribution, 0.1, 2.0);
-	ImGui::SliderFloat("Dir Light Radiance Multiplier", &settings.dirLightRadianceMultiplier, 1.0, 250.0);
+	ImGui::SliderFloat("Dir Light Radiance Multiplier", &settings.dirLightRadianceMultiplier, 1.0, 200.0);
 
 	//// Scattering Params ////
 	ImGui::SeparatorText("Scattering Properties");
@@ -789,9 +812,6 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("How much the amount of light scattering towards the viewer depends on direction");
-
-	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
-	ImGui::SliderFloat("Local Light Multiplier", &settings.localLightsMultiplier, 1.0, 5.0);
 
 	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.001, 0.6, "%.4f");
 	if (auto _tt = Util::HoverTooltipWrapper())
@@ -807,11 +827,18 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The ratio of light that is scattered compared to absorped");
 
+	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
+	ImGui::SliderFloat("Local Light Multiplier", &settings.localLightsMultiplier, 1.0, 5.0);
+
 	//// Fog Params ////
 	ImGui::SeparatorText("Fog Properties");
 
 	ImGui::SliderFloat("Fog Falloff Height", &settings.globalFogFalloffHeight, 250.0f, 10000.0f);  // Lower min values cause aliasing
 	ImGui::SliderFloat("Fog Base Height", &settings.globalFogStartHeight, -10000.0f, 10000.0f);
+
+	ImGui::SliderFloat("Distant Haze Extinction", &settings.distantHazeExtinction, 0.0, 1.0);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("This controls the ambient atmospheric fog contribution");
 
 	ImGui::Spacing();
 	ImGui::SeparatorText("Shadow properties");
