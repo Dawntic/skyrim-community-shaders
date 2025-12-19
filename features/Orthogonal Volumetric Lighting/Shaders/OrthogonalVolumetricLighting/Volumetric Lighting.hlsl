@@ -529,27 +529,28 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 PrevRayPosition = RayDirection * PrevViewZ;
     float StepLength = max(distance(PrevRayPosition, RayPosition), 1.0);
 
-
     //float3 FogInputs = GetFogInputs(0);
     //float OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, FogInputs.x, FogInputs.y, FogInputs.z);
     float FogBaseHeight = UIGlobalFogBaseHeight;
     float FogFalloff = UIGobalFogFalloff;
     float FogExtinction = UIExtinction;
     float OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, FogBaseHeight, FogFalloff, FogExtinction);
-    //OpticalDepth = lerp(OpticalDepth, StepLength * min(FogParam.z, FogParam.w), 1); //this means that global fog still in effect - distance dependance from fog factor
-    //OpticalDepth = OpticalDepth * (1.0 - FogFactor) + (StepLength * min(FogParam.z*0.0001, FogParam.w));
-    //OpticalDepth = StepLength * min(FogParam.z*0.0001, FogParam.w);
 
-    float FogFactor = GetWeatherBasedFog(ViewZ) * 0.002;
-    float HomogeneousOpticalDepth = GetHomogeneousOpticalDepth(FogFactor, StepLength);
+    float WeatherFog = GetWeatherBasedFog(ViewZ) * 0.002;
+    float HomogeneousOpticalDepth = GetHomogeneousOpticalDepth(WeatherFog, StepLength);
     OpticalDepth = lerp(OpticalDepth, HomogeneousOpticalDepth, FogParam.w);
 
-
     float Extinction = max(OpticalDepth * rcp(max(StepLength, EPSILON_DIVISION)), EPSILON_DIVISION);
-
     float3 ScatteringAlbedo = UIScatteringRatio.xyz * Extinction;
 
     float4 Output = float4(ScatteringAlbedo, OpticalDepth);
+
+
+    //float DensityAtFroxel = 1.0;
+    //float MediaExtinction = UIExtinction * DensityAtFroxel;
+    //float3 MediaScattering = UIScatteringRatio.xyz * MediaExtinction;
+    //float3 MediaScattering = UIScatteringRatio.xyz * DensityAtFroxel;
+    //Output = float4(MediaScattering, MediaExtinction);
 
 
 //// Wind Vectoring
@@ -738,18 +739,18 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 
     float3 Lighting = float3(0,0,0);
-    Lighting += GetAmbientLighting(RayPosition, DirLightToEye) * UIAmibentLightingMultiplier;
+    //Lighting += GetAmbientLighting(RayPosition, DirLightToEye) * UIAmibentLightingMultiplier;
 
     float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation) * Shadow;
     float DirLightCosTheta = dot(DirLightToEye, RayToEye);
     Lighting += DirLightRadiance * HenyeyGreensteinPhase(DirLightCosTheta, UIAnisotropy) * UIDirLightMultipler;
 
-    Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
+    //Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow);
 
 
     float Exposure = UIExposure; //float Exposure = max(1.0, min(length(SharedData::DirLightColor.xyz), 1.5)); //eh
 
-    Lighting = Lighting * MediaScattering * Exposure;
+    Lighting = Lighting * MediaScattering;// * Exposure;
 
     ScatteringVolume[ThreadID] = float4(Lighting, OpticalDepth);
 }
@@ -778,6 +779,15 @@ void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSample, fl
     Accumulation.w *= Transmittance;
 }
 
+void AccumulateScattering2(inout float4 Accumulation, float4 ScatteringSlice, float StepLength){
+    float Extinction = ScatteringSlice.w;
+    float Transmittance = exp(-Extinction * StepLength);
+
+    float3 InScatterIntegral = ScatteringSlice.xyz * (1.0 - Transmittance) / max(Extinction, EPSILON_DIVISION);
+
+    Accumulation.xyz += InScatterIntegral * Accumulation.w;
+    Accumulation.w *= Transmittance;
+}
 
 [numthreads(8, 8, 1)]
 void main(uint3 Froxel : SV_DispatchThreadID)
@@ -796,6 +806,8 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 
         AccumulateScattering(Accumulation, ScatteringSample, OpticalDepth, StepLength);
         PrevWorldPosition = WorldPosition;
+
+        //AccumulateScattering2(Accumulation, ScatteringSample, StepLength);
 
         //IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), 1.0); // Encode output as normalized radiance for density anti aliasing
 
@@ -874,7 +886,7 @@ float4 main(VertexShaderOutput input) : SV_Target
     float3 SceneColor = MainScene.SampleLevel(Point_Sampler, input.TexCoord.xy, 0).xyz;
            SceneColor = Color::GammaToLinear(SceneColor);
 
-    float3 OutputColor = NormalizedRadiance.xyz + SceneColor * Transmittance;
+    float3 OutputColor = NormalizedRadiance.xyz + SceneColor;// * Transmittance; // Disable alpha blending for now
            OutputColor = Color::LinearToGamma(OutputColor);
 
     return float4(OutputColor, 1.0);
