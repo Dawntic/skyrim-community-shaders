@@ -540,7 +540,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //OpticalDepth = OpticalDepth * (1.0 - FogFactor) + (StepLength * min(FogParam.z*0.0001, FogParam.w));
     //OpticalDepth = StepLength * min(FogParam.z*0.0001, FogParam.w);
 
-    float FogFactor = GetWeatherBasedFog(ViewDepthToLinear(ViewZ));
+    float FogFactor = GetWeatherBasedFog(ViewZ) * 0.002;
     float HomogeneousOpticalDepth = GetHomogeneousOpticalDepth(FogFactor, StepLength);
     OpticalDepth = lerp(OpticalDepth, HomogeneousOpticalDepth, FogParam.w);
 

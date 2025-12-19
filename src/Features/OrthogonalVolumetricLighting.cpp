@@ -408,21 +408,9 @@ void OrthogonalVolumetricLighting::UpdateGeneralBuffers()
 
 	float4 fogParams = float4(0, 0, 0, 0);
 	if (auto sky = globals::game::sky) {
-		fogParams = float4(sky->fogNear / sky->fogFar, 1.0f / sky->fogFar, sky->fogPower, 0);
-
-		if (auto weather = sky->currentWeather) {
-			fogParams.w = 1.0f - ((sky->fogNear - weather->fogData.dayNear) / std::max(weather->fogData.dayFar - weather->fogData.dayNear, 1e-6f));
-
-			if (sky->currentWeatherPct < 1.0) {
-				if (auto lastWeather = sky->lastWeather) {
-					auto& prevData = sky->lastWeather->fogData;
-					float4 Prev = float4(prevData.dayNear / prevData.dayFar, 1.0f / prevData.dayFar, prevData.dayPower, 0);
-					Prev.w = 1.0f - ((sky->fogNear - prevData.dayNear) / std::max(prevData.dayFar - prevData.dayNear, 1e-6f));
-					fogParams = float4::Lerp(Prev, fogParams, 1.0f - sky->currentWeatherPct);
-				}
-			}
-		}
-		logger::info("currentWeatherPct: {}   fogParams: {}, {}, {}, {}", sky->currentWeatherPct, fogParams.x, fogParams.y, fogParams.z, fogParams.w);
+		float4 Base = float4(std::max(sky->fogNear, 1e-6f), std::max(sky->fogFar, 1e-6f), sky->fogPower, 0);
+		fogParams = float4(Base.x / Base.y, 1.0f / Base.y, Base.z, sky->fogClamp);
+		fogParams.w = std::clamp(1.0f - (sky->fogNear / 12000.0f), 0.0f, 1.0f);
 	}
 
 	generalData.gFogParams = fogParams;
