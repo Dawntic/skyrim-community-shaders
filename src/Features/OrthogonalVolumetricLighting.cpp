@@ -329,13 +329,20 @@ void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
 	if (eyePos.x > 1.0 || eyePos.x < -1.0)
 		eyePositionWS = float3(eyePos.x, eyePos.y, eyePos.z);
 
+	static Matrix inverseViewProjCache = globals::game::frameBufferCached.GetCameraViewProjInverse(0);  // need to do something about other matrices
+
+	Matrix inverseViewProj = globals::game::frameBufferCached.GetCameraViewProjInverse(0);
+	auto inverseViewProjRow1 = float4(inverseViewProj._21, inverseViewProj._22, inverseViewProj._23, inverseViewProj._24);
+	if (inverseViewProjRow1 != float4(-0, 0.5, 0, -0))
+		inverseViewProjCache = globals::game::frameBufferCached.GetCameraViewProjInverse(0);
+
 	FroxelGridCB froxelData{};
 	froxelData.cameraView = globals::game::frameBufferCached.GetCameraView(0);
 	froxelData.cameraProj = globals::game::frameBufferCached.GetCameraProj(0);
 	froxelData.cameraViewInverse = globals::game::frameBufferCached.GetCameraViewInverse(0);
 	froxelData.cameraProjInverse = globals::game::frameBufferCached.GetCameraProjInverse(0);
 	froxelData.prevCameraViewProj = globals::game::frameBufferCached.GetCameraPreviousViewProjUnjittered(0);
-	froxelData.cameraViewProjInverse = globals::game::frameBufferCached.GetCameraViewProjInverse(0);
+	froxelData.cameraViewProjInverse = inverseViewProjCache;
 	froxelData.cameraPosition = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
 	froxelData.cameraData = Util::GetCameraData();
 	froxelData.volumeSize = volumeDimensions;
@@ -572,8 +579,8 @@ void OrthogonalVolumetricLighting::GenerateScatteringVolume()
 	context->CSSetShaderResources(5, 1, &lightListSB);
 	context->CSSetShaderResources(6, 1, &lightGridSB);
 
-	auto strictLightDataCB = LLF.strictLightDataCB->CB();
-	context->CSSetConstantBuffers(9, 1, &strictLightDataCB);  //Do i need this for anything?
+	//auto strictLightDataCB = LLF.strictLightDataCB->CB();
+	//context->CSSetConstantBuffers(9, 1, &strictLightDataCB);  //Do i need this for anything?
 
 	context->Dispatch(60, 34, 17);
 
@@ -786,14 +793,6 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Distribution Lambda", &distributionLambda, 0.5, 3.0);
 	ImGui::SliderFloat("Distance Fade In", &settings.distanceFadeIn, 0.0, 250.0);
 
-	//// Local Lights Params ////
-	ImGui::SeparatorText("Local Lights");
-
-	ImGui::Checkbox("Enable Local Lights", (bool*)&settings.enableLocalLights);
-	ImGui::SliderFloat("Local Light Multiplier", &settings.localLightsMultiplier, 0.1, 5.0);
-	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
-	ImGui::SliderFloat("Local Light Saturation", &settings.localLightsSaturation, 0.0, 1.0);
-
 	//// Directional Light Params ////
 	ImGui::SeparatorText("Directional Light");
 
@@ -803,6 +802,14 @@ void OrthogonalVolumetricLighting::DrawSettings()
 		ImGui::Text("How much the amount of light scattering towards the viewer depends on direction");
 	ImGui::SliderFloat("Dir Light Saturation", &settings.color_saturation, 0.0, 1.0);
 	ImGui::SliderFloat("Obsolete Exposure", &settings.preExposure, 0.1, 3.0);
+
+	//// Local Lights Params ////
+	ImGui::SeparatorText("Local Lights");
+
+	ImGui::Checkbox("Enable Local Lights", (bool*)&settings.enableLocalLights);
+	ImGui::SliderFloat("Local Light Multiplier", &settings.localLightsMultiplier, 0.1, 5.0);
+	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
+	ImGui::SliderFloat("Local Light Saturation", &settings.localLightsSaturation, 0.0, 1.0);
 
 	//// Amibent Light Params
 	ImGui::SeparatorText("Ambient Light");

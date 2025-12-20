@@ -130,24 +130,6 @@ float NDCDepthToView(float depth){
     return (CameraData.w / (-depth * CameraData.z + CameraData.x));
 }
 
-/*
-float FroxelDepthToScreen(float Froxel){
-    return (FrustumNearFar.w * loAnisotropy(Froxel / FrustumNearFar.x) - 0.5);
-}
-float ViewDepthToUV(float ViewDepth){ //includes 0.5 tex offset
-    return log(ViewDepth / FrustumNearFar.x) / log(FrustumNearFar.y / FrustumNearFar.x); //CPU
-}
-float UVToViewDepth(float UV){
-    return FrustumNearFar.x * pow(FrustumNearFar.y / FrustumNearFar.x, UV);
-}
-float ViewDepthToFroxel(float ViewDepth){
-    return loAnisotropy(ViewDepth * FrustumNearFar.z) * FrustumNearFar.w;
-}
-float FroxelDepthToView(float Froxel){
-     return exp2(Froxel / FrustumNearFar.w) / FrustumNearFar.z;
-}
-*/
-
 float ViewDepthToUV(float ViewDepth){
     return pow(abs(log(ViewDepth / FrustumNearFar.x) / log(FrustumNearFar.z)), 1.0 / FrustumNearFar.w);
 }
@@ -185,10 +167,6 @@ float3 GetHistoryUV(float3 CoordsWS, out float Confidence)
 
     return PrevUV;
 }
-//float ValidViewZ = float(PrevClip.w > 0.0);
-//float ValidDepth = float(PrevUVZ.z >= 0.0 && PrevUVZ.z <= 1.0);
-//Confidence = (any(abs(PrevNDC.xyz) > 1.0)) ? float2(0.0, 0.0) : float2(ValidViewZ, ValidViewZ * ValidDepth);
-
 
 bool GetClusterIndex(in float2 CoordsUV, in float ViewZ, inout uint clusterIndex){
    // const uint3 clusterSize = SharedData::lightLimitFixSettings.ClusterSize.xyz; //uint3(40,23,32);
@@ -362,10 +340,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 Froxel = ThreadID;
     float2 CoordsUV = (Froxel.xy + 0.5) / VolumeSize.xy;
 
-    //if(Froxel.z == 0)
-    //    return;
-
-    float CoordZ = FroxelDepthToView(Froxel.z - 2); //bias to avoid leaks
+    float CoordZ = FroxelDepthToView(Froxel.z - 2); // Bias to avoid leaks
     float ThicknessZ = FroxelDepthToView(Froxel.z - 1) - CoordZ;
 
     float Noise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
@@ -384,7 +359,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float CloudShadow = CloudShadows::GetCloudShadowMult(WorldPosition, Linear_Sampler) * UICloudShadowContrib;
     float TerrainShadow = TerrainShadows::GetTerrainShadow(WorldPosition, Linear_Sampler);
 
-    float Shadow = LocalShadow + CascadeShadow;// * TerrainShadow * CloudShadow;
+    float Shadow = LocalShadow + CascadeShadow;// * TerrainShadow;// * CloudShadow;
 
     float Confidence;
     float ViewZCenter = FroxelDepthToView(Froxel.z + 0.5);
@@ -393,12 +368,11 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ShadowHistory = ShadowHistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0).x;
 
     float DeltaLimit = max(UIDisocclutionThreshold, EPSILON_DIVISION); //Shadow diff below which max history will be used
-    float ReprojectionValue = 1.0 - LinearStep(DeltaLimit, 1.0, abs(Shadow - ShadowHistory)); //saturate((x - edge0) / (edge1 - edge0));
+    float ReprojectionValue = 1.0 - LinearStep(DeltaLimit, 1.0, abs(Shadow - ShadowHistory));
           ReprojectionValue = Confidence * min(ReprojectionValue, MaxHistory) * UIUseHistory;
 
-    //Shadow = lerp(Shadow, ShadowHistory, 0.5);
     //Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
-    //Shadow = Shadow * 0.15;
+    Shadow = Shadow * 0.15;
 
     float3 BoxCoords = WorldPosition - float3(500, -600, -5500);
     float3 Box = abs(BoxCoords) - float3(1000,20,100);
@@ -472,20 +446,6 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 /////////////////////////////////////////////////////////////////////////////////////////
 
 
-float3 GetFogInputs(float FogFactor)
-{
-    float GameFogBaseHeight = -10000;
-    float GameFogFalloff = 10000;
-    float FogBaseHeight = lerp(UIGlobalFogBaseHeight, GameFogBaseHeight, FogFactor);
-    float FogFalloff = lerp(UIGobalFogFalloff, GameFogFalloff, FogFactor);
-    float FogExtinction = lerp(UIExtinction, min(FogFactor, 0.5), FogFactor);
-
-    return float3(FogBaseHeight, FogFalloff, FogExtinction);
-}
-
-// As weather fades in we lerp from global to game fog
-
-//lerp
 
 //// Media Volume ///////////////////////////////////////////////////////////////////////
 
@@ -545,7 +505,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //float4 LocalFogData = GetLocalFogData(WorldPosition);
 
 
-    float PrevViewZ = FroxelDepthToView(max(Froxel.z - 1.0, 1.0));// + RayJitter;
+    float PrevViewZ = FroxelDepthToView(max(Froxel.z - 1.0, 1.0)); // + RayJitter;
     float3 PrevRayPosition = RayDirection * PrevViewZ;
     float StepLength = max(distance(PrevRayPosition, RayPosition), 1.0);
 
@@ -556,7 +516,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     OpticalDepth = lerp(OpticalDepth, HomogeneousOpticalDepth, FogParam.w * UIUseWeatherFog);
 
     float Extinction = max(OpticalDepth * rcp(max(StepLength, EPSILON_DIVISION)), EPSILON_DIVISION);
-    float3 ScatteringAlbedo = UIScatteringRatio.xyz * Extinction;// * UIExposure;
+    float3 ScatteringAlbedo = UIScatteringRatio.xyz * Extinction;
 
     float4 Output = float4(ScatteringAlbedo, OpticalDepth);
 
@@ -624,16 +584,6 @@ StructuredBuffer<LightLimitFix::LightGrid> lightGrid : register(t6);
 
 RWTexture3D<float4> ScatteringVolume : register(u0);
 
-
-cbuffer StrictLightData : register(b9)
-{
-    uint NumStrictLights;
-    int RoomIndex;
-    uint ShadowBitMask;
-    uint pad0;
-    LightLimitFix::Light StrictLights[15];
-};
-
 // strength * polarization * normalizationFactor / angularDistributionLobe
 float CSPhase(float ScatterCos, float Anisotropy)
 {
@@ -663,13 +613,7 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
             Attenuation = InverseSquareLighting::GetAttenuation(length(LightPosition), light);
             if (Attenuation < 1e-5) continue;
 
-            //float lightDist = length(LightPosition);
-            //float intensityFactor = saturate(lightDist / light.radius);
-		   // if (intensityFactor < 100)
-			 //   continue;
-		   // Attenuation = 1 - intensityFactor * intensityFactor;
-
-            float3 Radiance = Color::Saturation(Color::GammaToLinear(light.color.xyz), UILocalLightsSaturation) * Attenuation; // change sat var
+            float3 Radiance = Color::Saturation(Color::GammaToLinear(light.color.xyz), UILocalLightsSaturation) * Attenuation;
 
             if (light.lightFlags & LightLimitFix::LightFlags::Shadow)
                 Radiance *= Shadow;
@@ -682,30 +626,20 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
     return Lighting;
 }
 
-float3 GetSceneVolumetricDiffuse(float3 LightToSurface)
-{
-    sh2 SH_R = DiffuseIBLTexture.Load(int3(0, 0, 0));
-    sh2 SH_G = DiffuseIBLTexture.Load(int3(1, 0, 0));
-    sh2 SH_B = DiffuseIBLTexture.Load(int3(2, 0, 0));
-
+float3 GetSceneVolumetricDiffuse(float3 LightToSurface){
     float3 DALC = float3(
-        SphericalHarmonics::Unproject(SH_R, LightToSurface),
-        SphericalHarmonics::Unproject(SH_G, LightToSurface),
-        SphericalHarmonics::Unproject(SH_B, LightToSurface));
+        SphericalHarmonics::Unproject(DiffuseIBLTexture.Load(int3(0, 0, 0)), LightToSurface),
+        SphericalHarmonics::Unproject(DiffuseIBLTexture.Load(int3(1, 0, 0)), LightToSurface),
+        SphericalHarmonics::Unproject(DiffuseIBLTexture.Load(int3(2, 0, 0)), LightToSurface));
 
     return max(0.0, DALC);
 }
 
-float3 GetSkyVolumetricDiffuse(float3 LightToSurface)
-{
-    sh2 SH_R = DiffuseSkyIBLTexture.Load(int3(0, 0, 0));
-    sh2 SH_G = DiffuseSkyIBLTexture.Load(int3(1, 0, 0));
-    sh2 SH_B = DiffuseSkyIBLTexture.Load(int3(2, 0, 0));
-
+float3 GetSkyVolumetricDiffuse(float3 LightToSurface){
     float3 Sky_Ambient = float3(
-        SphericalHarmonics::Unproject(SH_R, LightToSurface),
-        SphericalHarmonics::Unproject(SH_G, LightToSurface),
-        SphericalHarmonics::Unproject(SH_B, LightToSurface));
+        SphericalHarmonics::Unproject(DiffuseSkyIBLTexture.Load(int3(0, 0, 0)), LightToSurface),
+        SphericalHarmonics::Unproject(DiffuseSkyIBLTexture.Load(int3(1, 0, 0)), LightToSurface),
+        SphericalHarmonics::Unproject(DiffuseSkyIBLTexture.Load(int3(2, 0, 0)), LightToSurface));
 
     return max(0.0, Sky_Ambient);
 }
@@ -717,16 +651,14 @@ float3 GetAmbientLighting(float3 WorldPosition, float3 DirLightToEye)
     float SkyDiffuse = SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, float4(0.282095, 0, 0, 0)); // Omnidir average
           SkyDiffuse = lerp(1.0, saturate(SkyDiffuse), Skylighting::getFadeOutFactor(WorldPosition));
 
-    float3 SceneAmbient = GetSceneVolumetricDiffuse(-normalize(WorldPosition)) * UISceneAmbientContribution; // add UI contribution scaling
+    float3 SceneAmbient = GetSceneVolumetricDiffuse(-normalize(WorldPosition)) * UISceneAmbientContribution;
     float3 SkyAmbient = GetSkyVolumetricDiffuse(float3(0, 0, -1)) * UISkyAmbientContribution; // Should weight this dir by phase func or just do light dir maybe? but then its not ambient anymore or is it?
 
-    //float3 AmbientLight = (SceneAmbient + SkyAmbient) * SkyDiffuse;
-    float3 AmbientLight = float3(1,1,1) * SkyDiffuse * 0.5;
+    float3 AmbientLight = (SceneAmbient + SkyAmbient) * SkyDiffuse;
 
     return AmbientLight;
 }
 
-//skylighting AO mods the absorption instead of
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -740,7 +672,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ViewZ = FroxelDepthToView(Froxel.z + 0.5);
     float ThicknessZ = FroxelDepthToView(Froxel.z + 1.5) - ViewZ;
 
-    //ViewZ += ThicknessZ * RayJitter;
+    ViewZ += ThicknessZ * RayJitter;
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
 
@@ -755,8 +687,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
 
     float3 Lighting = float3(0,0,0);
-    //Lighting += 0.4;
     Lighting += GetAmbientLighting(RayPosition, DirLightToEye) * UIAmibentLightingMultiplier;
+    //Lighting = 0.5;
 
     float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz, UISaturation) * Shadow;
     float DirLightCosTheta = dot(DirLightToEye, RayToEye);
@@ -765,9 +697,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow) * UIEnableLocalLights * UILocalLightMultiplier;
 
 
-    float Exposure = UIExposure; //float Exposure = max(1.0, min(length(SharedData::DirLightColor.xyz), 1.5)); //eh
-
-    Lighting = Lighting * MediaScattering; //* Exposure;
+    Lighting = Lighting * MediaScattering;
 
 
     ScatteringVolume[ThreadID] = float4(Lighting, OpticalDepth);
@@ -775,7 +705,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
-
+//float Exposure = UIExposure; //float Exposure = max(1.0, min(length(SharedData::DirLightColor.xyz), 1.5)); //eh
 
 //// Slicemarch Compute Shader /////////////////////////////////////////////////////////
 
@@ -879,24 +809,22 @@ float4 main(VertexShaderOutput input) : SV_Target
     //float2 Jitter = frac(Noise + (SharedData::FrameCount % 16) * kPhi) * jitterRange - (jitterRange * 0.5);
 
     float2 CoordsUV = input.TexCoord.xy + (InverseVolumeSize.xy * Jitter);
+
     float4 NormalizedRadiance = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV, FroxelDepth), 0); //Inscattered light
      //NormalizedRadiance.xyz *= LinearStep(UIDistanceFadeIn / 250, 1.0, FroxelDepth); //account for extinction
     float Transmittance = NormalizedRadiance.w;
 
     float OpticalDepth = GetAnalyticOpticalDepth(PixelDirectionWS.z, 0.0, PixelViewZ, UIGlobalFogBaseHeight, UIGobalFogFalloff, UIExtinction);
-
     if(Depth < 0.999999)
         OpticalDepth += GetHomogeneousOpticalDepth(UIDistantHazeExtinction, PixelViewZ);
 
-    //DAA
+    // DAA
     Transmittance = exp(-OpticalDepth);
     NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance);
 
-    float3 SceneColor = Color::GammaToLinear(MainScene.SampleLevel(Point_Sampler, input.TexCoord.xy, 0).xyz);
+    float3 OutputColor = Color::GammaToLinear(MainScene.SampleLevel(Point_Sampler, input.TexCoord.xy, 0).xyz);
+    if(UIEnableVL) OutputColor = OutputColor * Transmittance + NormalizedRadiance.xyz;
 
-    float3 OutputColor = SceneColor;
-    if(UIEnableVL)
-        OutputColor = OutputColor * Transmittance + NormalizedRadiance.xyz;
     OutputColor = Color::LinearToGamma(OutputColor);
 
     return float4(OutputColor, 1.0);
@@ -904,9 +832,6 @@ float4 main(VertexShaderOutput input) : SV_Target
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
-//if(PixelPositionWS.y > FrustumNearFar.y){ //FrustumNearFar.y = froxel grid far plane.
-    //  discard;
-//}
 
 
 //// Fog Map ////////////////////////////////////////////////////////////////////////////
