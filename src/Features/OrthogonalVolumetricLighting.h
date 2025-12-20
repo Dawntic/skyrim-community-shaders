@@ -224,28 +224,35 @@ struct OrthogonalVolumetricLighting : Feature
 
 	struct Settings
 	{
-		float extinction = 0.1;
-		float anisotropy = 0.1;
-		float localLightsAnisotropy = 0.80;
-		float localLightsMultiplier = 2.0;
+		uint enableVL = true;
+		uint useWeatherFog = false;
+		uint useHistory = true;
+		uint enableLocalLights = true;
+
 		float4 scatteringRatio = float4(1.0, 1.0, 1.0, 1.0);
 
-		float globalFogDensity = 0.3;
+		float dirLightRadianceMultiplier = 1.0;
+		float anisotropy = 0.3;
+		float color_saturation = 1.0;
+		float preExposure = 1.0;
+
+		float localLightsAnisotropy = 0.60;
+		float localLightsMultiplier = 1.0;
+		float localLightsSaturation = 1.0;
+
+		float amibentLightingMultiplier = 1.0;
+		float skyAmbientContribution = 0.6;
+		float sceneAmbientContribution = 1.0;
+
+		float extinction = 0.1;
 		float globalFogFalloffHeight = 500;
 		float globalFogStartHeight = -4000;
 		float distantHazeExtinction = 0.5;
 
-		float amibentLightingMultiplier = 1.0;
-		float skyAmbientContribution = 1.0;
-		float sceneAmbientContribution = 1.0;
-		float dirLightRadianceMultiplier = 10.0;
-
 		uint esmExponent = 8;
-		float color_saturation = 0.25;
-		float preExposure = 1.0;
-
-		uint useHistory = true;
+		float EVSMSeachSize = 4.0;
 		float disocclutionThreshold = 0.05;
+
 		float distanceFadeIn = 1.0;
 
 		float blendOpp = false;
@@ -276,6 +283,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float4 cameraPosition;
 		float4 cameraData;
 		float4 volumeSize;
+		float4 inverseVolumeSize;
 		float4 frustumNearFar;
 
 		float4 lightDirection;

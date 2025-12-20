@@ -7,11 +7,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	localLightsAnisotropy,
 	localLightsMultiplier,
 	scatteringRatio,
-	globalFogDensity,
 	globalFogStartHeight,
 	globalFogFalloffHeight,
 	skyAmbientContribution,
 	sceneAmbientContribution,
+	dirLightRadianceMultiplier,
 	esmExponent,
 	color_saturation,
 	preExposure,
@@ -323,7 +323,7 @@ void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
 	//float farPlane = 10000.0f;
 	//frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, volumeDimensions.z / std::log2(farPlane / nearPlane));
 
-	frustumNearFar = float4(nearPlane, farPlane, 1.0f / nearPlane, distributionLambda);  //float exponent = 1.5f;  // Lower = more linear (1.0 = fully linear, 2.0 = quadratic)
+	frustumNearFar = float4(nearPlane, farPlane, farPlane / nearPlane, distributionLambda);  //float exponent = 1.5f;  // Lower = more linear (1.0 = fully linear, 2.0 = quadratic)
 
 	auto eyePos = Util::GetEyePosition(0);
 	if (eyePos.x > 1.0 || eyePos.x < -1.0)
@@ -339,6 +339,7 @@ void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
 	froxelData.cameraPosition = float4(eyePositionWS.x, eyePositionWS.y, eyePositionWS.z, 1.0f);
 	froxelData.cameraData = Util::GetCameraData();
 	froxelData.volumeSize = volumeDimensions;
+	froxelData.inverseVolumeSize = 1.0f / float4(volumeDimensions.x, volumeDimensions.y, volumeDimensions.z, 1.0f);
 	froxelData.frustumNearFar = frustumNearFar;
 	froxelData.lightDirection = lightDir;
 	froxelData.frameparams = globals::game::frameBufferCached.GetFrameParams();
@@ -421,6 +422,7 @@ void OrthogonalVolumetricLighting::UpdateGeneralBuffers()
 	SettingsBuffer settingsData{};
 	settingsData.cbsettings = settings;
 	settingsData.cbsettings.extinction *= Util::Units::GAME_UNIT_TO_M;  // Multiply since extinction is a rate per unit distance
+	settingsData.cbsettings.distantHazeExtinction *= 0.000002;
 	settingsCB->Update(settingsData);
 }
 ///////////////////////////////////////////////////////////
@@ -772,34 +774,45 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 	ImGui::Spacing();
 
-	ImGui::Checkbox("Swap Output RT", (bool*)&swapOutputRT);
-	ImGui::Checkbox("Update Light Dir", &updateLightDir);
+	//ImGui::Checkbox("Swap Output RT", (bool*)&swapOutputRT);
+	//ImGui::Checkbox("Update Light Dir", &updateLightDir);
 
-	ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
-	ImGui::SliderFloat("Disocclution Threshold", &settings.disocclutionThreshold, 0.0001, 0.2);
-	ImGui::SliderFloat("Distance Fade In", &settings.distanceFadeIn, 0.0, 250.0);
+	ImGui::Checkbox("Enable Volumetric Lighting", (bool*)&settings.enableVL);
+	ImGui::Checkbox("History Reprojection", (bool*)&settings.useHistory);
 
 	//// Frustum Grid ////
-	ImGui::SliderFloat("Near Plane", &nearPlane, 1, 250);
+	ImGui::SliderFloat("Near Plane", &nearPlane, 1, 1000);
 	ImGui::SliderFloat("Far Plane", &farPlane, 2000, 353840);
 	ImGui::SliderFloat("Distribution Lambda", &distributionLambda, 0.5, 3.0);
+	ImGui::SliderFloat("Distance Fade In", &settings.distanceFadeIn, 0.0, 250.0);
 
-	//// Color Params ////
-	ImGui::SeparatorText("Lighting Properties");
+	//// Local Lights Params ////
+	ImGui::SeparatorText("Local Lights");
 
-	ImGui::SliderFloat("Color Saturation", &settings.color_saturation, 0.0, 1.0);
-	ImGui::SliderFloat("Exposure", &settings.preExposure, 0.1, 3.0);
-	ImGui::SliderFloat("Ambient Light Multiplier", &settings.amibentLightingMultiplier, 0.1, 2.0);
-	ImGui::SliderFloat("Sky Ambient Contribution", &settings.skyAmbientContribution, 0.1, 2.0);
-	ImGui::SliderFloat("Scene Ambient Contribution", &settings.sceneAmbientContribution, 0.1, 2.0);
-	ImGui::SliderFloat("Dir Light Radiance Multiplier", &settings.dirLightRadianceMultiplier, 1.0, 200.0);
+	ImGui::Checkbox("Enable Local Lights", (bool*)&settings.enableLocalLights);
+	ImGui::SliderFloat("Local Light Multiplier", &settings.localLightsMultiplier, 0.1, 5.0);
+	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
+	ImGui::SliderFloat("Local Light Saturation", &settings.localLightsSaturation, 0.0, 1.0);
 
-	//// Scattering Params ////
-	ImGui::SeparatorText("Scattering Properties");
+	//// Directional Light Params ////
+	ImGui::SeparatorText("Directional Light");
 
+	ImGui::SliderFloat("Dir Light Multiplier", &settings.dirLightRadianceMultiplier, 1.0, 100.0);
 	ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.2, 1.0);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("How much the amount of light scattering towards the viewer depends on direction");
+	ImGui::SliderFloat("Dir Light Saturation", &settings.color_saturation, 0.0, 1.0);
+	ImGui::SliderFloat("Obsolete Exposure", &settings.preExposure, 0.1, 3.0);
+
+	//// Amibent Light Params
+	ImGui::SeparatorText("Ambient Light");
+
+	ImGui::SliderFloat("Ambient Light Multiplier", &settings.amibentLightingMultiplier, 0.1, 10.0);
+	ImGui::SliderFloat("Sky Ambient Contribution", &settings.skyAmbientContribution, 0.1, 5.0);
+	ImGui::SliderFloat("Scene Ambient Contribution", &settings.sceneAmbientContribution, 0.1, 5.0);
+
+	//// Scattering Params ////
+	ImGui::SeparatorText("Scattering Properties");
 
 	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.001, 0.6, "%.4f");
 	if (auto _tt = Util::HoverTooltipWrapper())
@@ -815,26 +828,25 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The ratio of light that is scattered compared to absorped");
 
-	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
-	ImGui::SliderFloat("Local Light Multiplier", &settings.localLightsMultiplier, 1.0, 5.0);
-
 	//// Fog Params ////
 	ImGui::SeparatorText("Fog Properties");
 
+	ImGui::Checkbox("Enable Weather Fog", (bool*)&settings.useWeatherFog);
 	ImGui::SliderFloat("Fog Falloff Height", &settings.globalFogFalloffHeight, 250.0f, 10000.0f);  // Lower min values cause aliasing
 	ImGui::SliderFloat("Fog Base Height", &settings.globalFogStartHeight, -10000.0f, 10000.0f);
-
 	ImGui::SliderFloat("Distant Haze Extinction", &settings.distantHazeExtinction, 0.0, 1.0);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("This controls the ambient atmospheric fog contribution");
 
-	ImGui::Spacing();
-	ImGui::SeparatorText("Shadow properties");
-	ImGui::SliderInt("VSM Exponent: ", (int*)&settings.esmExponent, 1, 100);
-	ImGui::Spacing();
+	//// Shadow Params ////
+	ImGui::SeparatorText("Shadows");
+	ImGui::SliderInt("EVSM Exponent", (int*)&settings.esmExponent, 1, 100);
+	ImGui::SliderFloat("Disocclution Threshold", &settings.disocclutionThreshold, 0.0001, 0.2);
+	ImGui::SliderFloat("Erosion Kernal Size", &settings.EVSMSeachSize, 1, 8);
 
 	//ImGui::SeparatorText("Global height fog");
 	//ImGui::SliderFloat("Fog Density", &settings.globalFogDensity, 0.0f, 1.0f);
+	//
 	//ImGui::SliderFloat("Ground Level Bias", &settings.globalFogStartHeight, -2000.0f, 2000.0f);
 	//ImGui::SliderFloat("End Height", &settings.globalFogStartHeight, 0.0f, 50000.0f);
 	//ImGui::SliderFloat("Falloff Distance", &settings.globalFogFalloffHeight, 0.0f, 10000.0f);
