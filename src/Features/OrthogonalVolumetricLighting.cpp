@@ -285,6 +285,13 @@ void OrthogonalVolumetricLighting::VLightingRenderChain()
 		SetupPerlinNoise();
 	}
 
+	if (auto ui = globals::game::ui) {
+		if (ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) {
+			overrideShader = false;
+			return;
+		}
+	}
+
 	RenderEVSM();
 	RenderEVSMBlur();
 	GenerateShadowVolume();
@@ -579,6 +586,9 @@ void OrthogonalVolumetricLighting::GenerateScatteringVolume()
 	context->CSSetShaderResources(5, 1, &lightListSB);
 	context->CSSetShaderResources(6, 1, &lightGridSB);
 
+	auto localShadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS].depthSRV;
+	context->CSSetShaderResources(7, 1, &localShadowMap);
+
 	//auto strictLightDataCB = LLF.strictLightDataCB->CB();
 	//context->CSSetConstantBuffers(9, 1, &strictLightDataCB);  //Do i need this for anything?
 
@@ -762,6 +772,7 @@ void OrthogonalVolumetricLighting::SetupBypass()
 }
 ///////////////////////////////////////////////////////////
 
+#include "DynamicCubemaps.h"
 ///// Settings ////////////////////////////////////////////
 void OrthogonalVolumetricLighting::DrawSettings()
 {
@@ -783,6 +794,12 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 	//ImGui::Checkbox("Swap Output RT", (bool*)&swapOutputRT);
 	//ImGui::Checkbox("Update Light Dir", &updateLightDir);
+
+	ImGui::Button("Reset cubemap");
+	if (ImGui::IsItemClicked()) {
+		globals::features::dynamicCubemaps.resetCapture[0] = true;
+		globals::features::dynamicCubemaps.resetCapture[1] = true;
+	}
 
 	ImGui::Checkbox("Enable Volumetric Lighting", (bool*)&settings.enableVL);
 	ImGui::Checkbox("History Reprojection", (bool*)&settings.useHistory);
@@ -811,17 +828,17 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
 	ImGui::SliderFloat("Local Light Saturation", &settings.localLightsSaturation, 0.0, 1.0);
 
-	//// Amibent Light Params
+	//// Amibent Light Params ////
 	ImGui::SeparatorText("Ambient Light");
 
 	ImGui::SliderFloat("Ambient Light Multiplier", &settings.amibentLightingMultiplier, 0.1, 10.0);
-	ImGui::SliderFloat("Sky Ambient Contribution", &settings.skyAmbientContribution, 0.1, 5.0);
-	ImGui::SliderFloat("Scene Ambient Contribution", &settings.sceneAmbientContribution, 0.1, 5.0);
+	ImGui::SliderFloat("Sky Ambient Contribution", &settings.skyAmbientContribution, 0.0, 5.0);
+	ImGui::SliderFloat("Scene Ambient Contribution", &settings.sceneAmbientContribution, 0.0, 5.0);
 
 	//// Scattering Params ////
 	ImGui::SeparatorText("Scattering Properties");
 
-	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.001, 0.6, "%.4f");
+	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.0001, 0.6, "%.5f");
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The rate of light loss per unit distance (light absorpted + light scattered)");
 
@@ -839,8 +856,8 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SeparatorText("Fog Properties");
 
 	ImGui::Checkbox("Enable Weather Fog", (bool*)&settings.useWeatherFog);
-	ImGui::SliderFloat("Fog Falloff Height", &settings.globalFogFalloffHeight, 250.0f, 10000.0f);  // Lower min values cause aliasing
-	ImGui::SliderFloat("Fog Base Height", &settings.globalFogStartHeight, -10000.0f, 10000.0f);
+	ImGui::SliderFloat("Fog Falloff Height", &settings.globalFogFalloffHeight, -1000.0f, 10000.0f);  // Lower min values cause aliasing
+	ImGui::SliderFloat("Fog Base Height", &settings.globalFogStartHeight, -15000.0f, 10000.0f);
 	ImGui::SliderFloat("Distant Haze Extinction", &settings.distantHazeExtinction, 0.0, 1.0);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("This controls the ambient atmospheric fog contribution");
@@ -848,7 +865,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	//// Shadow Params ////
 	ImGui::SeparatorText("Shadows");
 	ImGui::SliderInt("EVSM Exponent", (int*)&settings.esmExponent, 1, 100);
-	ImGui::SliderFloat("Disocclution Threshold", &settings.disocclutionThreshold, 0.0001, 0.2);
+	ImGui::SliderFloat("Disocclution Threshold", &settings.disocclutionThreshold, 0.0001, 0.2, "%.5f");
 	ImGui::SliderFloat("Erosion Kernal Size", &settings.EVSMSeachSize, 1, 8);
 
 	//ImGui::SeparatorText("Global height fog");

@@ -659,6 +659,7 @@ void ScreenSpaceGI::UpdateSB()
 void ScreenSpaceGI::DrawSSGI()
 {
 	auto context = globals::d3d::context;
+	logger::trace("Draw SSGI");
 
 	auto imageSpaceManager = RE::ImageSpaceManager::GetSingleton();
 	GET_INSTANCE_MEMBER(BSImagespaceShaderISSAOBlurH, imageSpaceManager);

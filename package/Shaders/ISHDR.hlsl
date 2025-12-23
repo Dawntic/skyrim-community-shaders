@@ -18,11 +18,11 @@ SamplerState BlendSampler : register(s1);
 #	endif
 SamplerState AvgSampler : register(s2);
 
-Texture2D<float4> ImageTex : register(t0);
+Texture2D<float4> BloomTexture : register(t0);
 #	if defined(DOWNSAMPLE)
 Texture2D<float4> AdaptTex : register(t1);
 #	elif defined(BLEND)
-Texture2D<float4> BlendTex : register(t1);
+Texture2D<float4> SceneTexture : register(t1);
 #	endif
 Texture2D<float4> AvgTex : register(t2);
 
@@ -50,13 +50,12 @@ float3 GetTonemapFactorHejlBurgessDawson(float3 luminance)
 	       pow(((tmp * 6.2 + 0.5) * tmp) / (tmp * (tmp * 6.2 + 1.7) + 0.06), Color::GammaCorrectionValue);
 }
 
-#	include "Common/DisplayMapping.hlsli"
+#include "Common/DisplayMapping.hlsli"
 
-PS_OUTPUT main(PS_INPUT input)
-{
+PS_OUTPUT main(PS_INPUT input){
 	PS_OUTPUT psout;
 
-#	if defined(DOWNSAMPLE)
+#if defined(DOWNSAMPLE)
 	float3 downsampledColor = 0;
 	for (int sampleIndex = 0; sampleIndex < DOWNSAMPLE; ++sampleIndex) {
 		float2 texCoord = BlurOffsets[sampleIndex].xy * BlurScale.xy + input.TexCoord;
@@ -64,82 +63,68 @@ PS_OUTPUT main(PS_INPUT input)
 		{
 			texCoord = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(texCoord);
 		}
-		float3 imageColor = max(0.0, ImageTex.Sample(ImageSampler, texCoord).xyz);
-#		if defined(RGB2LUM)
-		imageColor = Color::RGBToLuminance(imageColor);
-#		elif (defined(LUM) || defined(LUMCLAMP)) && !defined(DOWNADAPT)
-		imageColor = imageColor.x;
-#		endif
+		float3 imageColor = max(0.0, BloomTexture.Sample(ImageSampler, texCoord).xyz);
+
+		#if defined(RGB2LUM)
+			imageColor = Color::RGBToLuminance(imageColor);
+		#elif (defined(LUM) || defined(LUMCLAMP)) && !defined(DOWNADAPT)
+			imageColor = imageColor.x;
+		#endif
+
 		downsampledColor += imageColor * BlurOffsets[sampleIndex].z;
 	}
-#		if defined(DOWNADAPT)
-	float2 adaptValue = max(0.001, AdaptTex.Sample(AdaptSampler, input.TexCoord).xy);
-	float2 adaptDelta = downsampledColor.xy - adaptValue;
-	downsampledColor.xy =
-		sign(adaptDelta) * clamp(abs(Param.wz * adaptDelta), 0.00390625, abs(adaptDelta)) +
-		adaptValue;
-#		endif
-	psout.Color = float4(downsampledColor, BlurScale.z);
+	#if defined(DOWNADAPT)
+		float2 adaptValue = max(0.001, AdaptTex.Sample(AdaptSampler, input.TexCoord).xy);
+		float2 adaptDelta = downsampledColor.xy - adaptValue;
+		downsampledColor.xy = sign(adaptDelta) * clamp(abs(Param.wz * adaptDelta), 0.00390625, abs(adaptDelta)) + adaptValue;
+	#endif
 
-#	elif defined(BLEND)
+	psout.Color = float4(downsampledColor, BlurScale.z);
+//END DOWNSAMPLE
+
+#elif defined(BLEND)
 	float2 uv = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(input.TexCoord);
 
-	float3 inputColor = BlendTex.Sample(BlendSampler, uv).xyz;
+	float3 Scene = SceneTexture.Sample(BlendSampler, uv).xyz;
 
 	float3 bloomColor = 0;
 	if (Flags.x > 0.5) {
-		bloomColor = ImageTex.Sample(ImageSampler, uv).xyz;
+		bloomColor = BloomTexture.Sample(ImageSampler, uv).xyz;
 	} else {
-		bloomColor = ImageTex.Sample(ImageSampler, input.TexCoord.xy).xyz;
+		bloomColor = BloomTexture.Sample(ImageSampler, input.TexCoord.xy).xyz;
 	}
+	//bloomColor = float3(0,0,0);
 
 	float2 avgValue = AvgTex.Sample(AvgSampler, input.TexCoord.xy).xy;
 
 	// Vanilla tonemapping and post-processing
-	float3 gameSdrColor = 0.0;
-	float3 ppColor = 0.0;
-	{
-		if (avgValue.x != 0 && avgValue.y != 0)
-			inputColor *= avgValue.y / avgValue.x;
+	if (avgValue.x != 0 && avgValue.y != 0)
+		Scene *= avgValue.y / avgValue.x;
 
-		inputColor = max(0, inputColor);
+	Scene = max(0, Scene);
 
-		float3 blendedColor;
-		[branch] if (Param.z > 0.5)
-		{
-			blendedColor = DisplayMapping::HuePreservingHejlBurgessDawson(inputColor, bloomColor);
-		}
-		else
-		{
-			float maxCol = Color::RGBToLuminance(inputColor);
-			float mappedMax = GetTonemapFactorReinhard(maxCol).x;
-			float3 compressedHuePreserving = inputColor * mappedMax / maxCol;
-			blendedColor = compressedHuePreserving;
-			blendedColor += saturate(Param.x - blendedColor) * bloomColor;
-		}
-
-		gameSdrColor = blendedColor;
-
-		float blendedLuminance = Color::RGBToLuminance(blendedColor);
-
-		float3 linearColor = Cinematic.w * lerp(lerp(blendedLuminance, blendedColor, Cinematic.x), blendedLuminance * Tint.xyz, Tint.w).xyz;
-
-		linearColor = lerp(avgValue.x, linearColor, Cinematic.z);
-
-		ppColor = max(0, linearColor);
+	float3 OutputColor;
+	[branch] if (Param.z > 0.5){
+		OutputColor = DisplayMapping::HuePreservingHejlBurgessDawson(Scene, bloomColor);
+	} else{
+		float SceneLum = Color::RGBToLuminance(Scene);
+		OutputColor = Scene * GetTonemapFactorReinhard(SceneLum).x / SceneLum;
+		OutputColor += saturate(Param.x - OutputColor) * bloomColor;
 	}
 
-	float3 srgbColor = ppColor;
+	float OutLum = Color::RGBToLuminance(OutputColor);
+	OutputColor = lerp(OutLum, OutputColor, Cinematic.x);
+	OutputColor = Cinematic.w * lerp(OutputColor, OutLum * Tint.xyz, Tint.w).xyz;
 
-#		if defined(FADE)
-	srgbColor = lerp(srgbColor, Fade.xyz, Fade.w);
-#		endif
+	float3 srgbColor = Scene; //=max(0, lerp(avgValue.x, OutputColor, Cinematic.z));
 
-	srgbColor = FrameBuffer::ToSRGBColor(srgbColor);
+	#if defined(FADE)
+		srgbColor = lerp(srgbColor, Fade.xyz, Fade.w);
+	#endif
 
-	psout.Color = float4(srgbColor, 1.0);
+	psout.Color = float4(FrameBuffer::ToSRGBColor(srgbColor), 1.0);
 
-#	endif
+	#endif
 
 	return psout;
 }

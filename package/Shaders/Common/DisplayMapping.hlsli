@@ -128,6 +128,13 @@ namespace DisplayMapping
 		return XYZToRGB(col);
 	}
 
+	float3 GetTonemapFactorHejlBurgessDawson(float3 luminance)
+	{
+		float3 tmp = max(0, luminance - 0.004);
+		return Param.y *
+			pow(((tmp * 6.2 + 0.5) * tmp) / (tmp * (tmp * 6.2 + 1.7) + 0.06), Color::GammaCorrectionValue);
+	}
+
 	float3 HuePreservingHejlBurgessDawson(float3 col, float3 bloomCol)
 	{
 		float3 ictcp = RGBToICtCp(col);

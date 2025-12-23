@@ -163,6 +163,7 @@ void DynamicCubemaps::DataLoaded()
 		Util::EnableBooleanSettings(hiddenVRCubeMapSettings, GetName());
 	}
 	MenuOpenCloseEventHandler::Register();
+	logger::info("DATA LOADED");
 }
 
 void DynamicCubemaps::PostPostLoad()
@@ -187,8 +188,10 @@ void DynamicCubemaps::PostPostLoad()
 RE::BSEventNotifyControl MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
 {
 	// When entering a new cell, reset the capture
+	logger::trace("Process Event");
 	if (a_event->menuName == RE::LoadingMenu::MENU_NAME) {
 		if (!a_event->opening) {
+			logger::info("ProcessEvent: Reset Capture");
 			auto& dynamicCubemaps = globals::features::dynamicCubemaps;
 			dynamicCubemaps.resetCapture[0] = true;
 			dynamicCubemaps.resetCapture[1] = true;
@@ -314,6 +317,8 @@ void DynamicCubemaps::UpdateCubemapCapture(bool a_reflections)
 	auto renderer = globals::game::renderer;
 	auto context = globals::d3d::context;
 
+	logger::trace("Update Cubemap");
+
 	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
 	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 
@@ -386,6 +391,8 @@ void DynamicCubemaps::Inferrence(bool a_reflections)
 	auto renderer = globals::game::renderer;
 	auto context = globals::d3d::context;
 
+	logger::trace("Inferrence Cubemap");
+
 	// Infer local reflection information
 	ID3D11UnorderedAccessView* uav = envInferredTexture->uav.get();
 
@@ -422,6 +429,8 @@ void DynamicCubemaps::Inferrence(bool a_reflections)
 void DynamicCubemaps::Irradiance(bool a_reflections)
 {
 	auto context = globals::d3d::context;
+
+	logger::trace("Irradiance Cubemap");
 
 	// Copy cubemap to other resources
 	for (uint face = 0; face < 6; face++) {
@@ -490,8 +499,9 @@ void DynamicCubemaps::UpdateCubemap()
 		logger::debug("Recompiling for Dynamic Cubemaps");
 		auto shaderCache = globals::shaderCache;
 		if (!shaderCache->Clear("Data//Shaders//ISReflectionsRayTracing.hlsl"))
-			// if can't find specific hlsl file cache, clear all image space files
-			shaderCache->Clear(RE::BSShader::Types::ImageSpace);
+			logger::info("Clearing all imagespace shaders");
+		// if can't find specific hlsl file cache, clear all image space files
+		shaderCache->Clear(RE::BSShader::Types::ImageSpace);
 		recompileFlag = false;
 	}
 
@@ -534,6 +544,7 @@ void DynamicCubemaps::UpdateCubemap()
 void DynamicCubemaps::PostDeferred()
 {
 	auto context = globals::d3d::context;
+	logger::trace("new frame");
 
 	ID3D11ShaderResourceView* views[2] = { (activeReflections ? envReflectionsTexture : envTexture)->srv.get(), envTexture->srv.get() };
 	context->PSSetShaderResources(30, 2, views);
