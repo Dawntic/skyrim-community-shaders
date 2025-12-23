@@ -126,6 +126,9 @@ float GameUnitToMeter(float input){
     return input * 0.01428222656;
 }
 
+float LinearStep(float edge0, float edge1, float x){
+    return saturate((x - edge0) / (edge1 - edge0));}
+
 float NDCDepthToView(float depth){
     return (CameraData.w / (-depth * CameraData.z + CameraData.x));
 }
@@ -198,62 +201,33 @@ float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float EndHeight)
     return max(OpticalDepth, EPSILON_DIVISION);
 }
 */
-
+//WorldUp = (abs(WorldUp) < 1e-4) ? sign(WorldUp) * 0.001 : clamp(WorldUp, -1.0, 1.0);
 float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float StepLength, float InFogBaseHeight, float InFogFalloff, float InExtinction)
 {
     float InverseFalloff = max(rcp(InFogFalloff), 1e-8); //CPU
 
-    WorldUp = (abs(WorldUp) < 1e-4) ? sign(WorldUp) * 0.001 : clamp(WorldUp, -1.0, 1.0);
-
     StartHeight += CameraPosition.z;
-    float EndHeight = StartHeight + StepLength * WorldUp;
-    float BaseHeight = min(StartHeight, EndHeight);
 
-    WorldUp = abs(WorldUp);
-    float InverseWorldUp = rcp(WorldUp);
+     float OpticalDepth;
+     if(abs(WorldUp) < 1e-6){
+        float DensityAtHeight = exp(-max(StartHeight - InFogBaseHeight, 0) * InverseFalloff);
+        OpticalDepth = StepLength * DensityAtHeight * InExtinction;
+    } else{
+        float EndHeight = StartHeight + StepLength * WorldUp;
+        float BaseHeight = min(StartHeight, EndHeight);
 
-    float FogBase = clamp((InFogBaseHeight - BaseHeight) * InverseWorldUp, 0, StepLength);
+        WorldUp = abs(WorldUp);
+        float InverseWorldUp = rcp(WorldUp);
 
-    float DensityBase = exp(-max(BaseHeight - InFogBaseHeight, 0) * InverseFalloff);
-    //DensityBase = min(DensityBase, 0.00001);
-    float DensityDelta = 1.0 - exp(-(StepLength - FogBase) * WorldUp * InverseFalloff);
-    //DensityDelta = min(DensityDelta, 0.00001);
+        float FogBase = clamp((InFogBaseHeight - BaseHeight) * InverseWorldUp, 0, StepLength);
+        float DensityBase = exp(-max(BaseHeight - InFogBaseHeight, 0) * InverseFalloff);
+        float DensityDelta = 1.0 - exp(-(StepLength - FogBase) * WorldUp * InverseFalloff);
 
-    float VerticalCorrection = InFogFalloff * InverseWorldUp;
-
-    float OpticalDepth = (VerticalCorrection * DensityBase * DensityDelta + FogBase) * InExtinction;
-
-    //OpticalDepth = min(OpticalDepth, UIAmibentLightingMultiplier);
-
-    return max(OpticalDepth, EPSILON_DIVISION);
-}
-
-float GetAnalyticOpticalDepth_2(float3 start_pos, float3 end_pos, float FalloffHeight)
-{
-    float Decay = rcp(FalloffHeight);
-
-    start_pos += CameraPosition.xyz;
-    end_pos += CameraPosition.xyz;
-
-	float3 dir_vec = end_pos - start_pos;
-	float dist = length(dir_vec);
-	if (dist < 1e-6)
-		return 0.0;
-
-	dir_vec /= dist;
-
-    float BaseHeight = -14000;
-    float start_height = start_pos.z - BaseHeight;
-    float vertical_component = dir_vec.z;
-
-    float fog_amount;
-    if (abs(vertical_component) < 1e-6) {
-        fog_amount = dist * exp(-start_height * Decay);
-    } else {
-        fog_amount = exp(-start_height * Decay)  * (1.0 - exp(-dist * vertical_component * Decay)) / (Decay * vertical_component);
+        float VerticalCorrection = InFogFalloff * InverseWorldUp;
+        OpticalDepth = (VerticalCorrection * DensityBase * DensityDelta + FogBase) * InExtinction;
     }
 
-    return fog_amount * UIExtinction;
+    return max(OpticalDepth, EPSILON_DIVISION);
 }
 
 float GetHomogeneousOpticalDepth(float Extinction, float StepLength)
@@ -361,11 +335,7 @@ float GetLocalLightShadow(float3 WorldPosition, float ViewZ, float2 CoordsUV)
     return Visibility;
 }
 
-float LinearStep(float edge0, float edge1, float x){
-    return saturate((x - edge0) / (edge1 - edge0));}
-
 #define MaxHistory 0.85
-
 
 [numthreads(4, 4, 4)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -407,18 +377,15 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
     Shadow = Shadow * 0.15;
 
-    //float3 BoxCoords = WorldPosition - float3(500, -600, -5500);
-    //float3 Box = abs(BoxCoords) - float3(1000,20,100);
-    //float BoxSDF = length(max(Box, 0.0)) + min(max(Box.x, max(Box.y, Box.z)), 0.0);
-    //Shadow = 1.0 - smoothstep(0.0, 0.01, saturate(BoxSDF));
-
-
     ShadowVolume[ThreadID] = Shadow;
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
-
+    //float3 BoxCoords = WorldPosition - float3(500, -600, -5500);
+    //float3 Box = abs(BoxCoords) - float3(1000,20,100);
+    //float BoxSDF = length(max(Box, 0.0)) + min(max(Box.x, max(Box.y, Box.z)), 0.0);
+    //Shadow = 1.0 - smoothstep(0.0, 0.01, saturate(BoxSDF));
 
 //// Create EVSM ////////////////////////////////////////////////////////////////////////
 
@@ -537,17 +504,15 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //float3 WorldPosition = RayPosition + CameraPosition.xyz;
     //float4 LocalFogData = GetLocalFogData(WorldPosition);
 
-
     float PrevViewZ = FroxelDepthToView(max(Froxel.z - 1.0, 1.0)); // + RayJitter;
     float3 PrevRayPosition = RayDirection * PrevViewZ;
     float StepLength = max(distance(PrevRayPosition, RayPosition), 1.0);
 
     float OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, UIGlobalFogBaseHeight, UIGobalFogFalloff, UIExtinction);
-    //float OpticalDepth = GetAnalyticOpticalDepth_2(PrevRayPosition, RayPosition, UIGlobalFogBaseHeight);
 
     float WeatherFog = GetWeatherBasedFog(ViewZ) * 0.002;
     float HomogeneousOpticalDepth = GetHomogeneousOpticalDepth(WeatherFog, StepLength);
-    //OpticalDepth = lerp(OpticalDepth, HomogeneousOpticalDepth, FogParam.w * UIUseWeatherFog);
+    OpticalDepth = lerp(OpticalDepth, HomogeneousOpticalDepth, FogParam.w * UIUseWeatherFog);
 
     float Extinction = max(OpticalDepth * rcp(max(StepLength, EPSILON_DIVISION)), EPSILON_DIVISION);
     float3 ScatteringAlbedo = UIScatteringRatio.xyz * Extinction;
@@ -799,20 +764,14 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //Lighting = 0.5;
 
     float DirLightCosTheta = dot(DirLightToEye, RayToEye);
+    float Phase = CSPhase(DirLightCosTheta, UIAnisotropy);
     //float Phase = HGPhase(DirLightCosTheta, UIAnisotropy) * UILocalLightAnisotropy;
     //Phase += HGPhase(DirLightCosTheta, UIAnisotropy * (2.0 / 3.0)) * UILocalLightsSaturation;
 
-    float Phase = CSPhase(DirLightCosTheta, UIAnisotropy);// *0.01;
-          //Phase += CSPhase(DirLightCosTheta, UILocalLightAnisotropy * (UILocalLightMultiplier-0.5) )* OpticalDepth;
-          //Phase += CSPhase(DirLightCosTheta, UILocalLightAnisotropy) * Tranmittance * UILocalLightMultiplier;
-
-
-
     //float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz + 20, UISaturation+20) * Shadow * UIDirLightMultipler;
     float3 DirLightRadiance = Color::Saturation(Color::GammaToTrueLinear(SharedData::DirLightColor.xyz), UISaturation);
-           DirLightRadiance = DirLightRadiance * Shadow * Phase * UIDirLightMultipler;//CSPhase(DirLightCosTheta, UIAnisotropy) ;
+           DirLightRadiance = DirLightRadiance * Shadow * Phase * UIDirLightMultipler;
     Lighting += DirLightRadiance;
-
 
     float3 LocalLight = 0;
     for(int j=-1; j<=1;j++){ // Reduce light noise (for full coverage use +-2 and 0.25)
@@ -833,7 +792,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
-//float Exposure = UIExposure; //float Exposure = max(1.0, min(length(SharedData::DirLightColor.xyz), 1.5)); //eh
+
 
 //// Slicemarch Compute Shader /////////////////////////////////////////////////////////
 
@@ -852,26 +811,6 @@ void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSample, fl
 
     Accumulation.xyz += InScatteredLight;
     Accumulation.w *= Transmittance;
-}
-
-
-void AccumulateScattering2(inout float4 Accumulation, float4 ScatteringSlice, float StepLength){
-    float Extinction = ScatteringSlice.w;
-    float Transmittance = exp(-Extinction * StepLength);
-
-    float3 InScatterIntegral = ScatteringSlice.xyz * (1.0 - Transmittance) / max(Extinction, EPSILON_DIVISION);
-
-    Accumulation.xyz += InScatterIntegral * Accumulation.w;
-    Accumulation.w *= Transmittance;
-}
-
-float ConvertUnit(float input){
-    return input * 0.01428222656;
-}
-float3 simpleTonemap(float3 color)
-{
-	float luma = dot(color, float3(0.2126, 0.7152, 0.0722));
-	return color / max(1.0 + luma, 1e-6);
 }
 
 [numthreads(8, 8, 1)]
@@ -893,10 +832,8 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 		float FadeIn = saturate(ViewZ * rcp(UIDistanceFadeIn)); // CPU
 
         AccumulateScattering(Accumulation, ScatteringSample, OpticalDepth, StepLength, FadeIn);
-        //AccumulateScattering2(Accumulation, ScatteringSample, ConvertUnit(StepLength));
         PrevWorldPosition = WorldPosition;
 
-        //Accumulation.xyz = simpleTonemap(Accumulation.xyz);
         IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), Accumulation.w); // Encode output as normalized radiance for density anti aliasing
         //IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
     }
@@ -915,6 +852,7 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 // Function Graph: https://www.desmos.com/calculator/udlencsh7k
 
 //#include "Common/DisplayMapping.hlsli"
+//float2 Jitter = frac(Noise + ((SharedData::FrameCountAlwaysActive + 17) % 33) * kPhi) * 2.0 - 1.0;
 
 #ifdef APPLY_PIXEL
 
@@ -926,19 +864,11 @@ Texture2DArray BlueNoise : register(t2);
 Texture3D ShadowVolume : register(t3);
 Texture2D MainScene : register(t4);
 
-float LinearStep(float edge0, float edge1, float x){
-    return saturate((x - edge0) / (edge1 - edge0));}
-
-//float2 Jitter = frac(Noise + ((SharedData::FrameCountAlwaysActive + 17) % 33) * kPhi) * 2.0 - 1.0;
-
 // from ShortFuse (RenoDX)
-
 float ApplyCurve(float x, float a, float b, float c, float d, float e, float f){
-	return ((x * (a * x + c * b) + d * e) / (x * (a * x + b) + d * f)) - e / f;
-}
+	return ((x * (a * x + c * b) + d * e) / (x * (a * x + b) + d * f)) - e / f;}
 float3 ApplyCurve(float3 x, float a, float b, float c, float d, float e, float f){
-	return ((x * (a * x + c * b) + d * e) / (x * (a * x + b) + d * f)) - e / f;
-}
+	return ((x * (a * x + c * b) + d * e) / (x * (a * x + b) + d * f)) - e / f;}
 
 static const float A = 0.22;  // Shoulder Strength  .22
 static const float B = 0.30;  // Linear Strength
@@ -948,17 +878,17 @@ static const float E = 0.01;  // Toe Numerator
 static const float F = 0.30;  // Toe Denominator
 static const float W = 11.2;  // Linear White
 
-float3 Uncharted2Tonemap(float3 untonemapped, float linear_white = W)
-{
+float3 Uncharted2Tonemap(float3 untonemapped, float linear_white = W){
 	return ApplyCurve(untonemapped * 2.f, A, B, C, D, E, F) / ApplyCurve(linear_white, A, B, C, D, E, F);
 }
 
-float3 SimpleTonemap(float3 color)
-{
-	float luma = dot(color, float3(0.2126, 0.7152, 0.0722));
-	return color / max(1.0 - luma, 1e-6);
-}
+float2 GetJitteredUVCoords(float2 CoordsSS, float2 CoordsUV){
+    float2 Noise = BlueNoise.Load(int4(int2(CoordsSS.xy) & 63, 0, 0)).xx;
+           Noise.y = BlueNoise.Load(int4(int2(CoordsSS.yx) & 63, 0, 0)).x;
+    float2 Jitter = frac(Noise + (SharedData::FrameCountAlwaysActive % 16) * kPhi) * 4.0 - 2.0;
 
+    return CoordsUV + InverseVolumeSize.xy * Jitter;
+}
 
 float4 main(VertexShaderOutput input) : SV_Target
 {
@@ -969,11 +899,7 @@ float4 main(VertexShaderOutput input) : SV_Target
 
     float4 Scene = MainScene.SampleLevel(Point_Sampler, input.TexCoord.xy, 0);
 
-    float2 Noise = BlueNoise.Load(int4(int2(input.Position.xy) & 63, 0, 0)).xx;
-           Noise.y = BlueNoise.Load(int4(int2(input.Position.yx) & 63, 0, 0)).x;
-    float2 Jitter = frac(Noise + (SharedData::FrameCountAlwaysActive % 16) * kPhi) * 4.0 - 2.0;
-
-    float2 CoordsUV = input.TexCoord.xy + (InverseVolumeSize.xy * Jitter);
+   float2 CoordsUV = GetJitteredUVCoords(input.Position.xy, input.TexCoord.xy);
 
     float4 NormalizedRadiance = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV, FroxelDepth), 0);
     float Transmittance = NormalizedRadiance.w;
@@ -997,9 +923,6 @@ float4 main(VertexShaderOutput input) : SV_Target
         OutputColor = OutputColor * Transmittance + NormalizedRadiance.xyz;
     }
     OutputColor = Color::TrueLinearToGamma(OutputColor);
-
-    if(UIUseHistory)
-        OutputColor = OpticalDepth.xxx;
 
     return float4(OutputColor, 1.0);
 }
