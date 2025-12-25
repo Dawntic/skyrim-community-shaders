@@ -420,6 +420,7 @@ void OrthogonalVolumetricLighting::UpdateGeneralBuffers()
 	generalData.heightMapParams = float4(mapScale.x, mapScale.y, mapOffset.x, mapOffset.y);
 	generalData.heightMapZRange = float4(mapRange.x, mapRange.y, 0.0, 0.0);
 	generalData.NoiseSize = noiseDimensions;
+	generalData.fogMapSize = float4(fogMapSize.x, fogMapSize.y, 1.0 / fogMapSize.x, 1.0 / fogMapSize.y);
 
 	float4 fogParams = float4(0, 0, 0, 0);
 	if (auto sky = globals::game::sky) {
@@ -808,7 +809,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Near Plane", &nearPlane, 1, 1000);
 	ImGui::SliderFloat("Far Plane", &farPlane, 2000, 353840);
 	ImGui::SliderFloat("Distribution Lambda", &distributionLambda, 0.5, 3.0);
-	ImGui::SliderFloat("Distance Fade In", &settings.distanceFadeIn, 0.0, 250.0);
+	ImGui::SliderFloat("Distance Fade In", &settings.distanceFadeIn, 0.0, 500.0);
 
 	//// Directional Light Params ////
 	ImGui::SeparatorText("Directional Light");
@@ -838,7 +839,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	//// Scattering Params ////
 	ImGui::SeparatorText("Scattering Properties");
 
-	ImGui::SliderFloat("Extinction Per Meter", &settings.extinction, 0.0001, 0.6, "%.5f");
+	ImGui::SliderFloat("Extinction", &settings.extinction, 0.0001, 0.6, "%.5f");
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The rate of light loss per unit distance (light absorpted + light scattered)");
 
@@ -890,14 +891,14 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Feather", &brushFeather, 0.0f, 1.0f);
 	ImGui::SliderFloat("Erase", &settings.blendOpp, -1.0f, 0.0f, "%.0f");
 
-	static float localFogDensity = 0.0;
-	static float localFogGroundLevelBias = 0.0;
-	static float localFogMaxHeight = 0.0;
-	static float localFogFalloffDistance = 0.0;
-	ImGui::SliderFloat("Fog Density", &localFogDensity, 0.0f, 1.0f);
-	ImGui::SliderFloat("DISABLED Ground Level Bias", &localFogGroundLevelBias, -2000.0f, 2000.0f);
-	ImGui::SliderFloat("Fog Height", &localFogMaxHeight, 0.0f, 50000.0f);              //(GroundLevel + Bias) + This   = FogTop
-	ImGui::SliderFloat("Falloff Distance", &localFogFalloffDistance, 0.0f, 10000.0f);  //EndHeight - This  = FalloffStart
+	static float localFogExtinction = 0.0;
+	static float localFogFalloffHeight = 0.0;
+	static float localFogBaseHeight = 0.0;
+	//static float localFogGroundLevelBias = 0.0;
+	ImGui::SliderFloat("Extinction ##p1", &localFogExtinction, 0.0f, 0.6f);
+	ImGui::SliderFloat("Falloff Height ##p1", &localFogFalloffHeight, -1000.0f, 10000.0f);  //EndHeight - This  = FalloffStart
+	ImGui::SliderFloat("Base Height ##p1", &localFogBaseHeight, -15000.0f, 10000.0f);       //(GroundLevel + Bias) + This   = FogTop
+	//ImGui::SliderFloat("DISABLED Ground Level Bias", &localFogGroundLevelBias, -2000.0f, 2000.0f);
 
 	ImVec2 displaySize = ImVec2(screenSize.x * 0.5f, screenSize.y * 0.5f);
 
@@ -933,7 +934,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 			if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
 				float2 Coords = float2(mouse.x - PosTL.x, mouse.y - PosTL.y) / float2(displaySize.x, displaySize.y) * fogMapSize;
 				settings.fogMapData = float4(Coords.x, Coords.y, brushRadius, brushFeather);
-				settings.UIfogMapParams = float4(localFogGroundLevelBias, localFogMaxHeight, localFogFalloffDistance, localFogDensity);
+				settings.UIfogMapParams = float4(0.0, localFogBaseHeight, localFogFalloffHeight, localFogExtinction);
 
 				DrawFogMap();
 			}

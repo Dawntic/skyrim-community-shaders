@@ -298,6 +298,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float4 heightMapZRange;
 		float4 NoiseSize;
 		float4 gFogParams;
+		float4 fogMapSize;
 		//uint frameCounter;
 		//uint boardCondition;
 		//float _pad[3];

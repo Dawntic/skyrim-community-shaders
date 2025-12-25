@@ -64,6 +64,7 @@ cbuffer GeneralBuffer : register(b2)
     float4 HeightMapZRange;
     float4 NoiseSize;
     float4 FogParam; //near / far, 1.0 / far, power, max
+    float4 FogMapSize;
 };
 
 cbuffer SettingsBuffer : register(b3)
@@ -89,7 +90,7 @@ cbuffer SettingsBuffer : register(b3)
     float UISceneAmbientContribution;
 
     float UIExtinction;
-    float UIGobalFogFalloff;
+    float UIGlobalFogFalloff;
     float UIGlobalFogBaseHeight;
     float UIDistantHazeExtinction;
 
@@ -102,7 +103,7 @@ cbuffer SettingsBuffer : register(b3)
     float FogMapBlendOpp;
 
     float4 FogMapData;
-    float4 UIFogMapInput;
+    float4 UILocalFogMapInput;
 };
 
 SamplerState Linear_Sampler : register(s10);
@@ -128,6 +129,9 @@ float GameUnitToMeter(float input){
 
 float LinearStep(float edge0, float edge1, float x){
     return saturate((x - edge0) / (edge1 - edge0));}
+
+float4 LinearStep(float4 edge0, float4 edge1, float4 x){
+return saturate((x - edge0) / (edge1 - edge0));}
 
 float NDCDepthToView(float depth){
     return (CameraData.w / (-depth * CameraData.z + CameraData.x));
@@ -193,10 +197,10 @@ float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float EndHeight)
     float WorldStartHeight = StartHeight + CameraPosition.z - UIGlobalFogBaseHeight; //Start at previous froxel world height
     float WorldEndHeight = EndHeight + CameraPosition.z - UIGlobalFogBaseHeight; //End at current froxel world height
 
-    float InverseFalloff = rcp(max(UIGobalFogFalloff, EPSILON_DIVISION));
+    float InverseFalloff = rcp(max(UIGlobalFogFalloff, EPSILON_DIVISION));
     float Density = exp(-WorldStartHeight * InverseFalloff) - exp(-WorldEndHeight * InverseFalloff);
 
-    float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGobalFogFalloff * Density * rcp(WorldUp);
+    float OpticalDepth = UIGlobalFogDensity * UIExtinction * UIGlobalFogFalloff * Density * rcp(WorldUp);
 
     return max(OpticalDepth, EPSILON_DIVISION);
 }
@@ -259,6 +263,20 @@ StructuredBuffer<uint> lightList : register(t5);
 StructuredBuffer<LightLimitFix::LightGrid> lightGrid : register(t6);
 
 
+float EVSM_VisibilityV2(float3 CoordsLS, float2 Moments)
+{
+    CoordsLS.z = exp(UIEVSMExponent * CoordsLS.z);
+
+    float Bias = 0.001;
+	float Variance = Moments.y - (Moments.x * Moments.x);
+	      Variance = max(Variance, Bias * CoordsLS.z * CoordsLS.z);
+
+	float Delta = CoordsLS.z - Moments.x;
+	float pMax = Variance / (Variance + (Delta * Delta));
+
+	return (CoordsLS.z <= Moments.x) ? 1.0 : pMax;
+}
+
 float EVSM_Visibility(float3 CoordsLS, float2 Moments)
 {
     float MinVariance = 0.0;
@@ -289,8 +307,8 @@ float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float Thi
 
         Result += Visibility;
 
-        float Value = ((SharedData::FrameCountAlwaysActive + 17) % 33);
-        float ViewZNoise = frac(BNoise + ((Value + i + 1) % 16) * kPhi);
+        float Value = SharedData::FrameCountAlwaysActive % 16;//((SharedData::FrameCountAlwaysActive + 17) % 33);
+        float ViewZNoise = frac(BNoise + ((Value + i + 1)) * kPhi);
 
         ViewZ = CoordZ + ThicknessZ * ViewZNoise;
     }
@@ -301,11 +319,11 @@ float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float Thi
 
 float GetLocalLightShadow(float3 WorldPosition, float ViewZ, float2 CoordsUV)
 {
-    float Visibility = 0.0;
+    float Visibility = 1.0;
     uint clusterIdx = 0;
     uint lightCount = 0;
 
-    if (GetClusterIndex(CoordsUV, ViewZ, clusterIdx)){
+    if (GetClusterIndex(CoordsUV, ViewZ, clusterIdx) && UIEnableLocalLights){
         uint lightCount = lightGrid[clusterIdx].lightCount;
         uint lightOffset = lightGrid[clusterIdx].offset;
 
@@ -313,11 +331,10 @@ float GetLocalLightShadow(float3 WorldPosition, float ViewZ, float2 CoordsUV)
             uint Index = lightList[lightOffset + i];
             LightLimitFix::Light light = lights[Index];
 
-            //Shadow Lights
             if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
                 float4 CoordsLS = mul(ShadowLightData[light.shadowLightIndex].ShadowMatrix, float4(WorldPosition, 1.0));
 
-                bool lowerHalf = CoordsLS.z < 0; // CoordsLS.z * 0.5 + 0.5 < 0;
+                bool lowerHalf = CoordsLS.z < 0;
                 float3 PosOffset = float3(0, 0, 1.0 - 2 * lowerHalf);
                 float3 lightDirection = normalize(normalize(CoordsLS.xyz) + PosOffset);
                 float2 ShadowUV = lightDirection.xy / lightDirection.z * 0.5 + 0.5;
@@ -326,12 +343,11 @@ float GetLocalLightShadow(float3 WorldPosition, float ViewZ, float2 CoordsUV)
                 float Shadow = ParaboloidShadowMaps.SampleLevel(Linear_Sampler, float3(ShadowUV.xy, ShadowLightData[light.shadowLightIndex].ShadowMapIndex), 0).x;
 
                 float shadowMapCompareValue = saturate(length(CoordsLS.xyz) / light.radius); //- 0.00638;
-                if (Shadow >= shadowMapCompareValue)
-                    Visibility = 1;
+                if (Shadow <= shadowMapCompareValue)
+                    Visibility = min(Visibility, Shadow);
             }
         }
     }
-
     return Visibility;
 }
 
@@ -341,7 +357,7 @@ float GetLocalLightShadow(float3 WorldPosition, float ViewZ, float2 CoordsUV)
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float3 Froxel = ThreadID;
-    float2 CoordsUV = (Froxel.xy + 0.5) / VolumeSize.xy;
+    float2 CoordsUV = (Froxel.xy + 0.5) * InverseVolumeSize.xy;
 
     float CoordZ = FroxelDepthToView(Froxel.z - 2); // Bias to avoid leaks
     float ThicknessZ = FroxelDepthToView(Froxel.z - 1) - CoordZ;
@@ -356,13 +372,13 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float CascadeShadow = GetCascadeShadow(RayDirection, ViewZ, CoordZ, ThicknessZ, Noise);
 
-    float LocalShadow = GetLocalLightShadow(RayPosition, ViewZ, CoordsUV) * UIEnableLocalLights;
+    float LocalShadow = GetLocalLightShadow(RayPosition, ViewZ, CoordsUV);
 
     float UICloudShadowContrib = 1.0;
     float CloudShadow = CloudShadows::GetCloudShadowMult(WorldPosition, Linear_Sampler) * UICloudShadowContrib;
     float TerrainShadow = TerrainShadows::GetTerrainShadow(WorldPosition, Linear_Sampler);
 
-    float Shadow = max(LocalShadow, CascadeShadow) * TerrainShadow;// * CloudShadow;
+    float Shadow = LocalShadow * CascadeShadow; //min(LocalShadow, CascadeShadow);// * TerrainShadow;// * CloudShadow;
 
     float Confidence;
     float ViewZCenter = FroxelDepthToView(Froxel.z + 0.5);
@@ -376,6 +392,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     //Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
     Shadow = Shadow * 0.15;
+    //Shadow = min(Shadow, 0.15);
 
     ShadowVolume[ThreadID] = Shadow;
 }
@@ -459,30 +476,13 @@ RWTexture3D<float4> MediaVolume : register(u0);
 //RWTexture2D<float4> FogMap : register(u1);
 
 
-float4 GetLocalFogData(float3 CoordsWS){
-    float MapCameraDepth = -249920.0;
-
-    row_major float4x4 MapViewProj = float4x4(
-    float4( 1.19175, 0.00, 0.00, 0.00),
-    float4(0.00, 2.11867, 0.00073, 0.00),
-    float4(0.00, 0.00035, -1.00036, -128.04633),
-    float4(0.00, 0.00035, -1.00, 0.00));
-
-    float4 MapCoordsNDC = mul(MapViewProj, float4(CoordsWS.xy, CoordsWS.z + MapCameraDepth, 1.0));
+float4 GetLocalFogData(float3 CoordsWS, float RayJitter){
+    float MapCameraDepth = 249920.0;
+    float4 MapCoordsNDC = mul(FogViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
     float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
 
-    return FogMap.SampleLevel(Point_Sampler, MapCoordsUV, 0);
-}
-
-float TestLocalFog(float FroxelWorldHeight){
-    float MaxHeight = UIGlobalFogBaseHeight; //
-    float FalloffDistance = UIGobalFogFalloff; //
-
-    float Falloff = MaxHeight - (MaxHeight - FalloffDistance);
-
-    float LocalFog = 1.0 - saturate((FroxelWorldHeight - (MaxHeight - FalloffDistance)) / Falloff);
-
-    return LocalFog * LocalFog * LocalFog;// * UIGlobalFogDensity;
+    float2 FogMapSize = float2(2560, 1440);// - (RayJitter*2);
+    return FogMap.Load(int3(MapCoordsUV * FogMapSize.xy, 0)); //returns fog height, falloff and extinction
 }
 
 
@@ -494,27 +494,49 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ViewZ = FroxelDepthToView(Froxel.z);
     float ThicknessZ = FroxelDepthToView(Froxel.z + 1.0) - ViewZ;
 
-    //float RayJitter = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
-          //RayJitter = ThicknessZ * frac(RayJitter + (SharedData::FrameCountAlwaysActive % 16) * kPhi);
+    float RayJitter = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+          RayJitter = frac(RayJitter + (SharedData::FrameCountAlwaysActive % 16) * kPhi);
 
-    //ViewZ += RayJitter;
+    ViewZ += ThicknessZ * RayJitter;
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
-
-    //float3 WorldPosition = RayPosition + CameraPosition.xyz;
-    //float4 LocalFogData = GetLocalFogData(WorldPosition);
 
     float PrevViewZ = FroxelDepthToView(max(Froxel.z - 1.0, 1.0)); // + RayJitter;
     float3 PrevRayPosition = RayDirection * PrevViewZ;
     float StepLength = max(distance(PrevRayPosition, RayPosition), 1.0);
 
-    float OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, UIGlobalFogBaseHeight, UIGobalFogFalloff, UIExtinction);
+    float OpticalDepth = 0.0;
+    //OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, UIGlobalFogBaseHeight, UIGlobalFogFalloff, UIExtinction);
+
+
+    //float CoordsZ = Froxel.z * InverseVolumeSize.z;
+    //CoordsZ += (RayJitter * 6.0 - 0.0) * InverseVolumeSize.z;
+    //CoordsZ *= VolumeSize.z;
+
+    //float ViewZ_2 = FroxelDepthToView(CoordsZ);
+    //float UVZ = ViewZ_2 * InverseVolumeSize.z;
+   //UVZ += InverseVolumeSize.z * (RayJitter);
+    // CoordsUV + InverseVolumeSize.xy * Jitter
+    //ViewZ_2 = UVZ * VolumeSize
+    //float3 PosTest = RayDirection * ViewZ_2 + CameraPosition.xyz;
+
+    //float4 LocalFogData = 0;
+   // for(int j=-1; j<=1;j++){
+   //     ViewZ = FroxelDepthToView(Froxel.z + 0.5 * j);
+   //     RayPosition = RayDirection * ViewZ;
+   //     LocalFogData += GetLocalFogData(RayPosition + CameraPosition.xyz, 0.0);
+   // }
+   // LocalFogData *= 0.33;
+
+    float4 LocalFogData = GetLocalFogData(RayPosition + CameraPosition.xyz, RayJitter);
+    OpticalDepth += GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, LocalFogData.y, LocalFogData.z, LocalFogData.w);
+
 
     float WeatherFog = GetWeatherBasedFog(ViewZ) * 0.002;
     float HomogeneousOpticalDepth = GetHomogeneousOpticalDepth(WeatherFog, StepLength);
     OpticalDepth = lerp(OpticalDepth, HomogeneousOpticalDepth, FogParam.w * UIUseWeatherFog);
 
-    float Extinction = max(OpticalDepth * rcp(max(StepLength, EPSILON_DIVISION)), EPSILON_DIVISION);
+    float Extinction = OpticalDepth * rcp(StepLength); //max(OpticalDepth * rcp(max(StepLength, EPSILON_DIVISION)), EPSILON_DIVISION);
     float3 ScatteringAlbedo = UIScatteringRatio.xyz * Extinction;
 
     float4 Output = float4(ScatteringAlbedo, OpticalDepth);
@@ -541,18 +563,27 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
           Noise = smoothstep(0.0, 1.0, Noise);
           Noise = lerp(Noise, 1.0, saturate(OffsetZ * FadeRate));
 
-
+*/
 //// Reprojection
 
     float Confidence;
-    float CenterViewZ = FroxelDepthToView(Froxel.z + 0.5);
-    float3 PrevCoordsUV = GetHistoryUV(RayPosition * CenterViewZ, Confidence);
+    float CenterViewZ = FroxelDepthToView(Froxel.z);
+     float ThicknessZ2 = FroxelDepthToView(Froxel.z + 1.0) - CenterViewZ;
+     //CenterViewZ += ThicknessZ2 * RayJitter;
+
+    float3 PrevCoordsUV = GetHistoryUV(RayDirection * CenterViewZ, Confidence);
 
     float4 MediaHistory = HistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0);
     float BaseValue = 0.90;
-    float ReprojectionValue = BaseValue * Confidence;
+    //float ReprojectionValue = BaseValue;// * Confidence;
+
+    float DeltaLimit = max(UIDisocclutionThreshold, EPSILON_DIVISION); //Shadow diff below which max history will be used
+    float ReprojectionValue = 1.0 - LinearStep(DeltaLimit.xxxx, float4(1,1,1,1), abs(Output - MediaHistory));
+          ReprojectionValue = Confidence * min(ReprojectionValue, BaseValue) * UIUseHistory;
+
+    ReprojectionValue = 0.60;
     //Output = lerp(Output, MediaHistory, ReprojectionValue);
-*/
+
 
     MediaVolume[ThreadID] = Output;
 }
@@ -613,7 +644,7 @@ float3 ClampLuminance(float3 Color, float Max){
     return Color;
 }
 
-float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, float3 RayToEye, float Shadow)
+float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, float3 RayToEye, float ShadowA)
 {
     float3 Lighting = float3(0,0,0);
     uint clusterIdx = 0;
@@ -631,27 +662,29 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
 
             float3 Radiance = Color::Saturation(ClampLuminance(Color::GammaToTrueLinear(light.color.xyz), 10.0), UILocalLightsSaturation) * Attenuation;
 
-             if (light.lightFlags & LightLimitFix::LightFlags::Shadow){
-                Radiance *= Shadow;
-                /*
-                float Visibility = 1.0;
+            // local shadows should not attenuate dir light
+            // local shadows should not attenuate other local light sources
+            float Visibility = 1.0;
+            if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
+                Radiance *= ShadowA;
+
                 float4 CoordsLS = mul(ShadowLightData[light.shadowLightIndex].ShadowMatrix, float4(WorldPosition, 1.0));
 
-                bool lowerHalf = CoordsLS.z < 0; //CoordsLS.z * 0.5 + 0.5 < 0;
+                bool lowerHalf = CoordsLS.z < 0;
                 float3 PosOffset = float3(0, 0, 1.0 - 2 * lowerHalf);
                 float3 lightDirection = normalize(normalize(CoordsLS.xyz) + PosOffset);
                 float2 ShadowUV = lightDirection.xy / lightDirection.z * 0.5 + 0.5;
-                       ShadowUV.y = lowerHalf ? 1 - 0.5 * ShadowUV.y : 0.5 * ShadowUV.y;
+                ShadowUV.y = lowerHalf ? 1 - 0.5 * ShadowUV.y : 0.5 * ShadowUV.y;
 
                 float Shadow = ParaboloidShadowMaps.SampleLevel(Linear_Sampler, float3(ShadowUV.xy, ShadowLightData[light.shadowLightIndex].ShadowMapIndex), 0).x;
 
                 float shadowMapCompareValue = saturate(length(CoordsLS.xyz) / light.radius); //- 0.00638;
-                if (Shadow >= shadowMapCompareValue)
+                if (Shadow <= shadowMapCompareValue)
                     Visibility = 0.0;
-
-                //Radiance *= Visibility;
-                */
             }
+            //else{Radiance *= 0.0;}
+
+            //Radiance *= Visibility;
 
             float3 LightToRay = normalize(LightPosition);
             float ScatterCos = dot(LightToRay, RayToEye);
@@ -756,11 +789,13 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 RayToEye = -normalize(RayDirection);
     float3 DirLightToEye = LightDirection.xyz;
 
-    float Extinction = MediaScattering.x / UIScatteringRatio.x;
-    float Tranmittance = exp(-OpticalDepth);
+    //float Extinction = MediaScattering.x / UIScatteringRatio.x;
+    //float Tranmittance = exp(-OpticalDepth);
+
+    float3 JitteredWorldPos = RayPosition;//RayDirection * (ViewZ + RayJitter * (Skylighting::CELL_SIZE * 0.5));
 
     float3 Lighting = float3(0,0,0);
-    Lighting += GetAmbientLighting(RayPosition, DirLightToEye, RayToEye) * UIAmibentLightingMultiplier;
+    Lighting += GetAmbientLighting(JitteredWorldPos, DirLightToEye, RayToEye) * UIAmibentLightingMultiplier;
     //Lighting = 0.5;
 
     float DirLightCosTheta = dot(DirLightToEye, RayToEye);
@@ -780,12 +815,15 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
         LocalLight += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow) * UIEnableLocalLights * UILocalLightMultiplier;
     }
     Lighting += LocalLight * 0.33;
+    //Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow) * UIEnableLocalLights * UILocalLightMultiplier;
 
     //MediaScattering = 0.0063;
     //OpticalDepth = 0.002;
 
     Lighting = Lighting * MediaScattering;
 
+    //if(UIUseHistory)
+    //    Lighting = Shadow.xxx;
 
     ScatteringVolume[ThreadID] = float4(Lighting, OpticalDepth);
 }
@@ -834,8 +872,8 @@ void main(uint3 Froxel : SV_DispatchThreadID)
         AccumulateScattering(Accumulation, ScatteringSample, OpticalDepth, StepLength, FadeIn);
         PrevWorldPosition = WorldPosition;
 
-        IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), Accumulation.w); // Encode output as normalized radiance for density anti aliasing
-        //IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
+        //IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), Accumulation.w); // Encode output as normalized radiance for density anti aliasing
+        IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
     }
 }
 #endif
@@ -890,6 +928,20 @@ float2 GetJitteredUVCoords(float2 CoordsSS, float2 CoordsUV){
     return CoordsUV + InverseVolumeSize.xy * Jitter;
 }
 
+float3 Uncharted2TonemapA(float3 x)
+{
+    // http://www.gdcvault.com/play/1012459/Uncharted_2__HDR_Lighting
+    // http://filmicgames.com/archives/75 - the coefficients are from here
+    float A = 0.15; // Shoulder Strength
+    float B = 0.50; // Linear Strength
+    float C = 0.10; // Linear Angle
+    float D = 0.20; // Toe Strength
+    float E = 0.02; // Toe Numerator
+    float F = 0.30; // Toe Denominator
+    return ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F; // E/F = Toe Angle
+}
+
+
 float4 main(VertexShaderOutput input) : SV_Target
 {
     float Depth = DepthTex.Sample(Point_Sampler, input.TexCoord.xy).x;
@@ -907,13 +959,15 @@ float4 main(VertexShaderOutput input) : SV_Target
     float2 CoordsNDC = input.TexCoord.xy * 2.0 - 1.0;
     float3 PixelDirectionWS = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
 
-    float OpticalDepth = GetAnalyticOpticalDepth(PixelDirectionWS.z, 0.0, PixelViewZ, UIGlobalFogBaseHeight, UIGobalFogFalloff, UIExtinction);
+    //Given our analyical optical depth function, is there any way to account for multiple medias(different heights and extinctions) without recalculating another optical depth
+
+    float OpticalDepth = GetAnalyticOpticalDepth(PixelDirectionWS.z, 0.0, PixelViewZ, UIGlobalFogBaseHeight, UIGlobalFogFalloff, UIExtinction);
     if(Depth < 0.999999) // maybe use transmittance and multiply with ^^
         OpticalDepth = max(OpticalDepth, GetHomogeneousOpticalDepth(UIDistantHazeExtinction, PixelViewZ)); // Dont apply this to... and scale by total radiance(if radiance sample is too high then this over exposes)
 
     // DAA
-    Transmittance = exp(-OpticalDepth);
-    NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance); // * TerrainShadow;
+    //Transmittance = exp(-OpticalDepth);
+    //NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance); // * TerrainShadow;
 
     NormalizedRadiance.xyz = Uncharted2Tonemap(NormalizedRadiance.xyz);
 
@@ -929,7 +983,7 @@ float4 main(VertexShaderOutput input) : SV_Target
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
-//float OpticalDepth = GetAnalyticOpticalDepth_2(float3(0,0,0), PixelDirectionWS * PixelViewZ, UIGobalFogFalloff);
+//float OpticalDepth = GetAnalyticOpticalDepth_2(float3(0,0,0), PixelDirectionWS * PixelViewZ, UIGlobalFogFalloff);
 //float3 WorldPosition = PixelDirectionWS * PixelViewZ + CameraPosition.xyz;
 //float TerrainShadow = TerrainShadows::GetTerrainShadow(WorldPosition, Linear_Sampler);
 
@@ -1017,28 +1071,31 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float2 Coords = float2(ThreadID.xy);
     float RadiusPx = FogMapData.z;
 
-    float4 CurrValue = FogMap[ThreadID.xy];
+    float CurrExtinction = FogMap[ThreadID.xy].w;
     if(length(Coords - FogMapData.xy) - RadiusPx < 0.0){
-        float FogDensity = (FogMapBlendOpp != -1) ? CurrValue.w + UIFogMapInput.w : CurrValue.w - UIFogMapInput.w;
-              FogDensity = saturate(FogDensity);
+        float Extinction = (FogMapBlendOpp != -1) ? CurrExtinction + UILocalFogMapInput.w : CurrExtinction - UILocalFogMapInput.w;
+              Extinction = saturate(Extinction);
 
-        float3 UIOutput = float3(1.0 - UIFogMapInput.xy * FogDensity, 1 * FogDensity);
-        UIFogMap[ThreadID.xy] = float4(UIOutput, FogDensity);
+        //float3 UIOutputColor = float3(1.0 - UILocalFogMapInput.xy * Extinction, 1 * Extinction);
+        //float3 WorldPos = GetWorldPosFromMapSS(Coords);
+        //float2 HeightUV = WorldPos.xy * HeightMapParams.xy + HeightMapParams.zw;
+        //float GroundHeight = GetWorldHeight(HeightUV);
 
-        float3 WorldPos = GetWorldPosFromMapSS(Coords);
-        float2 HeightUV = WorldPos.xy * HeightMapParams.xy + HeightMapParams.zw;
-        float GroundHeight = GetWorldHeight(HeightUV);
+        //float FogGroundHeightBais = UILocalFogMapInput.x; //MapRange(UILocalFogMapInput.x, 0.0, 1.0, 0.0, 35000.0);
+        //float FogBaseHeight = UILocalFogMapInput.y;
+        //float FogHeight = FogBaseHeight + GroundHeight;//GroundHeight + FogBaseHeight;
+        //float FogFalloff = UILocalFogMapInput.z;
+        //FogMap[ThreadID.xy] = float4(FogHeight, FogFalloff, 1.0, Extinction);
 
-        //float FogGroundHeightBais = UIFogMapInput.x; //MapRange(UIFogMapInput.x, 0.0, 1.0, 0.0, 35000.0);
-        float FogHeightUI = UIFogMapInput.y;
-        float FogHeight = FogHeightUI + GroundHeight;//GroundHeight + FogHeightUI;
-        float FogFalloff = UIFogMapInput.z;
 
-        FogMap[ThreadID.xy] = float4(FogHeight, FogFalloff, 1.0, FogDensity);
+        UIFogMap[ThreadID.xy] = float4(1.0, 1.0, 1.0, Extinction); //This target is an overlay fitted onto the world map image displayed to the user to visualize their changes
+
+        FogMap[ThreadID.xy] = float4(1.0, UILocalFogMapInput.y, UILocalFogMapInput.z, Extinction); // This target is used as a lookup in the media compute stage
+        //FogMap[ThreadID.xy] = float4(1.0, UIGlobalFogBaseHeight, UIGlobalFogFalloff, Extinction);
     }
     else{
-        if(CurrValue.w == 0.0)
-            FogMap[ThreadID.xy] = float4(WorldMap.Load(int3(ThreadID.xy, 0.0)).xyz, 0.0);
+        if(CurrExtinction == 0.0)
+            FogMap[ThreadID.xy] = float4(WorldMap.Load(int3(ThreadID.xy, 0.0)).xyz, 0.0); // This is just to debug in renderDoc
         }
 
      //UIFogMap[ThreadID.xy] = float4(GetWorldHeight(HeightUV).xxx, 1);
