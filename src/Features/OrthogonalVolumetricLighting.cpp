@@ -289,10 +289,7 @@ void OrthogonalVolumetricLighting::CheckOverride()
 {
 	if (overrideShader) {
 		LookupShader(shaderdesc);
-	}  //else if (shaderdesc == Shaders::RenderVL) {
-	//RenderToScreen();
-	//shaderdesc = Shaders::Bypass;
-	//}
+	}
 }
 
 void OrthogonalVolumetricLighting::Prepass()
@@ -327,8 +324,6 @@ void OrthogonalVolumetricLighting::VLightingRenderChain()
 	GenerateMediaVolume();
 	GenerateScatteringVolume();
 	RunIntergrationPass();
-
-	//SetupApplyPass();
 
 	overrideShader = false;
 }
@@ -679,17 +674,14 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
 
-	//TracyD3D11Zone(state->tracyCtx, "Volumetrics - Apply Volumetric Lighting");
-	//if (globals::state->frameAnnotations)
-	//	globals::state->BeginPerfEvent("Volumetrics - Apply Volumetric Lighting");
+	TracyD3D11Zone(state->tracyCtx, "Volumetrics - Apply Volumetric Lighting");
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Volumetrics - Apply Volumetric Lighting");
 
 	SetupApplyPassResources();
 
 	context->RSSetState(outVolumetricsRasterizer);
 	context->OMSetBlendState(outVolumetricsBlendState, nullptr, 0xffffffff);  // BLEND DISABLED AT CREATION
-
-	//auto& mainRTVCopy = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN_COPY].RTV;
-	//context->OMSetRenderTargets(1, &mainRTVCopy, nullptr);
 
 	auto& mainRTV = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].RTV;
 	context->OMSetRenderTargets(1, &mainRTV, nullptr);
@@ -703,8 +695,8 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 	auto& mainSRVCopy = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN_COPY].SRV;
 	context->PSSetShaderResources(4, 1, &mainSRVCopy);
 
-	//if (globals::state->frameAnnotations)
-	//	globals::state->EndPerfEvent();
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 
 	overrideShader = false;
 }

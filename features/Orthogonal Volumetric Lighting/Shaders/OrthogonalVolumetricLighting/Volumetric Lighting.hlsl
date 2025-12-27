@@ -364,6 +364,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float Noise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
     float RayJitter = frac(Noise + (SharedData::FrameCountAlwaysActive % 16) * kPhi);
+    //RayJitter = frac(Noise + ((SharedData::FrameCountAlwaysActive + 17) % 33) * kPhi); // Coprime LDS
+
 
     float ViewZ = CoordZ + ThicknessZ * RayJitter;
     float3 RayDirection = FroxelWorldDirection(Froxel);
@@ -378,7 +380,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float CloudShadow = CloudShadows::GetCloudShadowMult(WorldPosition, Linear_Sampler) * UICloudShadowContrib;
     float TerrainShadow = TerrainShadows::GetTerrainShadow(WorldPosition, Linear_Sampler);
 
-    float Shadow = LocalShadow * CascadeShadow; //min(LocalShadow, CascadeShadow);// * TerrainShadow;// * CloudShadow;
+    float Shadow = CascadeShadow;//LocalShadow * CascadeShadow; //min(LocalShadow, CascadeShadow);// * TerrainShadow;// * CloudShadow;
 
     float Confidence;
     float ViewZCenter = FroxelDepthToView(Froxel.z + 0.5);
@@ -390,8 +392,9 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ReprojectionValue = 1.0 - LinearStep(DeltaLimit, 1.0, abs(Shadow - ShadowHistory));
           ReprojectionValue = Confidence * min(ReprojectionValue, MaxHistory) * UIUseHistory;
 
+    //ReprojectionValue = 0.4;
     //Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
-    Shadow = Shadow * 0.15;
+    //Shadow = Shadow * 0.15;
     //Shadow = min(Shadow, 0.15);
 
     ShadowVolume[ThreadID] = Shadow;
@@ -497,7 +500,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float RayJitter = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
           RayJitter = frac(RayJitter + (SharedData::FrameCountAlwaysActive % 16) * kPhi);
 
-    ViewZ += ThicknessZ * RayJitter;
+    //ViewZ += ThicknessZ * RayJitter;
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
 
@@ -527,13 +530,14 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
    // }
    // LocalFogData *= 0.33;
 
+
     float4 LocalFogData = GetLocalFogData(RayPosition + CameraPosition.xyz, RayJitter);
-    OpticalDepth += GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, LocalFogData.y, LocalFogData.z, LocalFogData.w);
+    //OpticalDepth += GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, LocalFogData.y, LocalFogData.z, LocalFogData.w);
 
 
     float WeatherFog = GetWeatherBasedFog(ViewZ) * 0.002;
     float HomogeneousOpticalDepth = GetHomogeneousOpticalDepth(WeatherFog, StepLength);
-    OpticalDepth = lerp(OpticalDepth, HomogeneousOpticalDepth, FogParam.w * UIUseWeatherFog);
+    //OpticalDepth = lerp(OpticalDepth, HomogeneousOpticalDepth, FogParam.w * UIUseWeatherFog);
 
     float Extinction = OpticalDepth * rcp(StepLength); //max(OpticalDepth * rcp(max(StepLength, EPSILON_DIVISION)), EPSILON_DIVISION);
     float3 ScatteringAlbedo = UIScatteringRatio.xyz * Extinction;
@@ -775,7 +779,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ViewZ = FroxelDepthToView(Froxel.z + 0.5);
     float ThicknessZ = FroxelDepthToView(Froxel.z + 1.5) - ViewZ;
 
-    ViewZ += ThicknessZ * RayJitter;
+    //ViewZ += ThicknessZ * RayJitter;
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
 
@@ -795,7 +799,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float3 Lighting = float3(0,0,0);
     Lighting += GetAmbientLighting(JitteredWorldPos, DirLightToEye, RayToEye) * UIAmibentLightingMultiplier;
-
+    //Lighting = 0.3;
 
     float DirLightCosTheta = dot(DirLightToEye, RayToEye);
     float Phase = CSPhase(DirLightCosTheta, UIAnisotropy);
@@ -871,8 +875,8 @@ void main(uint3 Froxel : SV_DispatchThreadID)
         AccumulateScattering(Accumulation, ScatteringSample, OpticalDepth, StepLength, FadeIn);
         PrevWorldPosition = WorldPosition;
 
-        //IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), Accumulation.w); // Encode output as normalized radiance for density anti aliasing
-        IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
+        IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), Accumulation.w); // Encode output as normalized radiance for density anti aliasing
+        //IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
     }
 }
 #endif
@@ -940,6 +944,53 @@ float3 Uncharted2TonemapA(float3 x)
     return ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F; // E/F = Toe Angle
 }
 
+float4 Exact_CubicBasisSpline3(float3 CoordsUV, Texture3D Volume, SamplerState Sampler){
+    float3 FracUV = frac(CoordsUV * VolumeSize.xyz);
+    float3 a = FracUV;
+    float3 a2 = a * a;
+    float3 a3 = a2 * a;
+
+    // Exact basis functions
+    float3 w0 = (-a3 + 3.0 * a2 - 3.0 * a + 1.0) / 6.0;
+    float3 w1 = (3.0 * a3 - 6.0 * a2 + 4.0) / 6.0;
+    float3 w2 = (-3.0 * a3 + 3.0 * a2 + 3.0 * a + 1.0) / 6.0;
+    float3 w3 = a3 / 6.0;
+
+    float3 g0 = w0 + w1;
+    float3 g1 = w2 + w3;
+
+    float3 Offset_0 = (w1 / g0) - 1.0;
+    float3 Offset_1 = (w3 / g1) + 1.0;
+
+    float3 TexelSize = InverseVolumeSize.xyz;
+
+    float3 coord_00 = CoordsUV + float3(-Offset_0.x, -Offset_0.y, 0) * TexelSize;
+    float3 coord_10 = CoordsUV + float3(+Offset_1.x, -Offset_0.y, 0) * TexelSize;
+    float3 coord_01 = CoordsUV + float3(-Offset_0.x, +Offset_1.y, 0) * TexelSize;
+    float3 coord_11 = CoordsUV + float3(+Offset_1.x, +Offset_1.y, 0) * TexelSize;
+
+    float3 offset_z0 = float3(0, 0, -Offset_0.z) * TexelSize;
+    float3 offset_z1 = float3(0, 0, +Offset_1.z) * TexelSize;
+
+    float4 Sample0 = Volume.SampleLevel(Sampler, coord_00 + offset_z0, 0);
+    float4 Sample1 = Volume.SampleLevel(Sampler, coord_00 + offset_z1, 0);
+    float4 Sample2 = Volume.SampleLevel(Sampler, coord_01 + offset_z0, 0);
+    float4 Sample3 = Volume.SampleLevel(Sampler, coord_01 + offset_z1, 0);
+    float4 Sample4 = Volume.SampleLevel(Sampler, coord_10 + offset_z0, 0);
+    float4 Sample5 = Volume.SampleLevel(Sampler, coord_10 + offset_z1, 0);
+    float4 Sample6 = Volume.SampleLevel(Sampler, coord_11 + offset_z0, 0);
+    float4 Sample7 = Volume.SampleLevel(Sampler, coord_11 + offset_z1, 0);
+
+    // Blend along Z
+    float4 BlendZ0 = lerp(Sample0, Sample1, g1.z);
+    float4 BlendZ1 = lerp(Sample2, Sample3, g1.z);
+    float4 BlendZ2 = lerp(Sample4, Sample5, g1.z);
+    float4 BlendZ3 = lerp(Sample6, Sample7, g1.z);
+
+    // Compound blend Y then X
+    return lerp(lerp(BlendZ0, BlendZ1, g1.y), lerp(BlendZ2, BlendZ3, g1.y), g1.x);
+}
+
 
 float4 main(VertexShaderOutput input) : SV_Target
 {
@@ -955,6 +1006,8 @@ float4 main(VertexShaderOutput input) : SV_Target
     float4 NormalizedRadiance = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV, FroxelDepth), 0);
     float Transmittance = NormalizedRadiance.w;
 
+    //NormalizedRadiance.xyz = Exact_CubicBasisSpline3(float3(CoordsUV, FroxelDepth), IntergrationVolume, Linear_Sampler).xyz; //point?
+
     float2 CoordsNDC = input.TexCoord.xy * 2.0 - 1.0;
     float3 PixelDirectionWS = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
 
@@ -963,8 +1016,8 @@ float4 main(VertexShaderOutput input) : SV_Target
         OpticalDepth = max(OpticalDepth, GetHomogeneousOpticalDepth(UIDistantHazeExtinction, PixelViewZ)); // Dont apply this to... and scale by total radiance(if radiance sample is too high then this over exposes)
 
     // DAA
-    //Transmittance = exp(-OpticalDepth);
-    //NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance); // * TerrainShadow;
+    Transmittance = exp(-OpticalDepth);
+    NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance); // * TerrainShadow;
 
     NormalizedRadiance.xyz = Uncharted2Tonemap(NormalizedRadiance.xyz);
 
