@@ -213,7 +213,7 @@ float GetAnalyticOpticalDepth(float WorldUp, float StartHeight, float StepLength
     StartHeight += CameraPosition.z;
 
      float OpticalDepth;
-     if(abs(WorldUp) < 1e-6){
+     if(abs(WorldUp) < 1e-4){
         float DensityAtHeight = exp(-max(StartHeight - InFogBaseHeight, 0) * InverseFalloff);
         OpticalDepth = StepLength * DensityAtHeight * InExtinction;
     } else{
@@ -491,8 +491,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float3 Froxel = ThreadID;
 
-    float ViewZ = FroxelDepthToView(Froxel.z);
-    float ThicknessZ = FroxelDepthToView(Froxel.z + 1.0) - ViewZ;
+    float ViewZ = FroxelDepthToView(Froxel.z+0.5);
+    float ThicknessZ = FroxelDepthToView(Froxel.z + 1.5) - ViewZ;
 
     float RayJitter = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
           RayJitter = frac(RayJitter + (SharedData::FrameCountAlwaysActive % 16) * kPhi);
@@ -506,8 +506,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float StepLength = max(distance(PrevRayPosition, RayPosition), 1.0);
 
     float OpticalDepth = 0.0;
-    //OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, UIGlobalFogBaseHeight, UIGlobalFogFalloff, UIExtinction);
-
+    OpticalDepth = GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, UIGlobalFogBaseHeight, UIGlobalFogFalloff, UIExtinction);
 
     //float CoordsZ = Froxel.z * InverseVolumeSize.z;
     //CoordsZ += (RayJitter * 6.0 - 0.0) * InverseVolumeSize.z;
@@ -611,7 +610,7 @@ Texture2D<sh2> DiffuseSkyIBLTexture : register(t77);
 StructuredBuffer<LightLimitFix::Light> lights : register(t4);
 StructuredBuffer<uint> lightList : register(t5);
 StructuredBuffer<LightLimitFix::LightGrid> lightGrid : register(t6);
-Texture3D<float4> ParaboloidShadowMaps : register(t7);
+Texture2DArray<float4> ParaboloidShadowMaps : register(t7);
 
 RWTexture3D<float4> ScatteringVolume : register(u0);
 
@@ -796,7 +795,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float3 Lighting = float3(0,0,0);
     Lighting += GetAmbientLighting(JitteredWorldPos, DirLightToEye, RayToEye) * UIAmibentLightingMultiplier;
-    //Lighting = 0.5;
+
 
     float DirLightCosTheta = dot(DirLightToEye, RayToEye);
     float Phase = CSPhase(DirLightCosTheta, UIAnisotropy);
@@ -899,7 +898,7 @@ void main(uint3 Froxel : SV_DispatchThreadID)
 Texture2D DepthTex : register(t0);
 Texture3D IntergrationVolume : register(t1);
 Texture2DArray BlueNoise : register(t2);
-Texture3D ShadowVolume : register(t3);
+//Texture3D ShadowVolume : register(t3);
 Texture2D MainScene : register(t4);
 
 // from ShortFuse (RenoDX)
@@ -959,8 +958,6 @@ float4 main(VertexShaderOutput input) : SV_Target
     float2 CoordsNDC = input.TexCoord.xy * 2.0 - 1.0;
     float3 PixelDirectionWS = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.0, 1.0)).xyz;
 
-    //Given our analyical optical depth function, is there any way to account for multiple medias(different heights and extinctions) without recalculating another optical depth
-
     float OpticalDepth = GetAnalyticOpticalDepth(PixelDirectionWS.z, 0.0, PixelViewZ, UIGlobalFogBaseHeight, UIGlobalFogFalloff, UIExtinction);
     if(Depth < 0.999999) // maybe use transmittance and multiply with ^^
         OpticalDepth = max(OpticalDepth, GetHomogeneousOpticalDepth(UIDistantHazeExtinction, PixelViewZ)); // Dont apply this to... and scale by total radiance(if radiance sample is too high then this over exposes)
@@ -977,6 +974,7 @@ float4 main(VertexShaderOutput input) : SV_Target
         OutputColor = OutputColor * Transmittance + NormalizedRadiance.xyz;
     }
     OutputColor = Color::TrueLinearToGamma(OutputColor);
+    //OutputColor = NormalizedRadiance.xyz;
 
     return float4(OutputColor, 1.0);
 }

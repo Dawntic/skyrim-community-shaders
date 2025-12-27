@@ -45,6 +45,8 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void SetupResources() override;
 	void CompileShaders();
 
+	virtual void Prepass();
+
 	void CheckOverride();
 	void LookupShader(int desc);
 	void UpdateAndSetupResources();
@@ -80,6 +82,7 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11SamplerState* anisoWrapLinear = nullptr;
 
 	ID3D11BlendState* outVolumetricsBlendState = nullptr;
+	ID3D11RasterizerState* outVolumetricsRasterizer = nullptr;
 
 	//// Volumes ////////////
 	ID3D11ComputeShader* generateMediaVolumeCS = nullptr;
@@ -162,6 +165,9 @@ struct OrthogonalVolumetricLighting : Feature
 
 	bool updateLightDir = true;
 	float4 lightDir = float4(0, 0, 0, 0);
+
+	void(__fastcall* gFlareApplyFunc)(RE::NiCamera*, void*, uint64_t) = nullptr;
+	void* gFlareShader = nullptr;
 
 	struct LocalShadowLightTransform
 	{
@@ -484,7 +490,11 @@ struct OrthogonalVolumetricLighting : Feature
 #pragma warning(disable: 4189)
 			static bool thunk(void* shader, RE::NiCamera* camera, uint64_t unk)
 			{
+				if (!globals::features::orthogonalVolumetricLighting.gFlareShader && shader) {
+					globals::features::orthogonalVolumetricLighting.gFlareShader = shader;
+				}
 				bool result = func(shader, camera, unk);
+
 				return true;
 			}
 #pragma warning(pop)
@@ -520,6 +530,12 @@ struct OrthogonalVolumetricLighting : Feature
 		//	static inline REL::Relocation<decltype(thunk)> func;
 		//};
 
+		struct Main_PostProcessing  //run post upscale effects
+		{
+			static void thunk(RE::ImageSpaceManager* a1, uint32_t a3, uint32_t er8_);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		static void Install()
 		{
 			logger::info("[Lens Effects] Installed hooks");
@@ -531,6 +547,8 @@ struct OrthogonalVolumetricLighting : Feature
 
 			stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>>(RE::VTABLE_BSImagespaceShaderLensFlare[3]);
 			stl::write_vfunc<0x6, BSSkyShader_SetupMaterial>(RE::VTABLE_BSSkyShader[0]);
+
+			stl::detour_thunk<Main_PostProcessing>(REL::RelocationID(99023, 105674));
 		}
 	};
 };

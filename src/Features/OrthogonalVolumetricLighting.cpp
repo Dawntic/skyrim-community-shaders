@@ -196,6 +196,8 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateShaderResourceView(intergrationVolume, nullptr, &intergrationVolumeSRV));
 
 	//// MISC ///////////////////////////////////////////////////////////////////////////
+
+	/*
 	D3D11_TEXTURE2D_DESC outputDesc{};
 	outputDesc.Width = (UINT)screenSize.x;
 	outputDesc.Height = (UINT)screenSize.y;
@@ -212,6 +214,20 @@ void OrthogonalVolumetricLighting::SetupResources()
 	DX::ThrowIfFailed(device->CreateTexture2D(&outputDesc, nullptr, &outputTexture));
 	DX::ThrowIfFailed(device->CreateRenderTargetView(outputTexture, nullptr, &outputRTV));
 	DX::ThrowIfFailed(device->CreateShaderResourceView(outputTexture, nullptr, &outputSRV));
+	*/
+	D3D11_RASTERIZER_DESC rsDesc{};
+	rsDesc.FillMode = D3D11_FILL_SOLID;
+	rsDesc.CullMode = D3D11_CULL_NONE;
+	rsDesc.FrontCounterClockwise = FALSE;
+	rsDesc.DepthBias = 0;
+	rsDesc.SlopeScaledDepthBias = 0.0f;
+	rsDesc.DepthBiasClamp = 0.0f;
+	rsDesc.DepthClipEnable = TRUE;
+	rsDesc.ScissorEnable = FALSE;
+	rsDesc.MultisampleEnable = FALSE;
+	rsDesc.AntialiasedLineEnable = FALSE;
+
+	device->CreateRasterizerState(&rsDesc, &outVolumetricsRasterizer);
 
 	DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\OrthogonalVolumetricLighting\\Textures\\STBN.dds", nullptr, &blueNoiseSRV));
 	ID3D11Resource* Resource;
@@ -220,7 +236,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	D3D11_TEXTURE2D_DESC FogMapDesc{};
 	worldMapTexture->GetDesc(&FogMapDesc);
-	outputDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	FogMapDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	FogMapDesc.Usage = D3D11_USAGE_DEFAULT;
 	FogMapDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
@@ -243,13 +259,15 @@ void OrthogonalVolumetricLighting::SetupResources()
 	skyrim_FlareData = reinterpret_cast<uintptr_t*>(REL::RelocationID(527915, 414867).address());
 	skyrim_RunFlarePtr = reinterpret_cast<uint32_t*>(REL::RelocationID(527916, 414862).address());
 
+	gFlareApplyFunc = reinterpret_cast<decltype(gFlareApplyFunc)>(REL::RelocationID(100281, 106995).address());
+
 	*reinterpret_cast<uint32_t*>(REL::RelocationID(391108, 391108).address()) = 0;  //Disable VL maps
 
 	skyrim_SunPosition = reinterpret_cast<RE::NiPoint3*>(REL::RelocationID(527924, 414871).address());
 
 	renderdata = new Setup::LF_RenderData;
 	renderdata->SetupPass(Shaders::RenderVL, true, 1, { .uncond_pass = true });
-	renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
+	//renderdata->SetupPass(Shaders::Apply, true, 1, { .uncond_pass = true });
 	renderdata->SetupRenderData();
 
 	CompileShaders();
@@ -259,8 +277,8 @@ void OrthogonalVolumetricLighting::LookupShader(int desc)
 {
 	static const std::unordered_map<int, void (OrthogonalVolumetricLighting::*)()> effects{
 		{ Shaders::Bypass, &OrthogonalVolumetricLighting::SetupBypass },
-		{ Shaders::RenderVL, &OrthogonalVolumetricLighting::VLightingRenderChain },
-		{ Shaders::Apply, &OrthogonalVolumetricLighting::RenderToScreen },
+		{ Shaders::RenderVL, &OrthogonalVolumetricLighting::SetupApplyPass },  //////////////////
+																			   //{ Shaders::Apply, &OrthogonalVolumetricLighting::RenderToScreen },
 	};
 	auto it = effects.find(desc);
 	if (it != effects.cend())
@@ -271,13 +289,24 @@ void OrthogonalVolumetricLighting::CheckOverride()
 {
 	if (overrideShader) {
 		LookupShader(shaderdesc);
-	}
+	}  //else if (shaderdesc == Shaders::RenderVL) {
+	//RenderToScreen();
+	//shaderdesc = Shaders::Bypass;
+	//}
+}
+
+void OrthogonalVolumetricLighting::Prepass()
+{
+	VLightingRenderChain();
 }
 
 void OrthogonalVolumetricLighting::VLightingRenderChain()
 {
 	UpdateAndSetupResources();
-	std::swap(currentVolumeIdx, historyVolumeIdx);
+
+	if (settings.useHistory) {
+		std::swap(currentVolumeIdx, historyVolumeIdx);
+	}
 	frameCounter++;
 
 	static bool renderPerlin = true;
@@ -299,8 +328,7 @@ void OrthogonalVolumetricLighting::VLightingRenderChain()
 	GenerateScatteringVolume();
 	RunIntergrationPass();
 
-	SetupApplyPassResources();
-	SetupApplyPass();
+	//SetupApplyPass();
 
 	overrideShader = false;
 }
@@ -420,7 +448,7 @@ void OrthogonalVolumetricLighting::UpdateGeneralBuffers()
 	generalData.heightMapParams = float4(mapScale.x, mapScale.y, mapOffset.x, mapOffset.y);
 	generalData.heightMapZRange = float4(mapRange.x, mapRange.y, 0.0, 0.0);
 	generalData.NoiseSize = noiseDimensions;
-	generalData.fogMapSize = float4(fogMapSize.x, fogMapSize.y, 1.0 / fogMapSize.x, 1.0 / fogMapSize.y);
+	generalData.fogMapSize = float4(fogMapSize.x, fogMapSize.y, 1.0f / fogMapSize.x, 1.0f / fogMapSize.y);
 
 	float4 fogParams = float4(0, 0, 0, 0);
 	if (auto sky = globals::game::sky) {
@@ -448,10 +476,10 @@ void OrthogonalVolumetricLighting::RenderEVSM()
 	ZoneScoped;
 	auto context = globals::d3d::context;
 
-	TracyD3D11Zone(state->tracyCtx, "VL - Generate EVSM");
+	TracyD3D11Zone(state->tracyCtx, "Volumetrics - Generate EVSM");
 
 	if (globals::state->frameAnnotations)
-		globals::state->BeginPerfEvent("VL - Generate EVSM");
+		globals::state->BeginPerfEvent("Volumetrics - Generate EVSM");
 
 	context->CSSetShader(EVSMComputeShader, nullptr, 0);
 	context->CSSetUnorderedAccessViews(0, 1, &expVarianceMapUAV, nullptr);
@@ -473,9 +501,9 @@ void OrthogonalVolumetricLighting::RenderEVSMBlur()
 	ZoneScoped;
 	auto context = globals::d3d::context;
 
-	TracyD3D11Zone(state->tracyCtx, "VL - Blur EVSM");
+	TracyD3D11Zone(state->tracyCtx, "Volumetrics - Blur EVSM");
 	if (globals::state->frameAnnotations)
-		globals::state->BeginPerfEvent("VL - Blur EVSM");
+		globals::state->BeginPerfEvent("Volumetrics - Blur EVSM");
 
 	context->CSSetShader(blurEVSMComputeShader, nullptr, 0);
 	context->CSSetUnorderedAccessViews(0, 1, &EVSMBlurUAV, nullptr);
@@ -497,9 +525,9 @@ void OrthogonalVolumetricLighting::GenerateShadowVolume()
 	auto context = globals::d3d::context;
 	auto& LLF = globals::features::lightLimitFix;
 
-	TracyD3D11Zone(state->tracyCtx, "VL - Generate Shadow Volume");
+	TracyD3D11Zone(state->tracyCtx, "Volumetrics - Generate Shadow Volume");
 	if (globals::state->frameAnnotations)
-		globals::state->BeginPerfEvent("VL - Generate Shadow Volume");
+		globals::state->BeginPerfEvent("Volumetrics - Generate Shadow Volume");
 
 	context->CSSetShader(generateShadowVolumeCS, nullptr, 0);
 	context->CSSetUnorderedAccessViews(0, 1, &shadowVolumeUAV[currentVolumeIdx], nullptr);
@@ -532,9 +560,9 @@ void OrthogonalVolumetricLighting::GenerateMediaVolume()
 	ZoneScoped;
 	auto context = globals::d3d::context;
 
-	TracyD3D11Zone(state->tracyCtx, "VL - Generate Media Volume");
+	TracyD3D11Zone(state->tracyCtx, "Volumetrics - Generate Media Volume");
 	if (globals::state->frameAnnotations)
-		globals::state->BeginPerfEvent("VL - Generate Media Volume");
+		globals::state->BeginPerfEvent("Volumetrics - Generate Media Volume");
 
 	//ID3D11UnorderedAccessView* UAVs[2] = { mediaUAV, FogMapUAV };
 	context->CSSetUnorderedAccessViews(0, 1, &mediaVolumeUAV[currentVolumeIdx], nullptr);
@@ -561,9 +589,9 @@ void OrthogonalVolumetricLighting::GenerateScatteringVolume()
 	auto& skyLighting = globals::features::skylighting;
 	auto& imageBasedLighting = globals::features::ibl;
 
-	TracyD3D11Zone(state->tracyCtx, "VL - Generate Scattering Volume");
+	TracyD3D11Zone(state->tracyCtx, "Volumetrics - Generate Scattering Volume");
 	if (globals::state->frameAnnotations)
-		globals::state->BeginPerfEvent("VL - Generate Scattering Volume");
+		globals::state->BeginPerfEvent("Volumetrics - Generate Scattering Volume");
 
 	context->CSSetUnorderedAccessViews(0, 1, &scatteringVolumeUAV, nullptr);
 	context->CSSetShader(generateScatteringVolumeCS, nullptr, 0);
@@ -606,9 +634,9 @@ void OrthogonalVolumetricLighting::RunIntergrationPass()
 	ZoneScoped;
 	auto context = globals::d3d::context;
 
-	TracyD3D11Zone(state->tracyCtx, "VL - Volumetric Intergration Pass");
+	TracyD3D11Zone(state->tracyCtx, "Volumetrics - Volumetric Intergration Pass");
 	if (globals::state->frameAnnotations)
-		globals::state->BeginPerfEvent("VL - Volumetric Intergration Pass");
+		globals::state->BeginPerfEvent("Volumetrics - Volumetric Intergration Pass");
 
 	context->CSSetUnorderedAccessViews(0, 1, &intergrationVolumeUAV, nullptr);
 	context->CSSetShader(intergrationSliceMarchCS, nullptr, 0);
@@ -634,6 +662,15 @@ void OrthogonalVolumetricLighting::SetupApplyPassResources()
 	context->PSSetSamplers(11, 1, &pointSampler);
 	context->PSSetSamplers(12, 1, &anisoLinear);
 	context->PSSetSamplers(13, 1, &anisoWrapLinear);
+
+	auto renderer = globals::game::renderer;
+	//RE::BSGraphics::RenderTargetData& sceneRenderData = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+	//RE::BSGraphics::RenderTargetData& sceneRenderDataCopy = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN_COPY];
+	//std::swap(sceneRenderData, sceneRenderDataCopy);
+
+	auto& mainTexture = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture;
+	auto& mainTextureCopy = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN_COPY].texture;
+	context->CopyResource(mainTextureCopy, mainTexture);
 }
 
 void OrthogonalVolumetricLighting::SetupApplyPass()
@@ -642,19 +679,20 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
 
-	TracyD3D11Zone(state->tracyCtx, "VL - Apply Volumetric Lighting");
-	if (globals::state->frameAnnotations)
-		globals::state->BeginPerfEvent("VL - Apply Volumetric Lighting");
+	//TracyD3D11Zone(state->tracyCtx, "Volumetrics - Apply Volumetric Lighting");
+	//if (globals::state->frameAnnotations)
+	//	globals::state->BeginPerfEvent("Volumetrics - Apply Volumetric Lighting");
 
-	//auto& mainRTV = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].RTV;
-	//if (!swapOutputRT)
-	//	context->OMSetRenderTargets(1, &mainRTV, nullptr);
-	//else
-	context->OMSetRenderTargets(1, &outputRTV, nullptr);
+	SetupApplyPassResources();
 
+	context->RSSetState(outVolumetricsRasterizer);
 	context->OMSetBlendState(outVolumetricsBlendState, nullptr, 0xffffffff);  // BLEND DISABLED AT CREATION
-	auto& mainSRV = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].SRV;
-	context->PSSetShaderResources(4, 1, &mainSRV);
+
+	//auto& mainRTVCopy = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN_COPY].RTV;
+	//context->OMSetRenderTargets(1, &mainRTVCopy, nullptr);
+
+	auto& mainRTV = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].RTV;
+	context->OMSetRenderTargets(1, &mainRTV, nullptr);
 
 	context->VSSetShader(bypassVS, NULL, NULL);
 	context->PSSetShader(applyVolumetricLightingPS, NULL, NULL);
@@ -662,20 +700,20 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 	context->PSSetShaderResources(1, 1, &intergrationVolumeSRV);
 	context->PSSetShaderResources(2, 1, &blueNoiseSRV);
 	context->PSSetShaderResources(3, 1, &shadowVolumeSRV[historyVolumeIdx]);
+	auto& mainSRVCopy = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN_COPY].SRV;
+	context->PSSetShaderResources(4, 1, &mainSRVCopy);
 
-	if (globals::state->frameAnnotations)
-		globals::state->EndPerfEvent();
+	//if (globals::state->frameAnnotations)
+	//	globals::state->EndPerfEvent();
+
+	overrideShader = false;
 }
 
 void OrthogonalVolumetricLighting::RenderToScreen()
 {
-	auto context = globals::d3d::context;
-	auto renderer = globals::game::renderer;
-	auto& mainTexture = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture;
+	//auto context = globals::d3d::context;
 
-	context->CopyResource(mainTexture, outputTexture);
-
-	overrideShader = false;
+	//overrideShader = false;
 }
 /*
 void OrthogonalVolumetricLighting::SetupFilterPass()
@@ -718,9 +756,9 @@ void OrthogonalVolumetricLighting::DrawFogMap()
 	ZoneScoped;
 	auto context = globals::d3d::context;
 
-	TracyD3D11Zone(state->tracyCtx, "VL - Draw Fog Map");
+	TracyD3D11Zone(state->tracyCtx, "Volumetrics - Draw Fog Map");
 	if (globals::state->frameAnnotations)
-		globals::state->BeginPerfEvent("VL - Draw Fog Map");
+		globals::state->BeginPerfEvent("Volumetrics - Draw Fog Map");
 
 	context->CSSetUnorderedAccessViews(0, 1, &UIFogMapUAV, nullptr);
 	context->CSSetUnorderedAccessViews(1, 1, &fogMapUAV, nullptr);
@@ -750,9 +788,9 @@ void OrthogonalVolumetricLighting::SetupPerlinNoise()
 	ZoneScoped;
 	auto context = globals::d3d::context;
 
-	TracyD3D11Zone(state->tracyCtx, "VL - Render Perlin Noise");
+	TracyD3D11Zone(state->tracyCtx, "Volumetrics - Render Perlin Noise");
 	if (globals::state->frameAnnotations)
-		globals::state->BeginPerfEvent("VL - Render Perlin Noise");
+		globals::state->BeginPerfEvent("Volumetrics - Render Perlin Noise");
 
 	context->CSSetUnorderedAccessViews(0, 1, &perlinUAV, nullptr);
 	context->CSSetShader(generatePerlinCS, nullptr, 0);
@@ -936,7 +974,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 				settings.fogMapData = float4(Coords.x, Coords.y, brushRadius, brushFeather);
 				settings.UIfogMapParams = float4(0.0, localFogBaseHeight, localFogFalloffHeight, localFogExtinction);
 
-				DrawFogMap();
+				DrawFogMap();  //new buffer for fog map - update the buffer here
 			}
 		}
 	}
@@ -976,24 +1014,43 @@ void OrthogonalVolumetricLighting::Hooks::LensFlareVisibility_CheckRenderConditi
 
 	func(camera, shader);
 
-	bool sunVisble = static_cast<bool>(*lens.skyrim_RunFlarePtr);
+	//bool sunVisble = static_cast<bool>(*lens.skyrim_RunFlarePtr);
 
-	if (*lens.skyrim_FlareData) {
-		lens.renderdata->ResetEffects(sunVisble);
+	//if (*lens.skyrim_FlareData && !globals::game::ui->GameIsPaused()) {
+	//	lens.renderdata->ResetEffects(sunVisble);
+	//	*lens.skyrim_RunFlarePtr = 1;
+	//} else
+
+	*lens.skyrim_RunFlarePtr = 0;
+
+	if (!globals::features::orthogonalVolumetricLighting.gFlareShader)
 		*lens.skyrim_RunFlarePtr = 1;
-	} else
-		*lens.skyrim_RunFlarePtr = 0;
 }
 
 void OrthogonalVolumetricLighting::Hooks::BSImagespaceShader_Render<RE::ImageSpaceManager::ISLensFlare>::thunk(void* shader, RE::BSTriShape* shape, RE::ImageSpaceEffectParam* param)
 {
-	auto& lens = globals::features::orthogonalVolumetricLighting;
+	auto& OVL = globals::features::orthogonalVolumetricLighting;
 
-	lens.overrideShader = true;
-	lens.shaderdesc = lens.renderdata->UpdateCurrentEffect();
+	OVL.overrideShader = true;
+	OVL.shaderdesc = OVL.renderdata->UpdateCurrentEffect();
+	//logger::info("Render pass {}", OVL.shaderdesc.underlying());
 
 	func(shader, shape, param);
 }
+
+void OrthogonalVolumetricLighting::Hooks::Main_PostProcessing::thunk(RE::ImageSpaceManager* a1, uint32_t a3, uint32_t er8_)
+{
+	auto& OVL = globals::features::orthogonalVolumetricLighting;
+
+	OVL.renderdata->CheckRefData();
+
+	if (*OVL.skyrim_FlareData && OVL.gFlareShader && !globals::game::ui->GameIsPaused()) {
+		OVL.gFlareApplyFunc(RE::Main::WorldRootCamera(), OVL.gFlareShader, 0);
+	}
+
+	func(a1, a3, er8_);
+}
+
 ///////////////////////////////////////////////////////////
 
 void OrthogonalVolumetricLighting::LoadSettings(json& o_json)
