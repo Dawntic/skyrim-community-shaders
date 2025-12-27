@@ -263,7 +263,7 @@ StructuredBuffer<uint> lightList : register(t5);
 StructuredBuffer<LightLimitFix::LightGrid> lightGrid : register(t6);
 
 
-float EVSM_VisibilityV2(float3 CoordsLS, float2 Moments)
+float EVSM_Visibility(float3 CoordsLS, float2 Moments)
 {
     CoordsLS.z = exp(UIEVSMExponent * CoordsLS.z);
 
@@ -272,22 +272,9 @@ float EVSM_VisibilityV2(float3 CoordsLS, float2 Moments)
 	      Variance = max(Variance, Bias * CoordsLS.z * CoordsLS.z);
 
 	float Delta = CoordsLS.z - Moments.x;
-	float pMax = Variance / (Variance + (Delta * Delta));
+	float Max = Variance / (Variance + (Delta * Delta));
 
-	return (CoordsLS.z <= Moments.x) ? 1.0 : pMax;
-}
-
-float EVSM_Visibility(float3 CoordsLS, float2 Moments)
-{
-    float MinVariance = 0.0;
-
-    float Depth = exp(UIEVSMExponent * CoordsLS.z);
-    float Delta = Depth - Moments.x;
-
-    float Variance = max(Moments.y - Moments.x * Moments.x, MinVariance);
-    float Visibility = Variance / (Variance + Delta * Delta);
-
-    return (Depth <= Moments.x) ? 1.0 : Visibility;
+	return (CoordsLS.z <= Moments.x) ? 1.0 : Max;
 }
 
 float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float ThicknessZ, float BNoise)
@@ -317,40 +304,6 @@ float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float Thi
     return Result;
 }
 
-float GetLocalLightShadow(float3 WorldPosition, float ViewZ, float2 CoordsUV)
-{
-    float Visibility = 1.0;
-    uint clusterIdx = 0;
-    uint lightCount = 0;
-
-    if (GetClusterIndex(CoordsUV, ViewZ, clusterIdx) && UIEnableLocalLights){
-        uint lightCount = lightGrid[clusterIdx].lightCount;
-        uint lightOffset = lightGrid[clusterIdx].offset;
-
-        [loop] for(uint i = 0; i < lightCount; i++){
-            uint Index = lightList[lightOffset + i];
-            LightLimitFix::Light light = lights[Index];
-
-            if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
-                float4 CoordsLS = mul(ShadowLightData[light.shadowLightIndex].ShadowMatrix, float4(WorldPosition, 1.0));
-
-                bool lowerHalf = CoordsLS.z < 0;
-                float3 PosOffset = float3(0, 0, 1.0 - 2 * lowerHalf);
-                float3 lightDirection = normalize(normalize(CoordsLS.xyz) + PosOffset);
-                float2 ShadowUV = lightDirection.xy / lightDirection.z * 0.5 + 0.5;
-                ShadowUV.y = lowerHalf ? 1 - 0.5 * ShadowUV.y : 0.5 * ShadowUV.y;
-
-                float Shadow = ParaboloidShadowMaps.SampleLevel(Linear_Sampler, float3(ShadowUV.xy, ShadowLightData[light.shadowLightIndex].ShadowMapIndex), 0).x;
-
-                float shadowMapCompareValue = saturate(length(CoordsLS.xyz) / light.radius); //- 0.00638;
-                if (Shadow <= shadowMapCompareValue)
-                    Visibility = min(Visibility, Shadow);
-            }
-        }
-    }
-    return Visibility;
-}
-
 #define MaxHistory 0.85
 
 [numthreads(4, 4, 4)]
@@ -374,13 +327,11 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float CascadeShadow = GetCascadeShadow(RayDirection, ViewZ, CoordZ, ThicknessZ, Noise);
 
-    float LocalShadow = GetLocalLightShadow(RayPosition, ViewZ, CoordsUV);
-
     float UICloudShadowContrib = 1.0;
     float CloudShadow = CloudShadows::GetCloudShadowMult(WorldPosition, Linear_Sampler) * UICloudShadowContrib;
     float TerrainShadow = TerrainShadows::GetTerrainShadow(WorldPosition, Linear_Sampler);
 
-    float Shadow = CascadeShadow;//LocalShadow * CascadeShadow; //min(LocalShadow, CascadeShadow);// * TerrainShadow;// * CloudShadow;
+    float Shadow = CascadeShadow * TerrainShadow;// * CloudShadow;
 
     float Confidence;
     float ViewZCenter = FroxelDepthToView(Froxel.z + 0.5);
@@ -484,7 +435,7 @@ float4 GetLocalFogData(float3 CoordsWS, float RayJitter){
     float4 MapCoordsNDC = mul(FogViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
     float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
 
-    float2 FogMapSize = float2(2560, 1440);// - (RayJitter*2);
+    float2 FogMapSize = float2(2560, 1440);// - (RayJitter*2);  //CPU
     return FogMap.Load(int3(MapCoordsUV * FogMapSize.xy, 0)); //returns fog height, falloff and extinction
 }
 
@@ -565,7 +516,6 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float Noise = saturate((((Perlin1 + Perlin2) * 0.5) - Threshold) * Gain);
           Noise = smoothstep(0.0, 1.0, Noise);
           Noise = lerp(Noise, 1.0, saturate(OffsetZ * FadeRate));
-
 */
 //// Reprojection
 
@@ -647,7 +597,7 @@ float3 ClampLuminance(float3 Color, float Max){
     return Color;
 }
 
-float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, float3 RayToEye, float ShadowA)
+float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, float3 RayToEye)
 {
     float3 Lighting = float3(0,0,0);
     uint clusterIdx = 0;
@@ -667,10 +617,7 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
 
             // local shadows should not attenuate dir light
             // local shadows should not attenuate other local light sources
-            float Visibility = 1.0;
             if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
-                Radiance *= ShadowA;
-
                 float4 CoordsLS = mul(ShadowLightData[light.shadowLightIndex].ShadowMatrix, float4(WorldPosition, 1.0));
 
                 bool lowerHalf = CoordsLS.z < 0;
@@ -683,11 +630,10 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
 
                 float shadowMapCompareValue = saturate(length(CoordsLS.xyz) / light.radius); //- 0.00638;
                 if (Shadow <= shadowMapCompareValue)
-                    Visibility = 0.0;
-            }
-            //else{Radiance *= 0.0;}
+                    Shadow = 0.0;
 
-            //Radiance *= Visibility;
+                Radiance *= Shadow;
+            }
 
             float3 LightToRay = normalize(LightPosition);
             float ScatterCos = dot(LightToRay, RayToEye);
@@ -697,21 +643,6 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
     return Lighting;
 }
 
-float3 GetSceneVolumetricDiffuse(float3 LightToSurface){
-    float3 DALC = float3(
-        SphericalHarmonics::Unproject(DiffuseIBLTexture.Load(int3(0, 0, 0)), LightToSurface),
-        SphericalHarmonics::Unproject(DiffuseIBLTexture.Load(int3(1, 0, 0)), LightToSurface),
-        SphericalHarmonics::Unproject(DiffuseIBLTexture.Load(int3(2, 0, 0)), LightToSurface));
-    return max(0.0, DALC);
-}
-float3 GetSkyVolumetricDiffuse(float3 LightToSurface){
-    float3 Sky_Ambient = float3(
-        SphericalHarmonics::Unproject(DiffuseSkyIBLTexture.Load(int3(0, 0, 0)), LightToSurface),
-        SphericalHarmonics::Unproject(DiffuseSkyIBLTexture.Load(int3(1, 0, 0)), LightToSurface),
-        SphericalHarmonics::Unproject(DiffuseSkyIBLTexture.Load(int3(2, 0, 0)), LightToSurface));
-    return max(0.0, Sky_Ambient);
-}
-
 float3 GetAmbientLighting(float3 WorldPosition, float3 DirLightToEye, float3 RayToEye)
 {
     sh2 SkyLightVisibility = Skylighting::sampleNoBias(SharedData::skylightingSettings, SkylightingProbeArray, WorldPosition); // Note the use of Skylightings settings
@@ -719,51 +650,34 @@ float3 GetAmbientLighting(float3 WorldPosition, float3 DirLightToEye, float3 Ray
     float SkyDiffuse = SphericalHarmonics::FuncProductIntegral(SkyLightVisibility, float4(0.282095, 0, 0, 0)); // Omnidir average
           SkyDiffuse = lerp(1.0, saturate(SkyDiffuse), Skylighting::getFadeOutFactor(WorldPosition));
 
-    float3 AmbientLight;
+    //float3 AmbientLight = max(0.0, SkyAmbient) * 0.282095 * UISkyAmbientContribution; // SkyAmbient = unprojected
+    sh2 SkyIrradianceR = DiffuseSkyIBLTexture.Load(int3(0, 0, 0));
+    sh2 SkyIrradianceG = DiffuseSkyIBLTexture.Load(int3(1, 0, 0));
+    sh2 SkyIrradianceB = DiffuseSkyIBLTexture.Load(int3(2, 0, 0));
 
-    //Quick Amibent term
-    //float3 SceneAmbientA = GetSceneVolumetricDiffuse(RayToEye) * UISceneAmbientContribution;
-    float3 SkyAmbientA = GetSkyVolumetricDiffuse(float3(0, 0, -1)) * UISkyAmbientContribution; // Should weight this dir by phase func or just do light dir maybe? but then its not ambient anymore or is it?
+    // Use up vector to avoid jumping and bland color
+    sh2 SkyPhaseZonalSH = SphericalHarmonics::EvaluatePhaseHG(float3(0, 0, -1), UIAnisotropy);
+    float3 SkyAmbient = float3(
+        SphericalHarmonics::FuncProductIntegral(SkyIrradianceR, SkyPhaseZonalSH),
+        SphericalHarmonics::FuncProductIntegral(SkyIrradianceG, SkyPhaseZonalSH),
+        SphericalHarmonics::FuncProductIntegral(SkyIrradianceB, SkyPhaseZonalSH));
 
-    float3 AmbientColor = SkyAmbientA;// + SceneAmbientA;
-    float4 RotatedZonalSH = float4(1.0, RayToEye) * float4(1.0, UIAnisotropy, UIAnisotropy, UIAnisotropy); //RayToEye
-    float4 SkyIrradiance = float4(0.282095 * AmbientColor.x, 0, 0, 0);
-    float4 SkyIrradiance1 = float4(0.282095 * AmbientColor.y, 0, 0, 0);
-    float4 SkyIrradiance2 = float4(0.282095 * AmbientColor.z, 0, 0, 0);
-    float AmbientR = dot(SkyIrradiance, RotatedZonalSH);
-    float AmbientG = dot(SkyIrradiance1, RotatedZonalSH);
-    float AmbientB = dot(SkyIrradiance2, RotatedZonalSH);
 
-    AmbientLight = float3(AmbientR, AmbientG, AmbientB);
-
+    // This method stops ambient jumping
+    sh2 SceneIrradianceR = DiffuseIBLTexture.Load(int3(0, 0, 0));
+    sh2 SceneIrradianceG = DiffuseIBLTexture.Load(int3(1, 0, 0));
+    sh2 SceneIrradianceB = DiffuseIBLTexture.Load(int3(2, 0, 0));
 
     sh2 PhaseZonalSH = SphericalHarmonics::EvaluatePhaseHG(RayToEye, UIAnisotropy); //PhaseZonalSH = float4(0.282095, 0, 0, 0);
+    float3 SceneAmbient = float3(
+        SphericalHarmonics::FuncProductIntegral(SceneIrradianceR, PhaseZonalSH),
+        SphericalHarmonics::FuncProductIntegral(SceneIrradianceG, PhaseZonalSH),
+        SphericalHarmonics::FuncProductIntegral(SceneIrradianceB, PhaseZonalSH));
 
-    float3 SkyAmbient;
-    sh2 SkyIrradianceR = DiffuseSkyIBLTexture.Load(int3(0, 0, 0)); // Red channel SH
-    sh2 SkyIrradianceG = DiffuseSkyIBLTexture.Load(int3(1, 0, 0)); // Green channel SH
-    sh2 SkyIrradianceB = DiffuseSkyIBLTexture.Load(int3(2, 0, 0)); // Blue channel SH
-    SkyAmbient.x = SphericalHarmonics::FuncProductIntegral(SkyIrradianceR, PhaseZonalSH);
-    SkyAmbient.y = SphericalHarmonics::FuncProductIntegral(SkyIrradianceG, PhaseZonalSH);
-    SkyAmbient.z = SphericalHarmonics::FuncProductIntegral(SkyIrradianceB, PhaseZonalSH);
+    float3 AmbientLight = SkyAmbient * UISkyAmbientContribution;
+           AmbientLight += SceneAmbient * UISceneAmbientContribution;
 
-    float3 SceneAmbient; //This method stops ambient jumping
-    sh2 SceneIrradianceR = DiffuseIBLTexture.Load(int3(0, 0, 0)); // Red channel SH
-    sh2 SceneIrradianceG = DiffuseIBLTexture.Load(int3(1, 0, 0)); // Green channel SH
-    sh2 SceneIrradianceB = DiffuseIBLTexture.Load(int3(2, 0, 0)); // Blue channel SH
-
-    SceneAmbient.x = SphericalHarmonics::FuncProductIntegral(SceneIrradianceR, PhaseZonalSH);
-    SceneAmbient.y = SphericalHarmonics::FuncProductIntegral(SceneIrradianceG, PhaseZonalSH);
-    SceneAmbient.z = SphericalHarmonics::FuncProductIntegral(SceneIrradianceB, PhaseZonalSH);
-
-    //AmbientLight = SkyAmbient * UISkyAmbientContribution; // * 0.25 + SceneAmbient * UISceneAmbientContribution * 0.25;
-
-    AmbientLight += SceneAmbient * UISceneAmbientContribution; // * 0.25; // * SkyDiffuse;
-
-    AmbientLight *= SkyDiffuse;
-
-
-    return AmbientLight;
+    return AmbientLight * SkyDiffuse;
 }
 
 
@@ -779,7 +693,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ViewZ = FroxelDepthToView(Froxel.z + 0.5);
     float ThicknessZ = FroxelDepthToView(Froxel.z + 1.5) - ViewZ;
 
-    //ViewZ += ThicknessZ * RayJitter;
+    ViewZ += ThicknessZ * RayJitter;
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
 
@@ -792,48 +706,38 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 RayToEye = -normalize(RayDirection);
     float3 DirLightToEye = LightDirection.xyz;
 
-    //float Extinction = MediaScattering.x / UIScatteringRatio.x;
-    //float Tranmittance = exp(-OpticalDepth);
-
-    float3 JitteredWorldPos = RayPosition;//RayDirection * (ViewZ + RayJitter * (Skylighting::CELL_SIZE * 0.5));
+    float3 JitteredWorldPos = RayPosition; //RayDirection * (ViewZ + RayJitter * (Skylighting::CELL_SIZE * 0.5));
 
     float3 Lighting = float3(0,0,0);
     Lighting += GetAmbientLighting(JitteredWorldPos, DirLightToEye, RayToEye) * UIAmibentLightingMultiplier;
-    //Lighting = 0.3;
 
     float DirLightCosTheta = dot(DirLightToEye, RayToEye);
     float Phase = CSPhase(DirLightCosTheta, UIAnisotropy);
-    //float Phase = HGPhase(DirLightCosTheta, UIAnisotropy) * UILocalLightAnisotropy;
-    //Phase += HGPhase(DirLightCosTheta, UIAnisotropy * (2.0 / 3.0)) * UILocalLightsSaturation;
 
-    //float3 DirLightRadiance = Color::Saturation(SharedData::DirLightColor.xyz + 20, UISaturation+20) * Shadow * UIDirLightMultipler;
     float3 DirLightRadiance = Color::Saturation(Color::GammaToTrueLinear(SharedData::DirLightColor.xyz), UISaturation);
            DirLightRadiance = DirLightRadiance * Shadow * Phase * UIDirLightMultipler;
     Lighting += DirLightRadiance;
 
     float3 LocalLight = 0;
-    for(int j=-1; j<=1;j++){ // Reduce light noise (for full coverage use +-2 and 0.25)
+    for(int j=-1; j<=1;j++){ // Reduce light aliasing (for full coverage use +-2 and 0.25)
         ViewZ = FroxelDepthToView(Froxel.z + 0.5 * j);
         RayPosition = RayDirection * ViewZ;
-        LocalLight += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow) * UIEnableLocalLights * UILocalLightMultiplier;
+        LocalLight += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye) * UIEnableLocalLights * UILocalLightMultiplier;
     }
     Lighting += LocalLight * 0.33;
-    //Lighting += GetLocalLighting(RayPosition, CoordsUV, ViewZ, RayToEye, Shadow) * UIEnableLocalLights * UILocalLightMultiplier;
-
-    //MediaScattering = 0.0063;
-    //OpticalDepth = 0.002;
 
     Lighting = Lighting * MediaScattering;
-
-    //if(UIUseHistory)
-    //    Lighting = Shadow.xxx;
 
     ScatteringVolume[ThreadID] = float4(Lighting, OpticalDepth);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
+//float Phase = HGPhase(DirLightCosTheta, UIAnisotropy) * UILocalLightAnisotropy;
+//Phase += HGPhase(DirLightCosTheta, UIAnisotropy * (2.0 / 3.0)) * UILocalLightsSaturation;
 
+//MediaScattering = 0.0063;
+//OpticalDepth = 0.002;
 
 //// Slicemarch Compute Shader /////////////////////////////////////////////////////////
 
@@ -846,7 +750,8 @@ RWTexture3D<float4> IntergrationVolume : register(u0);
 void AccumulateScattering(inout float4 Accumulation, float4 ScatteringSample, float OpticalDepth, float StepLength, float FadeIn)
 {
     float Transmittance = exp(-OpticalDepth);
-    float Extinction = max(OpticalDepth * rcp(max(EPSILON_DIVISION, StepLength)), EPSILON_DIVISION);
+    //float Extinction = max(OpticalDepth * rcp(max(EPSILON_DIVISION, StepLength)), EPSILON_DIVISION);
+    float Extinction = OpticalDepth * rcp(StepLength);
 
     float3 InScatteredLight = FadeIn * ScatteringSample.xyz * (1.0 - Transmittance) * rcp(Extinction) * Accumulation.w;
 
@@ -1022,7 +927,7 @@ float4 main(VertexShaderOutput input) : SV_Target
     NormalizedRadiance.xyz = Uncharted2Tonemap(NormalizedRadiance.xyz);
 
     float3 OutputColor = Color::GammaToTrueLinear(Scene.xyz);
-           OutputColor = Uncharted2Tonemap(OutputColor);
+           //OutputColor = Uncharted2Tonemap(OutputColor);
     if(UIEnableVL){
         OutputColor = OutputColor * Transmittance + NormalizedRadiance.xyz;
     }

@@ -51,6 +51,27 @@ float3 GetTonemapFactorHejlBurgessDawson(float3 luminance)
 }
 
 #include "Common/DisplayMapping.hlsli"
+#include "Common/Tonemappers.hlsli"
+
+float3 ApplyUncharted2HDR(float3 untonemapped)
+{
+	float3 parameters0;
+	 parameters0.y = 203;//paperWhite
+	 parameters0.z = 1000;//peakNits
+
+	float midGray = Tonemap::Uncharted2::Apply(0.18f, 0.15f, 0.50f, 0.10f, 0.20f, 0.02f, 0.30f, 11.2f);
+
+	float3 hdrColor = untonemapped * (midGray / 0.18f);  // match midgray
+
+	float3 sdrColor = Tonemap::Uncharted2::Apply(untonemapped, 0.15f, 0.50f, 0.10f, 0.20f, 0.02f, 0.30f, 11.2f);
+	hdrColor = Tonemap::ExponentialRolloff::Apply(hdrColor, midGray, max(1.f, parameters0.z / parameters0.y));
+
+	float3 blendedColor = lerp(sdrColor, hdrColor, saturate(sdrColor));
+
+	return blendedColor;
+}
+
+
 
 PS_OUTPUT main(PS_INPUT input){
 	PS_OUTPUT psout;
@@ -95,11 +116,11 @@ PS_OUTPUT main(PS_INPUT input){
 	}
 	//bloomColor = float3(0,0,0);
 
-	float2 avgValue = AvgTex.Sample(AvgSampler, input.TexCoord.xy).xy;
+	float2 avgGrayValue = AvgTex.Sample(AvgSampler, input.TexCoord.xy).xy;
 
 	// Vanilla tonemapping and post-processing
-	if (avgValue.x != 0 && avgValue.y != 0)
-		Scene *= avgValue.y / avgValue.x;
+	if (avgGrayValue.x != 0 && avgGrayValue.y != 0)
+		Scene *= avgGrayValue.y / avgGrayValue.x;
 
 	Scene = max(0, Scene);
 
@@ -116,13 +137,37 @@ PS_OUTPUT main(PS_INPUT input){
 	OutputColor = lerp(OutLum, OutputColor, Cinematic.x);
 	OutputColor = Cinematic.w * lerp(OutputColor, OutLum * Tint.xyz, Tint.w).xyz;
 
-	float3 srgbColor = Scene; //=max(0, lerp(avgValue.x, OutputColor, Cinematic.z));
+	float3 srgbColor = max(0, lerp(avgGrayValue.x, OutputColor, Cinematic.z));
 
 	#if defined(FADE)
 		srgbColor = lerp(srgbColor, Fade.xyz, Fade.w);
 	#endif
 
 	psout.Color = float4(FrameBuffer::ToSRGBColor(srgbColor), 1.0);
+
+	///////////////////////////////////////////
+	// Linearize the incoming HDR buffer
+	float3 untonemapped = Color::GammaToTrueLinear(Scene.xyz);
+
+	float Exposure = 2.0;
+	float3 linearExposed = untonemapped * Exposure;
+
+	OutputColor = ApplyUncharted2HDR(linearExposed);
+
+	float Luma = Color::RGBToLuminance(OutputColor);
+	OutputColor = lerp(Luma.xxx, OutputColor, 1.0); //saturation
+	//OutputColor = max(0, lerp(avgGrayValue.x, OutputColor, Cinematic.z))
+	//OutputColor = Cinematic.w * lerp(OutputColor, OutLum * Tint.xyz, Tint.w).xyz;
+
+
+	OutputColor = Color::TrueLinearToGamma(OutputColor);
+
+	psout.Color = float4(OutputColor, 1.0);
+
+
+
+	//psout.Color = float4(Scene, 1.0);
+
 
 	#endif
 

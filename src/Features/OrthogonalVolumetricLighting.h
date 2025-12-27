@@ -237,7 +237,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 		float4 scatteringRatio = float4(1.0, 1.0, 1.0, 1.0);
 
-		float dirLightRadianceMultiplier = 1.0;
+		float dirLightRadianceMultiplier = 5.0;
 		float anisotropy = 0.3;
 		float color_saturation = 1.0;
 		float preExposure = 1.0;
@@ -246,20 +246,20 @@ struct OrthogonalVolumetricLighting : Feature
 		float localLightsMultiplier = 1.0;
 		float localLightsSaturation = 1.0;
 
-		float amibentLightingMultiplier = 1.0;
-		float skyAmbientContribution = 0.6;
+		float amibentLightingMultiplier = 3.5;
+		float skyAmbientContribution = 2.0;
 		float sceneAmbientContribution = 1.0;
 
 		float extinction = 0.1;
-		float globalFogFalloffHeight = 500;
-		float globalFogStartHeight = -4000;
-		float distantHazeExtinction = 0.5;
+		float globalFogFalloffHeight = 2000;
+		float globalFogStartHeight = -10000;
+		float distantHazeExtinction = 0.0;
 
 		uint esmExponent = 8;
 		float EVSMSeachSize = 4.0;
 		float disocclutionThreshold = 0.05;
 
-		float distanceFadeIn = 1.0;
+		float distanceFadeIn = 500.0;
 
 		float blendOpp = false;
 		float _pad[1];
