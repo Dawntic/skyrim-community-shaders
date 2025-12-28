@@ -292,9 +292,9 @@ float EVSM_Visibility(float3 CoordsLS, float2 Moments)
     return (Depth <= Moments.x) ? 1.0 : Visibility;
 }
 
-float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float ThicknessZ, float BNoise)
+float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float ThicknessZ, float Noise)
 {
-    int Samples = 8;
+    int Samples = 6;
 
     float Result = 0;
     for(int i=0; i<Samples; i++){
@@ -302,17 +302,15 @@ float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float Thi
 
         uint CascadeIndex = (ViewZ < ShadowCascadeEndSplit.x) ? 0 : 1;
         if(ViewZ > ShadowCascadeEndSplit.y)
-            return 1.0;
+            return 0.0; //////////////////////////
         float3 CoordsLS = mul(DirectionalShadowCascadeMatrix[CascadeIndex], float4(RaySampleCoords, 1.0)).xyz;
         float2 Moments = EVSMCascade.SampleLevel(Linear_Sampler, float3(CoordsLS.xy, CascadeIndex), 0).xy;
         float Visibility = EVSM_Visibility(CoordsLS, Moments);
 
         Result += Visibility;
 
-        float Value = SharedData::FrameCountAlwaysActive % 16;//((SharedData::FrameCountAlwaysActive + 17) % 33);
-        float ViewZNoise = frac(BNoise + ((Value + i + 1)) * kPhi);
-
-        ViewZ = CoordZ + ThicknessZ * ViewZNoise;
+        float RayJitter = frac(Noise + (SharedData::FrameCountAlwaysActive % 16 + (i+1)) * kPhi) * 4.0 - 2.0;
+        ViewZ = CoordZ + ThicknessZ * RayJitter;
     }
     Result /= Samples;
 
@@ -332,19 +330,17 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 
     float Noise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
     float RayJitter = frac(Noise + (SharedData::FrameCountAlwaysActive % 16) * kPhi);
-    //RayJitter = frac(Noise + ((SharedData::FrameCountAlwaysActive + 17) % 33) * kPhi); // Coprime LDS
-
 
     float ViewZ = CoordZ + ThicknessZ * RayJitter;
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
-    float3 WorldPosition = RayPosition + CameraPosition.xyz;
 
     float CascadeShadow = GetCascadeShadow(RayDirection, ViewZ, CoordZ, ThicknessZ, Noise);
 
     float CloudShadow = 1.0;
     float TerrainShadow = 1.0;
     if(!SharedData::InInterior){
+        float3 WorldPosition = RayPosition + CameraPosition.xyz;
         CloudShadow = CloudShadows::GetCloudShadowMult(WorldPosition, Linear_Sampler);
         TerrainShadow = TerrainShadows::GetTerrainShadow(WorldPosition, Linear_Sampler);
     }
@@ -353,17 +349,14 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float Confidence;
     float ViewZCenter = FroxelDepthToView(Froxel.z + 0.5);
     float3 PrevCoordsUV = GetHistoryUV(RayDirection * ViewZCenter, Confidence);
-    //float3 PrevCoordsUV = GetHistoryUV(RayDirection * (ViewZCenter + ThicknessZ * RayJitter), Confidence);
-    float ShadowHistory = ShadowHistoryVolume.SampleLevel(Linear_Sampler, PrevCoordsUV, 0).x;
+    float ShadowHistory = ShadowHistoryVolume.SampleLevel(Linear_Sampler, saturate(PrevCoordsUV), 0).x;
 
     float DeltaLimit = max(UIDisocclutionThreshold, EPSILON_DIVISION); //Shadow diff below which max history will be used
     float ReprojectionValue = 1.0 - LinearStep(DeltaLimit, 1.0, abs(Shadow - ShadowHistory));
           ReprojectionValue = Confidence * min(ReprojectionValue, MaxHistory) * UIUseHistory;
 
-    //ReprojectionValue = 0.4;
-    //Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
-    //Shadow = Shadow * 0.15;
-    //Shadow = min(Shadow, 0.15);
+    Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
+    Shadow = min(Shadow, 0.15);
 
     ShadowVolume[ThreadID] = Shadow;
 }
@@ -959,7 +952,7 @@ float4 main(VertexShaderOutput input) : SV_Target
     Transmittance = exp(-OpticalDepth);
     NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance); // * TerrainShadow;
 
-    NormalizedRadiance.xyz = Uncharted2Tonemap(NormalizedRadiance.xyz);
+    //NormalizedRadiance.xyz = Uncharted2Tonemap(NormalizedRadiance.xyz);
 
     float3 OutputColor = Color::GammaToTrueLinear(Scene.xyz);
            //OutputColor = Uncharted2Tonemap(OutputColor);

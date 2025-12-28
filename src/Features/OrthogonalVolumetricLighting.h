@@ -232,7 +232,7 @@ struct OrthogonalVolumetricLighting : Feature
 	{
 		uint enableVL = true;
 		uint useWeatherFog = false;
-		uint useHistory = true;
+		uint useHistory = false;
 		uint enableLocalLights = true;
 
 		float4 scatteringRatio = float4(1.0, 1.0, 1.0, 1.0);
@@ -309,7 +309,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float4 fogMapSize;
 		//uint frameCounter;
 		//uint boardCondition;
-		//float _pad[3];
+		float _pad[3];
 	};
 
 	struct alignas(16) SettingsBuffer

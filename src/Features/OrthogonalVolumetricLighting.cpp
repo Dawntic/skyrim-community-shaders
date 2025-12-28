@@ -312,10 +312,10 @@ void OrthogonalVolumetricLighting::VLightingRenderChain()
 	}
 
 	if (auto ui = globals::game::ui) {
-		if (ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) {
-			overrideShader = false;
-			return;
-		}
+		//if (ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) { //does not fix map
+		//	overrideShader = false;
+		//	return;
+		//}
 	}
 
 	RenderEVSM();
