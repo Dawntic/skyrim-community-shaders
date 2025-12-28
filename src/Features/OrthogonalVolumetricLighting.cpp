@@ -858,6 +858,8 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Local Light Multiplier", &settings.localLightsMultiplier, 0.1, 5.0);
 	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
 	ImGui::SliderFloat("Local Light Saturation", &settings.localLightsSaturation, 0.0, 1.0);
+	ImGui::SliderFloat("Local Light Max Luminance", &settings.localLightsMaxLum, 0.0, 20.0);
+	ImGui::SliderFloat("Local Light Min Temprature", &settings.localLightsMinTemp, 0.0, 1.0);
 
 	//// Amibent Light Params ////
 	ImGui::SeparatorText("Ambient Light");
