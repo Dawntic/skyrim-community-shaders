@@ -2,25 +2,31 @@
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	OrthogonalVolumetricLighting::Settings,
+	enableVL,
+	useWeatherFog,
+	useHistory,
+	enableLocalLights,
+	scatteringRatio,
 	extinction,
 	anisotropy,
-	localLightsAnisotropy,
-	localLightsMultiplier,
-	scatteringRatio,
-	globalFogStartHeight,
-	globalFogFalloffHeight,
-	skyAmbientContribution,
-	sceneAmbientContribution,
-	dirLightRadianceMultiplier,
-	esmExponent,
 	color_saturation,
 	preExposure,
-	useHistory,
+	dirLightRadianceMultiplier,
+	localLightsAnisotropy,
+	localLightsMultiplier,
+	localLightsSaturation,
+	localLightsMaxLum,
+	localLightsMinTemp,
+	amibentLightingMultiplier,
+	skyAmbientContribution,
+	sceneAmbientContribution,
+	globalFogStartHeight,
+	globalFogFalloffHeight,
+	distantHazeExtinction,
+	esmExponent,
+	EVSMSeachSize,
 	disocclutionThreshold,
-	distanceFadeIn,
-	blendOpp,
-	fogMapData,
-	UIfogMapParams)
+	distanceFadeIn)
 
 void OrthogonalVolumetricLighting::CompileShaders()
 {
@@ -118,7 +124,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	shadowDataCB = new ConstantBuffer(ConstantBufferDesc<ShadowDataCB>());
 	froxelGridCB = new ConstantBuffer(ConstantBufferDesc<FroxelGridCB>());
-	volumeCB = new ConstantBuffer(ConstantBufferDesc<VolumeBuffer>());
+	fogMapperCB = new ConstantBuffer(ConstantBufferDesc<FogMapperCB>());
 	settingsCB = new ConstantBuffer(ConstantBufferDesc<SettingsBuffer>());
 
 	screenSize = (float2)Util::ConvertToDynamic(globals::state->screenSize);
@@ -311,12 +317,12 @@ void OrthogonalVolumetricLighting::VLightingRenderChain()
 		SetupPerlinNoise();
 	}
 
-	if (auto ui = globals::game::ui) {
-		//if (ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) { //does not fix map
-		//	overrideShader = false;
-		//	return;
-		//}
-	}
+	//if (auto ui = globals::game::ui) {
+	//	if (ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) { //does not fix map
+	//	overrideShader = false;
+	//	return;
+	//}
+	//}
 
 	RenderEVSM();
 	RenderEVSMBlur();
@@ -325,7 +331,7 @@ void OrthogonalVolumetricLighting::VLightingRenderChain()
 	GenerateScatteringVolume();
 	RunIntergrationPass();
 
-	overrideShader = false;
+	//overrideShader = false;
 }
 
 //// Per Frame ////////////////////////////////////////////
@@ -333,10 +339,10 @@ void OrthogonalVolumetricLighting::UpdateAndSetupResources()
 {
 	UpdateShadowBuffer();
 	UpdateFroxelBuffer();
-	UpdateGeneralBuffers();
+	UpdateSettingBuffer();
 
 	auto context = globals::d3d::context;
-	ID3D11Buffer* buffers[4] = { shadowDataCB->CB(), froxelGridCB->CB(), volumeCB->CB(), settingsCB->CB() };
+	ID3D11Buffer* buffers[4] = { shadowDataCB->CB(), froxelGridCB->CB(), fogMapperCB->CB(), settingsCB->CB() };
 	context->CSSetConstantBuffers(0, 4, buffers);
 
 	//std::array<ID3D11SamplerState*, 2> samplers = { Deferred::GetSingleton()->linearSampler, Deferred::GetSingleton()->pointSampler };
@@ -377,6 +383,7 @@ void OrthogonalVolumetricLighting::UpdateFroxelBuffer()
 	froxelData.cameraData = Util::GetCameraData();
 	froxelData.volumeSize = volumeDimensions;
 	froxelData.inverseVolumeSize = 1.0f / float4(volumeDimensions.x, volumeDimensions.y, volumeDimensions.z, 1.0f);
+	froxelData.NoiseSize = noiseDimensions;
 	froxelData.frustumNearFar = frustumNearFar;
 	froxelData.lightDirection = lightDir;
 	froxelData.frameparams = globals::game::frameBufferCached.GetFrameParams();
@@ -426,7 +433,24 @@ void OrthogonalVolumetricLighting::UpdateShadowBuffer()
 	shadowDataCB->Update(shadowData);
 }
 
-void OrthogonalVolumetricLighting::UpdateGeneralBuffers()
+void OrthogonalVolumetricLighting::UpdateSettingBuffer()
+{
+	float4 fogParams = float4(0, 0, 0, 0);
+	if (auto sky = globals::game::sky) {
+		float4 Base = float4(std::max(sky->fogNear, 1e-6f), std::max(sky->fogFar, 1e-6f), sky->fogPower, 0);
+		fogParams = float4(Base.x / Base.y, 1.0f / Base.y, Base.z, sky->fogClamp);
+		fogParams.w = std::clamp(1.0f - (sky->fogNear / 12000.0f), 0.0f, 1.0f);
+	}
+
+	SettingsBuffer settingsData{};
+	settingsData.cbsettings = settings;
+	settingsData.cbsettings.extinction *= Util::Units::GAME_UNIT_TO_M;  // Multiply since extinction is a rate per unit distance
+	settingsData.cbsettings.distantHazeExtinction *= 0.000002;
+	settingsData.gFogParams = fogParams;
+	settingsCB->Update(settingsData);
+}
+
+void OrthogonalVolumetricLighting::UpdateFogMappingBuffer()
 {
 	float3 mapScale = float3(0, 0, 0);
 	float2 mapOffset = float2(0, 0);
@@ -438,30 +462,15 @@ void OrthogonalVolumetricLighting::UpdateGeneralBuffers()
 		mapRange = float2(heightMap->pos0.z, heightMap->pos1.z);
 	}
 
-	VolumeBuffer generalData{};
-	generalData.fogMapMatrix = fogMapViewProj;
-	generalData.heightMapParams = float4(mapScale.x, mapScale.y, mapOffset.x, mapOffset.y);
-	generalData.heightMapZRange = float4(mapRange.x, mapRange.y, 0.0, 0.0);
-	generalData.NoiseSize = noiseDimensions;
-	generalData.fogMapSize = float4(fogMapSize.x, fogMapSize.y, 1.0f / fogMapSize.x, 1.0f / fogMapSize.y);
-
-	float4 fogParams = float4(0, 0, 0, 0);
-	if (auto sky = globals::game::sky) {
-		float4 Base = float4(std::max(sky->fogNear, 1e-6f), std::max(sky->fogFar, 1e-6f), sky->fogPower, 0);
-		fogParams = float4(Base.x / Base.y, 1.0f / Base.y, Base.z, sky->fogClamp);
-		fogParams.w = std::clamp(1.0f - (sky->fogNear / 12000.0f), 0.0f, 1.0f);
-	}
-
-	generalData.gFogParams = fogParams;
-	//generalData.frameCounter = frameCounter;
-	//generalData.boardCondition = frameCounter & 1;
-	volumeCB->Update(generalData);
-
-	SettingsBuffer settingsData{};
-	settingsData.cbsettings = settings;
-	settingsData.cbsettings.extinction *= Util::Units::GAME_UNIT_TO_M;  // Multiply since extinction is a rate per unit distance
-	settingsData.cbsettings.distantHazeExtinction *= 0.000002;
-	settingsCB->Update(settingsData);
+	FogMapperCB fogMapperData{};
+	fogMapperData.fogMapper = fogMapper;
+	fogMapperData.fogMapper.fogMapMatrix = fogMapViewProj;
+	fogMapperData.fogMapper.fogMapCameraDepth = fogMapCameraDepth;
+	fogMapperData.fogMapper.heightMapParams = float4(mapScale.x, mapScale.y, mapOffset.x, mapOffset.y);
+	fogMapperData.fogMapper.heightMapZRange = float4(mapRange.x, mapRange.y, 0.0, 0.0);
+	fogMapperData.fogMapper.fogMapSize = float4(fogMapSize.x, fogMapSize.y, 1.0f / fogMapSize.x, 1.0f / fogMapSize.y);
+	// Other params are updated from UI
+	fogMapperCB->Update(fogMapperData);
 }
 ///////////////////////////////////////////////////////////
 
@@ -531,11 +540,11 @@ void OrthogonalVolumetricLighting::GenerateShadowVolume()
 	context->CSSetShaderResources(1, 1, &blueNoiseSRV);
 	context->CSSetShaderResources(2, 1, &EVSMBlurSRV);
 
-	auto localShadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS].depthSRV;
+	//auto localShadowMap = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS].depthSRV;
 	auto lightsSB = LLF.lights->srv.get();
 	auto lightListSB = LLF.lightIndexList->srv.get();
 	auto lightGridSB = LLF.lightGrid->srv.get();
-	context->CSSetShaderResources(3, 1, &localShadowMap);
+	//context->CSSetShaderResources(3, 1, &localShadowMap);
 	context->CSSetShaderResources(4, 1, &lightsSB);
 	context->CSSetShaderResources(5, 1, &lightListSB);
 	context->CSSetShaderResources(6, 1, &lightGridSB);
@@ -650,7 +659,7 @@ void OrthogonalVolumetricLighting::RunIntergrationPass()
 void OrthogonalVolumetricLighting::SetupApplyPassResources()
 {
 	auto context = globals::d3d::context;
-	ID3D11Buffer* buffers[4] = { shadowDataCB->CB(), froxelGridCB->CB(), volumeCB->CB(), settingsCB->CB() };
+	ID3D11Buffer* buffers[4] = { shadowDataCB->CB(), froxelGridCB->CB(), fogMapperCB->CB(), settingsCB->CB() };
 	context->PSSetConstantBuffers(0, 4, buffers);
 
 	context->PSSetSamplers(10, 1, &linearSampler);
@@ -752,13 +761,15 @@ void OrthogonalVolumetricLighting::DrawFogMap()
 	if (globals::state->frameAnnotations)
 		globals::state->BeginPerfEvent("Volumetrics - Draw Fog Map");
 
+	UpdateFogMappingBuffer();
+
 	context->CSSetUnorderedAccessViews(0, 1, &UIFogMapUAV, nullptr);
 	context->CSSetUnorderedAccessViews(1, 1, &fogMapUAV, nullptr);
 
 	context->CSSetShader(drawFogMapCS, nullptr, 0);
 
-	auto volumeBuff = volumeCB->CB();
-	context->CSSetConstantBuffers(0, 1, &volumeBuff);
+	auto fogBuffer = fogMapperCB->CB();
+	context->CSSetConstantBuffers(0, 1, &fogBuffer);
 
 	context->CSSetShaderResources(0, 1, &staticWorldMapSRV);
 
@@ -771,8 +782,6 @@ void OrthogonalVolumetricLighting::DrawFogMap()
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
 	if (globals::state->frameAnnotations)
 		globals::state->EndPerfEvent();
-
-	overrideShader = false;
 }
 
 void OrthogonalVolumetricLighting::SetupPerlinNoise()
@@ -901,27 +910,11 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Disocclution Threshold", &settings.disocclutionThreshold, 0.0001, 0.2, "%.5f");
 	ImGui::SliderFloat("Erosion Kernal Size", &settings.EVSMSeachSize, 1, 8);
 
-	//ImGui::SeparatorText("Global height fog");
-	//ImGui::SliderFloat("Fog Density", &settings.globalFogDensity, 0.0f, 1.0f);
-	//
-	//ImGui::SliderFloat("Ground Level Bias", &settings.globalFogStartHeight, -2000.0f, 2000.0f);
-	//ImGui::SliderFloat("End Height", &settings.globalFogStartHeight, 0.0f, 50000.0f);
-	//ImGui::SliderFloat("Falloff Distance", &settings.globalFogFalloffHeight, 0.0f, 10000.0f);
-
-	//ImGui::SliderFloat("Start Height", &settings.globalFogStartHeight, -20000.0f, 50000.0f);
-
-	//ImGui::Checkbox("Use History", (bool*)&settings.useHistory);
-	//ImGui::SliderFloat("History Bias", &settings.historyAlpha, 0.0, 0.5);
-	//ImGui::SliderFloat("Weight 1", &settings.weight1, 0.0, 1.0);
-	//ImGui::SliderFloat("Weight 2", &settings.weight2, 0.0, 1.0);
-	//ImGui::SliderFloat("Media Albedo", &settings.albedo, 0.0, 1.0);
-
-	//ImGui::SliderFloat("Shadow Threshold", &settings.shadow_threshold, 0.0, 1.0);
-
+	//// Fog Maps ////
 	ImGui::SeparatorText("Fog Maps");
-	ImGui::SliderFloat("Radius", &brushRadius, 1.0f, 200.0f, "%.0f");
-	ImGui::SliderFloat("Feather", &brushFeather, 0.0f, 1.0f);
-	ImGui::SliderFloat("Erase", &settings.blendOpp, -1.0f, 0.0f, "%.0f");
+	ImGui::SliderFloat("Radius", &fogMapper.brushRadius, 1.0f, 200.0f, "%.0f");
+	ImGui::SliderFloat("Feather", &fogMapper.brushFeather, 0.0f, 1.0f);
+	ImGui::SliderFloat("Erase", &fogMapper.brushErase, -1.0f, 0.0f, "%.0f");
 
 	static float localFogExtinction = 0.0;
 	static float localFogFalloffHeight = 0.0;
@@ -949,7 +942,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 		if (ImGui::IsItemHovered()) {
 			float ScaleX = displaySize.x / fogMapSize.x, ScaleY = displaySize.y / fogMapSize.y;
-			float RadiusX = brushRadius * ScaleX, RadiusY = brushRadius * ScaleY;
+			float RadiusX = fogMapper.brushRadius * ScaleX, RadiusY = fogMapper.brushRadius * ScaleY;
 			const int Seg = 64;
 
 			ImGui::GetIO().MouseDrawCursor = false;
@@ -965,10 +958,10 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 			if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
 				float2 Coords = float2(mouse.x - PosTL.x, mouse.y - PosTL.y) / float2(displaySize.x, displaySize.y) * fogMapSize;
-				settings.fogMapData = float4(Coords.x, Coords.y, brushRadius, brushFeather);
-				settings.UIfogMapParams = float4(0.0, localFogBaseHeight, localFogFalloffHeight, localFogExtinction);
+				fogMapper.BrushCoords = float4(Coords.x, Coords.y, 0, 0);
+				fogMapper.FogData = float4(0.0, localFogBaseHeight, localFogFalloffHeight, localFogExtinction);
 
-				DrawFogMap();  //new buffer for fog map - update the buffer here
+				DrawFogMap();
 			}
 		}
 	}
@@ -1027,7 +1020,6 @@ void OrthogonalVolumetricLighting::Hooks::BSImagespaceShader_Render<RE::ImageSpa
 
 	OVL.overrideShader = true;
 	OVL.shaderdesc = OVL.renderdata->UpdateCurrentEffect();
-	//logger::info("Render pass {}", OVL.shaderdesc.underlying());
 
 	func(shader, shape, param);
 }
@@ -1038,9 +1030,18 @@ void OrthogonalVolumetricLighting::Hooks::Main_PostProcessing::thunk(RE::ImageSp
 
 	OVL.renderdata->CheckRefData();
 
-	if (*OVL.skyrim_FlareData && OVL.gFlareShader && !globals::game::ui->GameIsPaused()) {
+	bool menu = false;
+	if (auto ui = globals::game::ui)
+		if (ui->IsMenuOpen(RE::MapMenu::MENU_NAME))
+			menu = true;
+
+	if (*OVL.skyrim_FlareData && OVL.gFlareShader && !menu) {
 		OVL.gFlareApplyFunc(RE::Main::WorldRootCamera(), OVL.gFlareShader, 0);
 	}
+
+	//if (*OVL.skyrim_FlareData && OVL.gFlareShader && !globals::game::ui->GameIsPaused()) {
+	//	OVL.gFlareApplyFunc(RE::Main::WorldRootCamera(), OVL.gFlareShader, 0);
+	//}
 
 	func(a1, a3, er8_);
 }

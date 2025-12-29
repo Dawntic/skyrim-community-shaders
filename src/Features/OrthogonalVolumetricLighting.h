@@ -55,7 +55,8 @@ struct OrthogonalVolumetricLighting : Feature
 
 	void UpdateShadowBuffer();
 	void UpdateFroxelBuffer();
-	void UpdateGeneralBuffers();
+	void UpdateSettingBuffer();
+	void UpdateFogMappingBuffer();
 
 	void RenderEVSM();
 	void RenderEVSMBlur();
@@ -73,7 +74,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	ConstantBuffer* shadowDataCB = nullptr;
 	ConstantBuffer* froxelGridCB = nullptr;
-	ConstantBuffer* volumeCB = nullptr;
+	ConstantBuffer* fogMapperCB = nullptr;
 	ConstantBuffer* settingsCB = nullptr;
 
 	ID3D11SamplerState* linearSampler = nullptr;
@@ -186,6 +187,7 @@ struct OrthogonalVolumetricLighting : Feature
 	float farPlane = 353840.0f;
 
 	float2 fogMapSize;
+	float fogMapCameraDepth = 249920.0f;
 	DirectX::XMFLOAT4X4 fogMapViewProj = DirectX::XMFLOAT4X4(
 		1.19175, 0.00, 0.00, 0.00,
 		0.00, 2.11867, 0.00073, 0.00,
@@ -207,9 +209,6 @@ struct OrthogonalVolumetricLighting : Feature
 	//float4 fogMapColor;
 	//float globalFogStartHeight = 0.0f;
 	//float globalFogFalloffHeight = 0.0f;
-	float brushRadius = 24.0f;
-	float brushFeather = 0.5;
-	float fogErase = false;
 
 	inline REX::W32::XMFLOAT4X4 GetCascadeMatrix(REX::W32::XMFLOAT4X4& lightMatrix)
 	{
@@ -263,11 +262,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 		float distanceFadeIn = 500.0;
 
-		float blendOpp = false;
-		float _pad[3];
-
-		float4 fogMapData;
-		float4 UIfogMapParams;
+		//float _pad[3];
 	};
 	Settings settings;
 
@@ -292,6 +287,7 @@ struct OrthogonalVolumetricLighting : Feature
 		float4 cameraData;
 		float4 volumeSize;
 		float4 inverseVolumeSize;
+		float4 NoiseSize;
 		float4 frustumNearFar;
 
 		float4 lightDirection;
@@ -299,22 +295,33 @@ struct OrthogonalVolumetricLighting : Feature
 		uint lightClusterGridSize[4];
 	};
 
-	struct alignas(16) VolumeBuffer
+	struct FogMapper
 	{
 		DirectX::XMFLOAT4X4 fogMapMatrix;
+		float4 fogMapSize;
+		float4 BrushCoords;
+		float4 FogData;
+
 		float4 heightMapParams;
 		float4 heightMapZRange;
-		float4 NoiseSize;
-		float4 gFogParams;
-		float4 fogMapSize;
-		//uint frameCounter;
-		//uint boardCondition;
-		float _pad[3];
+
+		float fogMapCameraDepth;
+
+		float brushRadius = 24.0f;
+		float brushFeather = 0.5;
+		float brushErase = false;
+	};
+	FogMapper fogMapper;
+
+	struct alignas(16) FogMapperCB
+	{
+		FogMapper fogMapper;
 	};
 
 	struct alignas(16) SettingsBuffer
 	{
 		Settings cbsettings;
+		float4 gFogParams;
 	};
 
 	struct Shaders

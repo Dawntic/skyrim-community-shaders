@@ -47,24 +47,34 @@ cbuffer FroxelBuffer : register(b1)
     row_major float4x4 CameraProjInverse;
     row_major float4x4 PrevCameraViewProj;
     row_major float4x4 CameraViewProjInverse;
+
     float4 CameraPosition;
     float4 CameraData;
     float4 VolumeSize;
     float4 InverseVolumeSize;
+    float4 NoiseSize;
     float4 FrustumNearFar;
+
     float4 LightDirection;
     float4 FrameParams;
     uint4 LightGridClusterSize;
 };
 
-cbuffer GeneralBuffer : register(b2)
+cbuffer FogMapperBuffer : register(b2)
 {
-    row_major float4x4 FogViewProjMatrix;
+    row_major float4x4 FogMapViewProjMatrix;
+    float4 FogMapSize;
+    float4 BrushPxCoords; //Pixel xy, 0, 0
+    float4 FogMapParams;
+
     float4 HeightMapParams;
     float4 HeightMapZRange;
-    float4 NoiseSize;
-    float4 FogParam; //near / far, 1.0 / far, power, max
-    float4 FogMapSize;
+
+    float FogMapCameraDepth;
+
+    float BrushPxRadius;
+    float BrushFeather;
+    float BrushErase;
 };
 
 cbuffer SettingsBuffer : register(b3)
@@ -102,10 +112,8 @@ cbuffer SettingsBuffer : register(b3)
 
     float UIDistanceFadeIn;
 
-    float FogMapBlendOpp;
-
-    float4 FogMapData;
-    float4 UILocalFogMapInput;
+    // End Settings
+    float4 FogParam; //near / far, 1.0 / far, power, max
 };
 
 SamplerState Linear_Sampler : register(s10);
@@ -294,7 +302,7 @@ float EVSM_Visibility(float3 CoordsLS, float2 Moments)
 
 float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float ThicknessZ, float Noise)
 {
-    int Samples = 6;
+    int Samples = 4;
 
     float Result = 0;
     for(int i=0; i<Samples; i++){
@@ -328,8 +336,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float CoordZ = FroxelDepthToView(Froxel.z - 2); // Bias to avoid leaks
     float ThicknessZ = FroxelDepthToView(Froxel.z - 1) - CoordZ;
 
-    float Noise = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
-    float RayJitter = frac(Noise + (SharedData::FrameCountAlwaysActive % 16) * kPhi);
+    float Noise = BlueNoise[int3(ThreadID.xy & 63, SharedData::FrameCountAlwaysActive & 31)].x;
+    float RayJitter = frac(Noise + (SharedData::FrameCountAlwaysActive % 16) * kPhi) * 2.0 - 1.0;
 
     float ViewZ = CoordZ + ThicknessZ * RayJitter;
     float3 RayDirection = FroxelWorldDirection(Froxel);
@@ -355,7 +363,9 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ReprojectionValue = 1.0 - LinearStep(DeltaLimit, 1.0, abs(Shadow - ShadowHistory));
           ReprojectionValue = Confidence * min(ReprojectionValue, MaxHistory) * UIUseHistory;
 
-    Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
+    ReprojectionValue = 0.8;
+    if(UIUseHistory)
+        Shadow = lerp(Shadow, ShadowHistory, ReprojectionValue);
     Shadow = min(Shadow, 0.15);
 
     ShadowVolume[ThreadID] = Shadow;
@@ -414,7 +424,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     [loop] for (int dy = -SearchRadius; dy <= SearchRadius; ++dy){
         [loop] for (int dx = -SearchRadius; dx <= SearchRadius; ++dx){
             int2 SampleCoords = clamp(int2(ThreadID.xy) + int2(dx, dy), int2(0, 0), int2(EVSMData.xy) - 1);
-            float4 Sample = EVSM.Load(int4(SampleCoords, ThreadID.z, 0));
+            float4 Sample = EVSM[int3(SampleCoords, ThreadID.z)];
 
             Result = (Result.x < Sample.x) ? Result.xy : Sample.xy;
         }
@@ -442,7 +452,7 @@ RWTexture3D<float4> MediaVolume : register(u0);
 
 float4 GetLocalFogData(float3 CoordsWS, float RayJitter){
     float MapCameraDepth = 249920.0;
-    float4 MapCoordsNDC = mul(FogViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
+    float4 MapCoordsNDC = mul(FogMapViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
     float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
 
     float2 FogMapSize = float2(2560, 1440);// - (RayJitter*2);  //CPU
@@ -458,7 +468,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float ViewZ = FroxelDepthToView(Froxel.z+0.5);
     float ThicknessZ = FroxelDepthToView(Froxel.z + 1.5) - ViewZ;
 
-    float RayJitter = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+    float RayJitter = BlueNoise[int3(ThreadID.xy & 63, SharedData::FrameCountAlwaysActive & 31)].x;
           RayJitter = frac(RayJitter + (SharedData::FrameCountAlwaysActive % 16) * kPhi);
 
     //ViewZ += ThicknessZ * RayJitter;
@@ -541,10 +551,10 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     //float ReprojectionValue = BaseValue;// * Confidence;
 
     float DeltaLimit = max(UIDisocclutionThreshold, EPSILON_DIVISION); //Shadow diff below which max history will be used
-    float ReprojectionValue = 1.0 - LinearStep(DeltaLimit.xxxx, float4(1,1,1,1), abs(Output - MediaHistory));
-          ReprojectionValue = Confidence * min(ReprojectionValue, BaseValue) * UIUseHistory;
+    //float ReprojectionValue = 1.0 - LinearStep(DeltaLimit, 1.0, min4(abs(Output - MediaHistory))); //need min4
+    //      ReprojectionValue = Confidence * min(ReprojectionValue, BaseValue) * UIUseHistory;
 
-    ReprojectionValue = 0.60;
+    //ReprojectionValue = 0.60;
     //Output = lerp(Output, MediaHistory, ReprojectionValue);
 
 
@@ -708,7 +718,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 Froxel = ThreadID;
     float2 CoordsUV = Froxel.xy * InverseVolumeSize.xy;
 
-    float RayJitter = BlueNoise.Load(int4(ThreadID.xy & 63, 0, 0)).x;
+    float RayJitter = BlueNoise[int3(ThreadID.xy & 63, SharedData::FrameCountAlwaysActive & 31)].x;
           RayJitter = frac(RayJitter + (SharedData::FrameCountAlwaysActive % 16) * kPhi);
 
     float ViewZ = FroxelDepthToView(Froxel.z + 0.5);
@@ -718,9 +728,9 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 RayDirection = FroxelWorldDirection(Froxel);
     float3 RayPosition = RayDirection * ViewZ;
 
-    float Shadow = ShadowVolume.Load(int4(Froxel, 0)).x;
+    float Shadow = ShadowVolume[Froxel].x;
 
-    float4 Scattering_Extinction = MediaVolume.Load(int4(Froxel, 0));
+    float4 Scattering_Extinction = MediaVolume[Froxel];
     float3 MediaScattering = Scattering_Extinction.xyz;
     float OpticalDepth = Scattering_Extinction.w;
 
@@ -794,7 +804,7 @@ void main(uint3 Froxel : SV_DispatchThreadID)
     float3 PrevWorldPosition = FroxelWorldDirection(Froxel) * FrustumNearFar.x;
 
     for(int Slice=0; Slice < VolumeSize.z; Slice++){
-        float4 ScatteringSample = ScatterVolume.Load(int4(Froxel.xy, Slice, 0));
+        float4 ScatteringSample = ScatterVolume[(int3(Froxel.xy, Slice))];
         float OpticalDepth = ScatteringSample.w;
 
         float ViewZ = FroxelDepthToView(Slice + 1.0);
@@ -838,9 +848,10 @@ Texture2DArray BlueNoise : register(t2);
 Texture2D MainScene : register(t4);
 
 
-float2 GetJitteredUVCoords(float2 CoordsSS, float2 CoordsUV){
-    float2 Noise = BlueNoise.Load(int4(int2(CoordsSS.xy) & 63, 0, 0)).xx;
-           Noise.y = BlueNoise.Load(int4(int2(CoordsSS.yx) & 63, 0, 0)).x;
+float2 GetJitteredUVCoords(int2 CoordsSS, float2 CoordsUV){
+    float2 Noise = BlueNoise[int3(CoordsSS.xy & 63, SharedData::FrameCountAlwaysActive & 31)].xx;
+           Noise.y = BlueNoise[int3(CoordsSS.yx & 63, SharedData::FrameCountAlwaysActive & 31)].x;
+
     float2 Jitter = frac(Noise + (SharedData::FrameCountAlwaysActive % 16) * kPhi) * 4.0 - 2.0;
 
     return CoordsUV + InverseVolumeSize.xy * Jitter;
@@ -934,7 +945,7 @@ float4 main(VertexShaderOutput input) : SV_Target
 
     float4 Scene = MainScene.SampleLevel(Point_Sampler, input.TexCoord.xy, 0);
 
-   float2 CoordsUV = GetJitteredUVCoords(input.Position.xy, input.TexCoord.xy);
+   float2 CoordsUV = GetJitteredUVCoords(int2(input.Position.xy), input.TexCoord.xy);
 
     float4 NormalizedRadiance = IntergrationVolume.SampleLevel(Linear_Sampler, float3(CoordsUV, FroxelDepth), 0);
     float Transmittance = NormalizedRadiance.w;
@@ -952,10 +963,9 @@ float4 main(VertexShaderOutput input) : SV_Target
     Transmittance = exp(-OpticalDepth);
     NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance); // * TerrainShadow;
 
-    //NormalizedRadiance.xyz = Uncharted2Tonemap(NormalizedRadiance.xyz);
+    NormalizedRadiance.xyz = Uncharted2Tonemap(NormalizedRadiance.xyz);
 
     float3 OutputColor = Color::GammaToTrueLinear(Scene.xyz);
-           //OutputColor = Uncharted2Tonemap(OutputColor);
     if(UIEnableVL){
         OutputColor = OutputColor * Transmittance + NormalizedRadiance.xyz;
     }
@@ -980,7 +990,6 @@ RWTexture2D<float4> UIFogMap : register(u0);
 RWTexture2D<float4> FogMap : register(u1);
 Texture2D WorldMap : register(t0);
 Texture2D HeightMap : register(t1);
-
 
 
 float3 GetMapSSFromWorldPos(float3 CoordsWS){
@@ -1053,28 +1062,27 @@ float GetWorldHeight(float2 CoordsUV){
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float2 Coords = float2(ThreadID.xy);
-    float RadiusPx = FogMapData.z;
 
     float CurrExtinction = FogMap[ThreadID.xy].w;
-    if(length(Coords - FogMapData.xy) - RadiusPx < 0.0){
-        float Extinction = (FogMapBlendOpp != -1) ? CurrExtinction + UILocalFogMapInput.w : CurrExtinction - UILocalFogMapInput.w;
+    if(length(Coords - BrushPxCoords.xy) - BrushPxRadius < 0.0){
+        float Extinction = (BrushErase != -1) ? CurrExtinction + FogMapParams.w : CurrExtinction - FogMapParams.w;
               Extinction = saturate(Extinction);
 
-        //float3 UIOutputColor = float3(1.0 - UILocalFogMapInput.xy * Extinction, 1 * Extinction);
+        //float3 UIOutputColor = float3(1.0 - FogMapParams.xy * Extinction, 1 * Extinction);
         //float3 WorldPos = GetWorldPosFromMapSS(Coords);
         //float2 HeightUV = WorldPos.xy * HeightMapParams.xy + HeightMapParams.zw;
         //float GroundHeight = GetWorldHeight(HeightUV);
 
-        //float FogGroundHeightBais = UILocalFogMapInput.x; //MapRange(UILocalFogMapInput.x, 0.0, 1.0, 0.0, 35000.0);
-        //float FogBaseHeight = UILocalFogMapInput.y;
+        //float FogGroundHeightBais = FogMapParams.x; //MapRange(FogMapParams.x, 0.0, 1.0, 0.0, 35000.0);
+        //float FogBaseHeight = FogMapParams.y;
         //float FogHeight = FogBaseHeight + GroundHeight;//GroundHeight + FogBaseHeight;
-        //float FogFalloff = UILocalFogMapInput.z;
+        //float FogFalloff = FogMapParams.z;
         //FogMap[ThreadID.xy] = float4(FogHeight, FogFalloff, 1.0, Extinction);
 
 
         UIFogMap[ThreadID.xy] = float4(1.0, 1.0, 1.0, Extinction); //This target is an overlay fitted onto the world map image displayed to the user to visualize their changes
 
-        FogMap[ThreadID.xy] = float4(1.0, UILocalFogMapInput.y, UILocalFogMapInput.z, Extinction); // This target is used as a lookup in the media compute stage
+        FogMap[ThreadID.xy] = float4(1.0, FogMapParams.y, FogMapParams.z, Extinction); // This target is used as a lookup in the media compute stage
         //FogMap[ThreadID.xy] = float4(1.0, UIGlobalFogBaseHeight, UIGlobalFogFalloff, Extinction);
     }
     else{
