@@ -256,6 +256,7 @@ float GetWeatherBasedFog(float LinearDepth)
 }
 
 
+
 #ifdef SHADOW_COMPUTE
 
 #include "TerrainShadows/TerrainShadows.hlsli"
@@ -302,7 +303,7 @@ float EVSM_Visibility(float3 CoordsLS, float2 Moments)
 
 float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float ThicknessZ, float Noise)
 {
-    int Samples = 4;
+    int Samples = 4; // Adding more samples will either cause bleed due to moving beyond the cell-2 bias or undersample(if jitter given delta limit)
 
     float Result = 0;
     for(int i=0; i<Samples; i++){
@@ -317,7 +318,7 @@ float GetCascadeShadow(float3 RayDirection, float ViewZ, float CoordZ, float Thi
 
         Result += Visibility;
 
-        float RayJitter = frac(Noise + (SharedData::FrameCountAlwaysActive % 16 + (i+1)) * kPhi) * 4.0 - 2.0;
+        float RayJitter = frac(Noise + (SharedData::FrameCountAlwaysActive % 16 + (i+1)) * kPhi) * Samples - (Samples * 0.5);
         ViewZ = CoordZ + ThicknessZ * RayJitter;
     }
     Result /= Samples;
@@ -333,8 +334,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 Froxel = ThreadID;
     float2 CoordsUV = (Froxel.xy + 0.5) * InverseVolumeSize.xy;
 
-    float CoordZ = FroxelDepthToView(Froxel.z - 2); // Bias to avoid leaks
-    float ThicknessZ = FroxelDepthToView(Froxel.z - 1) - CoordZ;
+    float CoordZ = FroxelDepthToView(max(Froxel.z - 2, 0.1)); // Bias to avoid leaks
+    float ThicknessZ = FroxelDepthToView(max(Froxel.z - 1, 0.1)) - CoordZ;
 
     float Noise = BlueNoise[int3(ThreadID.xy & 63, SharedData::FrameCountAlwaysActive & 31)].x;
     float RayJitter = frac(Noise + (SharedData::FrameCountAlwaysActive % 16) * kPhi) * 2.0 - 1.0;
@@ -449,14 +450,13 @@ Texture2D FogMap : register(t3);
 RWTexture3D<float4> MediaVolume : register(u0);
 //RWTexture2D<float4> FogMap : register(u1);
 
-
-float4 GetLocalFogData(float3 CoordsWS, float RayJitter){
+float4 GetLocalFogData(float3 CoordsWS){
     float MapCameraDepth = 249920.0;
     float4 MapCoordsNDC = mul(FogMapViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
     float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
 
     float2 FogMapSize = float2(2560, 1440);// - (RayJitter*2);  //CPU
-    return FogMap.Load(int3(MapCoordsUV * FogMapSize.xy, 0)); //returns fog height, falloff and extinction
+    return FogMap[int2(MapCoordsUV * FogMapSize.xy)]; //returns fog height, falloff and extinction
 }
 
 
@@ -502,8 +502,8 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
    // LocalFogData *= 0.33;
 
 
-    float4 LocalFogData = GetLocalFogData(RayPosition + CameraPosition.xyz, RayJitter);
-    //OpticalDepth += GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, LocalFogData.y, LocalFogData.z, LocalFogData.w);
+    float4 LocalFogData = GetLocalFogData(RayPosition + CameraPosition.xyz);
+    OpticalDepth += GetAnalyticOpticalDepth(RayDirection.z, PrevRayPosition.z, StepLength, LocalFogData.y, LocalFogData.z, LocalFogData.w);
 
 
     float WeatherFog = GetWeatherBasedFog(ViewZ) * 0.002;
@@ -584,7 +584,7 @@ Texture2D<sh2> DiffuseSkyIBLTexture : register(t77);
 StructuredBuffer<LightLimitFix::Light> lights : register(t4);
 StructuredBuffer<uint> lightList : register(t5);
 StructuredBuffer<LightLimitFix::LightGrid> lightGrid : register(t6);
-Texture2DArray<float4> ParaboloidShadowMaps : register(t7);
+Texture2DArray<float4> ParabolicShadowTex : register(t7);
 
 RWTexture3D<float4> ScatteringVolume : register(u0);
 
@@ -619,7 +619,7 @@ float3 LumaTempSat(float3 Color, float MaxLuma, float MinTemp, float SatFactor){
     // Adjust temp
     float3 Normalized = Color / (max(max(Color.x, Color.y), Color.z) + EPSILON_DIVISION);
     float Temp = (Normalized.x - Normalized.z) * 0.5 + 0.5 + (Normalized.x - Normalized.y) * 0.3;
-    float3 TempColorTarget = float3(9.6, 2.8, 0.4) * Luminance;
+    float3 TempColorTarget = float3(9.6, 2.8, 0.4) * Luminance; // Eh?
 	Color = lerp(Color, TempColorTarget, saturate(MinTemp - Temp));
 
     // Adjust saturation
@@ -645,10 +645,8 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
             if (Attenuation < 1e-5) continue;
 
             float3 Radiance = Color::GammaToTrueLinear(light.color.xyz);
-                   Radiance = LumaTempSat(Radiance, UILocalLightMaxLum, UILocalLightMinTemp, UILocalLightSaturation) * Attenuation;
+                   Radiance = LumaTempSat(Radiance, UILocalLightMaxLum, UILocalLightMinTemp, UILocalLightSaturation) * Attenuation; // Yuck
 
-            // local shadows should not attenuate dir light
-            // local shadows should not attenuate other local light sources
             if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
                 float4 CoordsLS = mul(ShadowLightData[light.shadowLightIndex].ShadowMatrix, float4(WorldPosition, 1.0));
 
@@ -658,7 +656,7 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
                 float2 ShadowUV = lightDirection.xy / lightDirection.z * 0.5 + 0.5;
                 ShadowUV.y = lowerHalf ? 1 - 0.5 * ShadowUV.y : 0.5 * ShadowUV.y;
 
-                float Shadow = ParaboloidShadowMaps.SampleLevel(Linear_Sampler, float3(ShadowUV.xy, ShadowLightData[light.shadowLightIndex].ShadowMapIndex), 0).x;
+                float Shadow = ParabolicShadowTex.SampleLevel(Linear_Sampler, float3(ShadowUV.xy, ShadowLightData[light.shadowLightIndex].ShadowMapIndex), 0).x;
 
                 float shadowMapCompareValue = saturate(length(CoordsLS.xyz) / light.radius); //- 0.00638;
                 Shadow = (Shadow <= shadowMapCompareValue) ? 0.0 : Shadow;
@@ -752,7 +750,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     float3 LocalLight = 0;
     LocalLight += GetLocalLighting(RayPosition, CoordsUV, ViewZ, ScatterDir) * UIEnableLocalLights * UILocalLightMultiplier;
 
-    [branch]if(ViewZ > 4000){ // Reduce light aliasing
+    [branch] if(ViewZ > 4000){ // Reduce light aliasing
         ViewZ = FroxelDepthToView(Froxel.z - 0.5);
         LocalLight += GetLocalLighting(RayDirection * ViewZ, CoordsUV, ViewZ, ScatterDir) * UIEnableLocalLights * UILocalLightMultiplier;
         ViewZ = FroxelDepthToView(Froxel.z + 1.0);
@@ -817,8 +815,8 @@ void main(uint3 Froxel : SV_DispatchThreadID)
         AccumulateScattering(Accumulation, ScatteringSample, OpticalDepth, StepLength, FadeIn);
         PrevWorldPosition = WorldPosition;
 
-        IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), Accumulation.w); // Encode output as normalized radiance for density anti aliasing
-        //IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
+        //IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), Accumulation.w); // Encode output as normalized radiance for density anti aliasing
+        IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
     }
 }
 #endif
@@ -846,7 +844,7 @@ Texture3D IntergrationVolume : register(t1);
 Texture2DArray BlueNoise : register(t2);
 //Texture3D ShadowVolume : register(t3);
 Texture2D MainScene : register(t4);
-
+Texture2D FogMap : register(t5);
 
 float2 GetJitteredUVCoords(int2 CoordsSS, float2 CoordsUV){
     float2 Noise = BlueNoise[int3(CoordsSS.xy & 63, SharedData::FrameCountAlwaysActive & 31)].xx;
@@ -935,6 +933,15 @@ float4 Exact_CubicBasisSpline3(float3 CoordsUV, Texture3D Volume, SamplerState S
     return lerp(lerp(BlendZ0, BlendZ1, g1.y), lerp(BlendZ2, BlendZ3, g1.y), g1.x);
 }
 
+float4 GetLocalFogData(float3 CoordsWS){
+    float MapCameraDepth = 249920.0;
+    float4 MapCoordsNDC = mul(FogMapViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
+    float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
+
+    float2 FogMapSize = float2(2560, 1440);// - (RayJitter*2);  //CPU
+    return FogMap[int2(MapCoordsUV * FogMapSize.xy)]; //returns fog height, falloff and extinction
+}
+
 
 float4 main(VertexShaderOutput input) : SV_Target
 {
@@ -959,9 +966,15 @@ float4 main(VertexShaderOutput input) : SV_Target
     if(Depth < 0.999999) // maybe use transmittance and multiply with ^^
         OpticalDepth = max(OpticalDepth, GetHomogeneousOpticalDepth(UIDistantHazeExtinction, PixelViewZ)); // Dont apply this to... and scale by total radiance(if radiance sample is too high then this over exposes)
 
+    float4 LocalFogData = GetLocalFogData(PixelDirectionWS * PixelViewZ + CameraPosition.xyz);
+    float4 TestLocalFogData = float4(0.0, -10000, 2000, 0.0007);
+    //LocalFogData.w = TestLocalFogData.w;
+    //LocalFogData = TestLocalFogData;
+    OpticalDepth += GetAnalyticOpticalDepth(PixelDirectionWS.z, 0.0, PixelViewZ, LocalFogData.y, LocalFogData.z, LocalFogData.w);
+
     // DAA
-    Transmittance = exp(-OpticalDepth);
-    NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance); // * TerrainShadow;
+    //Transmittance = exp(-OpticalDepth);
+    //NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance); // * TerrainShadow;
 
     NormalizedRadiance.xyz = Uncharted2Tonemap(NormalizedRadiance.xyz);
 
@@ -970,7 +983,9 @@ float4 main(VertexShaderOutput input) : SV_Target
         OutputColor = OutputColor * Transmittance + NormalizedRadiance.xyz;
     }
     OutputColor = Color::TrueLinearToGamma(OutputColor);
-    //OutputColor = NormalizedRadiance.xyz;
+
+    //OutputColor = OpticalDepth.xxx;
+
 
     return float4(OutputColor, 1.0);
 }

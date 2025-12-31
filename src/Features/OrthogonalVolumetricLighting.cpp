@@ -703,6 +703,7 @@ void OrthogonalVolumetricLighting::SetupApplyPass()
 	context->PSSetShaderResources(3, 1, &shadowVolumeSRV[historyVolumeIdx]);
 	auto& mainSRVCopy = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN_COPY].SRV;
 	context->PSSetShaderResources(4, 1, &mainSRVCopy);
+	context->PSSetShaderResources(5, 1, &fogMapSRV);
 
 	if (globals::state->frameAnnotations)
 		globals::state->EndPerfEvent();
