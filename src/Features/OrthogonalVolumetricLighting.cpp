@@ -859,7 +859,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("How much the amount of light scattering towards the viewer depends on direction");
 	ImGui::SliderFloat("Dir Light Saturation", &settings.color_saturation, 0.0, 1.0);
-	ImGui::SliderFloat("Obsolete Exposure", &settings.preExposure, 0.1, 3.0);
+	//ImGui::SliderFloat("Obsolete Exposure", &settings.preExposure, 0.1, 3.0);
 
 	//// Local Lights Params ////
 	ImGui::SeparatorText("Local Lights");
@@ -881,10 +881,6 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	//// Scattering Params ////
 	ImGui::SeparatorText("Scattering Properties");
 
-	ImGui::SliderFloat("Extinction", &settings.extinction, 0.0001, 0.6, "%.5f");
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("The rate of light loss per unit distance (light absorpted + light scattered)");
-
 	ImGui::SliderFloat("Red Scatter to Absorption Ratio", &settings.scatteringRatio.x, 0.0, 1.0);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The ratio of light that is scattered compared to absorped");
@@ -899,6 +895,9 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SeparatorText("Fog Properties");
 
 	ImGui::Checkbox("Enable Weather Fog", (bool*)&settings.useWeatherFog);
+	ImGui::SliderFloat("Extinction", &settings.extinction, 0.0001, 0.6, "%.5f");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("The rate of light loss per unit distance (light absorpted + light scattered)");
 	ImGui::SliderFloat("Fog Falloff Height", &settings.globalFogFalloffHeight, -1000.0f, 10000.0f);  // Lower min values cause aliasing
 	ImGui::SliderFloat("Fog Base Height", &settings.globalFogStartHeight, -15000.0f, 10000.0f);
 	ImGui::SliderFloat("Distant Haze Extinction", &settings.distantHazeExtinction, 0.0, 1.0);
@@ -913,18 +912,18 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 	//// Fog Maps ////
 	ImGui::SeparatorText("Fog Maps");
+	ImGui::Checkbox("Erase", (bool*)&fogMapper.brushErase);
+	ImGui::Checkbox("Additive Blend", (bool*)&fogMapper.brushAdditive);
 	ImGui::SliderFloat("Radius", &fogMapper.brushRadius, 1.0f, 200.0f, "%.0f");
 	ImGui::SliderFloat("Feather", &fogMapper.brushFeather, 0.0f, 1.0f);
-	ImGui::SliderFloat("Erase", &fogMapper.brushErase, -1.0f, 0.0f, "%.0f");
 
 	static float localFogExtinction = 0.0;
 	static float localFogFalloffHeight = 0.0;
 	static float localFogBaseHeight = 0.0;
-	//static float localFogGroundLevelBias = 0.0;
-	ImGui::SliderFloat("Extinction ##p1", &localFogExtinction, 0.0f, 0.6f);
-	ImGui::SliderFloat("Falloff Height ##p1", &localFogFalloffHeight, -1000.0f, 10000.0f);  //EndHeight - This  = FalloffStart
-	ImGui::SliderFloat("Base Height ##p1", &localFogBaseHeight, -15000.0f, 10000.0f);       //(GroundLevel + Bias) + This   = FogTop
-	//ImGui::SliderFloat("DISABLED Ground Level Bias", &localFogGroundLevelBias, -2000.0f, 2000.0f);
+	static bool localFogAdditiveBlend = false;
+	ImGui::SliderFloat("Extinction ##p1", &localFogExtinction, 0.0f, 0.6f, "%.5f");
+	ImGui::SliderFloat("Falloff Height ##p1", &localFogFalloffHeight, -1000.0f, 10000.0f);
+	ImGui::SliderFloat("Base Height ##p1", &localFogBaseHeight, -15000.0f, 10000.0f);
 
 	ImVec2 displaySize = ImVec2(screenSize.x * 0.5f, screenSize.y * 0.5f);
 
