@@ -309,8 +309,8 @@ struct OrthogonalVolumetricLighting : Feature
 
 		float brushRadius = 24.0f;
 		float brushFeather = 0.5;
-		float brushErase = false;
-		float brushAdditive = false;
+		uint brushErase = false;
+		uint brushAdditive = false;
 		float _pad[3];
 	};
 	FogMapper fogMapper;

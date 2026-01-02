@@ -65,7 +65,7 @@ cbuffer FogMapperBuffer : register(b2)
     row_major float4x4 FogMapViewProjMatrix;
     float4 FogMapSize;
     float4 BrushPxCoords; //Pixel xy, 0, 0
-    float4 FogMapParams;
+    float4 FogMapInput;
 
     float4 HeightMapParams;
     float4 HeightMapZRange;
@@ -74,7 +74,8 @@ cbuffer FogMapperBuffer : register(b2)
 
     float BrushPxRadius;
     float BrushFeather;
-    float BrushErase;
+    uint BrushErase;
+    uint BrushAdditive;
 };
 
 cbuffer SettingsBuffer : register(b3)
@@ -451,11 +452,9 @@ RWTexture3D<float4> MediaVolume : register(u0);
 //RWTexture2D<float4> FogMap : register(u1);
 
 float4 GetLocalFogData(float3 CoordsWS){
-    float MapCameraDepth = 249920.0;
-    float4 MapCoordsNDC = mul(FogMapViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
+    float4 MapCoordsNDC = mul(FogMapViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - FogMapCameraDepth, 1.0));
     float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
 
-    float2 FogMapSize = float2(2560, 1440);// - (RayJitter*2);  //CPU
     return FogMap[int2(MapCoordsUV * FogMapSize.xy)]; //returns fog height, falloff and extinction
 }
 
@@ -934,11 +933,9 @@ float4 Exact_CubicBasisSpline3(float3 CoordsUV, Texture3D Volume, SamplerState S
 }
 
 float4 GetLocalFogData(float3 CoordsWS){
-    float MapCameraDepth = 249920.0;
-    float4 MapCoordsNDC = mul(FogMapViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
+    float4 MapCoordsNDC = mul(FogMapViewProjMatrix, float4(CoordsWS.xy, CoordsWS.z - FogMapCameraDepth, 1.0));
     float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
 
-    float2 FogMapSize = float2(2560, 1440);// - (RayJitter*2);  //CPU
     return FogMap[int2(MapCoordsUV * FogMapSize.xy)]; //returns fog height, falloff and extinction
 }
 
@@ -1007,103 +1004,31 @@ Texture2D WorldMap : register(t0);
 Texture2D HeightMap : register(t1);
 
 
-float3 GetMapSSFromWorldPos(float3 CoordsWS){
-    float MapCameraDepth = 249920.0;
-
-    row_major float4x4 MapViewProj = float4x4(
-    float4(1.19175, 1.01186E-07, -0.00029, 0.00),
-    float4(0.00, 2.11867, 0.00065, 0.00),
-    float4(0.00, 0.00035, -1.00036, -128.04633),
-    float4(0.00, 0.00035, -1.00, 0.00));
-
-    row_major float4x4 MapViewProjTest = float4x4(
-    float4( 1.19175, 0.00, 0.00, 0.00),
-    float4(0.00, 2.11867, 0.00073, 0.00),
-    float4(0.00, 0.00035, -1.00036, -128.04633),
-    float4(0.00, 0.00035, -1.00, 0.00));
-
-    float4 MapCoordsNDC = mul(MapViewProjTest, float4(CoordsWS.xy, CoordsWS.z - MapCameraDepth, 1.0));
-    float2 MapCoordsUV = (MapCoordsNDC.xy / MapCoordsNDC.w) * float2(0.5, -0.5) + 0.5;
-
-    return float3(MapCoordsUV * float2(2560.0, 1440.0), MapCoordsNDC.z / MapCoordsNDC.w);
-}
-
-float3 GetWorldPosFromMapSS(float2 CoordsSS){
-    float MapCameraDepth = 249920.0;
-
-    row_major float4x4 MapViewProjInverse = float4x4(
-    float4(0.8391, 2.81308E-15, 0.00, -0.00025),
-    float4(0.00, 0.47199, 0.00, 0.00031),
-    float4(0.00, 0.00016, 0.00, -1.00),
-    float4(0.00, 0.00, -0.00781, 0.00781));
-
-    row_major float4x4 MapViewProjInverseTest = float4x4(
-    float4(0.8391, 0.00, 0.00, 0.00),
-    float4(0.00, 0.47199, 0.00, 0.00035),
-    float4(0.00, 0.00016, 0.00, -1.00),
-    float4(0.00, 0.00, -0.00781, 0.00781));
-
-    row_major float4x4 MapProj = float4x4(
-    float4(1.19175, 0.00, 0.00029, 0.00),
-    float4(0.00, 2.11867, 0.00008, 0.00),
-    float4(0.00, 0.00, 1.00036, -128.04633),
-    float4(0.00, 0.00, 1.00, 0.00));
-
-    float NDCDepth = MapProj[2][2] + MapProj[2][3] / MapCameraDepth;
-    NDCDepth = 0.99952;
-
-    float3 CoordsNDC = float3(((CoordsSS.xy+0.5) / float2(2560.0, 1440.0)) * 2.0 - 1.0, 1);
-           CoordsNDC = float3(CoordsNDC.xy * float2(1.0, -1.0), NDCDepth);
-
-    float4 CoordsWS = mul(MapViewProjInverseTest, float4(CoordsNDC, 1.0));
-    CoordsWS /= CoordsWS.w;
-
-    return CoordsWS.xyz;
-}
-
-
-float MapRange(float x, float oldMin, float oldMax, float newMin, float newMax){
-    return newMin + ((x - oldMin) / (oldMax - oldMin)) * (newMax - newMin);}
-
-float GetWorldHeight(float2 CoordsUV){
-    float Height = HeightMap.SampleLevel(Point_Sampler, CoordsUV, 0.0).x;
-    return lerp(HeightMapZRange.x, HeightMapZRange.y, Height);
-}
-
-//Map UV(or NDC) -> worldspace point on map
-//worldspace pos -> use pos to sample terrain height map
-
 [numthreads(1, 1, 1)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
 {
     float2 Coords = float2(ThreadID.xy);
 
-    float CurrExtinction = FogMap[ThreadID.xy].w;
+    float CurrentExtinction = FogMap[ThreadID.xy].w;
     if(length(Coords - BrushPxCoords.xy) - BrushPxRadius < 0.0){
-        float Extinction = (BrushErase != -1) ? CurrExtinction + FogMapParams.w : CurrExtinction - FogMapParams.w;
-              Extinction = saturate(Extinction);
 
-        //float3 UIOutputColor = float3(1.0 - FogMapParams.xy * Extinction, 1 * Extinction);
-        //float3 WorldPos = GetWorldPosFromMapSS(Coords);
-        //float2 HeightUV = WorldPos.xy * HeightMapParams.xy + HeightMapParams.zw;
-        //float GroundHeight = GetWorldHeight(HeightUV);
+        //float Extinction = (BrushErase != -1) ? CurrExtinction + FogMapInput.w : CurrExtinction - FogMapInput.w;
+        //      Extinction = saturate(Extinction);
 
-        //float FogGroundHeightBais = FogMapParams.x; //MapRange(FogMapParams.x, 0.0, 1.0, 0.0, 35000.0);
-        //float FogBaseHeight = FogMapParams.y;
-        //float FogHeight = FogBaseHeight + GroundHeight;//GroundHeight + FogBaseHeight;
-        //float FogFalloff = FogMapParams.z;
-        //FogMap[ThreadID.xy] = float4(FogHeight, FogFalloff, 1.0, Extinction);
+        float InputExtinction = BrushErase ? -FogMapInput.w : FogMapInput.w;
 
+        float OutputExtinction = saturate(BrushAdditive ? CurrentExtinction + InputExtinction : InputExtinction);
+        OutputExtinction =  CurrentExtinction + InputExtinction;
 
-        UIFogMap[ThreadID.xy] = float4(1.0, 1.0, 1.0, Extinction); //This target is an overlay fitted onto the world map image displayed to the user to visualize their changes
+        UIFogMap[ThreadID.xy] = float4(1.0, 1.0, 1.0, OutputExtinction); //This target is an overlay fitted onto the world map image displayed to the user to visualize their changes
 
-        FogMap[ThreadID.xy] = float4(1.0, FogMapParams.y, FogMapParams.z, Extinction); // This target is used as a lookup in the media compute stage
+        FogMap[ThreadID.xy] = float4(1.0, FogMapInput.y, FogMapInput.z, OutputExtinction); // This target is used as a lookup in the media compute stage
         //FogMap[ThreadID.xy] = float4(1.0, UIGlobalFogBaseHeight, UIGlobalFogFalloff, Extinction);
     }
-    else{
-        if(CurrExtinction == 0.0)
-            FogMap[ThreadID.xy] = float4(WorldMap.Load(int3(ThreadID.xy, 0.0)).xyz, 0.0); // This is just to debug in renderDoc
-        }
+    //else{
+    //    if(CurrExtinction == 0.0)
+    //        FogMap[ThreadID.xy] = float4(WorldMap.Load(int3(ThreadID.xy, 0.0)).xyz, 0.0); // This is just to debug in renderDoc
+    //    }
 
      //UIFogMap[ThreadID.xy] = float4(GetWorldHeight(HeightUV).xxx, 1);
      //FogMap[ThreadID.xy] = float4(0,0,0,0);
