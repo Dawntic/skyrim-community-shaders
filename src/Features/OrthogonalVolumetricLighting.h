@@ -30,14 +30,16 @@ struct OrthogonalVolumetricLighting : Feature
 
 	uint CSM_Size;
 	uint EVSM_Size;
-	uint nCascades = 2;
+	uint nCascades = 3;
 	void SetupPostLoadResources();
 
 	virtual inline void DataLoaded() override
 	{
 		RE::GetINISetting("bLensFlare:Imagespace")->data.b = true;
 		CSM_Size = RE::GetINISetting("iShadowMapResolution:Display")->data.u;
+		nCascades = RE::GetINISetting("iNumSplits:Display")->data.u;
 		EVSM_Size = CSM_Size / 4;
+
 		SetupPostLoadResources();
 	}
 
@@ -233,7 +235,8 @@ struct OrthogonalVolumetricLighting : Feature
 		uint useWeatherFog = false;
 		uint useHistory = false;
 		uint enableLocalLights = true;
-
+		uint useTonemapping = true;
+		float _pad[3];
 		float4 scatteringRatio = float4(1.0, 1.0, 1.0, 1.0);
 
 		float dirLightRadianceMultiplier = 5.0;

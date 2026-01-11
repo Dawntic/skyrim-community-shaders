@@ -145,22 +145,18 @@ PS_OUTPUT main(PS_INPUT input){
 
 	psout.Color = float4(FrameBuffer::ToSRGBColor(srgbColor), 1.0);
 
-	///////////////////////////////////////////
+	//// Rubbish ///////////////////////////////////////
 	float3 untonemapped = Color::GammaToTrueLinear(Scene.xyz);
 
 	float Exposure = 2.0;
 	float3 linearExposed = untonemapped * Exposure;
 
-	OutputColor = ApplyUncharted2HDR(linearExposed); // seems to de-saturate
+	OutputColor = ApplyUncharted2HDR(linearExposed); // seems to desaturate
 
 	OutputColor = Color::TrueLinearToGamma(OutputColor);
-	psout.Color = float4(OutputColor, 1.0);
 
-	//float Luma = Color::RGBToLuminance(OutputColor);
-	//OutputColor = lerp(Luma.xxx, OutputColor, 1.0); //saturation
-	//OutputColor = max(0, lerp(avgGrayValue.x, OutputColor, Cinematic.z))
-	//OutputColor = Cinematic.w * lerp(OutputColor, OutLum * Tint.xyz, Tint.w).xyz;
-	//psout.Color = float4(Scene, 1.0);
+	psout.Color = float4(OutputColor, 1.0);
+	//////////////////////////////////////////////////
 
 	#endif
 

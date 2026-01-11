@@ -26,7 +26,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	esmExponent,
 	EVSMSeachSize,
 	disocclutionThreshold,
-	distanceFadeIn)
+	distanceFadeIn,
+	useTonemapping)
 
 void OrthogonalVolumetricLighting::CompileShaders()
 {
@@ -818,7 +819,7 @@ void OrthogonalVolumetricLighting::SetupBypass()
 void OrthogonalVolumetricLighting::DrawSettings()
 {
 	ImGui::SeparatorText("Reload");
-	ImGui::Button("Reload Flare");
+	ImGui::Button("Reload Shaders");
 	if (ImGui::IsItemClicked()) {
 		generateShadowVolumeCS = nullptr;
 		generateScatteringVolumeCS = nullptr;
@@ -836,14 +837,9 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	//ImGui::Checkbox("Swap Output RT", (bool*)&swapOutputRT);
 	//ImGui::Checkbox("Update Light Dir", &updateLightDir);
 
-	ImGui::Button("Reset cubemap");
-	if (ImGui::IsItemClicked()) {
-		globals::features::dynamicCubemaps.resetCapture[0] = true;
-		globals::features::dynamicCubemaps.resetCapture[1] = true;
-	}
-
 	ImGui::Checkbox("Enable Volumetric Lighting", (bool*)&settings.enableVL);
 	ImGui::Checkbox("History Reprojection", (bool*)&settings.useHistory);
+	ImGui::Checkbox("Use tonemapping", (bool*)&settings.useTonemapping);
 
 	//// Frustum Grid ////
 	ImGui::SliderFloat("Near Plane", &nearPlane, 1, 1000);
@@ -860,16 +856,6 @@ void OrthogonalVolumetricLighting::DrawSettings()
 		ImGui::Text("How much the amount of light scattering towards the viewer depends on direction");
 	ImGui::SliderFloat("Dir Light Saturation", &settings.color_saturation, 0.0, 1.0);
 	//ImGui::SliderFloat("Obsolete Exposure", &settings.preExposure, 0.1, 3.0);
-
-	//// Local Lights Params ////
-	ImGui::SeparatorText("Local Lights");
-
-	ImGui::Checkbox("Enable Local Lights", (bool*)&settings.enableLocalLights);
-	ImGui::SliderFloat("Local Light Multiplier", &settings.localLightsMultiplier, 0.1, 5.0);
-	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
-	ImGui::SliderFloat("Local Light Saturation", &settings.localLightsSaturation, 0.0, 1.0);
-	ImGui::SliderFloat("Local Light Max Luminance", &settings.localLightsMaxLum, 0.0, 20.0);
-	ImGui::SliderFloat("Local Light Min Temprature", &settings.localLightsMinTemp, 0.0, 1.0);
 
 	//// Amibent Light Params ////
 	ImGui::SeparatorText("Ambient Light");
@@ -890,6 +876,16 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::SliderFloat("Blue Scatter to Absorption Ratio", &settings.scatteringRatio.z, 0.0, 1.0);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("The ratio of light that is scattered compared to absorped");
+
+	//// Local Lights Params ////
+	ImGui::SeparatorText("Local Lights");
+
+	ImGui::Checkbox("Enable Local Lights", (bool*)&settings.enableLocalLights);
+	ImGui::SliderFloat("Local Light Multiplier", &settings.localLightsMultiplier, 0.1, 5.0);
+	ImGui::SliderFloat("Local Light Anisotropy", &settings.localLightsAnisotropy, -0.2, 1.0);
+	ImGui::SliderFloat("Local Light Saturation", &settings.localLightsSaturation, 0.0, 1.0);
+	ImGui::SliderFloat("Local Light Max Luminance", &settings.localLightsMaxLum, 0.0, 20.0);
+	ImGui::SliderFloat("Local Light Min Temprature", &settings.localLightsMinTemp, 0.0, 1.0);
 
 	//// Fog Params ////
 	ImGui::SeparatorText("Fog Properties");

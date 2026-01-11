@@ -84,6 +84,7 @@ cbuffer SettingsBuffer : register(b3)
     uint UIUseWeatherFog;
     uint UIUseHistory;
     uint UIEnableLocalLights;
+    uint UIUseTonemapping;
 
     float4 UIScatteringRatio;
 
@@ -608,7 +609,7 @@ float HGPhase(float cosTheta, float anisotropy){
     return (1.0 - anisotropy2) / (4.0 * Math::PI * phase);
 }
 
-float3 LumaTempSat(float3 Color, float MaxLuma, float MinTemp, float SatFactor){
+float3 LumTempSat(float3 Color, float MaxLuma, float MinTemp, float SatFactor){
     float CurrentLuminance = Color::RGBToLuminance(Color);
     float Luminance = min(CurrentLuminance, MaxLuma);
 
@@ -644,7 +645,7 @@ float3 GetLocalLighting(float3 WorldPosition, float2 CoordsUV, float ViewZ, floa
             if (Attenuation < 1e-5) continue;
 
             float3 Radiance = Color::GammaToTrueLinear(light.color.xyz);
-                   Radiance = LumaTempSat(Radiance, UILocalLightMaxLum, UILocalLightMinTemp, UILocalLightSaturation) * Attenuation; // Yuck
+                   Radiance = LumTempSat(Radiance, UILocalLightMaxLum, UILocalLightMinTemp, UILocalLightSaturation) * Attenuation; // Yuck
 
             if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
                 float4 CoordsLS = mul(ShadowLightData[light.shadowLightIndex].ShadowMatrix, float4(WorldPosition, 1.0));
@@ -705,7 +706,7 @@ float3 GetAmbientLighting(float3 RayPosition, float3 ScatterDir)
     float3 AmbientLight = SkyAmbient * UISkyAmbientContribution;
            AmbientLight += SceneAmbient * UISceneAmbientContribution;
 
-    return AmbientLight * SkyDiffuse;
+    return AmbientLight * UIAmibentLightingMultiplier * SkyDiffuse;
 }
 
 
@@ -814,8 +815,8 @@ void main(uint3 Froxel : SV_DispatchThreadID)
         AccumulateScattering(Accumulation, ScatteringSample, OpticalDepth, StepLength, FadeIn);
         PrevWorldPosition = WorldPosition;
 
-        //IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), Accumulation.w); // Encode output as normalized radiance for density anti aliasing
-        IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
+        IntergrationVolume[uint3(Froxel.xy, Slice)] = float4(Accumulation.xyz * rcp(max(1.0 - Accumulation.w, EPSILON_DIVISION)), Accumulation.w); // Encode output as normalized radiance for density anti aliasing
+        //IntergrationVolume[uint3(Froxel.xy, Slice)] = Accumulation;
     }
 }
 #endif
@@ -970,10 +971,11 @@ float4 main(VertexShaderOutput input) : SV_Target
     OpticalDepth += GetAnalyticOpticalDepth(PixelDirectionWS.z, 0.0, PixelViewZ, LocalFogData.y, LocalFogData.z, LocalFogData.w);
 
     // DAA
-    //Transmittance = exp(-OpticalDepth);
-    //NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance); // * TerrainShadow;
+    Transmittance = exp(-OpticalDepth);
+    NormalizedRadiance.xyz = NormalizedRadiance.xyz * (1.0 - Transmittance); // * TerrainShadow;
 
-    NormalizedRadiance.xyz = Uncharted2Tonemap(NormalizedRadiance.xyz);
+    if(UIUseTonemapping)
+        NormalizedRadiance.xyz = Uncharted2Tonemap(NormalizedRadiance.xyz);
 
     float3 OutputColor = Color::GammaToTrueLinear(Scene.xyz);
     if(UIEnableVL){
