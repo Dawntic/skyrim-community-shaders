@@ -386,7 +386,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 #ifdef EVSM_COMPUTE
 
 Texture2DArray CSM : register(t0);
-RWTexture2DArray<float4> EVSM : register(u0);
+RWTexture2DArray<float2> EVSM : register(u0);
 
 float sum4(float4 value){ return value.x + value.y + value.z + value.w; }
 
@@ -406,7 +406,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     }
     Result /= 16;
 
-    EVSM[ThreadID.xyz] = Result.xyxy;
+    EVSM[ThreadID.xyz] = Result.xy;
 }
 #endif
 
@@ -415,7 +415,7 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
 #ifdef EVSMBLUR_COMPUTE
 
 Texture2DArray EVSM : register(t0);
-RWTexture2DArray<float4> BlurOutput : register(u0);
+RWTexture2DArray<float2> BlurOutput : register(u0);
 
 [numthreads(16, 16, 1)]
 void main(uint3 ThreadID : SV_DispatchThreadID)
@@ -427,14 +427,14 @@ void main(uint3 ThreadID : SV_DispatchThreadID)
     [loop] for (int dy = -SearchRadius; dy <= SearchRadius; ++dy){
         [loop] for (int dx = -SearchRadius; dx <= SearchRadius; ++dx){
             int2 SampleCoords = clamp(int2(ThreadID.xy) + int2(dx, dy), int2(0, 0), int2(EVSMData.xy) - 1);
-            float4 Sample = EVSM[int3(SampleCoords, ThreadID.z)];
+            float2 Sample = EVSM[int3(SampleCoords, ThreadID.z)];
 
-            Result = (Result.x < Sample.x) ? Result.xy : Sample.xy;
+            Result = (Result.x < Sample.x) ? Result : Sample;
         }
     }
     //Result.xy = EVSM.SampleLevel(Linear_Sampler, float3(Coords, ThreadID.z), 0).xy;
 
-    BlurOutput[ThreadID.xyz] = Result.xyxy;
+    BlurOutput[ThreadID.xyz] = Result.xy;
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////

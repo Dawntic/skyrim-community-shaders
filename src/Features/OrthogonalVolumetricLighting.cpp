@@ -52,7 +52,7 @@ void OrthogonalVolumetricLighting::SetupPostLoadResources()
 	EVSMDesc.Width = EVSMDesc.Height = EVSM_Size;
 	EVSMDesc.MipLevels = 1;
 	EVSMDesc.ArraySize = nCascades;
-	EVSMDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	EVSMDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
 	EVSMDesc.Usage = D3D11_USAGE_DEFAULT;
 	EVSMDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
 	EVSMDesc.SampleDesc.Count = 1;

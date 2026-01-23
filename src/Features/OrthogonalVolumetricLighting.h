@@ -38,7 +38,7 @@ struct OrthogonalVolumetricLighting : Feature
 		RE::GetINISetting("bLensFlare:Imagespace")->data.b = true;
 		CSM_Size = RE::GetINISetting("iShadowMapResolution:Display")->data.u;
 		nCascades = RE::GetINISetting("iNumSplits:Display")->data.u;
-		EVSM_Size = CSM_Size / 4;
+		EVSM_Size = CSM_Size;  // / 4;
 
 		SetupPostLoadResources();
 	}
