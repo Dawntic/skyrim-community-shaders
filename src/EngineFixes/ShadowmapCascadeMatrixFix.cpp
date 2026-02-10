@@ -56,7 +56,7 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	float cascadeSplits[3] = { tmp_split[0], tmp_split[1], tmp_split[2] };
 
 	// Due to the game time scale creating high temporal variance in the view matrix we mitegate this by quantizing light direction to discrete angular steps
-	XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().lightDirection));
+	XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector));
 	lightDirection = QuantizeLightDirection(lightDirection, settings.lightUpdateAngle);
 
 	// Get root camera params
