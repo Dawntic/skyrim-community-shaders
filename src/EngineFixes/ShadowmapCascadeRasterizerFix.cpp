@@ -1,5 +1,7 @@
 #include "ShadowmapCascadeRasterizerFix.h"
 
+#include "../Features/terrainBlending.h"
+
 void ShadowmapRasterizerFix::Install()
 {
 	// This function is called once per cascade to begin the updating and rendering process
@@ -28,14 +30,21 @@ void ShadowmapRasterizerFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCas
 		initialized = cascade == numCascades - 1;
 	}
 
-	//Emplace
-	std::memcpy(*gRasterStates, shadowmapRasterStates[cascade], sizeof(RasterStateArray));
+	if (!globals::features::terrainBlending.reload) {
+		//Emplace
+		std::memcpy(*gRasterStates, shadowmapRasterStates[cascade], sizeof(RasterStateArray));
 
-	func(light, arg1, arg2, flags);
+		func(light, arg1, arg2, flags);
 
-	//Restore
-	if (cascade == numCascades - 1)
-		std::memcpy(*gRasterStates, backupGameRasterStates, sizeof(RasterStateArray));
+		//Restore
+		if (cascade == numCascades - 1)
+			std::memcpy(*gRasterStates, backupGameRasterStates, sizeof(RasterStateArray));
+	} else if (cascade == 0) {
+		Reload();
+		globals::features::terrainBlending.reload = false;
+
+		func(light, arg1, arg2, flags);
+	}
 
 	cascade = ++cascade < numCascades ? cascade : 0;
 }
@@ -45,6 +54,9 @@ void ShadowmapRasterizerFix::GetUpdatedRasterDesc(D3D11_RASTERIZER_DESC& outputD
 	outputDesc.DepthBias = shadowmapDesc.rasterDepthBias;
 	outputDesc.DepthBiasClamp = shadowmapDesc.rasterDepthBiasClamp;
 	outputDesc.SlopeScaledDepthBias = shadowmapDesc.rasterSlopeScaleBias;
+	outputDesc.DepthClipEnable = shadowmapDesc.depthClipEnable;
+	if (globals::features::terrainBlending.disableCulling)
+		outputDesc.CullMode = D3D11_CULL_NONE;
 }
 
 // Since state objects are shared globally across the pipeline we make duplicate arrays that cover the same range of states the game does
@@ -65,5 +77,19 @@ void ShadowmapRasterizerFix::CloneRasterStates(RasterStateArray* inputArray, int
 				}
 			}
 		}
+	}
+}
+
+void ShadowmapRasterizerFix::Reload()
+{
+	for (int i = 0; i < 2; i++) {
+		ShadowMapRasterizerDescriptor desc;
+		desc.rasterDepthBias = globals::features::terrainBlending.depthBias[i];
+		desc.rasterDepthBiasClamp = globals::features::terrainBlending.biasClamp[i];
+		desc.rasterSlopeScaleBias = globals::features::terrainBlending.slopeScaleBias[i];
+		desc.depthClipEnable = globals::features::terrainBlending.depthClip;
+
+		cascadeDescriptors[i] = desc;
+		CloneRasterStates(gRasterStates, i);
 	}
 }
