@@ -35,6 +35,7 @@ struct ShadowmapRasterizerFix : EngineFix
 		float rasterDepthBiasClamp;
 		float rasterSlopeScaleBias;
 		bool depthClipEnable = false;
+		bool rasterCulling = false;
 	};
 	static void GetUpdatedRasterDesc(D3D11_RASTERIZER_DESC& outputDesc, ShadowMapRasterizerDescriptor desc);
 

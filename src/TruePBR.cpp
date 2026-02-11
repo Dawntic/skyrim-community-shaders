@@ -679,6 +679,8 @@ struct BSLightingShaderProperty_GetRenderPasses
 					}
 				}
 
+				lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);
+
 				if (issEnabledAndInteriorWithSun)
 					lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);
 

@@ -3,10 +3,10 @@
 struct TerrainBlending : Feature
 {
 public:
-	virtual inline std::string GetName() override { return "Terrain Blending"; }
+	virtual inline std::string GetName() override { return "Shadow Cascade"; }
 	virtual inline std::string GetShortName() override { return "TerrainBlending"; }
 	virtual inline std::string_view GetShaderDefineName() override { return "TERRAIN_BLENDING"; }
-	virtual std::string_view GetCategory() const override { return "Landscape & Textures"; }
+	virtual std::string_view GetCategory() const override { return "Display"; }
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
 		return {
@@ -29,6 +29,31 @@ public:
 	STATIC_ASSERT_ALIGNAS_16(Settings);
 
 	Settings settings;
+
+	//
+	bool reload = false;
+	int depthBias[2] = { 0, 0 };
+	float biasClamp[2] = { 1, 1 };
+	float slopeScaleBias[2] = { 0, 0 };
+	bool renderShadowMask = false;
+
+	float multiplerRange = 2.0f;
+	bool update = true;
+	int testScale = 1;
+
+	int splits[4] = {};
+	float lightUpdateAngle = 0.1;
+	bool disableCulling = false;
+
+	bool rasterDepthClip = false;
+	bool rasterCulling = false;
+
+	bool updateView = true;
+	bool updatePos = true;
+	bool updateProj = true;
+
+	bool test = false;
+	//
 
 	virtual void DrawSettings() override;
 	virtual void LoadSettings(json& o_json) override;

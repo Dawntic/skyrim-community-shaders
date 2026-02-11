@@ -14,6 +14,23 @@ struct ShadowmapMatrixFix : EngineFix
 	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, DirectX::XMMATRIX viewProj, DirectX::XMVECTOR translate);
 	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
 
+	static void GetMainFrustum(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
+
+	static inline ID3D11RasterizerState* currentRasterState = nullptr;
+	static inline ID3D11RasterizerState* clonedRasterState = nullptr;
+	static inline ID3D11DepthStencilState* clonedDepthStencilState = nullptr;
+	static inline UINT currentStencilRef = 0;
+	static inline D3D11_VIEWPORT clonedViewport;
+
+	//static inline ID3D11Texture2D* cascadeTexv2 = nullptr;
+	static inline ID3D11Texture2D* cascadeTex = nullptr;
+	static inline ID3D11RenderTargetView* cascadeRT = nullptr;
+	static inline ID3D11DepthStencilView* cascadeDSV = nullptr;
+	static inline ID3D11ShaderResourceView* cascadeSRV = nullptr;
+
+	static inline bool renderShadowmaps = false;
+	static inline bool newFrame = false;
+
 	struct CascadeData
 	{
 		DirectX::XMVECTOR translation;
@@ -25,7 +42,7 @@ struct ShadowmapMatrixFix : EngineFix
 	};
 	static inline CascadeData cascadeData[maxCascades] = {};
 
-	static inline RE::NiFrustumPlanes maxExtentCullPlanes;
+	static inline RE::NiFrustumPlanes maxExtentCullPlanes = RE::NiFrustumPlanes();
 
 	struct alignas(16) ShadowDataCB
 	{
@@ -175,6 +192,12 @@ struct ShadowmapMatrixFix : EngineFix
 	struct AccumulateShadowmap
 	{
 		static void thunk(RE::NiCamera* camera, RE::NiAccumulator* accumulator, uint32_t flags);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct BSShaderPropertySetFlags
+	{
+		static void thunk(RE::BSShaderProperty* prop, RE::BSShaderProperty::EShaderPropertyFlag8 a_flag, bool a_set);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 };

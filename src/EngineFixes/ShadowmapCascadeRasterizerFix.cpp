@@ -55,7 +55,7 @@ void ShadowmapRasterizerFix::GetUpdatedRasterDesc(D3D11_RASTERIZER_DESC& outputD
 	outputDesc.DepthBiasClamp = shadowmapDesc.rasterDepthBiasClamp;
 	outputDesc.SlopeScaledDepthBias = shadowmapDesc.rasterSlopeScaleBias;
 	outputDesc.DepthClipEnable = shadowmapDesc.depthClipEnable;
-	if (globals::features::terrainBlending.disableCulling)
+	if (!shadowmapDesc.rasterCulling)
 		outputDesc.CullMode = D3D11_CULL_NONE;
 }
 
@@ -87,7 +87,8 @@ void ShadowmapRasterizerFix::Reload()
 		desc.rasterDepthBias = globals::features::terrainBlending.depthBias[i];
 		desc.rasterDepthBiasClamp = globals::features::terrainBlending.biasClamp[i];
 		desc.rasterSlopeScaleBias = globals::features::terrainBlending.slopeScaleBias[i];
-		desc.depthClipEnable = globals::features::terrainBlending.depthClip;
+		desc.depthClipEnable = globals::features::terrainBlending.rasterDepthClip;
+		desc.rasterCulling = globals::features::terrainBlending.rasterCulling;
 
 		cascadeDescriptors[i] = desc;
 		CloneRasterStates(gRasterStates, i);
