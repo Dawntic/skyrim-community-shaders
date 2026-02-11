@@ -23,13 +23,13 @@ struct ShadowmapMatrixFix : EngineFix
 	static inline D3D11_VIEWPORT clonedViewport;
 
 	//static inline ID3D11Texture2D* cascadeTexv2 = nullptr;
-	static inline ID3D11Texture2D* cascadeTex = nullptr;
-	static inline ID3D11RenderTargetView* cascadeRT = nullptr;
-	static inline ID3D11DepthStencilView* cascadeDSV = nullptr;
-	static inline ID3D11ShaderResourceView* cascadeSRV = nullptr;
+	//static inline ID3D11Texture2D* cascadeTex = nullptr;
+	//static inline ID3D11RenderTargetView* cascadeRT = nullptr;
+	//static inline ID3D11DepthStencilView* cascadeDSV = nullptr;
+	//static inline ID3D11ShaderResourceView* cascadeSRV = nullptr;
 
-	static inline bool renderShadowmaps = false;
-	static inline bool newFrame = false;
+	//static inline bool renderShadowmaps = false;
+	//static inline bool newFrame = false;
 
 	struct CascadeData
 	{

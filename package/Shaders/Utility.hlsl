@@ -167,8 +167,12 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4 positionWS = float4(mul(positionMS, transpose(worldMatrix)), 1);
 
 	positionCS = mul(FrameBuffer::CameraViewProj[eyeIndex], positionWS);
+
 #		else
+	//
 	precise float4x4 modelViewProj = mul(FrameBuffer::CameraViewProj[eyeIndex], World[eyeIndex]);
+
+	//end
 	positionCS = mul(modelViewProj, positionMS);
 #		endif
 
@@ -270,7 +274,7 @@ VS_OUTPUT main(VS_INPUT input)
 #	endif
 
 #	if defined(OFFSET_DEPTH)
-	vsout.PositionCS.z += 5.0;
+	vsout.PositionCS.z += 10.0;
 #	endif
 
 #	ifdef VR
@@ -363,6 +367,12 @@ cbuffer AlphaTestRefCB : register(b11)
 	float AlphaTestRefRS : packoffset(c0);
 }
 #	endif  // !VR
+
+cbuffer ShadowCascadeFix : register(b7)
+{
+	row_major float4x4 lightViewProj;
+	row_major float4x4 ShadowTransformMatrix[4];
+}
 
 #	if defined(RENDER_SHADOWMASKDPB)
 float GetPoissonDiskFilteredShadowVisibility(uint3 seed, Texture2DArray<float4> tex, SamplerComparisonState samp, float3 positionMS, float layerIndex, uint eyeIndex)
@@ -627,26 +637,30 @@ PS_OUTPUT main(PS_INPUT input)
 	uint3 seed = Random::pcg3d(uint3(input.PositionCS.xy, input.PositionCS.x * Math::PI));
 
 #		if defined(RENDER_SHADOWMASK)
-	if (SharedData::InInterior)
-		shadowColor = float4(0, 0, 0, 0);
+	if(SharedData::InInterior)
+		shadowColor = float4(0,0,0,0);
 
 	if (EndSplitDistances.z >= shadowMapDepth) {
-		float4x3 lightProjectionMatrix = ShadowMapProj[eyeIndex][0];
-		float shadowMapThreshold = AlphaTestRef.y;
+		float shadowMapThreshold;
+		float3 positionLS;
 		float cascadeIndex = 0;
+		float4x4 lightProjectionMatrix = ShadowTransformMatrix[0];
+		shadowMapThreshold = AlphaTestRef.y;
+		cascadeIndex = 0;
 		if (2.5 < EndSplitDistances.w && EndSplitDistances.y < shadowMapDepth) {
-			lightProjectionMatrix = ShadowMapProj[eyeIndex][2];
+			lightProjectionMatrix = ShadowTransformMatrix[2];
 			shadowMapThreshold = AlphaTestRef.z;
 			cascadeIndex = 2;
 		} else if (EndSplitDistances.x < shadowMapDepth) {
-			lightProjectionMatrix = ShadowMapProj[eyeIndex][1];
+			lightProjectionMatrix = ShadowTransformMatrix[1];
 			shadowMapThreshold = AlphaTestRef.z;
 			cascadeIndex = 1;
 		}
 
 		float shadowVisibility = 0;
 
-		float3 positionLS = mul(transpose(lightProjectionMatrix), float4(positionMS.xyz, 1)).xyz;
+		positionLS = mul(lightProjectionMatrix, float4(positionMS.xyz, 1)).xyz;
+
 
 #			if SHADOWFILTER == 0
 		float shadowMapValue = TexShadowMapSampler.Sample(SampShadowMapSampler, float3(positionLS.xy, cascadeIndex)).x;
@@ -662,7 +676,7 @@ PS_OUTPUT main(PS_INPUT input)
 		if (cascadeIndex < 1 && StartSplitDistances.y < shadowMapDepth) {
 			float cascade1ShadowVisibility = 0;
 
-			float3 cascade1PositionLS = mul(transpose(ShadowMapProj[eyeIndex][1]), float4(positionMS.xyz, 1)).xyz;
+			float3 cascade1PositionLS = mul(ShadowTransformMatrix[1], float4(positionMS.xyz, 1)).xyz;
 
 #			if SHADOWFILTER == 0
 			float cascade1ShadowMapValue = TexShadowMapSampler.Sample(SampShadowMapSampler, float3(cascade1PositionLS.xy, 1)).x;
