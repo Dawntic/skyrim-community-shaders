@@ -170,7 +170,7 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	XMVECTOR rootCameraPos = NiPoint3ToXMVector(rootCamera.world.translate);
 	RE::NiFrustum& viewFrustum = rootCamera.GetRuntimeData2().viewFrustum;
 	XMMATRIX worldRotMat = XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.world.rotate.entry));
-	XMMATRIX rootWorld = XMMATRIX(worldRotMat.r[0], worldRotMat.r[1], worldRotMat.r[2], XMVectorSetW(rootCameraPos, 1.0f));
+	XMMATRIX rootWorld = worldRotMat;  //XMMATRIX(worldRotMat.r[0], worldRotMat.r[1], worldRotMat.r[2], XMVectorSetW(rootCameraPos, 1.0f));
 
 	// Build light view matrix
 	XMVECTOR up = XMVectorSet(0, 1, 0, 0);
@@ -234,10 +234,19 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	XMVECTOR cornerMin = XMVectorSubtract(center, vRadius);
 	XMVECTOR cornerMax = XMVectorAdd(center, vRadius);
 
-	const XMVECTOR extent = XMVectorSubtract(cornerMax, cornerMin);
-	const XMVECTOR texelSize = extent / float(cascadePxSize);
-	cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
-	cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
+	// Snap to texel grid
+
+	XMVECTOR extent = XMVectorReplicate(2.0f * radius);
+	XMVECTOR texelSize = extent / float(cascadePxSize);
+	XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
+	cornerMin = XMVectorFloor(XMVectorAdd(cornerMin, lightCameraPos) / texelSize) * texelSize;
+	cornerMax = XMVectorFloor(XMVectorAdd(cornerMax, lightCameraPos) / texelSize) * texelSize;
+	//const XMVECTOR extent = XMVectorSubtract(cornerMax, cornerMin);
+	//XMVECTOR extent = XMVectorReplicate(2.0f * radius);
+	//extent = XMVectorFloor(extent / 64) * 64; //Didn't work
+	//XMVECTOR texelSize = extent / float(cascadePxSize);
+	//cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
+	//cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
 
 	//we can convert to float3 here and do the following math there
 	// Extend depth range
@@ -273,12 +282,13 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 
 	XMStoreFloat4x4(&cascadeData[cascade].viewProjTex, XMMatrixTranspose(XMMatrixMultiply(viewProj, texProj)));
 
-	cascadeData[cascade].translation = XMVectorZero();
+	cascadeData[cascade].translation = rootCameraPos;  //XMVectorZero();
 
 	// On GPU we do:
 	// Cascade VS
-	//float4x4 modelViewProj = mul(lightViewProj, PerGeomAbsWorldMatrix);
-	//vsoutput.PositionCS = mul(modelViewProj,  float4(vsinput.PositionMS.xyz, 1.0));
+	//float3 CameraPos = FrameBuffer::CameraPosAdjust[0].xyz;
+	//float4 CoordsWS = mul(World[0], float4(positionMS.xyz, 1.0));
+	//CoordsLS = mul(lightViewProj, float4((CoordsWS.xyz + CameraPos), 1.0));
 
 	// Sampling PS
 	// positionLS = mul(lightProjectionMatrix, float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[0].xyz, 1)).xyz;
@@ -287,6 +297,9 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	// Build culling planes
 	GetCullPlanesFromVPMatrix(cascadeData[cascade].cullingPlanes, viewProj, rootCameraPos);
 }
+
+//Subtract translation row on GPU
+// Thats no diff from CPU
 
 // On GPU we do:
 //float4x4 modelViewProj = mul(lightViewProj, PerGeomWorldMatrix);
