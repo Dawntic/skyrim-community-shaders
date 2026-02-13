@@ -119,6 +119,12 @@ float2 SmoothSaturate(float2 value)
 	return value * value * (3 - 2 * value);
 }
 
+cbuffer ShadowCascadeFix : register(b7)
+{
+	row_major float4x4 lightViewProj;
+	row_major float4x4 ShadowTransformMatrix[4];
+}
+
 VS_OUTPUT main(VS_INPUT input)
 {
 	VS_OUTPUT vsout;
@@ -166,13 +172,20 @@ VS_OUTPUT main(VS_INPUT input)
 	float3x4 worldMatrix = Skinned::GetBoneTransformMatrix(Bones, boneIndices, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, input.BoneWeights);
 	precise float4 positionWS = float4(mul(positionMS, transpose(worldMatrix)), 1);
 
-	positionCS = mul(FrameBuffer::CameraViewProj[eyeIndex], positionWS);
-
+#		if defined(RENDER_SHADOWMAP) && !defined(VR)
+	positionCS = mul(lightViewProj, positionWS);
 #		else
-	//
-	precise float4x4 modelViewProj = mul(FrameBuffer::CameraViewProj[eyeIndex], World[eyeIndex]);
+	positionCS = mul(FrameBuffer::CameraViewProj[eyeIndex], positionWS);
+#		endif
+#	else
 
-	//end
+	precise float4x4 modelViewProj;
+#		if defined(RENDER_SHADOWMAP) && !defined(VR)
+	modelViewProj = mul(lightViewProj, World[eyeIndex]);
+#		else
+	modelViewProj = mul(FrameBuffer::CameraViewProj[eyeIndex], World[eyeIndex]);
+#		endif
+
 	positionCS = mul(modelViewProj, positionMS);
 #		endif
 
@@ -659,7 +672,7 @@ PS_OUTPUT main(PS_INPUT input)
 
 		float shadowVisibility = 0;
 
-		positionLS = mul(lightProjectionMatrix, float4(positionMS.xyz, 1)).xyz;
+		positionLS = mul(lightProjectionMatrix, float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[0].xyz, 1)).xyz;
 
 
 #			if SHADOWFILTER == 0

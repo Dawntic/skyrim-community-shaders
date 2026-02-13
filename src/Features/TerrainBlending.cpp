@@ -108,14 +108,18 @@ void TerrainBlending::DrawSettings()
 	}
 
 	ImGui::Checkbox("Test", &test);
+	ImGui::Checkbox("Test 2", &test2);
+	ImGui::Checkbox("Test 3", &test3);
 
 	ImGui::SliderFloat("Z Range Multipler", &multiplerRange, 0.0f, 4.0f);
 	ImGui::SliderFloat("Light Angle Update Step", &lightUpdateAngle, 0.0f, 0.5f, "%.4f");
 
 	ImGui::SliderInt("Cascade 1 Coverage", &splits[0], 15, 2000);
-	ImGui::SliderInt("Cascade 2 Coverage", &splits[1], 100, 4000);
+	ImGui::SliderInt("Cascade 2 Coverage", &splits[1], splits[0], 4000);
 	ImGui::SliderInt("Cascade 3 Coverage", &splits[2], 500, 6000);
 	ImGui::SliderInt("Cascade 4 Coverage", &splits[3], 1000, 8000);
+
+	ImGui::Text(fmt::format("Cascade 1 Texel Size: {}", float(splits[0]) / 1024.0f).c_str());
 
 	ImGui::Checkbox("Disable Culling", &disableCulling);
 	ImGui::Checkbox("Raster Culling", &rasterCulling);

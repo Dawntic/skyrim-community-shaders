@@ -41,7 +41,7 @@ public:
 	bool update = true;
 	int testScale = 1;
 
-	int splits[4] = {};
+	int splits[4] = { 1000, 3000, 0, 0 };
 	float lightUpdateAngle = 0.1;
 	bool disableCulling = false;
 
@@ -53,6 +53,8 @@ public:
 	bool updateProj = true;
 
 	bool test = false;
+	bool test2 = false;
+	bool test3 = false;
 	//
 
 	virtual void DrawSettings() override;

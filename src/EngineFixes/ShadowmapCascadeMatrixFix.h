@@ -11,33 +11,18 @@ struct ShadowmapMatrixFix : EngineFix
 	static inline int cascadeToRender = -1;
 
 	static void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCameraNew);
+	static void GetMainFrustum(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
 	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, DirectX::XMMATRIX viewProj, DirectX::XMVECTOR translate);
 	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
-
-	static void GetMainFrustum(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
-
-	static inline ID3D11RasterizerState* currentRasterState = nullptr;
-	static inline ID3D11RasterizerState* clonedRasterState = nullptr;
-	static inline ID3D11DepthStencilState* clonedDepthStencilState = nullptr;
-	static inline UINT currentStencilRef = 0;
-	static inline D3D11_VIEWPORT clonedViewport;
-
-	//static inline ID3D11Texture2D* cascadeTexv2 = nullptr;
-	//static inline ID3D11Texture2D* cascadeTex = nullptr;
-	//static inline ID3D11RenderTargetView* cascadeRT = nullptr;
-	//static inline ID3D11DepthStencilView* cascadeDSV = nullptr;
-	//static inline ID3D11ShaderResourceView* cascadeSRV = nullptr;
-
-	//static inline bool renderShadowmaps = false;
-	//static inline bool newFrame = false;
 
 	struct CascadeData
 	{
 		DirectX::XMVECTOR translation;
-		DirectX::XMFLOAT4X4 viewMatrix;
+		DirectX::XMFLOAT4X4 worldMatrix;
+		DirectX::XMFLOAT4X4 projMatrix;
 		DirectX::XMFLOAT4X4 viewProj;
 		DirectX::XMFLOAT4X4 viewProjTex;
-		RE::NiFrustum frustum;
+		//RE::NiFrustum frustum;
 		RE::NiFrustumPlanes cullingPlanes;
 	};
 	static inline CascadeData cascadeData[maxCascades] = {};
