@@ -167,26 +167,10 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	lightDirection = QuantizeLightDirection(lightDirection, settings.lightUpdateAngle);
 
 	// Get root camera params
-	RE::NiFrustum& viewFrustum = rootCamera.GetRuntimeData2().viewFrustum;
 	XMVECTOR rootCameraPos = NiPoint3ToXMVector(rootCamera.world.translate);
-
+	RE::NiFrustum& viewFrustum = rootCamera.GetRuntimeData2().viewFrustum;
 	XMMATRIX worldRotMat = XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.world.rotate.entry));
-	XMMATRIX viewRotMat = XMMatrixTranspose(worldRotMat);
-
-	//if (settings.test2) {
-	//	viewRotMat = worldRotMat;
-	//	viewRotMat.r[3] = XMVectorSetW(rootCameraPos, 1.0f);
-	//	LogMatrix("viewRotMat", viewRotMat);
-	//}
-	//else {
-	//	viewRotMat = XMMatrixTranspose(worldRotMat);
-	//	viewRotMat.r[3] = XMVectorSetW(rootCameraPos, 1.0f);
-	//	LogMatrix("viewRotMat", viewRotMat);
-	//}
-	//if (settings.test) {
-	//	viewRotMat = XMMatrixTranspose(worldRotMat);
-	//	LogMatrix("viewRotMat", viewRotMat);
-	//}
+	XMMATRIX rootWorld = XMMATRIX(worldRotMat.r[0], worldRotMat.r[1], worldRotMat.r[2], XMVectorSetW(rootCameraPos, 1.0f));
 
 	// Build light view matrix
 	XMVECTOR up = XMVectorSet(0, 1, 0, 0);
@@ -206,24 +190,16 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	XMMATRIX lightView = XMMatrixTranspose(lightWorld);  // ViewRot == InvWorldRot == TrspWorld
 
 	XMVECTOR rootFrustum[] = {
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fRight, 0), viewFrustum.fFar), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fLeft, 0), viewFrustum.fFar), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fRight, 0), viewFrustum.fFar), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fFar), viewRotMat),
+		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fRight, 0), viewFrustum.fFar), rootWorld),
+		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fLeft, 0), viewFrustum.fFar), rootWorld),
+		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fRight, 0), viewFrustum.fFar), rootWorld),
+		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fFar), rootWorld),
 
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fRight, 0), viewFrustum.fNear), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fLeft, 0), viewFrustum.fNear), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fRight, 0), viewFrustum.fNear), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fNear), viewRotMat),
+		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fRight, 0), viewFrustum.fNear), rootWorld),
+		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fLeft, 0), viewFrustum.fNear), rootWorld),
+		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fRight, 0), viewFrustum.fNear), rootWorld),
+		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fNear), rootWorld),
 	};
-
-	//This seems to work but no worth rotation
-	if (settings.test) {
-		// After building rootFrustum[], make them absolute world space
-		for (int i = 0; i < 8; ++i) {
-			rootFrustum[i] = XMVectorAdd(rootFrustum[i], rootCameraPos);
-		}
-	}
 
 	int cascade = cascadeToRender;
 
@@ -253,18 +229,10 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 		radius = std::max(radius, XMVectorGetX(XMVector3Length(XMVectorSubtract(lightFrustum[j], center))));
 	}
 
-	//if (settings.test2)
-	//	center = XMVectorAdd(center, rootCameraPos);
-
 	// Build AABB from sphere
 	XMVECTOR vRadius = XMVectorReplicate(radius);
 	XMVECTOR cornerMin = XMVectorSubtract(center, vRadius);
 	XMVECTOR cornerMax = XMVectorAdd(center, vRadius);
-
-	//if (settings.test3) {
-	//	cornerMin = XMVectorAdd(cornerMin, rootCameraPos);
-	//	cornerMax = XMVectorAdd(cornerMax, rootCameraPos);
-	//}
 
 	const XMVECTOR extent = XMVectorSubtract(cornerMax, cornerMin);
 	const XMVECTOR texelSize = extent / float(cascadePxSize);
@@ -281,11 +249,6 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	cornerMin = XMVectorSetZ(cornerMin, centerZ - ExtentZ);
 	cornerMax = XMVectorSetZ(cornerMax, centerZ + ExtentZ);
 
-	//if (settings.test3) {
-	//	cornerMin = XMVectorAdd(cornerMin, rootCameraPos);
-	//	cornerMax = XMVectorAdd(cornerMax, rootCameraPos);
-	//}
-
 	// Build view projection matrix
 	float3 clipMin = cornerMin;  // left, bottom, near
 	float3 clipMax = cornerMax;  // right, top, far
@@ -298,11 +261,6 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	}
 
 	auto viewProj = XMMatrixMultiply(lightView, lightProj);
-
-	if (settings.test2) {
-		XMMATRIX camTranslation = XMMatrixTranslationFromVector(rootCameraPos);
-		viewProj = XMMatrixMultiply(viewProj, camTranslation);  //Tried trans * view
-	}
 
 	XMStoreFloat4x4(&cascadeData[cascade].viewProj, XMMatrixTranspose(viewProj));
 
@@ -317,13 +275,22 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 
 	cascadeData[cascade].translation = XMVectorZero();
 
+	// On GPU we do:
+	// Cascade VS
+	//float4x4 modelViewProj = mul(lightViewProj, PerGeomAbsWorldMatrix);
+	//vsoutput.PositionCS = mul(modelViewProj,  float4(vsinput.PositionMS.xyz, 1.0));
+
+	// Sampling PS
+	// positionLS = mul(lightProjectionMatrix, float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[0].xyz, 1)).xyz;
+	// vis = SampleCascade(positionLS);
+
 	// Build culling planes
 	GetCullPlanesFromVPMatrix(cascadeData[cascade].cullingPlanes, viewProj, rootCameraPos);
-
-	// On GPU we do:
-	//float4x4 modelViewProj = mul(lightViewProj, PerGeomWorldMatrix);
-	//vsoutput.PositionCS = mul(modelViewProj,  float4(vsinput.PositionMS.xyz, 1.0));
 }
+
+// On GPU we do:
+//float4x4 modelViewProj = mul(lightViewProj, PerGeomWorldMatrix);
+//vsoutput.PositionCS = mul(modelViewProj,  float4(vsinput.PositionMS.xyz, 1.0));
 
 // Would it be better to only snap corners XY and leave Z?
 // Does the fact the basis vectors are different matter? as in, rootCameraPos Z is up, but light matrix uses Y up.
