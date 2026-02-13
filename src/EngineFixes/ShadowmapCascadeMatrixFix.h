@@ -12,7 +12,7 @@ struct ShadowmapMatrixFix : EngineFix
 
 	static void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCameraNew);
 	static void GetMainFrustum(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
-	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, DirectX::XMMATRIX viewProj, DirectX::XMVECTOR translate);
+	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, DirectX::XMMATRIX viewProj);
 	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
 
 	struct CascadeData

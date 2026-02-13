@@ -201,20 +201,18 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fNear), rootWorld),
 	};
 
-	int cascade = cascadeToRender;
-
-	float split_near = (cascade == 0) ? viewFrustum.fNear / viewFrustum.fFar : cascadeSplits[cascade - 1] / viewFrustum.fFar;
-	float split_far = cascadeSplits[cascade] / viewFrustum.fFar;
+	float split_near = (cascadeToRender == 0) ? viewFrustum.fNear / viewFrustum.fFar : cascadeSplits[cascadeToRender - 1] / viewFrustum.fFar;
+	float split_far = cascadeSplits[cascadeToRender] / viewFrustum.fFar;
 
 	XMVECTOR lightFrustum[] = {
-		XMVector3Transform(XMVectorLerp(rootFrustum[4], rootFrustum[0], split_near), lightView),  // TR split_near
-		XMVector3Transform(XMVectorLerp(rootFrustum[4], rootFrustum[0], split_far), lightView),   // TR split_far
-		XMVector3Transform(XMVectorLerp(rootFrustum[5], rootFrustum[1], split_near), lightView),  // TL split_near
-		XMVector3Transform(XMVectorLerp(rootFrustum[5], rootFrustum[1], split_far), lightView),   // TL split_far
-		XMVector3Transform(XMVectorLerp(rootFrustum[6], rootFrustum[2], split_near), lightView),  // BR split_near
-		XMVector3Transform(XMVectorLerp(rootFrustum[6], rootFrustum[2], split_far), lightView),   // BR split_far
-		XMVector3Transform(XMVectorLerp(rootFrustum[7], rootFrustum[3], split_near), lightView),  // BL split_near
-		XMVector3Transform(XMVectorLerp(rootFrustum[7], rootFrustum[3], split_far), lightView),   // BL split_far
+		XMVector3Transform(XMVectorLerp(rootFrustum[4], rootFrustum[0], split_near), lightView),  // TR - near
+		XMVector3Transform(XMVectorLerp(rootFrustum[4], rootFrustum[0], split_far), lightView),   // TR - far
+		XMVector3Transform(XMVectorLerp(rootFrustum[5], rootFrustum[1], split_near), lightView),  // TL - near
+		XMVector3Transform(XMVectorLerp(rootFrustum[5], rootFrustum[1], split_far), lightView),   // TL - far
+		XMVector3Transform(XMVectorLerp(rootFrustum[6], rootFrustum[2], split_near), lightView),  // BR - near
+		XMVector3Transform(XMVectorLerp(rootFrustum[6], rootFrustum[2], split_far), lightView),   // BR - far
+		XMVector3Transform(XMVectorLerp(rootFrustum[7], rootFrustum[3], split_near), lightView),  // BL - near
+		XMVector3Transform(XMVectorLerp(rootFrustum[7], rootFrustum[3], split_far), lightView),   // BL - far
 	};
 
 	// Build bounding sphere
@@ -234,33 +232,28 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	XMVECTOR cornerMin = XMVectorSubtract(center, vRadius);
 	XMVECTOR cornerMax = XMVectorAdd(center, vRadius);
 
-	// Snap to texel grid
+	// Add trans vec
+	XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
+	cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
+	cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
 
+	// Snap texel grid
 	XMVECTOR extent = XMVectorReplicate(2.0f * radius);
 	XMVECTOR texelSize = extent / float(cascadePxSize);
-	XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
-	cornerMin = XMVectorFloor(XMVectorAdd(cornerMin, lightCameraPos) / texelSize) * texelSize;
-	cornerMax = XMVectorFloor(XMVectorAdd(cornerMax, lightCameraPos) / texelSize) * texelSize;
-	//const XMVECTOR extent = XMVectorSubtract(cornerMax, cornerMin);
-	//XMVECTOR extent = XMVectorReplicate(2.0f * radius);
-	//extent = XMVectorFloor(extent / 64) * 64; //Didn't work
-	//XMVECTOR texelSize = extent / float(cascadePxSize);
-	//cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
-	//cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
+	cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
+	cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
 
-	//we can convert to float3 here and do the following math there
-	// Extend depth range
-	center = (cornerMin + cornerMax) * 0.5f;
-	float centerZ = XMVectorGetZ(center);
-	float halfExtentZ = abs(centerZ - XMVectorGetZ(cornerMin));
-
-	float ExtentZ = halfExtentZ * settings.multiplerRange;  // The lower this is the more spread the shadow map depth values are so higher means less precision
-	cornerMin = XMVectorSetZ(cornerMin, centerZ - ExtentZ);
-	cornerMax = XMVectorSetZ(cornerMax, centerZ + ExtentZ);
-
-	// Build view projection matrix
 	float3 clipMin = cornerMin;  // left, bottom, near
 	float3 clipMax = cornerMax;  // right, top, far
+
+	// Extend depth
+	float centerZ = float3((clipMin + clipMax) * 0.5f).z;
+	float halfExtentZ = abs(centerZ - clipMin.z);
+	halfExtentZ *= settings.multiplerRange;  // The lower this is the more spread the shadow map depth values are so higher means less precision
+
+	clipMin.z = centerZ - halfExtentZ;
+	clipMax.z = centerZ + halfExtentZ;
+
 	auto lightProj = XMMatrixOrthographicOffCenterLH(clipMin.x, clipMax.x, clipMin.y, clipMax.y, clipMin.z, clipMax.z);
 
 	if (settings.updateProj) {
@@ -270,8 +263,7 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	}
 
 	auto viewProj = XMMatrixMultiply(lightView, lightProj);
-
-	XMStoreFloat4x4(&cascadeData[cascade].viewProj, XMMatrixTranspose(viewProj));
+	XMStoreFloat4x4(&cascadeData[cascadeToRender].viewProj, XMMatrixTranspose(viewProj));
 
 	// Build shadow sampling matrix
 	XMMATRIX texProj = XMMATRIX(
@@ -280,75 +272,14 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 		0.0f, 0.0f, 1.0f, 0.0f,
 		0.5f, 0.5f, 0.0f, 1.0f);
 
-	XMStoreFloat4x4(&cascadeData[cascade].viewProjTex, XMMatrixTranspose(XMMatrixMultiply(viewProj, texProj)));
+	XMStoreFloat4x4(&cascadeData[cascadeToRender].viewProjTex, XMMatrixTranspose(XMMatrixMultiply(viewProj, texProj)));
 
-	cascadeData[cascade].translation = rootCameraPos;  //XMVectorZero();
-
-	// On GPU we do:
-	// Cascade VS
-	//float3 CameraPos = FrameBuffer::CameraPosAdjust[0].xyz;
-	//float4 CoordsWS = mul(World[0], float4(positionMS.xyz, 1.0));
-	//CoordsLS = mul(lightViewProj, float4((CoordsWS.xyz + CameraPos), 1.0));
-
-	// Sampling PS
-	// positionLS = mul(lightProjectionMatrix, float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[0].xyz, 1)).xyz;
-	// vis = SampleCascade(positionLS);
+	// Set translation for geometry to transform against
+	cascadeData[cascadeToRender].translation = rootCameraPos;
 
 	// Build culling planes
-	GetCullPlanesFromVPMatrix(cascadeData[cascade].cullingPlanes, viewProj, rootCameraPos);
+	GetCullPlanesFromVPMatrix(cascadeData[cascadeToRender].cullingPlanes, viewProj);
 }
-
-//Subtract translation row on GPU
-// Thats no diff from CPU
-
-// On GPU we do:
-//float4x4 modelViewProj = mul(lightViewProj, PerGeomWorldMatrix);
-//vsoutput.PositionCS = mul(modelViewProj,  float4(vsinput.PositionMS.xyz, 1.0));
-
-// Would it be better to only snap corners XY and leave Z?
-// Does the fact the basis vectors are different matter? as in, rootCameraPos Z is up, but light matrix uses Y up.
-
-//cascadeData[cascade].frustum.fLeft = clipMin.x;
-//cascadeData[cascade].frustum.fRight = clipMax.x;
-//cascadeData[cascade].frustum.fBottom = clipMin.y;
-//cascadeData[cascade].frustum.fTop = clipMax.y;
-//cascadeData[cascade].frustum.fNear = clipMin.z;
-//cascadeData[cascade].frustum.fFar = clipMax.z;
-
-//Transform camera to light space and snap to grid
-//XMVECTOR snappedTranslation = XMVector3Transform(rootCameraPos, lightView);
-//snappedTranslation = XMVectorFloor(snappedTranslation / texelSize) * texelSize;
-
-//XMVECTOR cameraLS = XMVector3Transform(rootCameraPos, lightView);
-//XMVECTOR texelSizeVec = XMVectorReplicate(float(settings.testScale));  //XMVectorReplicate((split_far * 2.0f) / float(cascadePxSize));
-//XMVECTOR snappedCameraLS = XMVectorFloor(cameraLS / texelSizeVec) * texelSizeVec;
-//XMVECTOR snappedCameraPosWorld = XMVector3Transform(snappedCameraLS, lightWorld);
-
-// We need to set a translation for geometry to transform against
-//cascadeData[cascade].translation = rootCameraPos; //snappedCameraPosWorld;  //XMVector3Transform(snappedTranslation, lightWorld);
-
-// Needed when we go back to game cbuffer
-//XMStoreFloat4x4(&cascadeData[cascade].worldMatrix, lightWorld);
-
-//logger::info("texel size: {}", XMVectorGetX(texelSize));
-
-//}
-
-// Maybe i should add camera world position into the corners?
-// Store previous frame's viewProj (static or member variable)
-//static XMMATRIX prevViewProj = cascadeData[cascade].viewProj;
-// Inside cascade loop, after computing center from bounding sphere:
-// Project center using PREVIOUS frame's viewProj
-//XMVECTOR projectedCenter = XMVector3TransformCoord(center, prevViewProj[cascade]); //is using center corect?
-// Snap in clip space (ortho clip space is [-1,1] or depends on your projection)
-//float clipSpaceTexelSize = texelSize; //2.0f / cascadePxSize;     // 2.0 because clip space spans 2 units
-//float x = floor(XMVectorGetX(projectedCenter) / clipSpaceTexelSize) * clipSpaceTexelSize;
-//float y = floor(XMVectorGetY(projectedCenter) / clipSpaceTexelSize) * clipSpaceTexelSize;
-//float z = XMVectorGetZ(projectedCenter);  // don't snap Z
-// Transform back using inverse of PREVIOUS frame's viewProj
-//XMMATRIX invPrevViewProj = XMMatrixInverse(nullptr, prevViewProj[cascade]);
-//XMVECTOR snappedCenter = XMVector3Transform(XMVectorSet(x, y, z, 0), invPrevViewProj);
-//}
 
 // Step 1: Update cascade camera matrices, cull planes etc.
 bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSShadowDirectionalLight* light, RE::NiCamera& inputCamera)
@@ -481,7 +412,7 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 }
 
 //// UTIL ///////////////////////////////////////
-void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, DirectX::XMMATRIX viewProj, DirectX::XMVECTOR translation)
+void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, DirectX::XMMATRIX viewProj)
 {
 	using namespace DirectX;
 
@@ -506,7 +437,6 @@ void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlane
 			// NiPlane wants: n dot p = -d
 			XMVECTOR normal = XMVectorScale(planes[i], invLen);
 			auto constant = -XMVectorGetW(planes[i]) * invLen;
-			constant += XMVectorGetX(XMVector3Dot(normal, translation));
 
 			outPlanes.cullingPlanes[i].normal = XMVectorToNiPoint3(normal);
 			outPlanes.cullingPlanes[i].constant = constant;
