@@ -638,6 +638,9 @@ struct BSLightingShaderProperty_LoadBinary
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
+#include "EngineFix.h"
+#include "EngineFixes/ShadowmapCascadeMatrixFix.h"
+
 struct BSLightingShaderProperty_GetRenderPasses
 {
 	static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSLightingShaderProperty* property, RE::BSGeometry* geometry, std::uint32_t renderFlags, RE::BSShaderAccumulator* accumulator)
@@ -679,7 +682,11 @@ struct BSLightingShaderProperty_GetRenderPasses
 					}
 				}
 
-				lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);
+				if (EngineFix::installed && geometry) {
+					ShadowmapMatrixFix& matrixFix = EngineFix::GetEngineFix<ShadowmapMatrixFix>(2);
+					if (matrixFix.initialized && matrixFix.GeometryInsideShadowBound(geometry))
+						lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);
+				}
 
 				if (issEnabledAndInteriorWithSun)
 					lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);

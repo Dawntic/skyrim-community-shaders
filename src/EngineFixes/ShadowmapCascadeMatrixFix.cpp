@@ -10,7 +10,8 @@
 // Add UI?
 // Support 4 cascades
 // Split overlap
-//Culling breaks at low texel size - high shadow rez
+// Culling breaks at low texel size - high shadow rez
+// Figure out how to handle shader flag issue
 
 void ShadowmapMatrixFix::Install()
 {
@@ -46,98 +47,6 @@ void ShadowmapMatrixFix::GetMainFrustum(RE::BSShadowDirectionalLight* light, RE:
 	using namespace DirectX;
 
 	auto& settings = globals::features::terrainBlending;
-
-	// Get dir light params
-	auto& tmp_split = light->GetShadowDirectionalLightRuntimeData().endSplitDistances;
-	float cascadeSplits[3] = { tmp_split[0], tmp_split[1], tmp_split[2] };
-
-	// Due to the game time scale creating high temporal variance in the view matrix we mitegate this by quantizing light direction to discrete angular steps
-	XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector));
-	lightDirection = QuantizeLightDirection(lightDirection, settings.lightUpdateAngle);
-
-	// Get root camera params
-	RE::NiFrustum& viewFrustum = rootCamera.GetRuntimeData2().viewFrustum;
-	XMMATRIX worldRotMat = XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.world.rotate.entry));
-	XMMATRIX viewRotMat = XMMatrixTranspose(worldRotMat);
-	XMVECTOR rootCameraPos = NiPoint3ToXMVector(rootCamera.world.translate);
-
-	// Build light view matrix
-	XMVECTOR up = XMVectorSet(0, 1, 0, 0);
-	XMVECTOR forward = lightDirection;                                 // Direction light travels
-	XMVECTOR right = XMVector3Normalize(XMVector3Cross(forward, up));  // Matches game format
-	up = XMVector3Cross(right, forward);
-
-	// Adding translation breaks texel snapping
-	XMMATRIX lightWorld = XMMATRIX(right, up, forward, XMVectorSet(0, 0, 0, 1));
-	XMMATRIX lightView = XMMatrixTranspose(lightWorld);  // ViewRot == InvWorldRot == TrspWorld
-
-	XMVECTOR rootFrustum[] = {
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fRight, 0), viewFrustum.fFar), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fLeft, 0), viewFrustum.fFar), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fRight, 0), viewFrustum.fFar), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fFar), viewRotMat),
-
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fRight, 0), viewFrustum.fNear), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fLeft, 0), viewFrustum.fNear), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fRight, 0), viewFrustum.fNear), viewRotMat),
-		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fNear), viewRotMat),
-	};
-
-	float split_near = viewFrustum.fNear / viewFrustum.fFar;
-	float split_far = cascadeSplits[nCascades - 1] / viewFrustum.fFar;
-
-	XMVECTOR lightFrustum[] = {
-		XMVector3Transform(XMVectorLerp(rootFrustum[4], rootFrustum[0], split_near), lightView),  // TR split_near
-		XMVector3Transform(XMVectorLerp(rootFrustum[4], rootFrustum[0], split_far), lightView),   // TR split_far
-		XMVector3Transform(XMVectorLerp(rootFrustum[5], rootFrustum[1], split_near), lightView),  // TL split_near
-		XMVector3Transform(XMVectorLerp(rootFrustum[5], rootFrustum[1], split_far), lightView),   // TL split_far
-		XMVector3Transform(XMVectorLerp(rootFrustum[6], rootFrustum[2], split_near), lightView),  // BR split_near
-		XMVector3Transform(XMVectorLerp(rootFrustum[6], rootFrustum[2], split_far), lightView),   // BR split_far
-		XMVector3Transform(XMVectorLerp(rootFrustum[7], rootFrustum[3], split_near), lightView),  // BL split_near
-		XMVector3Transform(XMVectorLerp(rootFrustum[7], rootFrustum[3], split_far), lightView),   // BL split_far
-	};
-
-	// Build bounding sphere
-	XMVECTOR center = XMVectorZero();
-	float radius = 0;
-
-	for (int j = 0; j < 8; ++j) {
-		center = XMVectorAdd(center, lightFrustum[j]);
-	}
-	center = center / 8.0f;
-
-	for (int j = 0; j < 8; ++j) {
-		radius = std::max(radius, XMVectorGetX(XMVector3Length(XMVectorSubtract(lightFrustum[j], center))));
-	}
-
-	// Build AABB from sphere
-	XMVECTOR vRadius = XMVectorReplicate(radius);
-	XMVECTOR cornerMin = XMVectorSubtract(center, vRadius);
-	XMVECTOR cornerMax = XMVectorAdd(center, vRadius);
-
-	// Snap cascade to texel grid
-	const XMVECTOR extent = XMVectorSubtract(cornerMax, cornerMin);
-	const XMVECTOR texelSize = extent / float(cascadePxSize);
-	cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
-	cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
-
-	// Extend depth range
-	center = (cornerMin + cornerMax) * 0.5f;
-	float centerZ = XMVectorGetZ(center);
-	float halfExtentZ = abs(centerZ - XMVectorGetZ(cornerMin));
-
-	float ExtentZ = halfExtentZ * globals::features::terrainBlending.multiplerRange;  // The lower this is the more spread the shadow map depth values are so higher means less precision
-	cornerMin = XMVectorSetZ(cornerMin, centerZ - ExtentZ);
-	cornerMax = XMVectorSetZ(cornerMax, centerZ + ExtentZ);
-
-	// Build view projection matrix
-	float3 clipMin = cornerMin;  // left, bottom, near
-	float3 clipMax = cornerMax;  // right, top, far
-	auto lightProj = XMMatrixOrthographicOffCenterLH(clipMin.x, clipMax.x, clipMin.y, clipMax.y, clipMin.z, clipMax.z);
-	auto viewProj = XMMatrixMultiply(lightView, lightProj);
-
-	// Build culling planes
-	GetCullPlanesFromVPMatrix(maxExtentCullPlanes, viewProj);
 }
 
 void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera)
@@ -145,10 +54,6 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	using namespace DirectX;
 
 	auto& settings = globals::features::terrainBlending;
-
-	// Get dir light params
-	auto& tmp_split = light->GetShadowDirectionalLightRuntimeData().endSplitDistances;
-	float cascadeSplits[3] = { (float)settings.splits[0], (float)settings.splits[1], tmp_split[2] };
 
 	// Get root camera params
 	XMVECTOR rootCameraPos = NiPoint3ToXMVector(rootCamera.world.translate);
@@ -188,8 +93,19 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 		XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fNear), rootWorld),
 	};
 
-	float split_near = (cascadeToRender == 0) ? viewFrustum.fNear / viewFrustum.fFar : cascadeSplits[cascadeToRender - 1] / viewFrustum.fFar;
-	float split_far = cascadeSplits[cascadeToRender] / viewFrustum.fFar;
+	// Get dir light params
+	//auto& tmp_split = light->GetShadowDirectionalLightRuntimeData().endSplitDistances;
+	float cascadeSplits[4] = { (float)settings.splits[0], (float)settings.splits[1], (float)settings.splits[2], (float)settings.splits[3] };
+	cascadeSplitViewDist[0] = cascadeSplits[0];
+	cascadeSplitViewDist[1] = cascadeSplits[1];
+	cascadeSplitViewDist[2] = cascadeSplits[2];
+	cascadeSplitViewDist[3] = cascadeSplits[3];
+
+	for (int i = 0; i < 4; i++)
+		cascadeData[cascadeToRender].splitEndDepth = ViewDepthToNDC(cascadeSplits[i], viewFrustum);  // Make static //
+
+	float split_near = (cascadeToRender == 0) ? 0.0f : LinearStep(viewFrustum.fNear, viewFrustum.fFar, cascadeSplits[cascadeToRender - 1]);  // These lin steps can be static //
+	float split_far = LinearStep(viewFrustum.fNear, viewFrustum.fFar, cascadeSplits[cascadeToRender]);
 
 	XMVECTOR lightFrustum[] = {
 		XMVector3Transform(XMVectorLerp(rootFrustum[4], rootFrustum[0], split_near), lightView),  // TR - near
@@ -271,14 +187,13 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 // Step 1: Update cascade camera matrices, cull planes etc.
 bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSShadowDirectionalLight* light, RE::NiCamera& inputCamera)
 {
-	static bool init = true;
-	if (init && light) {
+	if (!initialized && light) {
 		cascadePxSize = RE::GetINISetting("iShadowMapResolution:Display")->data.u;
 		nCascades = RE::GetINISetting("iNumSplits:Display")->data.u;
-		if (!shadowDataCB)
-			shadowDataCB = new ConstantBuffer(ConstantBufferDesc<ShadowDataCB>());
+		if (!shadowCascadeFixCB)
+			shadowCascadeFixCB = new ConstantBuffer(ConstantBufferDesc<ShadowDataCB>());
 
-		init = false;
+		initialized = true;
 	}
 
 	// -1 by default
@@ -354,13 +269,14 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 	// Update cascade buffer
 	ShadowDataCB data{};
 	data.lightViewProj = cascadeData[cascadeToRender].viewProj;
-	data.shadowmapViewProj[0] = cascadeData[0].viewProjTex;
-	data.shadowmapViewProj[1] = cascadeData[1].viewProjTex;
-	data.shadowmapViewProj[2] = cascadeData[2].viewProjTex;
-	data.shadowmapViewProj[3] = cascadeData[3].viewProjTex;
-	shadowDataCB->Update(data);
+	for (int i = 0; i < (int)nCascades; i++) {
+		data.shadowmapViewProj[i] = cascadeData[i].viewProjTex;
+		data.cascadeSplitEnds[i] = cascadeData[i].splitEndDepth;
+	}
+	data.numCascades = nCascades;
+	shadowCascadeFixCB->Update(data);
 
-	ID3D11Buffer* buffer = shadowDataCB->CB();
+	ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
 	globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
 	globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
 
@@ -369,7 +285,7 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 		manager->windMagnitude = 0.0f;
 	}
 
-	// Only clear the RT of cascade we are rendering this frame
+	// Only clear RT of cascade we are rendering this frame
 	desc.clearRenderTarget = desc.shadowmapIndex == (uint)cascadeToRender;
 
 	func(light, desc, arg2, flags);
@@ -429,4 +345,12 @@ DirectX::XMVECTOR ShadowmapMatrixFix::QuantizeLightDirection(DirectX::XMVECTOR l
 	XMVECTOR quantized = XMVectorSet(sinf(azimuth) * cosElev, sinf(elevation), cosf(azimuth) * cosElev, 0.0f);
 
 	return XMVector3Normalize(quantized);
+}
+
+bool ShadowmapMatrixFix::GeometryInsideShadowBound(RE::BSGeometry* geometry)
+{
+	auto pos = geometry->worldBound.center - RE::Main::WorldRootCamera()->world.translate;
+	float dist = pos.Length() - geometry->worldBound.radius;
+	float maxShadowDist = cascadeSplitViewDist[maxCascades - 1];
+	return dist < maxShadowDist;
 }

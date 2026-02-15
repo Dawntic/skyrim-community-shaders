@@ -32,6 +32,7 @@ void EngineFix::InstallFixes(const std::vector<EngineFix*>& fixes)
 		fix->Install();
 		logger::info("[Engine Fixes] Installed {}", fix->GetName());
 	}
+	installed = true;
 }
 
 void EngineFix::InstallOnPostPostLoadFixes()

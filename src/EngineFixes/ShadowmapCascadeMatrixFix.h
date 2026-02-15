@@ -9,32 +9,41 @@ struct ShadowmapMatrixFix : EngineFix
 	static inline uint cascadePxSize = 0;
 	static inline uint nCascades = 0;
 	static inline int cascadeToRender = -1;
+	static inline bool initialized = false;
 
 	static void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCameraNew);
 	static void GetMainFrustum(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
 	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, DirectX::XMMATRIX viewProj);
 	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
+	static bool GeometryInsideShadowBound(RE::BSGeometry* geometry);
 
 	struct CascadeData
 	{
 		DirectX::XMVECTOR translation;
-		DirectX::XMFLOAT4X4 worldMatrix;
-		DirectX::XMFLOAT4X4 projMatrix;
 		DirectX::XMFLOAT4X4 viewProj;
 		DirectX::XMFLOAT4X4 viewProjTex;
-		//RE::NiFrustum frustum;
 		RE::NiFrustumPlanes cullingPlanes;
+		float splitEndDepth;
+		float _pad[3];
+		//RE::NiFrustum frustum;
+		DirectX::XMFLOAT4X4 projMatrix;   //tmp
+		DirectX::XMFLOAT4X4 worldMatrix;  //tmp
 	};
 	static inline CascadeData cascadeData[maxCascades] = {};
 
 	static inline RE::NiFrustumPlanes maxExtentCullPlanes = RE::NiFrustumPlanes();
 
+	static inline float cascadeSplitViewDist[maxCascades] = {};
+
 	struct alignas(16) ShadowDataCB
 	{
 		DirectX::XMFLOAT4X4 lightViewProj;
 		DirectX::XMFLOAT4X4 shadowmapViewProj[4];
+		float cascadeSplitEnds[4];
+		int numCascades;
+		float _pad[3];
 	};
-	static inline ConstantBuffer* shadowDataCB = nullptr;
+	static inline ConstantBuffer* shadowCascadeFixCB = nullptr;
 
 	static inline RE::NiPoint3 XMVectorToNiPoint3(DirectX::XMVECTOR vector)
 	{
@@ -55,6 +64,10 @@ struct ShadowmapMatrixFix : EngineFix
 	}
 
 	static inline float LinearStep(float edge0, float edge1, float x) { return std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f); }
+	static inline float ViewDepthToNDC(float depth, RE::NiFrustum frustum)
+	{
+		return (frustum.fFar * (depth - frustum.fNear) / (depth * (frustum.fFar - frustum.fNear)));
+	}
 
 	static inline void LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix)
 	{

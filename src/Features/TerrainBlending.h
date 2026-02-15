@@ -41,7 +41,7 @@ public:
 	bool update = true;
 	int testScale = 1;
 
-	int splits[4] = { 1000, 3000, 0, 0 };
+	int splits[4] = { 1000, 3000, 6000, 10000 };
 	float lightUpdateAngle = 0.1;
 	bool disableCulling = false;
 
