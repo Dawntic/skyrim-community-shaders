@@ -40,7 +40,7 @@ struct ShadowmapMatrixFix : EngineFix
 		DirectX::XMFLOAT4X4 lightViewProj;
 		DirectX::XMFLOAT4X4 shadowmapViewProj[4];
 		float cascadeSplitEnds[4];
-		int numCascades;
+		uint numCascades;
 		float _pad[3];
 	};
 	static inline ConstantBuffer* shadowCascadeFixCB = nullptr;

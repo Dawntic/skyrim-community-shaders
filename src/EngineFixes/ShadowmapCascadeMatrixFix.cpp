@@ -8,10 +8,13 @@
 // Add checks for VR
 // Catch ini settings and override shadow settings
 // Add UI?
-// Support 4 cascades
+// // Add native split calculations
 // Split overlap
-// Culling breaks at low texel size - high shadow rez
-// Figure out how to handle shader flag issue
+// Build culling matrices
+
+//ISSUES:
+// Culling breaks at low texel size - high shadow rez  OR small split distances  - i think increasing Z range mult fixes this
+// Shader flags still causing some blinking
 
 void ShadowmapMatrixFix::Install()
 {
@@ -101,8 +104,8 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	cascadeSplitViewDist[2] = cascadeSplits[2];
 	cascadeSplitViewDist[3] = cascadeSplits[3];
 
-	for (int i = 0; i < 4; i++)
-		cascadeData[cascadeToRender].splitEndDepth = ViewDepthToNDC(cascadeSplits[i], viewFrustum);  // Make static //
+	cascadeData[cascadeToRender].splitEndDepth = ViewDepthToNDC(cascadeSplits[cascadeToRender], viewFrustum);  // Make static //
+	logger::info("Test: {}", ViewDepthToNDC(cascadeSplits[cascadeToRender], viewFrustum));
 
 	float split_near = (cascadeToRender == 0) ? 0.0f : LinearStep(viewFrustum.fNear, viewFrustum.fFar, cascadeSplits[cascadeToRender - 1]);  // These lin steps can be static //
 	float split_far = LinearStep(viewFrustum.fNear, viewFrustum.fFar, cascadeSplits[cascadeToRender]);
@@ -268,17 +271,22 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 {
 	// Update cascade buffer
 	ShadowDataCB data{};
-	data.lightViewProj = cascadeData[cascadeToRender].viewProj;
-	for (int i = 0; i < (int)nCascades; i++) {
-		data.shadowmapViewProj[i] = cascadeData[i].viewProjTex;
-		data.cascadeSplitEnds[i] = cascadeData[i].splitEndDepth;
-	}
-	data.numCascades = nCascades;
-	shadowCascadeFixCB->Update(data);
+	if (desc.shadowmapIndex == 0) {  // Only update buffer once per frame
+		data.lightViewProj = cascadeData[cascadeToRender].viewProj;
+		for (int i = 0; i < (int)nCascades; i++) {
+			data.shadowmapViewProj[i] = cascadeData[i].viewProjTex;
+			data.cascadeSplitEnds[i] = cascadeData[i].splitEndDepth;
+			logger::info("cascadeData[i].splitEndDepth: {}", cascadeData[i].splitEndDepth);
+		}
+		data.numCascades = nCascades;
+		logger::info("nCascades: {}   Test: {}", nCascades, data.numCascades);
 
-	ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
-	globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
-	globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
+		shadowCascadeFixCB->Update(data);
+
+		ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
+		globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
+		globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
+	}
 
 	// Disable wind for now // TEMP
 	if (auto manager = RE::BSTreeManager::GetSingleton()) {

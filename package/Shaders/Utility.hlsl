@@ -662,10 +662,11 @@ PS_OUTPUT main(PS_INPUT input)
 	if(SharedData::InInterior)
 		shadowColor = float4(0,0,0,0);
 
+	float cascadeIndex = 0;
+	float shadowMapThreshold;
+	float3 positionLS;
+#	if defined(VR)
 	if (EndSplitDistances.z >= shadowMapDepth) {
-		float shadowMapThreshold;
-		float3 positionLS;
-		float cascadeIndex = 0;
 		float4x4 lightProjectionMatrix = ShadowTransformMatrix[0];
 		shadowMapThreshold = AlphaTestRef.y;
 		cascadeIndex = 0;
@@ -678,10 +679,18 @@ PS_OUTPUT main(PS_INPUT input)
 			shadowMapThreshold = AlphaTestRef.z;
 			cascadeIndex = 1;
 		}
+		positionLS = mul(lightProjectionMatrix, float4(positionMS.xyz, 1)).xyz;
+#	else //END VR
+	if(cascadeSplitEnds[numCascades - 1] >= shadowMapDepth) {
+		[unroll] for(; cascadeIndex < numCascades; cascadeIndex++){
+			if(shadowMapDepth <= cascadeSplitEnds[cascadeIndex])
+				break;
+		}
+		shadowMapThreshold = (cascadeIndex > 0) ? AlphaTestRef.z : AlphaTestRef.y;
+		positionLS = mul(ShadowTransformMatrix[cascadeIndex], float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[0].xyz, 1)).xyz;
+#	endif //END !VR
 
 		float shadowVisibility = 0;
-
-		positionLS = mul(lightProjectionMatrix, float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[0].xyz, 1)).xyz;
 
 		shadowVisibility = ShadowMapTexture.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(positionLS.xy, cascadeIndex), positionLS.z).x;
 
