@@ -17,13 +17,52 @@ struct ShadowmapMatrixFix : EngineFix
 	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
 	static bool GeometryInsideShadowBound(RE::BSGeometry* geometry);
 
+	static inline float maxCascadeCoverageVS = 0;
+
+	struct Frustum
+	{
+		DirectX::XMVECTOR corner[8];
+	};
+
+	struct CascadeBounds
+	{
+		struct EndSplits
+		{
+			float SplitVS[4];
+			float SplitNDC[4];
+			float SplitLin[4];
+		};
+		EndSplits endSplits;
+
+		struct Sphere
+		{
+			DirectX::XMVECTOR center;
+			float radius;
+		};
+		Sphere boundingSphere;
+
+		struct AABB
+		{
+			float3 cornerMin;
+			float3 cornerMax;
+		};
+		AABB boundingBox;
+	};
+
+	static void BuildRootFrustum(Frustum& outputFrustum, const RE::NiFrustum& viewFrustum, const DirectX::XMMATRIX& rootWorld);
+	static void SetCascadeSplit(CascadeBounds::EndSplits& outputSplits, const RE::NiFrustum& viewFrustum);
+	static void BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frustum& outFrustum, const CascadeBounds::EndSplits& cascadeSplits, const Frustum& rootFrustum, const DirectX::XMVECTOR& lightDirection);
+	static void BuildCascadeBoundingSphere(CascadeBounds::Sphere& outSphere, const Frustum& lightFrustum);
+	static void BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, const DirectX::XMVECTOR& lightCameraPos, const CascadeBounds::Sphere& sphere);
+	static void BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullingProj, const CascadeBounds::AABB& boundingBox);
+
 	struct CascadeData
 	{
 		DirectX::XMVECTOR translation;
 		DirectX::XMFLOAT4X4 viewProj;
 		DirectX::XMFLOAT4X4 viewProjTex;
 		RE::NiFrustumPlanes cullingPlanes;
-		float splitEndDepth;
+		float splitEndDepthNDC;
 		float _pad[3];
 		//RE::NiFrustum frustum;
 		DirectX::XMFLOAT4X4 projMatrix;   //tmp
@@ -33,7 +72,7 @@ struct ShadowmapMatrixFix : EngineFix
 
 	static inline RE::NiFrustumPlanes maxExtentCullPlanes = RE::NiFrustumPlanes();
 
-	static inline float cascadeSplitViewDist[maxCascades] = {};
+	//static inline float cascadeSplitViewDist[maxCascades] = {};
 
 	struct alignas(16) ShadowDataCB
 	{

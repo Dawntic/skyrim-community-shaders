@@ -123,6 +123,8 @@ cbuffer ShadowCascadeFix : register(b7)
 {
 	row_major float4x4 lightViewProj;
 	row_major float4x4 ShadowTransformMatrix[4];
+	float4 cascadeSplitEnds;
+	uint numCascades;
 }
 
 VS_OUTPUT main(VS_INPUT input)
@@ -394,6 +396,8 @@ cbuffer ShadowCascadeFix : register(b7)
 {
 	row_major float4x4 lightViewProj;
 	row_major float4x4 ShadowTransformMatrix[4];
+	float4 cascadeSplitEnds;
+	uint numCascades;
 }
 
 #	if defined(RENDER_SHADOWMASKDPB)
@@ -689,6 +693,7 @@ PS_OUTPUT main(PS_INPUT input)
 		shadowMapThreshold = (cascadeIndex > 0) ? AlphaTestRef.z : AlphaTestRef.y;
 		positionLS = mul(ShadowTransformMatrix[cascadeIndex], float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[0].xyz, 1)).xyz;
 #	endif //END !VR
+
 
 		float shadowVisibility = 0;
 
