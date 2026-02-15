@@ -8,13 +8,9 @@
 // Add checks for VR
 // Catch ini settings and override shadow settings
 // Add UI?
-// // Add native split calculations
-// Split overlap
-// Build culling matrices
+// Split overlap - natural in proj extention?
 
 //ISSUES:
-// Culling breaks at low texel size - high shadow rez  OR small split distances  - i think increasing Z range mult fixes this
-// Shader flags still causing some blinking
 
 void ShadowmapMatrixFix::Install()
 {
@@ -172,7 +168,7 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 	// Build culling frustum
 	{
 		// Cap min extent for small cascades to avoid issues
-		float extent = std::max(halfExtentZ, settings.minExtent);  //1600 seems okay
+		float extent = std::max(halfExtentZ, settings.minExtent);  //2600 min @ 2.0 range mult?
 
 		float adjustedMin = centerZ - extent;
 		float adjustedMax = centerZ + extent;
