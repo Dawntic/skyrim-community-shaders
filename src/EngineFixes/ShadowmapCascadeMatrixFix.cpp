@@ -81,9 +81,6 @@ void ShadowmapMatrixFix::SetCascadeSplit(CascadeBounds::EndSplits& outputSplits,
 		outputSplits.SplitLin[i] = LinearStep(viewFrustum.fNear, viewFrustum.fFar, cascadeSplits[i]);
 	}
 
-	logger::info("SplitLin: {}, {}", outputSplits.SplitLin[0], outputSplits.SplitLin[1]);
-	logger::info("SplitNDC: {}, {}", outputSplits.SplitNDC[0], outputSplits.SplitNDC[1]);
-
 	maxCascadeCoverageVS = outputSplits.SplitVS[nCascades - 1];
 }
 
@@ -140,7 +137,7 @@ void ShadowmapMatrixFix::BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, c
 	XMVECTOR cornerMin = XMVectorSubtract(sphere.center, vRadius);
 	XMVECTOR cornerMax = XMVectorAdd(sphere.center, vRadius);
 
-	// Add trans vec - doing it here avoids extra variance
+	// Add trans vec - adding here avoids extra variance
 	cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
 	cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
 
@@ -154,35 +151,72 @@ void ShadowmapMatrixFix::BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, c
 	outBoundingBox.cornerMax = cornerMax;  // right, top, far
 }
 
-void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullingProj, const CascadeBounds::AABB& boundingBox)
+void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullProj, const CascadeBounds::AABB& boundingBox)
 {
 	auto& settings = globals::features::terrainBlending;
 
-	{
-		// Extend depth
-		float centerZ = float3((boundingBox.cornerMin + boundingBox.cornerMax) * 0.5f).z;
-		float halfExtentZ = abs(centerZ - boundingBox.cornerMin.z);
-		halfExtentZ *= settings.multiplerRange;  // The lower this is the more spread the shadow map depth values are so higher means less precision
+	float centerZ = float3((boundingBox.cornerMin + boundingBox.cornerMax) * 0.5f).z;
+	float halfExtentZ = abs(centerZ - boundingBox.cornerMin.z);
 
-		float adjustedMin = centerZ - halfExtentZ;
-		float adjustedMax = centerZ + halfExtentZ;
+	// Build main proj frustum
+	{
+		// Adjust depth range for better precision - depth clipping is disabled
+		float extent = halfExtentZ * settings.multiplerRange;  // The lower this is the more spread the shadow map depth values are so higher means less precision
+
+		float adjustedMin = centerZ - extent;
+		float adjustedMax = centerZ + extent;
 
 		outProj = DirectX::XMMatrixOrthographicOffCenterLH(boundingBox.cornerMin.x, boundingBox.cornerMax.x, boundingBox.cornerMin.y, boundingBox.cornerMax.y, adjustedMin, adjustedMax);
 	}
 
+	// Build culling frustum
 	{
-		//NEED TO ADD ///////////////
+		// Cap min extent for small cascades to avoid issues
+		float extent = std::max(halfExtentZ, settings.minExtent);  //1600 seems okay
 
-		// Extend depth
-		float centerZ = float3((boundingBox.cornerMin + boundingBox.cornerMax) * 0.5f).z;
-		float halfExtentZ = abs(centerZ - boundingBox.cornerMin.z);
-		halfExtentZ *= settings.multiplerRange;  // The lower this is the more spread the shadow map depth values are so higher means less precision
+		float adjustedMin = centerZ - extent;
+		float adjustedMax = centerZ + extent;
 
-		float adjustedMin = centerZ - halfExtentZ;
-		float adjustedMax = centerZ + halfExtentZ;
-		//outCullingProj =
+		outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(boundingBox.cornerMin.x, boundingBox.cornerMax.x, boundingBox.cornerMin.y, boundingBox.cornerMax.y, adjustedMin, adjustedMax);
 	}
 }
+
+/*
+
+// clipping extrusion for projection:
+//	Tight Z distribution for precision (16-bit unorm especially) but allowing some extra room for cascade blending in Z
+{
+	XMFLOAT3 _min;
+	XMFLOAT3 _max;
+	XMStoreFloat3(&_min, vMin);
+	XMStoreFloat3(&_max, vMax);
+	float ext = abs(_center.z - _min.z);
+	ext *= 4;
+	_min.z = _center.z - ext;
+	_max.z = _center.z + ext;
+
+	const XMMATRIX lightProjection = XMMatrixOrthographicOffCenterLH(_min.x, _max.x, _min.y, _max.y, _max.z, _min.z);
+	shcams[cascade].view_projection = XMMatrixMultiply(lightView, lightProjection);
+}
+
+// culling extrusion for frustum:
+//	This only affects the frustum, which is for frustum culling draw call selection
+//	It is coarser to allow far away casters to be drawn. Far away casters can be outside real projection, and their depth will be clamped (depth clip is off)
+{
+	XMFLOAT3 _min;
+	XMFLOAT3 _max;
+	XMStoreFloat3(&_min, vMin);
+	XMStoreFloat3(&_max, vMax);
+	float ext = abs(_center.z - _min.z);
+	ext = std::max(ext, std::min(2000.0f, farPlane) * 0.5f);
+	_min.z = _center.z - ext;
+	_max.z = _center.z + ext;
+
+	// For the frustum, it is extended in Z for culling
+	const XMMATRIX lightProjection = XMMatrixOrthographicOffCenterLH(_min.x, _max.x, _min.y, _max.y, _max.z, _min.z);  // notice reversed Z!
+	shcams[cascade].frustum.Create(XMMatrixMultiply(lightView, lightProjection));
+}
+*/
 
 void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera)
 {
@@ -201,11 +235,14 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 
 	static CascadeBounds cascadeBoundData;
 
-	static bool setupSplits = true;
-	if (setupSplits) {
-		SetCascadeSplit(cascadeBoundData.endSplits, viewFrustum);
-		setupSplits = false;
-	}
+	SetCascadeSplit(cascadeBoundData.endSplits, viewFrustum);
+
+	// Add this back once split settings are finalized
+	//static bool setupSplits = true;
+	//if (setupSplits) {
+	//	SetCascadeSplit(cascadeBoundData.endSplits, viewFrustum);
+	//	setupSplits = false;
+	//}
 
 	// Build frustums, view matrix
 	Frustum rootFrustum;
@@ -214,7 +251,6 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	XMMATRIX lightView = {};
 	Frustum lightFrustum;
 	BuildLightFrustum(lightView, lightFrustum, cascadeBoundData.endSplits, rootFrustum, lightDirection);
-	LogMatrix("lightView", lightView);
 
 	// Build bounding objects
 	BuildCascadeBoundingSphere(cascadeBoundData.boundingSphere, lightFrustum);
@@ -227,11 +263,11 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	XMMATRIX lightProj = {};
 	XMMATRIX cullingProj = {};
 	BuildCascadeProjectionMatrices(lightProj, cullingProj, cascadeBoundData.boundingBox);
-	LogMatrix("proj", lightProj);
 
 	const XMMATRIX viewProj = XMMatrixMultiply(lightView, lightProj);
 	XMStoreFloat4x4(&cascadeData[cascadeToRender].viewProj, XMMatrixTranspose(viewProj));
 
+	// Relative translation added to shader MS position to avoid dot prod precision loss - DO NOT fuck with
 	const XMMATRIX texProj = XMMatrixMultiply(XMMatrixScaling(0.5f, -0.5f, 1.0f), XMMatrixTranslation(0.5f, 0.5f, 0.0f));
 	XMStoreFloat4x4(&cascadeData[cascadeToRender].viewProjTex, XMMatrixTranspose(XMMatrixMultiply(viewProj, texProj)));
 
@@ -241,7 +277,8 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	cascadeData[cascadeToRender].splitEndDepthNDC = cascadeBoundData.endSplits.SplitNDC[cascadeToRender];
 
 	// Build culling planes
-	GetCullPlanesFromVPMatrix(cascadeData[cascadeToRender].cullingPlanes, viewProj);
+	const XMMATRIX cullingViewProj = XMMatrixMultiply(lightView, cullingProj);
+	GetCullPlanesFromVPMatrix(cascadeData[cascadeToRender].cullingPlanes, cullingViewProj);
 }
 
 // Step 1: Update cascade camera matrices, cull planes etc.

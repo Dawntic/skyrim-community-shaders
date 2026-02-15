@@ -112,6 +112,7 @@ void TerrainBlending::DrawSettings()
 	ImGui::Checkbox("Test 3", &test3);
 
 	ImGui::SliderFloat("Z Range Multipler", &multiplerRange, 0.0f, 4.0f);
+	ImGui::SliderFloat("Z Min Extent", &minExtent, 0.0f, 5000.0f);
 	ImGui::SliderFloat("Light Angle Update Step", &lightUpdateAngle, 0.0f, 0.5f, "%.4f");
 
 	ImGui::SliderInt("Cascade 1 Coverage", &splits[0], 15, 5000);

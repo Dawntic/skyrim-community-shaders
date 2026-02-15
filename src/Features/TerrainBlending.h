@@ -37,6 +37,7 @@ public:
 	float slopeScaleBias[2] = { 0, 0 };
 	bool renderShadowMask = false;
 
+	float minExtent = 1800.0f;
 	float multiplerRange = 2.0f;
 	bool update = true;
 	int testScale = 1;
