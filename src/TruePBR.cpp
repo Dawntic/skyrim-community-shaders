@@ -682,9 +682,9 @@ struct BSLightingShaderProperty_GetRenderPasses
 					}
 				}
 
-				if (EngineFix::installed && geometry) {
-					ShadowmapMatrixFix& matrixFix = EngineFix::GetEngineFix<ShadowmapMatrixFix>(2);
-					if (matrixFix.initialized && matrixFix.GeometryInsideShadowBound(geometry))
+				if (geometry) {
+					ShadowmapMatrixFix& matrixFix = EngineFix::GetPPLEngineFix<ShadowmapMatrixFix>(0);
+					if (matrixFix.installed && matrixFix.initialized && matrixFix.GeometryInsideShadowBound(geometry))
 						lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);
 				}
 

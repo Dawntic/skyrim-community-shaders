@@ -32,30 +32,31 @@ public:
 
 	//
 	bool reload = false;
-	int depthBias[2] = { 0, 0 };
-	float biasClamp[2] = { 1, 1 };
-	float slopeScaleBias[2] = { 0, 0 };
-	bool renderShadowMask = false;
-
-	float minExtent = 3000.0f;
-	float multiplerRange = 2.0f;
-	bool update = true;
-	int testScale = 1;
+	int depthBias[4] = { 160, 100, 100, 100 };
+	float biasClamp[4] = { 1, 1, 1, 1 };
+	float slopeScaleBias[4] = { 3.2, 3.8, 3.8, 3.8 };
+	//bool renderShadowMask = false;
 
 	int splits[4] = { 1000, 3000, 6000, 10000 };
 	float lightUpdateAngle = 0.1;
 	bool disableCulling = false;
-
 	bool rasterDepthClip = false;
-	bool rasterCulling = false;
+	bool rasterCulling = true;
 
-	bool updateView = true;
-	bool updatePos = true;
-	bool updateProj = true;
+	float minExtent = 3000.0f;
+	float multiplerRange = 2.0f;
+	float testVar = 100;
+	float blendZone = 100;
+
+	//bool update = false;
+	//int testScale = 1;
+	//bool updateView = true;
+	//bool updatePos = true;
+	//bool updateProj = true;
 
 	bool test = false;
-	bool test2 = false;
-	bool test3 = false;
+	//bool test2 = false;
+	//bool test3 = false;
 	//
 
 	virtual void DrawSettings() override;

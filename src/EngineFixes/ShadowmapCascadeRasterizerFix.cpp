@@ -2,7 +2,7 @@
 
 #include "../Features/terrainBlending.h"
 
-void ShadowmapRasterizerFix::Install()
+bool ShadowmapRasterizerFix::Install()
 {
 	// This function is called once per cascade to begin the updating and rendering process
 	stl::write_thunk_call<BSShadowDirectionalLight_RenderShadowmaps_RenderCascade>(REL::RelocationID(101495, 108489).address() + REL::Relocate(0xC6, 0xC6, 0xF6));
@@ -10,6 +10,8 @@ void ShadowmapRasterizerFix::Install()
 	gRasterStates = reinterpret_cast<RasterStateArray*>(REL::RelocationID(524748, 411363).address());
 
 	numCascades = static_cast<uint>(Util::GetGameSettingValue<std::int32_t>("iNumSplits:Display", Settings.at("iNumSplits:Display")));
+
+	return true;
 }
 
 void ShadowmapRasterizerFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade::thunk(RE::BSShadowDirectionalLight* light, void* arg1, void* arg2, uint32_t flags)
@@ -82,7 +84,7 @@ void ShadowmapRasterizerFix::CloneRasterStates(RasterStateArray* inputArray, int
 
 void ShadowmapRasterizerFix::Reload()
 {
-	for (int i = 0; i < 2; i++) {
+	for (int i = 0; i < (int)numCascades - 1; i++) {
 		ShadowMapRasterizerDescriptor desc;
 		desc.rasterDepthBias = globals::features::terrainBlending.depthBias[i];
 		desc.rasterDepthBiasClamp = globals::features::terrainBlending.biasClamp[i];

@@ -6,14 +6,14 @@
 
 const std::vector<EngineFix*>& EngineFix::GetOnPostPostLoadFixesList()
 {
-	static ShadowmapCascadeCullingFix shadowmapCascadeCullingFix;
-	static ShadowmapRasterizerFix shadowmapRasterizerFix;
 	static ShadowmapMatrixFix shadowmapMatrixFix;
+	static ShadowmapRasterizerFix shadowmapRasterizerFix;
+	static ShadowmapCascadeCullingFix shadowmapCascadeCullingFix;
 
 	static std::vector<EngineFix*> fixes = {
-		&shadowmapCascadeCullingFix,
-		&shadowmapRasterizerFix,
 		&shadowmapMatrixFix,
+		&shadowmapRasterizerFix,
+		&shadowmapCascadeCullingFix,
 	};
 
 	return fixes;
@@ -29,10 +29,12 @@ const std::vector<EngineFix*>& EngineFix::GetOnDataLoadedFixesList()
 void EngineFix::InstallFixes(const std::vector<EngineFix*>& fixes)
 {
 	for (const auto fix : fixes) {
-		fix->Install();
-		logger::info("[Engine Fixes] Installed {}", fix->GetName());
+		if (REL::Module::IsVR() && !fix->SupportsVR())
+			continue;
+
+		if ((fix->installed = fix->Install()))
+			logger::info("[Engine Fixes] Installed {}", fix->GetName());
 	}
-	installed = true;
 }
 
 void EngineFix::InstallOnPostPostLoadFixes()

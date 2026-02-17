@@ -108,11 +108,14 @@ void TerrainBlending::DrawSettings()
 	}
 
 	ImGui::Checkbox("Test", &test);
-	ImGui::Checkbox("Test 2", &test2);
-	ImGui::Checkbox("Test 3", &test3);
+	//	ImGui::Checkbox("Test 2", &test2);
+	//	ImGui::Checkbox("Test 3", &test3);
 
 	ImGui::SliderFloat("Z Range Multipler", &multiplerRange, 0.0f, 4.0f);
 	ImGui::SliderFloat("Z Min Extent", &minExtent, 0.0f, 5000.0f);
+	ImGui::SliderFloat("Culling Proj Z Offset", &testVar, 0.0f, 5000.0f);
+	ImGui::SliderFloat("Blend Zone", &blendZone, 0.0f, 500.0f);
+
 	ImGui::SliderFloat("Light Angle Update Step", &lightUpdateAngle, 0.0f, 0.5f, "%.4f");
 
 	ImGui::SliderInt("Cascade 1 Coverage", &splits[0], 15, 5000);
@@ -120,48 +123,31 @@ void TerrainBlending::DrawSettings()
 	ImGui::SliderInt("Cascade 3 Coverage", &splits[2], splits[1], 20000);
 	ImGui::SliderInt("Cascade 4 Coverage", &splits[3], splits[2], 40000);
 
-	ImGui::Text(fmt::format("Cascade 1 Texel Size: {}", float(splits[0]) / 1024.0f).c_str());
+	//ImGui::Text(fmt::format("Cascade 1 Texel Size: {}", float(splits[0]) / 1024.0f).c_str());
+
+	ImGui::Text("Cascade 1");
+	ImGui::SliderInt("Constant Bias ##1", &depthBias[0], -2500, 2500);
+	ImGui::SliderFloat("Angular Bias ##1", &slopeScaleBias[0], -10.0f, 10.0f, "%.5f");
+	ImGui::SliderFloat("Max Amount of Bias ##1", &biasClamp[0], -1.0f, 1.0f, "%.4f");
+
+	ImGui::Text("Cascade 2");
+	ImGui::SliderInt("Constant Bias ##2", &depthBias[1], -2500, 2500);
+	ImGui::SliderFloat("Angular Bias ##2", &slopeScaleBias[1], -10.0f, 10.0f, "%.5f");
+	ImGui::SliderFloat("Max Amount of Bias ##2", &biasClamp[1], -1.0f, 1.0f, "%.4f");
+
+	ImGui::Text("Cascade 3");
+	ImGui::SliderInt("Constant Bias ##3", &depthBias[2], -2500, 2500);
+	ImGui::SliderFloat("Angular Bias ##3", &slopeScaleBias[2], -10.0f, 10.0f, "%.5f");
+	ImGui::SliderFloat("Max Amount of Bias ##3", &biasClamp[2], -1.0f, 1.0f, "%.4f");
+
+	ImGui::Text("Cascade 4");
+	ImGui::SliderInt("Constant Bias ##4", &depthBias[3], -2500, 2500);
+	ImGui::SliderFloat("Angular Bias ##4", &slopeScaleBias[3], -10.0f, 10.0f, "%.5f");
+	ImGui::SliderFloat("Max Amount of Bias ##4", &biasClamp[3], -1.0f, 1.0f, "%.4f");
 
 	ImGui::Checkbox("Disable Culling", &disableCulling);
 	ImGui::Checkbox("Raster Culling", &rasterCulling);
 	ImGui::Checkbox("Raster Depth Clipping", &rasterDepthClip);
-
-	//ImGui::Checkbox("Update Matrices", &update);
-	ImGui::Checkbox("Update View", &updateView);
-	ImGui::Checkbox("Update Pos", &updatePos);
-	ImGui::Checkbox("Update Proj", &updateProj);
-
-	ImGui::SliderInt("Quantization", &testScale, 1, 64);
-
-	ImGui::Text("Cascade 1");
-	ImGui::SliderInt("Constant Bias ##1", &depthBias[0], -2500, 2500);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("This is a constant bias that pushes away all geometry. Too high = light leaks, too low = shadow leaks");
-	}
-	ImGui::SliderFloat("Angular Bias ##1", &slopeScaleBias[0], -10.0f, 10.0f, "%.5f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("This bias is applied relative to the angle between the lights direction and that of the surfaces geometric normal");
-		ImGui::Text("This means that the bias applied increases at extreme grazing angles. Too high = light leaks at sleep angles, too low = shadow leaks at steep angles");
-	}
-	ImGui::SliderFloat("Max Amount of Bias ##1", &biasClamp[0], -1.0f, 1.0f, "%.4f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("Total amount of bias allowed at any given angle and amount of constant bias");
-	}
-
-	ImGui::Text("Cascade 2");
-	ImGui::SliderInt("Constant Bias", &depthBias[1], -2500, 2500);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("This is a constant bias that pushes away all geometry. Too high = light leaks, too low = shadow leaks");
-	}
-	ImGui::SliderFloat("Angular Bias", &slopeScaleBias[1], -10.0f, 10.0f, "%.5f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("This bias is applied relative to the angle between the lights direction and that of the surfaces geometric normal");
-		ImGui::Text("This means that the bias applied increases at extreme grazing angles. Too high = light leaks at sleep angles, too low = shadow leaks at steep angles");
-	}
-	ImGui::SliderFloat("Max Amount of Bias", &biasClamp[1], -1.0f, 1.0f, "%.4f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("Total amount of bias allowed at any given angle and amount of constant bias");
-	}
 }
 
 void TerrainBlending::LoadSettings(json& o_json)

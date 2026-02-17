@@ -9,13 +9,14 @@ struct EngineFix
 	virtual ~EngineFix() = default;
 
 	virtual std::string GetName() = 0;
+	virtual bool SupportsVR() = 0;
 
-	virtual void Install() {}
+	virtual bool Install() = 0;
 
 	static void InstallOnPostPostLoadFixes();
 	static void InstallOnDataLoadedFixes();
 
-	static inline bool installed = false;
+	bool installed = false;
 
 private:
 	static const std::vector<EngineFix*>& GetOnPostPostLoadFixesList();
@@ -24,9 +25,11 @@ private:
 
 public:
 	template <typename T>
-	static inline T& GetEngineFix(int index)
+	static inline T& GetPPLEngineFix(int index)
 	{
 		auto& fixes = GetOnPostPostLoadFixesList();
 		return *static_cast<T*>(fixes[index]);
 	}
 };
+
+// Need to add bool for when all post post load fixes are installed

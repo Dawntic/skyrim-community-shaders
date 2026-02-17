@@ -4,7 +4,9 @@
 struct ShadowmapRasterizerFix : EngineFix
 {
 	std::string GetName() override { return "Shadowmap Cascade Rasterizer Fix"; }
-	void Install() override;
+	bool SupportsVR() override { return true; }
+
+	bool Install() override;
 
 	using RasterStateArray = ID3D11RasterizerState* [2][3][12][2];
 
@@ -29,6 +31,10 @@ struct ShadowmapRasterizerFix : EngineFix
 	static constexpr float thirdCascadeDepthBiasClamp = 1.0f;
 	static constexpr float thirdCascadeSlopeScaleBias = 3.8f;
 
+	static constexpr int fourthCascadeDepthBias = 100;
+	static constexpr float fourthCascadeDepthBiasClamp = 1.0f;
+	static constexpr float fourthCascadeSlopeScaleBias = 3.8f;
+
 	struct ShadowMapRasterizerDescriptor
 	{
 		int rasterDepthBias;
@@ -42,7 +48,8 @@ struct ShadowmapRasterizerFix : EngineFix
 	static inline ShadowMapRasterizerDescriptor cascadeDescriptors[maxCascades] = {
 		{ firstCascadeDepthBias, firstCascadeDepthBiasClamp, firstCascadeSlopeScaleBias },
 		{ secondCascadeDepthBias, secondCascadeDepthBiasClamp, secondCascadeSlopeScaleBias },
-		{ thirdCascadeDepthBias, thirdCascadeDepthBiasClamp, thirdCascadeSlopeScaleBias }
+		{ thirdCascadeDepthBias, thirdCascadeDepthBiasClamp, thirdCascadeSlopeScaleBias },
+		{ fourthCascadeDepthBias, fourthCascadeDepthBiasClamp, fourthCascadeSlopeScaleBias }
 	};
 
 	struct BSShadowDirectionalLight_RenderShadowmaps_RenderCascade

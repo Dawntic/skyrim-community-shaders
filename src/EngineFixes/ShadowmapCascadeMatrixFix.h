@@ -3,19 +3,15 @@
 struct ShadowmapMatrixFix : EngineFix
 {
 	std::string GetName() override { return "Shadowmap Cascade Matrix Fix"; }
-	void Install() override;
+	bool SupportsVR() override { return false; }
+
+	bool Install() override;
 
 	static inline int constexpr maxCascades = 4;
 	static inline uint cascadePxSize = 0;
-	static inline uint nCascades = 0;
+	static inline int nCascades = 0;
 	static inline int cascadeToRender = -1;
 	static inline bool initialized = false;
-
-	static void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCameraNew);
-	static void GetMainFrustum(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
-	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, DirectX::XMMATRIX viewProj);
-	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
-	static bool GeometryInsideShadowBound(RE::BSGeometry* geometry);
 
 	static inline float maxCascadeCoverageVS = 0;
 
@@ -26,13 +22,14 @@ struct ShadowmapMatrixFix : EngineFix
 
 	struct CascadeBounds
 	{
-		struct EndSplits
+		struct Split
 		{
-			float SplitVS[4];
-			float SplitNDC[4];
-			float SplitLin[4];
+			float splitVS[4];
+			float endSplitNDC[4];
+			float startSplitNDC[4];
+			float splitLin[4];
 		};
-		EndSplits endSplits;
+		Split splitDist;
 
 		struct Sphere
 		{
@@ -49,24 +46,34 @@ struct ShadowmapMatrixFix : EngineFix
 		AABB boundingBox;
 	};
 
+	static inline Frustum primaryCullFrustum = {};
+
+	static void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
+	static void SetPrimaryCullPlanes(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
+	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
+	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
+	static bool GeometryInsideShadowBound(RE::BSGeometry* geometry);
+
 	static void BuildRootFrustum(Frustum& outputFrustum, const RE::NiFrustum& viewFrustum, const DirectX::XMMATRIX& rootWorld);
-	static void SetCascadeSplit(CascadeBounds::EndSplits& outputSplits, const RE::NiFrustum& viewFrustum);
-	static void BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frustum& outFrustum, const CascadeBounds::EndSplits& cascadeSplits, const Frustum& rootFrustum, const DirectX::XMVECTOR& lightDirection);
+	static void SetCascadeSplit(CascadeBounds::Split& outputSplits, const RE::NiFrustum& viewFrustum);
+	static void BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frustum& outFrustum, const CascadeBounds::Split& cascadeSplits, const Frustum& rootFrustum, const DirectX::XMVECTOR& lightDirection);
 	static void BuildCascadeBoundingSphere(CascadeBounds::Sphere& outSphere, const Frustum& lightFrustum);
 	static void BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, const DirectX::XMVECTOR& lightCameraPos, const CascadeBounds::Sphere& sphere);
 	static void BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullingProj, const CascadeBounds::AABB& boundingBox);
 
 	struct CascadeData
 	{
-		DirectX::XMVECTOR translation;
+		DirectX::XMFLOAT3 translation;
+		DirectX::XMFLOAT4X4 viewMatrix;
 		DirectX::XMFLOAT4X4 viewProj;
 		DirectX::XMFLOAT4X4 viewProjTex;
 		RE::NiFrustumPlanes cullingPlanes;
-		float splitEndDepthNDC;
-		float _pad[3];
+		float endDepthNDC;
+		float startDepthNDC;
+		float _pad[2];
 		//RE::NiFrustum frustum;
-		DirectX::XMFLOAT4X4 projMatrix;   //tmp
-		DirectX::XMFLOAT4X4 worldMatrix;  //tmp
+		//DirectX::XMFLOAT4X4 projMatrix;   //tmp
+		//DirectX::XMFLOAT4X4 worldMatrix;  //tmp
 	};
 	static inline CascadeData cascadeData[maxCascades] = {};
 
@@ -77,8 +84,9 @@ struct ShadowmapMatrixFix : EngineFix
 	struct alignas(16) ShadowDataCB
 	{
 		DirectX::XMFLOAT4X4 lightViewProj;
-		DirectX::XMFLOAT4X4 shadowmapViewProj[4];
+		DirectX::XMFLOAT4X4 shadowmapViewProjUV[4];
 		float cascadeSplitEnds[4];
+		float cascadeSplitStarts[4];
 		uint numCascades;
 		float _pad[3];
 	};
@@ -86,26 +94,12 @@ struct ShadowmapMatrixFix : EngineFix
 
 	static inline RE::NiPoint3 XMVectorToNiPoint3(DirectX::XMVECTOR vector)
 	{
-		using namespace DirectX;
-		return RE::NiPoint3(XMVectorGetX(vector), XMVectorGetY(vector), XMVectorGetZ(vector));
+		return RE::NiPoint3(DirectX::XMVectorGetX(vector), DirectX::XMVectorGetY(vector), DirectX::XMVectorGetZ(vector));
 	}
 
 	static inline DirectX::XMVECTOR NiPoint3ToXMVector(RE::NiPoint3 point)
 	{
-		using namespace DirectX;
-		return XMVectorSet(point.x, point.y, point.z, 1);
-	}
-
-	static inline DirectX::XMVECTOR XMVectorReverse(const DirectX::XMVECTOR& vec)
-	{
-		using namespace DirectX;
-		return XMVectorSet(XMVectorGetW(vec), XMVectorGetZ(vec), XMVectorGetY(vec), XMVectorGetX(vec));
-	}
-
-	static inline float LinearStep(float edge0, float edge1, float x) { return std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f); }
-	static inline float ViewDepthToNDC(float depth, RE::NiFrustum frustum)
-	{
-		return (frustum.fFar * (depth - frustum.fNear) / (depth * (frustum.fFar - frustum.fNear)));
+		return DirectX::XMVectorSet(point.x, point.y, point.z, 1);
 	}
 
 	static inline void LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix)
@@ -151,37 +145,14 @@ struct ShadowmapMatrixFix : EngineFix
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
-	struct BSShadowDirectionalLight_SetCameraRuntimeData2
+	struct BSShadowDirectionalLight_SetFrameCamera_SetCameraRuntimeData2
 	{
 		static void thunk(RE::NiCamera* cascadeCamera, RE::NiFrustum& frustum);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-	struct BSShadowDirectionalLight_SetCameraRuntimeData2Test
-	{
-		static void thunk(RE::NiCamera* cascadeCamera, RE::NiFrustum& frustum);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-	struct BSShadowDirectionalLight_CreateFrustum
-	{
-		static void thunk(RE::NiFrustum& frustum, float left, float right, float top, float farP, float bottom, float nearP, bool ortho);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct BSShadowDirectionalLight_Mul
-	{
-		static bool thunk(RE::NiCamera& camera, RE::NiPoint3& cornerPosition, float& outX, float& outY, float& outZ, float thresh);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-	struct BSShadowDirectionalLight_Mul_Precascade
-	{
-		static bool thunk(RE::NiCamera& camera, float3& cornerPosition, float& outX, float& outY, float& outZ, float thresh);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
 	struct FrustumSplit
 	{
-		//RE::NiPoint3 nearFace[4];
-		//RE::NiPoint3 farFace[4];
 		RE::NiPoint3 corners[8];
 	};
 
@@ -190,15 +161,10 @@ struct ShadowmapMatrixFix : EngineFix
 		static void thunk(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumSplit& frustumCorners, uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
+
 	struct BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond
 	{
 		static void thunk(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumSplit& frustumSplit, uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct BSBatchRenderer_RenderPassImmediately
-	{
-		static void thunk(RE::BSRenderPass* a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
@@ -207,96 +173,4 @@ struct ShadowmapMatrixFix : EngineFix
 		static void thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& arg1, uint32_t* arg2, uint32_t flags);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
-
-	struct SetShadowMapCount
-	{
-		static void thunk(RE::BSShadowLight* light, uint64_t numLights);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct BSShadowDirectionalLight_RenderShadowmaps
-	{
-		static void thunk(RE::BSShadowLight* light, void* a2);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct BSShadowDirectionalLight_TestFunc
-	{
-		static RE::BSShadowLight* thunk(void* arg1, uint32_t arg2);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct AccumulateShadowmap
-	{
-		static void thunk(RE::NiCamera* camera, RE::NiAccumulator* accumulator, uint32_t flags);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct BSShaderPropertySetFlags
-	{
-		static void thunk(RE::BSShaderProperty* prop, RE::BSShaderProperty::EShaderPropertyFlag8 a_flag, bool a_set);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
 };
-
-/*
-
-
-
-	//void(__fastcall* BuildPlaneFromPointsCallBack)(RE::NiPlane&, RE::NiPoint3&, RE::NiPoint3&, RE::NiPoint3&) = nullptr;
-	//void(__fastcall* SetPlaneFromPointAndNormal)(RE::NiPlane&, RE::NiPoint3&, RE::NiPoint3&) = nullptr;
-	//void BuildPlaneFromPoints(RE::NiPlane& planeOut, const RE::NiPoint3& p1, const RE::NiPoint3& p2, const RE::NiPoint3& p3);
-	struct FrustumCorners
-	{
-		float3 corners[8];
-	};
-	//void BuildCascadeCameraCullingPlanes(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumCorners& frustumCorners, uint32_t splitCornerIndices[8],
-	//	uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex);
-
-	DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
-	//virtual void BuildCloudShadowMatrix();
-	//void ExtractFrustumPlanes(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
-	//DirectX::XMMATRIX GameViewProj;
-	//DirectX::XMMATRIX GameViewProjTransed;
-	void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& camera);
-	virtual void LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix);
-	virtual void LogVector(std::string desc, DirectX::XMVECTOR vec);
-	//virtual DirectX::XMFLOAT4X4 ConvertTransMatrix(DirectX::XMFLOAT4X4& m);
-
-
-
-struct SetShadowMapCount
-{
-	static void thunk(RE::BSShadowLight* light, uint64_t numLights);
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct BSShadowDirectionalLight_RenderShadowmaps
-{
-	static void thunk(RE::BSShadowLight* light, void* unk);
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-
-
-
-
-
-
-
-stl::write_vfunc<0x10, BSShadowDirectionalLight_SetFrameCamera>(RE::VTABLE_BSShadowDirectionalLight[0]);
-
-
-
-}
-
-
-
-
-//stl::write_vfunc<0x2A, BSSkyShader_GetRenderPasses>(RE::VTABLE_BSSkyShaderProperty[0]);
-//stl::detour_thunk<SetShadowMapCount>(REL::RelocationID(107599, 107599));
-//stl::write_vfunc<0xA, BSShadowDirectionalLight_RenderShadowmaps>(RE::VTABLE_BSShadowDirectionalLight[0]);
-//stl::write_thunk_call<BSShadowDirectionalLight_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));                                   //set rotation and translation
-//stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //override corners
-//stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59, 0xC59));  ///FIRST ---------------------
-*/

@@ -1,10 +1,16 @@
 ﻿#include "ShadowmapCascadeCullingFix.h"
+#include "ShadowmapCascadeMatrixFix.h"
 
-void ShadowmapCascadeCullingFix::Install()
+bool ShadowmapCascadeCullingFix::Install()
 {
+	if (EngineFix::GetPPLEngineFix<ShadowmapMatrixFix>(0).installed)
+		return false;
+
 	gfSplitOverlap = reinterpret_cast<float*>(REL::RelocationID(513805, 391863).address());
 
-	//stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));
+	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));
+
+	return true;
 }
 
 void ShadowmapCascadeCullingFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes::thunk(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumSplit& frustumSplit, uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex)

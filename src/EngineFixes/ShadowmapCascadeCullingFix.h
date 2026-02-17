@@ -3,8 +3,8 @@
 struct ShadowmapCascadeCullingFix : EngineFix
 {
 	std::string GetName() override { return "Shadowmap Cascade Culling Fix"; }
-
-	void Install() override;
+	bool SupportsVR() override { return true; }
+	bool Install() override;
 
 private:
 	inline static float* gfSplitOverlap = nullptr;
