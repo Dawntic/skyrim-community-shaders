@@ -1,6 +1,26 @@
 #include "ShadowmapCascadeMatrixFix.h"
 
 #include "../Features/TerrainBlending.h"
+#include "../State.h"
+
+/*
+Fixes:
+fix view proj variance
+fix sky sync support
+fix cascade mip bias
+fix inter cascade blending
+fix FOV proj factoring
+fix map sampling fp precision
+fix geometry model fp precision
+fix cpu geometry translation
+fix bounding aspect ratio
+fix light altitude cap
+fix light dir update variance
+disable depth clipping
+add support for 4 cascades
+add time sliced rendering
+
+*/
 
 //TODO:
 // Catch ini settings and override shadow settings
@@ -13,6 +33,8 @@
 // Deferred renderer should use my buffer
 // culling breaks when setting very fig cascade distance  and disabling culling doesn't fix it
 // Running in game does something weird - does fov change??
+// I should probably cap the altitude or find a way to slow down the light updating
+// Sky sync compat
 
 //Recheck:
 // Need more offset - cascade is wasting lots of room
@@ -258,7 +280,6 @@ void ShadowmapMatrixFix::SetPrimaryCullPlanes(RE::BSShadowDirectionalLight* ligh
 	GetCullPlanesFromVPMatrix(primaryCullPlanes, cullingViewProj);
 }
 
-#include "../State.h"
 void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, const int cascadeIndex)
 {
 	using namespace DirectX;
@@ -489,6 +510,9 @@ DirectX::XMVECTOR ShadowmapMatrixFix::QuantizeLightDirection(DirectX::XMVECTOR l
 	return XMVector3Normalize(quantized);
 }
 
+// This is used in True PBR during the render pass list generation
+// It updates the flags for geometry retreiving shadows
+// The flag is set wrong during pre culling when the most distant cascade isn't rendered in the same frame
 bool ShadowmapMatrixFix::GeometryInsideShadowBound(RE::BSGeometry* geometry)
 {
 	auto pos = geometry->worldBound.center - RE::Main::WorldRootCamera()->world.translate;
