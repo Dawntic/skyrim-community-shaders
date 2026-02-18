@@ -15,6 +15,8 @@ struct ShadowmapMatrixFix : EngineFix
 
 	static inline float maxCascadeCoverageVS = 0;
 
+	inline static float* gCascadeBlendDist = nullptr;
+
 	struct Frustum
 	{
 		DirectX::XMVECTOR corner[8];
@@ -47,8 +49,9 @@ struct ShadowmapMatrixFix : EngineFix
 	};
 
 	static inline Frustum primaryCullFrustum = {};
+	static inline RE::NiFrustumPlanes primaryCullPlanes = RE::NiFrustumPlanes();
 
-	static void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
+	static void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, const int index);
 	static void SetPrimaryCullPlanes(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
 	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
 	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
@@ -60,6 +63,7 @@ struct ShadowmapMatrixFix : EngineFix
 	static void BuildCascadeBoundingSphere(CascadeBounds::Sphere& outSphere, const Frustum& lightFrustum);
 	static void BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, const DirectX::XMVECTOR& lightCameraPos, const CascadeBounds::Sphere& sphere);
 	static void BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullingProj, const CascadeBounds::AABB& boundingBox);
+	static void DisableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int index);
 
 	struct CascadeData
 	{
@@ -70,16 +74,13 @@ struct ShadowmapMatrixFix : EngineFix
 		RE::NiFrustumPlanes cullingPlanes;
 		float endDepthNDC;
 		float startDepthNDC;
-		float _pad[2];
+		float width;
+		float _pad[1];
 		//RE::NiFrustum frustum;
 		//DirectX::XMFLOAT4X4 projMatrix;   //tmp
 		//DirectX::XMFLOAT4X4 worldMatrix;  //tmp
 	};
 	static inline CascadeData cascadeData[maxCascades] = {};
-
-	static inline RE::NiFrustumPlanes maxExtentCullPlanes = RE::NiFrustumPlanes();
-
-	//static inline float cascadeSplitViewDist[maxCascades] = {};
 
 	struct alignas(16) ShadowDataCB
 	{
@@ -87,6 +88,7 @@ struct ShadowmapMatrixFix : EngineFix
 		DirectX::XMFLOAT4X4 shadowmapViewProjUV[4];
 		float cascadeSplitEnds[4];
 		float cascadeSplitStarts[4];
+		float cascadeWidth[4];
 		uint numCascades;
 		float _pad[3];
 	};

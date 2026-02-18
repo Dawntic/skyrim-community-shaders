@@ -37,25 +37,25 @@ public:
 	float slopeScaleBias[4] = { 3.2, 3.8, 3.8, 3.8 };
 	//bool renderShadowMask = false;
 
-	int splits[4] = { 1000, 3000, 6000, 10000 };
+	int splits[4] = { 1500, 3000, 6000, 15000 };
 	float lightUpdateAngle = 0.1;
 	bool disableCulling = false;
 	bool rasterDepthClip = false;
 	bool rasterCulling = true;
 
-	float minExtent = 3000.0f;
+	float minExtent = 5000.0f;
 	float multiplerRange = 2.0f;
-	float testVar = 100;
+	float testVar = 0;
 	float blendZone = 100;
 
-	//bool update = false;
+	bool update = true;
 	//int testScale = 1;
 	//bool updateView = true;
 	//bool updatePos = true;
 	//bool updateProj = true;
 
 	bool test = false;
-	//bool test2 = false;
+	bool test2 = false;
 	//bool test3 = false;
 	//
 

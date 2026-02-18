@@ -107,9 +107,11 @@ void TerrainBlending::DrawSettings()
 		reload = true;
 	}
 
+	ImGui::Checkbox("Update", &update);
+
 	ImGui::Checkbox("Test", &test);
-	//	ImGui::Checkbox("Test 2", &test2);
-	//	ImGui::Checkbox("Test 3", &test3);
+	ImGui::Checkbox("Test 2", &test2);
+	//ImGui::Checkbox("Test 3", &test3);
 
 	ImGui::SliderFloat("Z Range Multipler", &multiplerRange, 0.0f, 4.0f);
 	ImGui::SliderFloat("Z Min Extent", &minExtent, 0.0f, 5000.0f);
