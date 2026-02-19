@@ -9,6 +9,7 @@ fix view proj variance
 fix sky sync support
 fix cascade mip bias
 fix inter cascade blending
+fix wind factoring
 fix FOV proj factoring
 fix map sampling fp precision
 fix geometry model fp precision
@@ -19,25 +20,23 @@ fix light dir update variance
 disable depth clipping
 add support for 4 cascades
 add time sliced rendering
-
 */
 
 //TODO:
 // Catch ini settings and override shadow settings
 // Add UI?
-// Split overlap - natural in proj extention?
 
 //ISSUES:
-//VL shadowmaps called 4 times
-//VL shadowmaps cull everything
+// VL shadowmaps called 4 times
+// VL shadowmaps cull everything
 // Deferred renderer should use my buffer
 // culling breaks when setting very fig cascade distance  and disabling culling doesn't fix it
-// Running in game does something weird - does fov change??
 // I should probably cap the altitude or find a way to slow down the light updating
-// Sky sync compat
 
-//Recheck:
+//RE-CHECK:
 // Need more offset - cascade is wasting lots of room
+// Sky sync compat
+// Inteirors
 
 bool ShadowmapMatrixFix::Install()
 {
@@ -58,6 +57,10 @@ bool ShadowmapMatrixFix::Install()
 
 	// Fill VL shadows call
 	//REL::safe_fill(REL::RelocationID(101495, 108489).address() + REL::Relocate(0x30, 0x30), REL::NOP, 76);
+
+	// Need to use these somewhere
+	//gShadowDistance = reinterpret_cast<float*>(REL::RelocationID(528314, 415263).address());
+	//gInteriorShadowDistance = reinterpret_cast<float*>(REL::RelocationID(513755, 391724).address());
 
 	gCascadeBlendDist = reinterpret_cast<float*>(REL::RelocationID(513805, 391863).address());
 
@@ -487,6 +490,9 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 	desc.clearRenderTarget = desc.shadowmapIndex == (uint)cascadeToRender;
 
 	func(light, desc, arg2, flags);
+
+	// Needed because VL shadow maps use the same descriptors...
+	desc.clearRenderTarget = true;
 }
 
 DirectX::XMVECTOR ShadowmapMatrixFix::QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees)  //0.05 - 0.1 works well

@@ -15,7 +15,9 @@ struct ShadowmapMatrixFix : EngineFix
 
 	static inline float maxCascadeCoverageVS = 0;
 
-	inline static float* gCascadeBlendDist = nullptr;
+	static inline float* gCascadeBlendDist = nullptr;
+	//static inline float* gShadowDistance = nullptr;
+	//static inline float* gInteriorShadowDistance = nullptr;
 
 	struct Frustum
 	{
