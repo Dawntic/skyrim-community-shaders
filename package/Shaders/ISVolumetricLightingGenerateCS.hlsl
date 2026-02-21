@@ -59,6 +59,17 @@ cbuffer PerTechnique : register(b0)
 #	endif
 }
 
+#if !defined(VR)
+cbuffer ShadowCascadeFix : register(b7)
+{
+	row_major float4x4 lightViewProj;
+	row_major float4x4 shadowmapViewProjUV[4];
+	float4 cascadeEndDepth;
+	float4 cascadeStartDepth;
+	uint nCascades;
+}
+#endif
+
 [numthreads(32, 32, 1)] void main(uint3 dispatchID : SV_DispatchThreadID) {
 	const float3 StepCoefficients[] = {
 		{ 0, 0, 0 },
@@ -86,14 +97,23 @@ cbuffer PerTechnique : register(b0)
 
 	float shadowMapDepth = positionCSShifted.z;
 
-	bool noShadow = !SharedData::InInterior;
-	if (EndSplitDistances.z >= shadowMapDepth) {
-		uint cascadeIndex = ShadowMapCount >= 3.0f && shadowMapDepth > EndSplitDistances.y ? 2 : shadowMapDepth > EndSplitDistances.x ? 1 :
-		                                                                                                                                0;
-		float shadowMapThreshold = cascadeIndex == 0 ? 0.01f : 0.0f;
+	bool noShadow = true;
+		int cascadeIndex = 0;
+		float3 positionLS;
+#	if defined(VR)
+	if (EndSplitDistances[2] >= shadowMapDepth) {
+		uint cascadeIndex = ShadowMapCount >= 3.0f && shadowMapDepth > EndSplitDistances[1] ? 2 : shadowMapDepth > EndSplitDistances[0] ? 1 : 0;
 		float4x3 lightProjectionMatrix = ShadowMapProj[eyeIndex][cascadeIndex];
-
-		float3 positionLS = mul(transpose(lightProjectionMatrix), float4(positionWS.xyz, 1)).xyz;
+		positionLS = mul(transpose(lightProjectionMatrix), float4(positionWS.xyz, 1)).xyz;
+#	else
+	if(cascadeEndDepth[nCascades - 1] >= shadowMapDepth) {
+		[unroll] for(; cascadeIndex < nCascades; cascadeIndex++){
+			if(shadowMapDepth <= cascadeEndDepth[cascadeIndex])
+				break;
+		}
+		positionLS = mul(shadowmapViewProjUV[cascadeIndex], float4(positionWS.xyz + PosAdjust[eyeIndex], 1)).xyz;
+#	endif
+		float shadowMapThreshold = cascadeIndex == 0 ? 0.01f : 0.0f;
 		float shadowMapValue = ShadowmapTex.SampleLevel(ShadowmapSampler, float3(positionLS.xy, cascadeIndex), 0);
 		noShadow = shadowMapValue >= positionLS.z - shadowMapThreshold;
 

@@ -90,7 +90,7 @@ struct ShadowmapMatrixFix : EngineFix
 		DirectX::XMFLOAT4X4 shadowmapViewProjUV[4];
 		float cascadeSplitEnds[4];
 		float cascadeSplitStarts[4];
-		float cascadeWidth[4];
+		//float cascadeWidth[4];
 		uint numCascades;
 		float _pad[3];
 	};

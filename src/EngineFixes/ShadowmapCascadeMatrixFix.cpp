@@ -25,6 +25,7 @@ add time sliced rendering
 //TODO:
 // Catch ini settings and override shadow settings
 // Add UI?
+// Find SE addresses
 
 //ISSUES:
 // VL shadowmaps called 4 times
@@ -45,6 +46,7 @@ bool ShadowmapMatrixFix::Install()
 
 	//Render a cascade
 	stl::write_thunk_call<BSShadowDirectionalLight_RenderShadowmaps_RenderCascade>(REL::RelocationID(101495, 108489).address() + REL::Relocate(0xC6, 0xC6));
+	stl::write_thunk_call<BSShadowDirectionalLight_RenderShadowmaps_RenderCascade>(REL::RelocationID(101495, 108489).address() + REL::Relocate(0x6F, 0x6F));
 
 	// Clear the current frustum - we use it to set a new view matrix and translation
 	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));
@@ -379,7 +381,7 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	cascadeData[cascadeIndex].endDepthNDC = cascadeBoundData.splitDist.endSplitNDC[cascadeIndex];
 	cascadeData[cascadeIndex].startDepthNDC = cascadeBoundData.splitDist.startSplitNDC[cascadeIndex];
 
-	cascadeData[cascadeIndex].width = XMVectorGetX(cascadeBoundData.boundingBox.cornerMax) - XMVectorGetX(cascadeBoundData.boundingBox.cornerMin);
+	//cascadeData[cascadeIndex].width = XMVectorGetX(cascadeBoundData.boundingBox.cornerMax) - XMVectorGetX(cascadeBoundData.boundingBox.cornerMin);
 
 	// Build culling planes
 	const XMMATRIX cullingViewProj = XMMatrixMultiply(lightView, cullingProj);
@@ -477,7 +479,7 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 			data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
 			data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
 			data.cascadeSplitStarts[i] = cascadeData[i].startDepthNDC;
-			data.cascadeWidth[i] = cascadeData[i].width;
+			//	data.cascadeWidth[i] = cascadeData[i].width;
 		}
 		data.numCascades = nCascades;
 		shadowCascadeFixCB->Update(data);
@@ -485,6 +487,7 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 		ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
 		globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
 		globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
+		globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
 	}
 
 	desc.clearRenderTarget = desc.shadowmapIndex == (uint)cascadeToRender;
