@@ -26,20 +26,20 @@ add time sliced rendering
 // Catch ini settings and override shadow settings
 // Add UI?
 // Find SE addresses
+// Only render first 2 VL maps
+// Default 1024 cascades
+// Get VL shadow maps to limit rez above 64^2
 
 //ISSUES:
-// VL shadowmaps called 4 times
-// VL shadowmaps cull everything
 // Deferred renderer should use my buffer
 // culling breaks when setting very fig cascade distance  and disabling culling doesn't fix it
-// I should probably cap the altitude or find a way to slow down the light updating
-// Only render first 2 VL maps
-// Focus shadows are broken - player shadows
+// Cap the altitude or find a way to slow down the light updating
 
 //RE-CHECK:
 // Need more offset - cascade is wasting lots of room
 // Sky sync compat
 // Inteirors
+//Test in base game
 
 bool ShadowmapMatrixFix::Install()
 {
