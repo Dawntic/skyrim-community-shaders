@@ -76,8 +76,8 @@ struct ShadowmapMatrixFix : EngineFix
 		RE::NiFrustumPlanes cullingPlanes;
 		float endDepthNDC;
 		float startDepthNDC;
-		float width;
-		float _pad[1];
+		//float width;
+		float _pad[2];
 		//RE::NiFrustum frustum;
 		//DirectX::XMFLOAT4X4 projMatrix;   //tmp
 		//DirectX::XMFLOAT4X4 worldMatrix;  //tmp
@@ -87,6 +87,7 @@ struct ShadowmapMatrixFix : EngineFix
 	struct alignas(16) ShadowDataCB
 	{
 		DirectX::XMFLOAT4X4 lightViewProj;
+		DirectX::XMFLOAT4X4 lightView;  //TMP
 		DirectX::XMFLOAT4X4 shadowmapViewProjUV[4];
 		float cascadeSplitEnds[4];
 		float cascadeSplitStarts[4];

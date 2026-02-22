@@ -123,6 +123,7 @@ float2 SmoothSaturate(float2 value)
 cbuffer ShadowCascadeFix : register(b7)
 {
 	row_major float4x4 lightViewProj;
+	row_major float4x4 lightView;
 	row_major float4x4 shadowmapViewProjUV[4];
 	float4 cascadeEndDepth;
 	float4 cascadeStartDepth;
@@ -154,7 +155,7 @@ VS_OUTPUT main(VS_INPUT input)
 #	else
 
 	precise float4 positionMS = float4(input.PositionMS.xyz, 1.0);
-	float4 positionCS = float4(0, 0, 0, 0);
+	precise float4 positionCS = float4(0, 0, 0, 0);
 
 	float3 normalMS = float3(1, 1, 1);
 #		if defined(NORMALS)
@@ -168,7 +169,6 @@ VS_OUTPUT main(VS_INPUT input)
 	normalMult = 0;
 #	endif
 	positionMS.xyz += normalMS.xyz * normalMult;
-
 #		endif
 
 #		if defined(LOD_LANDSCAPE)
@@ -177,38 +177,27 @@ VS_OUTPUT main(VS_INPUT input)
 
 #		if defined(SKINNED)
 	precise int4 boneIndices = 765.01.xxxx * input.BoneIndices.xyzw;
-
 	float3x4 worldMatrix = Skinned::GetBoneTransformMatrix(Bones, boneIndices, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, input.BoneWeights);
-	precise float4 positionWS = float4(mul(positionMS, transpose(worldMatrix)), 1);
-
-#	if defined(RENDER_SHADOWMAP) && defined(RENDER_SHADOWMAP_CLAMPED) && !defined(VR)
-	positionCS = mul(lightViewProj, positionWS);
+	precise float4 positionWS = float4(mul(worldMatrix, positionMS).xyz, 1.0);
+#		if defined(RENDER_SHADOWMAP) && defined(RENDER_SHADOWMAP_CLAMPED) && !defined(VR)
+	positionCS = mul(lightViewProj, float4(positionWS.xyz + FrameBuffer::CameraPosAdjust[eyeIndex].xyz, 1.0));
 #		else
 	positionCS = mul(FrameBuffer::CameraViewProj[eyeIndex], positionWS);
 #		endif
-#	else // END SKINNED
 
-	float4 CoordsLS;
-	precise float4x4 modelViewProj;
+#	else
+
 #		if defined(RENDER_SHADOWMAP) && defined(RENDER_SHADOWMAP_CLAMPED) && !defined(VR)
-
-	float3 CameraPos = FrameBuffer::CameraPosAdjust[0].xyz;
-	float4 CoordsWS = mul(World[0], float4(positionMS.xyz, 1.0));
-	CoordsLS = mul(lightViewProj, float4((CoordsWS.xyz + CameraPos), 1.0));
-
+	float4 positionWS = mul(World[eyeIndex], positionMS);
+	positionCS = mul(lightViewProj, float4(positionWS.xyz + FrameBuffer::CameraPosAdjust[eyeIndex].xyz, 1.0));
 #		else
-	modelViewProj = mul(FrameBuffer::CameraViewProj[eyeIndex], World[eyeIndex]);
-#		endif
-
+	precise float4x4 modelViewProj = mul(FrameBuffer::CameraViewProj[eyeIndex], World[eyeIndex]);
 	positionCS = mul(modelViewProj, positionMS);
-#		if defined(RENDER_SHADOWMAP) && defined(RENDER_SHADOWMAP_CLAMPED) && !defined(VR)
-	positionCS = CoordsLS;
-	#endif
 #		endif
+#	endif // END SKINNED
 
 #		if defined(RENDER_SHADOWMAP) && defined(RENDER_SHADOWMAP_CLAMPED)
 	positionCS.z = max(0, positionCS.z);
-
 #		endif
 
 #		if defined(LOD_LANDSCAPE)
@@ -227,7 +216,7 @@ VS_OUTPUT main(VS_INPUT input)
 	float3 normalVS = float3(1, 1, 1);
 #			if defined(SKINNED)
 	float3x3 boneRSMatrix = Skinned::GetBoneRSMatrix(Bones, boneIndices, input.BoneWeights);
-	normalMS = normalize(mul(normalMS, transpose(boneRSMatrix)));
+	normalMS = normalize(mul(boneRSMatrix, normalMS));
 	normalVS = mul(FrameBuffer::CameraView[eyeIndex], float4(normalMS, 0)).xyz;
 #			else
 	normalVS = mul(mul(FrameBuffer::CameraView[eyeIndex], World[eyeIndex]), float4(normalMS, 0)).xyz;
@@ -305,7 +294,7 @@ VS_OUTPUT main(VS_INPUT input)
 #	endif
 
 #	if defined(OFFSET_DEPTH)
-	vsout.PositionCS.z += 10.0;
+	vsout.PositionCS.z += 5.0;
 #	endif
 
 #	ifdef VR
@@ -401,6 +390,7 @@ cbuffer AlphaTestRefCB : register(b11)
 cbuffer ShadowCascadeFix : register(b7)
 {
 	row_major float4x4 lightViewProj;
+	row_major float4x4 lightView;
 	row_major float4x4 shadowmapViewProjUV[4];
 	float4 cascadeEndDepth;
 	float4 cascadeStartDepth;

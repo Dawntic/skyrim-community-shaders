@@ -33,6 +33,8 @@ add time sliced rendering
 // Deferred renderer should use my buffer
 // culling breaks when setting very fig cascade distance  and disabling culling doesn't fix it
 // I should probably cap the altitude or find a way to slow down the light updating
+// Only render first 2 VL maps
+// Focus shadows are broken - player shadows
 
 //RE-CHECK:
 // Need more offset - cascade is wasting lots of room
@@ -263,7 +265,7 @@ void ShadowmapMatrixFix::SetPrimaryCullPlanes(RE::BSShadowDirectionalLight* ligh
 
 	auto& settings = globals::features::terrainBlending;
 
-	const XMMATRIX lightView = XMLoadFloat4x4(&cascadeData[0].viewMatrix);
+	const XMMATRIX lightView = XMMatrixTranspose(XMLoadFloat4x4(&cascadeData[0].viewMatrix));
 	const XMVECTOR rootCameraPos = NiPoint3ToXMVector(rootCamera.world.translate);
 	const XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
 
@@ -376,7 +378,7 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	// Set translation for geometry to transform against
 	XMStoreFloat3(&cascadeData[cascadeIndex].translation, rootCameraPos);
 
-	XMStoreFloat4x4(&cascadeData[cascadeIndex].viewMatrix, lightView);
+	XMStoreFloat4x4(&cascadeData[cascadeIndex].viewMatrix, XMMatrixTranspose(lightView));
 
 	cascadeData[cascadeIndex].endDepthNDC = cascadeBoundData.splitDist.endSplitNDC[cascadeIndex];
 	cascadeData[cascadeIndex].startDepthNDC = cascadeBoundData.splitDist.startSplitNDC[cascadeIndex];
@@ -475,6 +477,7 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 	if (desc.shadowmapIndex == (uint)cascadeToRender) {
 		ShadowDataCB data{};
 		data.lightViewProj = cascadeData[cascadeToRender].viewProj;
+		data.lightView = cascadeData[cascadeToRender].viewMatrix;
 		for (int i = 0; i < nCascades; i++) {
 			data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
 			data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
