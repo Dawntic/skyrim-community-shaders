@@ -5,6 +5,7 @@
 #include "Common/SharedData.hlsli"
 #include "Common/Skinned.hlsli"
 #include "Common/VR.hlsli"
+#include "Common/GBuffer.hlsli"
 
 #if defined(RENDER_SHADOWMASK) || defined(RENDER_SHADOWMASKSPOT) || defined(RENDER_SHADOWMASKPB) || defined(RENDER_SHADOWMASKDPB)
 #	define RENDER_SHADOWMASK_ANY
@@ -38,6 +39,10 @@ struct VS_OUTPUT
 {
 	float4 PositionCS: SV_POSITION0;
 
+	#if defined(TEXTURE)
+	float2 TexCoordTest : TEXCOORD6;
+	#endif
+
 #if !(defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) && SHADOWFILTER != 2
 #	if (defined(ALPHA_TEST) && ((!defined(RENDER_DEPTH) && !defined(RENDER_SHADOWMAP)) || defined(RENDER_SHADOWMAP_PB))) || defined(RENDER_NORMAL) || defined(DEBUG_SHADOWSPLIT) || defined(RENDER_BASE_TEXTURE)
 	float4 TexCoord0: TEXCOORD0;
@@ -62,6 +67,10 @@ struct VS_OUTPUT
 #	if defined(RENDER_SHADOWMASK_ANY)
 	float4 PositionMS: TEXCOORD5;
 #	endif
+
+
+
+
 
 #	if defined(ALPHA_TEST) && defined(VC) && defined(RENDER_SHADOWMASK_ANY)
 	float2 Alpha: TEXCOORD4;
@@ -140,6 +149,11 @@ VS_OUTPUT main(VS_INPUT input)
 		input.InstanceID
 #	endif
 	);
+
+	#if defined(TEXTURE)
+	vsout.TexCoordTest.xy = input.TexCoord.xy;
+	#endif
+
 
 #	if (defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) || SHADOWFILTER == 2
 	vsout.PositionCS.xy = input.PositionMS.xy;
@@ -334,6 +348,7 @@ Texture2DArray<float4> TexShadowMapSamplerComp : register(t4);
 Texture2D<uint4> TexStencilSampler : register(t5);
 Texture2DArray<float4> TexFocusShadowMapSamplerComp : register(t6);
 Texture2D<float4> TexGrayscaleSampler : register(t7);
+Texture2D<float4> NormalTex : register(t27);
 
 cbuffer PerTechnique : register(b0)
 {
@@ -749,6 +764,18 @@ PS_OUTPUT main(PS_INPUT input)
 			shadowVisibility = lerp(shadowVisibility, nextShadowVisibility, blendFactor);
 		}
 		// End blending
+
+		//shadowVisibility = TexShadowMapSamplerComp.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(positionLS.xy, cascadeIndex), positionLS.z).x;
+		float2 normalSample = NormalTex.SampleLevel(SampDepthSampler, input.TexCoordTest.xy, 0).xy;
+		float3 viewNormal = GBuffer::DecodeNormal(normalSample.xy);
+		float3 worldNormal = mul(FrameBuffer::CameraViewInverse[0], float4(viewNormal, 1.0)).xyz;
+		static const float BIAS_AMOUNT = 0.005;
+		float bias = BIAS_AMOUNT * (worldNormal.z > 0.1);
+		positionLS.z = positionLS.z - bias;
+		//float NdotL = dot(worldNormal, -SharedData::DirLightDirection);
+		//float stepped = (saturate(NdotL) - 0.0) / (1.0 - 0.0);
+		//float bias = BIAS_AMOUNT * (1.0 - saturate(NdotL));
+		//shadowVisibility = worldNormal.z > 0.1;
 
 		// Focus Shadows
 		if (stencilValue != 0) {
