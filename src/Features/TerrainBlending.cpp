@@ -103,9 +103,7 @@ namespace
 
 void TerrainBlending::DrawSettings()
 {
-	if (ImGui::Button("Reload")) {
-		reload = true;
-	}
+	ImGui::Checkbox("Reload", &reload);
 
 	ImGui::Checkbox("Update", &update);
 
@@ -126,6 +124,11 @@ void TerrainBlending::DrawSettings()
 	ImGui::SliderInt("Cascade 4 Coverage", &splits[3], splits[2], 40000);
 
 	//ImGui::Text(fmt::format("Cascade 1 Texel Size: {}", float(splits[0]) / 1024.0f).c_str());
+
+	ImGui::Text("Interior Windows Cascade 1");
+	ImGui::SliderInt("Constant Bias ##5", &depthBias[4], -2500, 2500);
+	ImGui::SliderFloat("Angular Bias ##5", &slopeScaleBias[4], -10.0f, 10.0f, "%.5f");
+	ImGui::SliderFloat("Max Amount of Bias ##5", &biasClamp[4], -1.0f, 1.0f, "%.4f");
 
 	ImGui::Text("Cascade 1");
 	ImGui::SliderInt("Constant Bias ##1", &depthBias[0], -2500, 2500);

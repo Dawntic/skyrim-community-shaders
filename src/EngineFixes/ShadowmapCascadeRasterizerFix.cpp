@@ -29,6 +29,10 @@ void ShadowmapRasterizerFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCas
 		//Clone
 		CloneRasterStates(gRasterStates, cascade);
 
+		if (cascade == 0) {
+			CloneRasterStatesInterior(gRasterStates, 4);
+		}
+
 		initialized = cascade == numCascades - 1;
 	}
 
@@ -82,9 +86,29 @@ void ShadowmapRasterizerFix::CloneRasterStates(RasterStateArray* inputArray, int
 	}
 }
 
+void ShadowmapRasterizerFix::CloneRasterStatesInterior(RasterStateArray* inputArray, int cascade)
+{
+	for (int fill = 0; fill < 2; fill++) {
+		for (int cull = 0; cull < 3; cull++) {
+			for (int depth = 0; depth < 12; depth++) {
+				for (int scissor = 0; scissor < 2; scissor++) {
+					if (auto* gRasterizer = (*inputArray)[fill][cull][depth][scissor]) {
+						D3D11_RASTERIZER_DESC desc{};
+						gRasterizer->GetDesc(&desc);
+
+						GetUpdatedRasterDesc(desc, cascadeDescriptors[cascade]);
+
+						DX::ThrowIfFailed(globals::d3d::device->CreateRasterizerState(&desc, &shadowmapInteriorRasterStates[fill][cull][depth][scissor]));
+					}
+				}
+			}
+		}
+	}
+}
+
 void ShadowmapRasterizerFix::Reload()
 {
-	for (int i = 0; i < (int)numCascades - 1; i++) {
+	for (int i = 0; i < (int)numCascades; i++) {
 		ShadowMapRasterizerDescriptor desc;
 		desc.rasterDepthBias = globals::features::terrainBlending.depthBias[i];
 		desc.rasterDepthBiasClamp = globals::features::terrainBlending.biasClamp[i];
@@ -95,4 +119,14 @@ void ShadowmapRasterizerFix::Reload()
 		cascadeDescriptors[i] = desc;
 		CloneRasterStates(gRasterStates, i);
 	}
+
+	ShadowMapRasterizerDescriptor desc;
+	desc.rasterDepthBias = globals::features::terrainBlending.depthBias[4];
+	desc.rasterDepthBiasClamp = globals::features::terrainBlending.biasClamp[4];
+	desc.rasterSlopeScaleBias = globals::features::terrainBlending.slopeScaleBias[4];
+	desc.depthClipEnable = globals::features::terrainBlending.rasterDepthClip;
+	//desc.rasterCulling = globals::features::terrainBlending.rasterCulling;
+
+	cascadeDescriptors[4] = desc;
+	CloneRasterStatesInterior(&backupGameRasterStates, 4);
 }

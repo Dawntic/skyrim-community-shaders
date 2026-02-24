@@ -1,8 +1,7 @@
 #include "ShadowmapCascadeMatrixFix.h"
-
-#include "../Features/TerrainBlending.h"
 #include "../State.h"
 
+#include "../Features/TerrainBlending.h"
 /*
 Fixes:
 fix view proj variance
@@ -39,7 +38,7 @@ add time sliced rendering
 // Need more offset - cascade is wasting lots of room
 // Sky sync compat
 // Inteirors
-//Test in base game
+// Test in base game
 
 bool ShadowmapMatrixFix::Install()
 {
@@ -168,7 +167,7 @@ void ShadowmapMatrixFix::BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, c
 	XMVECTOR cornerMin = XMVectorSubtract(sphere.center, vRadius);
 	XMVECTOR cornerMax = XMVectorAdd(sphere.center, vRadius);
 
-	// Add trans vec - here avoids extra variance
+	// Add trans vec here to avoid variance
 	cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
 	cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
 
@@ -222,7 +221,7 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 	}
 }
 
-// Gribb-Hartmann extraction method
+// Gribb-Hartmann extraction
 void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj)
 {
 	using namespace DirectX;
@@ -491,6 +490,9 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 		globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
 		globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
 		globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
+
+		auto& normalRoughness = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kRAWINDIRECT_DOWNSCALED].SRV;
+		globals::d3d::context->PSSetShaderResources(27, 1, &normalRoughness);
 	}
 
 	desc.clearRenderTarget = desc.shadowmapIndex == (uint)cascadeToRender;

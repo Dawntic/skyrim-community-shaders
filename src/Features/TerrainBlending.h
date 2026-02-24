@@ -32,9 +32,9 @@ public:
 
 	//
 	bool reload = false;
-	int depthBias[4] = { 160, 100, 100, 100 };
-	float biasClamp[4] = { 1, 1, 1, 1 };
-	float slopeScaleBias[4] = { 3.2, 3.8, 3.8, 3.8 };
+	int depthBias[5] = { 160, 100, 100, 100, 150 };
+	float biasClamp[5] = { 1, 1, 1, 1, 1 };
+	float slopeScaleBias[5] = { 3.2, 3.8, 3.8, 3.8, 3.0 };
 	//bool renderShadowMask = false;
 
 	int splits[4] = { 1500, 3000, 6000, 15000 };

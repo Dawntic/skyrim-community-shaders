@@ -125,9 +125,28 @@ void InteriorSun::DirShadowLightCulling::thunk(RE::BSShadowDirectionalLight* dir
 	func(dirLight, *passedJobArrays, nodes);
 }
 
+#include "../EngineFix.h"
+#include "../EngineFixes/ShadowmapCascadeRasterizerFix.h"
 void InteriorSun::BSBatchRenderer_RenderPassImmediately::thunk(RE::BSRenderPass* a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags)
 {
 	globals::features::interiorSun.UpdateRasterStateCullMode(a_pass, a_technique);
+
+	if (globals::features::interiorSun.isInteriorWithSun && a_technique & static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::RenderShadowmap)) {
+		const auto flags = a_pass->shaderProperty->flags;
+		if (flags.all(RE::BSShaderProperty::EShaderPropertyFlag::kAssumeShadowmask)) {
+			auto& shadowState = globals::game::shadowState->GetRuntimeData();
+			ShadowmapRasterizerFix& rasterizerFix = EngineFix::GetPPLEngineFix<ShadowmapRasterizerFix>(1);
+			ID3D11RasterizerState* newRaster = nullptr;
+
+			//auto* rasterCullPtr = globals::features::interiorSun.rasterStateCullMode;
+			//if (*rasterCullPtr == RE::BSGraphics::RasterStateCullMode::RASTER_STATE_CULL_MODE_BACK)
+			//	newRaster = rasterizerFix.shadowmapInteriorRasterStates[shadowState.rasterStateFillMode][RE::BSGraphics::RasterStateCullMode::RASTER_STATE_CULL_MODE_BACK][shadowState.rasterStateDepthBiasMode][shadowState.rasterStateScissorMode];
+			//else
+			newRaster = rasterizerFix.shadowmapInteriorRasterStates[shadowState.rasterStateFillMode][shadowState.rasterStateCullMode][shadowState.rasterStateDepthBiasMode][shadowState.rasterStateScissorMode];
+
+			globals::d3d::context->RSSetState(newRaster);
+		}
+	}
 
 	func(a_pass, a_technique, a_alphaTest, a_renderFlags);
 }
