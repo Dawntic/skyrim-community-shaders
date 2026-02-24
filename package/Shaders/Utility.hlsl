@@ -129,7 +129,7 @@ cbuffer ShadowCascadeFix : register(b7)
 	float4 cascadeStartDepth;
 	uint nCascades;
 }
-#	endif  // !VR
+#	endif
 
 VS_OUTPUT main(VS_INPUT input)
 {
@@ -330,7 +330,7 @@ Texture2D<float4> TexBaseSampler : register(t0);
 Texture2D<float4> TexNormalSampler : register(t1);
 Texture2D<float4> TexDepthUtilitySampler : register(t2);
 Texture2DArray<float4> TexShadowMapSampler : register(t3);
-Texture2DArray<float4> ShadowMapTexture : register(t4);
+Texture2DArray<float4> TexShadowMapSamplerComp : register(t4);
 Texture2D<uint4> TexStencilSampler : register(t5);
 Texture2DArray<float4> TexFocusShadowMapSamplerComp : register(t6);
 Texture2D<float4> TexGrayscaleSampler : register(t7);
@@ -339,7 +339,7 @@ cbuffer PerTechnique : register(b0)
 {
 	float4 VPOSOffset : packoffset(c0);
 	float4 ShadowSampleParam : packoffset(c1);    // fPoissonRadiusScale / iShadowMapResolution in z and w
-	float4 EndSplitDistances : packoffset(c2);    // cascade end distances int xyz, cascade count int z
+	float4 EndSplitDistances : packoffset(c2);    // cascade end distances int xyz, cascade count int w
 	float4 StartSplitDistances : packoffset(c3);  // cascade start ditances int xyz, 4 int z
 	float4 FocusShadowFadeParam : packoffset(c4);
 }
@@ -396,7 +396,7 @@ cbuffer ShadowCascadeFix : register(b7)
 	float4 cascadeStartDepth;
 	uint nCascades;
 }
-#	endif  // !VR
+#	endif
 
 #	if defined(RENDER_SHADOWMASKDPB)
 float GetPoissonDiskFilteredShadowVisibility(uint3 seed, Texture2DArray<float4> tex, SamplerComparisonState samp, float3 positionMS, float layerIndex, uint eyeIndex)
@@ -536,6 +536,27 @@ float GetPoissonDiskFilteredShadowVisibility(float noise, float2x2 rotationMatri
 }
 #	endif
 
+#	if defined(RENDER_SHADOWMASK)
+float SampleShadowCascade(float3 positionLS, float cascadeIndex, float noise, float2x2 rotationMatrix)
+{
+	float shadowVisibility = 0;
+
+#		if SHADOWFILTER == 0
+	float shadowMapValue = TexShadowMapSampler.Sample(SampShadowMapSampler, float3(positionLS.xy, cascadeIndex)).x;
+	if (shadowMapValue >= positionLS.z) {
+		shadowVisibility = 1;
+	}
+#		elif SHADOWFILTER == 1
+	shadowVisibility = TexShadowMapSamplerComp.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(positionLS.xy, cascadeIndex), positionLS.z).x;
+#		elif SHADOWFILTER == 3
+	shadowVisibility = GetPoissonDiskFilteredShadowVisibility(noise, rotationMatrix, TexShadowMapSamplerComp, SampShadowMapSamplerComp, positionLS.xy, cascadeIndex, positionLS.z, false);
+#		endif
+
+	return shadowVisibility;
+}
+#	endif
+
+
 PS_OUTPUT main(PS_INPUT input)
 {
 	PS_OUTPUT psout;
@@ -666,87 +687,44 @@ PS_OUTPUT main(PS_INPUT input)
 	uint3 seed = Random::pcg3d(uint3(input.PositionCS.xy, input.PositionCS.x * Math::PI));
 
 #		if defined(RENDER_SHADOWMASK)
-	if(SharedData::InInterior)
-		shadowColor = float4(0,0,0,0);
+	shadowColor = float4(1,1,1,1) * !SharedData::InInterior;
+
+	float4 cascadeStartDepths;
+	float4 cascadeEndDepths;
+	int numCascades;
+	#if defined(VR)
+		cascadeStartDepths = StartSplitDistances;
+		cascadeEndDepths = EndSplitDistances;
+		numCascades = EndSplitDistances.w;
+	#else
+		cascadeStartDepths = cascadeStartDepth;
+		cascadeEndDepths = cascadeEndDepth;
+		numCascades = nCascades;
+	#endif
 
 	float cascadeIndex = 0;
-	float shadowMapThreshold;
 	float3 positionLS;
-	float blendStart;
-#	if defined(VR)
-	if (EndSplitDistances.z >= shadowMapDepth) {
-		float4x4 lightProjectionMatrix = shadowmapViewProjUV[0];
-		shadowMapThreshold = AlphaTestRef.y;
-		cascadeIndex = 0;
-		if (2.5 < EndSplitDistances.w && EndSplitDistances.y < shadowMapDepth) {
-			lightProjectionMatrix = shadowmapViewProjUV[2];
-			shadowMapThreshold = AlphaTestRef.z;
-			cascadeIndex = 2;
-		} else if (EndSplitDistances.x < shadowMapDepth) {
-			lightProjectionMatrix = shadowmapViewProjUV[1];
-			shadowMapThreshold = AlphaTestRef.z;
-			cascadeIndex = 1;
-		}
-		positionLS = mul(lightProjectionMatrix, float4(positionMS.xyz, 1)).xyz;
-
-		if (cascadeIndex < 1 && StartSplitDistances.y < shadowMapDepth) {
-			float cascade1ShadowVisibility = 0;
-
-			float3 cascade1PositionLS = mul(shadowmapViewProjUV[1], float4(positionMS.xyz, 1)).xyz;
-
-	#			if SHADOWFILTER == 0
-			float cascade1ShadowMapValue = TexShadowMapSampler.Sample(SampShadowMapSampler, float3(cascade1PositionLS.xy, 1)).x;
-			if (cascade1ShadowMapValue >= cascade1PositionLS.z) {
-				cascade1ShadowVisibility = 1;
-			}
-	#			elif SHADOWFILTER == 1
-			cascade1ShadowVisibility = ShadowMapTexture.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(cascade1PositionLS.xy, 1), cascade1PositionLS.z).x;
-	#			elif SHADOWFILTER == 3
-			cascade1ShadowVisibility = GetPoissonDiskFilteredShadowVisibility(noise, rotationMatrix, ShadowMapTexture, SampShadowMapSamplerComp, cascade1PositionLS.xy, 1, cascade1PositionLS.z, false);
-	#			endif
-
-			float cascade1BlendFactor = smoothstep(0, 1, (shadowMapDepth - StartSplitDistances.y) / (EndSplitDistances.x - StartSplitDistances.y));
-			shadowVisibility = lerp(shadowVisibility, cascade1ShadowVisibility, cascade1BlendFactor);
-
-			shadowMapThreshold = AlphaTestRef.z;
-		}
-////////////////////////////////////////////
-#	else //END VR
-	if(cascadeEndDepth[nCascades - 1] >= shadowMapDepth) {
-		[unroll] for(; cascadeIndex < nCascades; cascadeIndex++){
-			if(shadowMapDepth <= cascadeEndDepth[cascadeIndex])
+	if(cascadeEndDepths[numCascades - 1] >= shadowMapDepth) {
+		[unroll] for(; cascadeIndex < numCascades; cascadeIndex++){
+			if(shadowMapDepth <= cascadeEndDepths[cascadeIndex])
 				break;
 		}
-		shadowMapThreshold = (cascadeIndex > 0) ? AlphaTestRef.z : AlphaTestRef.y;
-		positionLS = mul(shadowmapViewProjUV[cascadeIndex], float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[0].xyz, 1)).xyz;
-#	endif //END !VR
+		#if defined(VR)
+			positionLS = mul(transpose(ShadowMapProj[eyeIndex][cascadeIndex]), float4(positionMS.xyz, 1)).xyz;
+		#else
+			positionLS = mul(shadowmapViewProjUV[cascadeIndex], float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[eyeIndex].xyz, 1)).xyz;
+		#endif
 
-		float shadowVisibility = 0;
-		shadowVisibility = ShadowMapTexture.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(positionLS.xy, cascadeIndex), positionLS.z).x;
+		float shadowVisibility = SampleShadowCascade(positionLS, cascadeIndex, noise, rotationMatrix);
 
-		//fadeFactor = 1 - pow(saturate(dot(positionMS.xyz, positionMS.xyz) / ShadowLightParam.z), 8);
-
-#			if SHADOWFILTER == 0
-		//float shadowMapValue = TexShadowMapSampler.Sample(SampShadowMapSampler, float3(positionLS.xy, cascadeIndex)).x;
-		//if (shadowMapValue >= positionLS.z) {
-		//	shadowVisibility = 1;
-		//}
-#			elif SHADOWFILTER == 1
-		//shadowVisibility = ShadowMapTexture.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(positionLS.xy, cascadeIndex), positionLS.z).x;
-#			elif SHADOWFILTER == 3
-		//shadowVisibility = GetPoissonDiskFilteredShadowVisibility(noise, rotationMatrix, ShadowMapTexture, SampShadowMapSamplerComp, positionLS.xy, cascadeIndex, positionLS.z, false);
-#			endif
-
-#	if !defined(VR)
 		// Blend with next cascade if near boundary
 		int nextCascadeIndex = cascadeIndex + 1;
-		bool finalCascade = nextCascadeIndex == nCascades;
+		bool finalCascade = nextCascadeIndex == numCascades;
 
-		float currentCascadeEnd = cascadeEndDepth[cascadeIndex];
+		float currentCascadeEnd = cascadeEndDepths[cascadeIndex];
 		float nextCascadeStart;
-
 		if(!finalCascade) {
-			nextCascadeStart = cascadeStartDepth[nextCascadeIndex];
+			nextCascadeStart = cascadeStartDepths[nextCascadeIndex];
 		} else {
 			static const float FINAL_CASCADE_BLEND_PCT = 0.9;
 			float viewZ = SharedData::GetScreenDepth(currentCascadeEnd) * FINAL_CASCADE_BLEND_PCT;
@@ -756,18 +734,25 @@ PS_OUTPUT main(PS_INPUT input)
 		if (shadowMapDepth > nextCascadeStart) {
 			float nextShadowVisibility = (float)!SharedData::InInterior;
 			if(!finalCascade){
-				float3 nextPositionLS = mul(shadowmapViewProjUV[nextCascadeIndex], float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[0].xyz, 1)).xyz;
-				nextShadowVisibility = ShadowMapTexture.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(nextPositionLS.xy, nextCascadeIndex), nextPositionLS.z).x;
+				float3 nextPositionLS;
+				#if defined(VR)
+					nextPositionLS = mul(transpose(ShadowMapProj[eyeIndex][nextCascadeIndex]), float4(positionMS.xyz, 1)).xyz;
+				#else
+					nextPositionLS = mul(shadowmapViewProjUV[nextCascadeIndex], float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[eyeIndex].xyz, 1)).xyz;
+				#endif
+				nextShadowVisibility = SampleShadowCascade(nextPositionLS, nextCascadeIndex, noise, rotationMatrix);
 			}
 
-			float linSteppedDist =  (shadowMapDepth - nextCascadeStart) / (currentCascadeEnd - nextCascadeStart);
+			float linSteppedDist = (shadowMapDepth - nextCascadeStart) / (currentCascadeEnd - nextCascadeStart);
 			float blendFactor = smoothstep(0, 1, linSteppedDist);
 
 			shadowVisibility = lerp(shadowVisibility, nextShadowVisibility, blendFactor);
 		}
-		#endif //END !VR
+		// End blending
 
+		// Focus Shadows
 		if (stencilValue != 0) {
+			float shadowMapThreshold = (cascadeIndex > 0) ? AlphaTestRef.z : AlphaTestRef.y;
 			uint focusShadowIndex = stencilValue - 1;
 			float3 focusShadowMapPosition = mul(transpose(FocusShadowMapProj[focusShadowIndex]), float4(positionMS.xyz, 1));
 			float3 focusShadowMapUv = float3(focusShadowMapPosition.xy, StartSplitDistances.w + focusShadowIndex);
@@ -777,14 +762,12 @@ PS_OUTPUT main(PS_INPUT input)
 #			else
 			float focusShadowVisibility = TexFocusShadowMapSamplerComp.SampleCmpLevelZero(SampFocusShadowMapSamplerComp, focusShadowMapUv, focusShadowMapCompareValue).x;
 #			endif
-			float focusShadowFade = FocusShadowFadeParam[focusShadowIndex];
-			shadowVisibility = min(shadowVisibility, lerp(1, focusShadowVisibility, focusShadowFade));
+			shadowVisibility = min(shadowVisibility, lerp(1, focusShadowVisibility, FocusShadowFadeParam[focusShadowIndex]));
 			shadowVisibility = lerp(1.0 * !SharedData::InInterior, shadowVisibility, fadeFactor);
 		}
 
 		shadowColor.xyzw = shadowVisibility; //
 	}
-
 
 #		elif defined(RENDER_SHADOWMASKSPOT)
 	float4 positionLS = mul(transpose(ShadowMapProj[eyeIndex][0]), float4(positionMS.xyz, 1));
@@ -797,9 +780,9 @@ PS_OUTPUT main(PS_INPUT input)
 		shadowBaseVisibility = 1;
 	}
 #			elif SHADOWFILTER == 1
-	shadowBaseVisibility = ShadowMapTexture.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(shadowMapUv, EndSplitDistances.x), positionLS.z - AlphaTestRef.y).x;
+	shadowBaseVisibility = TexShadowMapSamplerComp.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(shadowMapUv, EndSplitDistances.x), positionLS.z - AlphaTestRef.y).x;
 #			elif SHADOWFILTER == 3
-	shadowBaseVisibility = GetPoissonDiskFilteredShadowVisibility(noise, rotationMatrix, ShadowMapTexture, SampShadowMapSamplerComp, shadowMapUv.xy, EndSplitDistances.x, positionLS.z - AlphaTestRef.y, false);
+	shadowBaseVisibility = GetPoissonDiskFilteredShadowVisibility(noise, rotationMatrix, TexShadowMapSamplerComp, SampShadowMapSamplerComp, shadowMapUv.xy, EndSplitDistances.x, positionLS.z - AlphaTestRef.y, false);
 #			endif
 	float shadowVisibilityFactor = pow(2 * length(0.5 * positionLS.xy), ShadowLightParam.x);
 	float shadowVisibility = shadowBaseVisibility - shadowVisibilityFactor * shadowBaseVisibility;
@@ -816,9 +799,9 @@ PS_OUTPUT main(PS_INPUT input)
 			focusShadowVisibility = 1;
 		}
 #			elif SHADOWFILTER == 1
-		focusShadowVisibility = ShadowMapTexture.SampleCmpLevelZero(SampShadowMapSamplerComp, focusShadowMapUv, focusShadowMapCompareValue).x;
+		focusShadowVisibility = TexShadowMapSamplerComp.SampleCmpLevelZero(SampShadowMapSamplerComp, focusShadowMapUv, focusShadowMapCompareValue).x;
 #			elif SHADOWFILTER == 3
-		focusShadowVisibility = GetPoissonDiskFilteredShadowVisibility(noise, rotationMatrix, ShadowMapTexture, SampShadowMapSamplerComp, focusShadowMapUv.xy, focusShadowMapUv.z, focusShadowMapCompareValue, false);
+		focusShadowVisibility = GetPoissonDiskFilteredShadowVisibility(noise, rotationMatrix, TexShadowMapSamplerComp, SampShadowMapSamplerComp, focusShadowMapUv.xy, focusShadowMapUv.z, focusShadowMapCompareValue, false);
 #			endif
 		shadowVisibility = min(shadowVisibility, lerp(1, focusShadowVisibility, FocusShadowFadeParam[focusShadowIndex]));
 	}
@@ -840,9 +823,9 @@ PS_OUTPUT main(PS_INPUT input)
 			shadowVisibility = 1;
 		}
 #			elif SHADOWFILTER == 1
-		shadowVisibility = ShadowMapTexture.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(shadowMapUv, EndSplitDistances.x), shadowMapCompareValue).x;
+		shadowVisibility = TexShadowMapSamplerComp.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(shadowMapUv, EndSplitDistances.x), shadowMapCompareValue).x;
 #			elif SHADOWFILTER == 3
-		shadowVisibility = GetPoissonDiskFilteredShadowVisibility(noise, rotationMatrix, ShadowMapTexture, SampShadowMapSamplerComp, shadowMapUv.xy, EndSplitDistances.x, shadowMapCompareValue, false);
+		shadowVisibility = GetPoissonDiskFilteredShadowVisibility(noise, rotationMatrix, TexShadowMapSamplerComp, SampShadowMapSamplerComp, shadowMapUv.xy, EndSplitDistances.x, shadowMapCompareValue, false);
 #			endif
 	} else {
 		shadowVisibility = 1;
@@ -869,9 +852,9 @@ PS_OUTPUT main(PS_INPUT input)
 		shadowVisibility = 1;
 	}
 #			elif SHADOWFILTER == 1
-	shadowVisibility = ShadowMapTexture.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(shadowMapUv, EndSplitDistances.x), shadowMapCompareValue).x;
+	shadowVisibility = TexShadowMapSamplerComp.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(shadowMapUv, EndSplitDistances.x), shadowMapCompareValue).x;
 #			elif SHADOWFILTER == 3
-	shadowVisibility = GetPoissonDiskFilteredShadowVisibility(seed, ShadowMapTexture, SampShadowMapSamplerComp, positionMS.xyz, EndSplitDistances.x, eyeIndex);
+	shadowVisibility = GetPoissonDiskFilteredShadowVisibility(seed, TexShadowMapSamplerComp, SampShadowMapSamplerComp, positionMS.xyz, EndSplitDistances.x, eyeIndex);
 #			endif
 
 	shadowColor.xyzw = fadeFactor * shadowVisibility;
