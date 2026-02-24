@@ -16,8 +16,6 @@ struct ShadowmapMatrixFix : EngineFix
 	static inline float maxCascadeCoverageVS = 0;
 
 	static inline float* gCascadeBlendDist = nullptr;
-	//static inline float* gShadowDistance = nullptr;
-	//static inline float* gInteriorShadowDistance = nullptr;
 
 	struct Frustum
 	{
@@ -76,22 +74,16 @@ struct ShadowmapMatrixFix : EngineFix
 		RE::NiFrustumPlanes cullingPlanes;
 		float endDepthNDC;
 		float startDepthNDC;
-		//float width;
 		float _pad[2];
-		//RE::NiFrustum frustum;
-		//DirectX::XMFLOAT4X4 projMatrix;   //tmp
-		//DirectX::XMFLOAT4X4 worldMatrix;  //tmp
 	};
 	static inline CascadeData cascadeData[maxCascades] = {};
 
 	struct alignas(16) ShadowDataCB
 	{
 		DirectX::XMFLOAT4X4 lightViewProj;
-		DirectX::XMFLOAT4X4 lightView;  //TMP
 		DirectX::XMFLOAT4X4 shadowmapViewProjUV[4];
 		float cascadeSplitEnds[4];
 		float cascadeSplitStarts[4];
-		//float cascadeWidth[4];
 		uint numCascades;
 		float _pad[3];
 	};
@@ -107,42 +99,11 @@ struct ShadowmapMatrixFix : EngineFix
 		return DirectX::XMVectorSet(point.x, point.y, point.z, 1);
 	}
 
-	static inline void LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix)
+	struct CreateVolumetricCascadeStencilTarget
 	{
-		DirectX::XMFLOAT4X4 matrix;
-		XMStoreFloat4x4(&matrix, inMatrix);
-		logger::info("{} row 1: {}, {}, {}, {}", desc, matrix.m[0][0], matrix.m[0][1], matrix.m[0][2], matrix.m[0][3]);
-		logger::info("{} row 2: {}, {}, {}, {}", desc, matrix.m[1][0], matrix.m[1][1], matrix.m[1][2], matrix.m[1][3]);
-		logger::info("{} row 3: {}, {}, {}, {}", desc, matrix.m[2][0], matrix.m[2][1], matrix.m[2][2], matrix.m[2][3]);
-		logger::info("{} row 4: {}, {}, {}, {}", desc, matrix.m[3][0], matrix.m[3][1], matrix.m[3][2], matrix.m[3][3]);
-	}
-	static inline void LogMatrix(std::string desc, DirectX::XMFLOAT4X4 matrix)
-	{
-		logger::info("{} row 1: {}, {}, {}, {}", desc, matrix.m[0][0], matrix.m[0][1], matrix.m[0][2], matrix.m[0][3]);
-		logger::info("{} row 2: {}, {}, {}, {}", desc, matrix.m[1][0], matrix.m[1][1], matrix.m[1][2], matrix.m[1][3]);
-		logger::info("{} row 3: {}, {}, {}, {}", desc, matrix.m[2][0], matrix.m[2][1], matrix.m[2][2], matrix.m[2][3]);
-		logger::info("{} row 4: {}, {}, {}, {}", desc, matrix.m[3][0], matrix.m[3][1], matrix.m[3][2], matrix.m[3][3]);
-	}
-
-	static inline void LogMatrix(const std::string& desc, const float matrix[4][4])
-	{
-		logger::info("{} row 1: {}, {}, {}, {}", desc,
-			matrix[0][0], matrix[0][1], matrix[0][2], matrix[0][3]);
-
-		logger::info("{} row 2: {}, {}, {}, {}", desc,
-			matrix[1][0], matrix[1][1], matrix[1][2], matrix[1][3]);
-
-		logger::info("{} row 3: {}, {}, {}, {}", desc,
-			matrix[2][0], matrix[2][1], matrix[2][2], matrix[2][3]);
-
-		logger::info("{} row 4: {}, {}, {}, {}", desc,
-			matrix[3][0], matrix[3][1], matrix[3][2], matrix[3][3]);
-	}
-
-	static inline void LogVector(std::string desc, DirectX::XMVECTOR vec)
-	{
-		logger::info("{}: {}, {}, {}, {}", desc, DirectX::XMVectorGetX(vec), DirectX::XMVectorGetY(vec), DirectX::XMVectorGetZ(vec), DirectX::XMVectorGetW(vec));
-	}
+		static void thunk(RE::BSGraphics::Renderer* renderer, RE::RENDER_TARGETS_DEPTHSTENCIL::RENDER_TARGET_DEPTHSTENCIL stencil, RE::BSGraphics::DepthStencilTargetProperties* prop);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
 
 	struct BSShadowDirectionalLight_SetFrameCamera
 	{
@@ -176,12 +137,6 @@ struct ShadowmapMatrixFix : EngineFix
 	struct BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 	{
 		static void thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& arg1, uint32_t* arg2, uint32_t flags);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct CreateVolumetricCascadeStencilTarget
-	{
-		static void thunk(RE::BSGraphics::Renderer* renderer, RE::RENDER_TARGETS_DEPTHSTENCIL::RENDER_TARGET_DEPTHSTENCIL stencil, RE::BSGraphics::DepthStencilTargetProperties* prop);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 };

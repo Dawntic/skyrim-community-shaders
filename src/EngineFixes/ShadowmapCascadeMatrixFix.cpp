@@ -209,11 +209,6 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 	float centerZ = float3((boundingBox.cornerMin + boundingBox.cornerMax) * 0.5f).z;
 	float halfExtentZ = abs(centerZ - boundingBox.cornerMin.z);
 
-	if (settings.test) {
-		LogVector("Min", boundingBox.cornerMin);
-		LogVector("Max", boundingBox.cornerMax);
-	}
-
 	// Build main proj frustum
 	{
 		// Adjust depth range for better precision - depth clipping is disabled
@@ -325,11 +320,6 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	viewFrustum.fLeft = -unitHalfWidth;
 	viewFrustum.fTop = unitHalfHeight;
 	viewFrustum.fBottom = -unitHalfHeight;
-
-	if (settings.test) {
-		LogMatrix("world rot that is maybe view rot", worldRotation);
-		logger::info("game frustum: left/right:{}, {}   bottom/top:{}, {}   near/far: {}, {}", viewFrustum.fLeft, viewFrustum.fRight, viewFrustum.fBottom, viewFrustum.fTop, viewFrustum.fNear, viewFrustum.fFar);
-	}
 
 	// Discretize light dir to mitigate variance from time scale
 	XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector));
@@ -492,7 +482,6 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 	if (desc.shadowmapIndex == (uint)cascadeToRender) {
 		ShadowDataCB data{};
 		data.lightViewProj = cascadeData[cascadeToRender].viewProj;
-		data.lightView = cascadeData[cascadeToRender].viewMatrix;
 		for (int i = 0; i < nCascades; i++) {
 			data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
 			data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
