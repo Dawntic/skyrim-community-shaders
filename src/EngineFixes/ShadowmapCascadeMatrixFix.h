@@ -178,4 +178,10 @@ struct ShadowmapMatrixFix : EngineFix
 		static void thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& arg1, uint32_t* arg2, uint32_t flags);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
+
+	struct CreateVolumetricCascadeStencilTarget
+	{
+		static void thunk(RE::BSGraphics::Renderer* renderer, RE::RENDER_TARGETS_DEPTHSTENCIL::RENDER_TARGET_DEPTHSTENCIL stencil, RE::BSGraphics::DepthStencilTargetProperties* prop);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
 };

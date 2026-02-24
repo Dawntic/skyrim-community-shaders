@@ -9,7 +9,7 @@ fix sky sync support
 fix cascade mip bias
 fix inter cascade blending
 fix wind factoring
-fix FOV proj factoring
+fix proj FOV factoring
 fix map sampling fp precision
 fix geometry model fp precision
 fix cpu geometry translation
@@ -23,22 +23,24 @@ add time sliced rendering
 
 //TODO:
 // Catch ini settings and override shadow settings
-// Add UI?
 // Find SE addresses
 // Only render first 2 VL maps
 // Default 1024 cascades
-// Get VL shadow maps to limit rez above 64^2
+// Deferred renderer should use my buffer
 
 //ISSUES:
-// Deferred renderer should use my buffer
-// culling breaks when setting very fig cascade distance  and disabling culling doesn't fix it
-// Cap the altitude or find a way to slow down the light updating
+// culling breaks when setting very fig cascade distance and disabling culling doesn't fix it
+
+// Do i Cap the altitude or find a way to slow down the light updating
+// Do i remove wind from bones?
 
 //RE-CHECK:
 // Need more offset - cascade is wasting lots of room
 // Sky sync compat
 // Inteirors
 // Test in base game
+
+// Tested at 4k with 4 cascades - everything renders fine including VL maps(time slicing works)
 
 bool ShadowmapMatrixFix::Install()
 {
@@ -53,10 +55,13 @@ bool ShadowmapMatrixFix::Install()
 	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));
 
 	// Culls against min near and max far plane of any cascade
-	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59, 0xC59));  //First call    need SE addr
+	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59));  //First call    need SE addr
 
 	// Culls individual cascade frustum
 	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //Second call
+
+	// Set limit on VL shadow cascade min size
+	stl::write_thunk_call<CreateVolumetricCascadeStencilTarget>(REL::RelocationID(107175, 107175).address() + REL::Relocate(0x9DC, 0x9DC));
 
 	// Fill VL shadows call
 	//REL::safe_fill(REL::RelocationID(101495, 108489).address() + REL::Relocate(0x30, 0x30), REL::NOP, 76);
@@ -71,6 +76,17 @@ bool ShadowmapMatrixFix::Install()
 }
 #pragma warning(push)
 #pragma warning(disable: 4100 4456 4189)
+
+// Ideally the VL cascade will be remvoed in the future
+void ShadowmapMatrixFix::CreateVolumetricCascadeStencilTarget::thunk(RE::BSGraphics::Renderer* renderer, RE::RENDER_TARGETS_DEPTHSTENCIL::RENDER_TARGET_DEPTHSTENCIL stencil, RE::BSGraphics::DepthStencilTargetProperties* prop)
+{
+	if (prop->width < 128) {
+		prop->width = 128;
+		prop->height = 128;
+	}
+
+	func(renderer, stencil, prop);
+};
 
 //////////////////////////////////////////////
 void ShadowmapMatrixFix::BuildRootFrustum(Frustum& outputFrustum, const RE::NiFrustum& viewFrustum, const DirectX::XMMATRIX& rootWorld)
@@ -491,6 +507,7 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 		globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
 		globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
 
+		//TMP
 		auto& normalRoughness = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kRAWINDIRECT_DOWNSCALED].SRV;
 		globals::d3d::context->PSSetShaderResources(27, 1, &normalRoughness);
 	}

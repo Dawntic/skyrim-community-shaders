@@ -424,6 +424,7 @@ namespace Hooks
 			}
 
 			stl::detour_vfunc<23, ID3D11Device_CreateSamplerState>(globals::d3d::device);
+			//stl::detour_vfunc<5, CreateTexture2DHook>(globals::d3d::device);
 
 			globals::InstallD3DHooks(globals::d3d::context);
 
@@ -456,6 +457,37 @@ namespace Hooks
 			a_wndClass->lpfnWndProc = &WndProcHandler_Hook::thunk;
 
 			return func(a_wndClass);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct CreateRenderTargetFunc
+	{
+		static void thunk(RE::BSGraphics::Renderer* This, RE::RENDER_TARGETS::RENDER_TARGET a_target, RE::BSGraphics::RenderTargetProperties* a_properties)
+		{
+			logger::info("Hooked: {}", a_properties->height);
+			if (a_properties) {
+				if (a_properties->width == 64 && a_properties->height == 64) {
+					// Get the full call stack
+					void* stack[100];
+					USHORT frames = CaptureStackBackTrace(0, 100, stack, NULL);
+
+					for (USHORT i = 0; i < frames; i++) {
+						HMODULE hModule = nullptr;
+						GetModuleHandleExA(
+							GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+							(LPCSTR)stack[i],
+							&hModule);
+
+						char moduleName[MAX_PATH];
+						GetModuleFileNameA(hModule, moduleName, MAX_PATH);
+						std::filesystem::path p(moduleName);
+
+						logger::info("Frame {}: 0x{:X} ({})", i, (uintptr_t)stack[i], p.filename().string());
+					}
+				}
+			}
+			func(This, a_target, a_properties);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -930,5 +962,7 @@ namespace Hooks
 
 		logger::info("Hooking CreateDXGIFactory");
 		*(uintptr_t*)&ptrCreateDXGIFactory = SKSE::PatchIAT(hk_CreateDXGIFactory, "dxgi.dll", !REL::Module::IsVR() ? "CreateDXGIFactory" : "CreateDXGIFactory1");
+
+		//stl::detour_thunk<CreateRenderTargetFunc>(REL::RelocationID(77446, 77446));  ///////
 	}
 }
