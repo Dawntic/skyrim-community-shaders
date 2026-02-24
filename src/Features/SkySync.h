@@ -48,6 +48,16 @@ public:
 
 	virtual bool SupportsVR() override { return true; }
 
+	/// Returns the sun direction with the altitude limited to a minimum angle.
+	/// The altitude follows a piecewise linear (triangle) profile with constant rate of change:
+	/// - Morning: clamped at limitDegrees until the true sun exceeds it
+	/// - Ascending: linear ramp from limitDegrees to peak at a constant rate
+	/// - Descending: linear ramp from peak to limitDegrees, reaching the limit at sunset
+	/// The ascending and descending rates are equal. The azimuth follows the true sun.
+	/// @param limitDegrees Minimum altitude angle in degrees above the horizon
+	/// @return Unit direction vector with limited altitude
+	RE::NiPoint3 GetSunDirectionWithAltitudeLimit(float limitDegrees) const;
+
 	virtual void PostPostLoad() override;
 	virtual void DataLoaded() override;
 
