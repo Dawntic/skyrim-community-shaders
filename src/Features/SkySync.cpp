@@ -19,6 +19,9 @@ void SkySync::DrawSettings()
 
 	ImGui::Checkbox("Use alternate sun path", &settings.UseAlternateSunPath);
 
+	ImGui::Checkbox("Test", &settings.test);
+	ImGui::SliderFloat("Light Min Angle", &settings.minAngle, 0.0f, 50.0f);
+
 	if (settings.UseAlternateSunPath) {
 		if (ImGui::SliderInt("Sun path", &settings.SunPath, 0, static_cast<uint8_t>(SunPath::Count) - 1, SunPathNames[settings.SunPath], ImGuiSliderFlags_AlwaysClamp))
 			SetSunAngle();
@@ -44,6 +47,69 @@ void SkySync::DrawSettings()
 		ImGui::SliderFloat("Sunset End (Hours)", &settings.SunsetEndOffset, -5.0f, 5.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::TreePop();
 	}
+}
+
+RE::NiPoint3 SkySync::GetSunDirectionWithAltitudeLimit(float limitDegrees)
+{
+	const auto sky = RE::Sky::GetSingleton();
+	if (!sky)
+		return { 0.0f, 0.0f, 1.0f };
+
+	const float time = sky->currentGameHour;
+	const float sunrise = timings.sunrise;
+	const float sunset = timings.sunset;
+	const float dayLength = sunset - sunrise;
+
+	if (dayLength <= 0.0f)
+		return { 0.0f, 0.0f, 1.0f };
+
+	const float tiltRadians = DirectX::XMConvertToRadians(sunAngle);
+	const float sinTilt = std::sin(tiltRadians);
+
+	if (sinTilt < FLT_EPSILON)
+		return { 0.0f, 0.0f, 1.0f };
+
+	const float peakElevation = std::asin(sinTilt);
+	const float limitRad = DirectX::XMConvertToRadians(std::max(limitDegrees, 0.0f));
+	const float effectiveLimit = std::min(limitRad, peakElevation);
+
+	// Compute phi for the true sun position (used for azimuth)
+	//const float phi = DirectX::XM_PI * std::clamp((time - sunrise) / dayLength, 0.0f, 1.0f);
+	const float phi = DirectX::XM_PI * ((time - sunrise) / (sunset - sunrise));
+	float sinPhi, cosPhi;
+	DirectX::XMScalarSinCosEst(&sinPhi, &cosPhi, phi);
+
+	// Get azimuth from the alternate sun path model
+	//const float cosTilt = std::cos(tiltRadians);
+	//const float azimuth = std::atan2(-sinPhi * cosTilt, cosPhi);
+	const float azimuth = DirectX::XM_PI + phi;
+
+	// Find T_m: morning time when true altitude first reaches the limit
+	// True elevation = asin(sin(phi) * sinTilt), so at limit: sin(phi_m) = sin(effectiveLimit) / sinTilt
+	const float sinPhiM = std::sin(effectiveLimit) / sinTilt;
+	const float phiM = std::asin(std::clamp(sinPhiM, 0.0f, 1.0f));
+	const float T_m = sunrise + dayLength * phiM / DirectX::XM_PI;
+
+	// Peak at midpoint between T_m and sunset gives equal ascending/descending rates
+	const float T_peak = (T_m + sunset) * 0.5f;
+
+	// Compute the piecewise linear altitude
+	float limitedElevation;
+	if (time <= T_m || time >= sunset) {
+		limitedElevation = effectiveLimit;
+	} else if (time <= T_peak) {
+		limitedElevation = std::lerp(effectiveLimit, peakElevation, (time - T_m) / (T_peak - T_m));
+	} else {
+		limitedElevation = std::lerp(peakElevation, effectiveLimit, (time - T_peak) / (sunset - T_peak));
+	}
+
+	// Construct direction from azimuth and limited elevation
+	float sinElev, cosElev, sinAz, cosAz;
+	DirectX::XMScalarSinCosEst(&sinElev, &cosElev, limitedElevation);
+	DirectX::XMScalarSinCosEst(&sinAz, &cosAz, azimuth);
+
+	return { cosElev * cosAz, cosElev * sinAz, sinElev };
+	//return { cosElev * sinAz, sinElev, cosElev * cosAz,  };
 }
 
 void SkySync::LoadSettings(json& o_json)
@@ -191,6 +257,9 @@ void SkySync::ProcessSun(const RE::Sun* sun, const float time, const float altit
 	} else
 		CalculateSunDirectionAndDistance(sun, dir, dist);
 
+	if (settings.test)
+		NEWCalculateAlternateSunDirectionAndDistance(dir, dist, time, timings.sunrise, timings.sunset, sunAngle, settings.minAngle);
+
 	rawDirections[static_cast<int>(Caster::Sun)] = dir;
 
 	const RE::NiPoint3 apparentDir = GetApparentDirection(dir, altitude);
@@ -270,6 +339,35 @@ inline void SkySync::CalculateAlternateSunDirectionAndDistance(RE::NiPoint3& out
 	DirectX::XMScalarSinCosEst(&sinTilt, &cosTilt, tiltRadians);
 
 	outDir = { cosPhi, -sinPhi * cosTilt, sinPhi * sinTilt };
+
+	if (const float length = outDir.Unitize(); length < FLT_EPSILON)
+		outDir = { 0.0f, 0.0f, 1.0f };
+
+	const float elevationRatio = std::max(sinPhi, 0.0f);
+	outDist = std::lerp(SunHorizonDistance, SunPeakDistance, elevationRatio);
+}
+
+inline void SkySync::NEWCalculateAlternateSunDirectionAndDistance(RE::NiPoint3& outDir, float& outDist, const float time, const float sunrise, const float sunset, const float sunAngle, float minimumSunAltitudeDegrees)
+{
+	const float normalizedTime = (time - sunrise) / (sunset - sunrise);
+	const float minAltitudeRad = DirectX::XMConvertToRadians(minimumSunAltitudeDegrees);
+
+	const float phi = std::lerp(minAltitudeRad, DirectX::XM_PI - minAltitudeRad, normalizedTime);
+
+	float sinPhi, cosPhi;
+	DirectX::XMScalarSinCosEst(&sinPhi, &cosPhi, phi);
+
+	float tiltRadians = DirectX::XMConvertToRadians(sunAngle);
+	float cosTilt, sinTilt;
+	DirectX::XMScalarSinCosEst(&sinTilt, &cosTilt, tiltRadians);
+
+	outDir = {
+		cosPhi,
+		-sinPhi * cosTilt,
+		sinPhi * sinTilt
+	};
+
+	outDir.Unitize();
 
 	if (const float length = outDir.Unitize(); length < FLT_EPSILON)
 		outDir = { 0.0f, 0.0f, 1.0f };

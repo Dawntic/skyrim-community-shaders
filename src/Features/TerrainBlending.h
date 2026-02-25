@@ -39,6 +39,7 @@ public:
 
 	int splits[4] = { 1500, 3000, 6000, 15000 };
 	float lightUpdateAngle = 0.08;
+	float lightMinAngle = 10;
 	bool disableCulling = false;
 	bool rasterDepthClip = false;
 	bool rasterCulling = true;

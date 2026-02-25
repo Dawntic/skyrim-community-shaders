@@ -11,6 +11,8 @@ public:
 	virtual inline std::string GetShortName() override { return "SkySync"; }
 	virtual std::string_view GetCategory() const override { return "Sky"; }
 
+	virtual RE::NiPoint3 GetSunDirectionWithAltitudeLimit(float limitDegrees);
+
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
 		return {
@@ -36,6 +38,8 @@ public:
 		float SunsetBeginOffset = 0.0f;
 		float SunsetEndOffset = 0.0f;
 		float MinShadowElevation = 0.25f;
+		float minAngle = 5;
+		bool test = false;
 	};
 
 	Settings settings;
@@ -198,6 +202,8 @@ private:
 	static void CalculateSunDirectionAndDistance(const RE::Sun* sun, RE::NiPoint3& outDir, float& outDistance);
 
 	static void CalculateAlternateSunDirectionAndDistance(RE::NiPoint3& outDir, float& outDist, float time, float sunrise, float sunset, float sunAngle);
+
+	static void NEWCalculateAlternateSunDirectionAndDistance(RE::NiPoint3& outDir, float& outDist, const float time, const float sunrise, const float sunset, const float sunAngle, float minimumSunAltitudeDegrees);
 
 	static RE::NiPoint3 GetApparentDirection(const RE::NiPoint3& dir, float altitude);
 

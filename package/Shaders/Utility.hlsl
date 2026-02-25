@@ -132,7 +132,6 @@ float2 SmoothSaturate(float2 value)
 cbuffer ShadowCascadeFix : register(b7)
 {
 	row_major float4x4 lightViewProj;
-	row_major float4x4 lightView;
 	row_major float4x4 shadowmapViewProjUV[4];
 	float4 cascadeEndDepth;
 	float4 cascadeStartDepth;
@@ -176,12 +175,9 @@ VS_OUTPUT main(VS_INPUT input)
 	normalMS = input.Normal.xyz * 2 - 1;
 #		endif
 
-#		if defined(VC) && defined(NORMALS) && defined(TREE_ANIM)
+#		if defined(VC) && defined(NORMALS) && defined(TREE_ANIM) && !defined(RENDER_SHADOWMAP)
 	float2 treeTmp1 = SmoothSaturate(abs(2 * frac(float2(0.1, 0.25) * (TreeParams.w * TreeParams.y * TreeParams.x) + dot(input.PositionMS.xyz, 1.0.xxx) + 0.5) - 1));
 	float normalMult = (treeTmp1.x + 0.1 * treeTmp1.y) * (input.Color.w * TreeParams.z);
-#	if defined(RENDER_SHADOWMAP) && defined(RENDER_SHADOWMAP_CLAMPED)
-	normalMult = 0;
-#	endif
 	positionMS.xyz += normalMS.xyz * normalMult;
 #		endif
 
@@ -405,7 +401,6 @@ cbuffer AlphaTestRefCB : register(b11)
 cbuffer ShadowCascadeFix : register(b7)
 {
 	row_major float4x4 lightViewProj;
-	row_major float4x4 lightView;
 	row_major float4x4 shadowmapViewProjUV[4];
 	float4 cascadeEndDepth;
 	float4 cascadeStartDepth;
@@ -567,6 +562,7 @@ float SampleShadowCascade(float3 positionLS, float cascadeIndex, float noise, fl
 	shadowVisibility = GetPoissonDiskFilteredShadowVisibility(noise, rotationMatrix, TexShadowMapSamplerComp, SampShadowMapSamplerComp, positionLS.xy, cascadeIndex, positionLS.z, false);
 #		endif
 
+	//return TexShadowMapSamplerComp.SampleCmpLevelZero(SampShadowMapSamplerComp, float3(positionLS.xy, cascadeIndex), positionLS.z).x;
 	return shadowVisibility;
 }
 #	endif

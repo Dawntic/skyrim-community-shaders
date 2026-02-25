@@ -297,6 +297,7 @@ void ShadowmapMatrixFix::SetPrimaryCullPlanes(RE::BSShadowDirectionalLight* ligh
 	GetCullPlanesFromVPMatrix(primaryCullPlanes, cullingViewProj);
 }
 
+#include "../Features/SkySync.h"
 void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, const int cascadeIndex)
 {
 	using namespace DirectX;
@@ -306,7 +307,7 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	// Get root camera params
 	const XMVECTOR rootCameraPos = NiPoint3ToXMVector(rootCamera.world.translate);
 	RE::NiFrustum viewFrustum = rootCamera.GetRuntimeData2().viewFrustum;
-	const XMMATRIX worldRotation = XMMatrixTranspose(XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.world.rotate.entry)));  // Is this world? idk but it works so fuck knows
+	const XMMATRIX worldRotation = XMMatrixTranspose(XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.world.rotate.entry)));
 
 	//Re-calculate because root frustum FOV is too dynamic
 	float& cameraFOVDeg = (*(float*)(REL::RelocationID(513786, 388785).address()));
@@ -324,6 +325,9 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	// Discretize light dir to mitigate variance from time scale
 	XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector));
 	lightDirection = QuantizeLightDirection(lightDirection, settings.lightUpdateAngle);
+
+	//if (settings.test)
+	//	lightDirection = NiPoint3ToXMVector(globals::features::skySync.GetSunDirectionWithAltitudeLimit(settings.lightMinAngle));
 
 	static CascadeBounds cascadeBoundData;
 

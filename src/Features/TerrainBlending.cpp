@@ -117,6 +117,7 @@ void TerrainBlending::DrawSettings()
 	ImGui::SliderFloat("Blend Zone", &blendZone, 0.0f, 500.0f);
 
 	ImGui::SliderFloat("Light Angle Update Step", &lightUpdateAngle, 0.0f, 0.5f, "%.4f");
+	ImGui::SliderFloat("Light Min Angle", &lightMinAngle, 0.0f, 50.0f);
 
 	ImGui::SliderInt("Cascade 1 Coverage", &splits[0], 15, 5000);
 	ImGui::SliderInt("Cascade 2 Coverage", &splits[1], splits[0], 10000);
