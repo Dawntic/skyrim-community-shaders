@@ -30,6 +30,7 @@ add time sliced rendering
 
 //ISSUES:
 // culling breaks when setting very fig cascade distance and disabling culling doesn't fix it
+// Distance things still flicker
 
 // Do i Cap the altitude or find a way to slow down the light updating
 // Do i remove wind from bones?
@@ -49,7 +50,7 @@ bool ShadowmapMatrixFix::Install()
 
 	//Render a cascade
 	stl::write_thunk_call<BSShadowDirectionalLight_RenderShadowmaps_RenderCascade>(REL::RelocationID(101495, 108489).address() + REL::Relocate(0xC6, 0xC6));
-	stl::write_thunk_call<BSShadowDirectionalLight_RenderShadowmaps_RenderCascade>(REL::RelocationID(101495, 108489).address() + REL::Relocate(0x6F, 0x6F));
+	stl::write_thunk_call<BSShadowDirectionalLight_RenderShadowmaps_RenderVolumetricCascade>(REL::RelocationID(101495, 108489).address() + REL::Relocate(0x6F, 0x6F));
 
 	// Clear the current frustum - we use it to set a new view matrix and translation
 	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));
@@ -115,9 +116,7 @@ void ShadowmapMatrixFix::SetCascadeSplit(CascadeBounds::Split& outputSplits, con
 
 	float cascadeSplits[4] = { (float)settings.splits[0], (float)settings.splits[1], (float)settings.splits[2], (float)settings.splits[3] };
 
-	float BLEND_AREA = *gCascadeBlendDist * 2.0f;  //settings.blendZone;
-
-	//logger::info("gCascadeBlendDist: {}", *gCascadeBlendDist);
+	float BLEND_AREA = *gCascadeBlendDist * 2.0f;
 
 	for (int i = 0; i < nCascades; i++) {
 		outputSplits.splitVS[i] = cascadeSplits[i];
@@ -127,7 +126,7 @@ void ShadowmapMatrixFix::SetCascadeSplit(CascadeBounds::Split& outputSplits, con
 		outputSplits.startSplitNDC[i] = ViewDepthToNDC(blendedVS, viewFrustum);
 	}
 
-	maxCascadeCoverageVS = outputSplits.splitVS[nCascades - 1] + 1000;  //Change name
+	maxCascadeCoverageVS = outputSplits.splitVS[nCascades - 1];  // + 2000;  //Change name
 }
 
 void ShadowmapMatrixFix::BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frustum& outFrustum, const CascadeBounds::Split& cascadeSplits, const Frustum& rootFrustum, const DirectX::XMVECTOR& lightDirection)
@@ -217,16 +216,21 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 		float adjustedMin = centerZ - extent;
 		float adjustedMax = centerZ + extent;
 
+		logger::info("adjustedMin: {}   adjustedMax: {}", adjustedMin, adjustedMax);
+
 		outProj = DirectX::XMMatrixOrthographicOffCenterLH(boundingBox.cornerMin.x, boundingBox.cornerMax.x, boundingBox.cornerMin.y, boundingBox.cornerMax.y, adjustedMin, adjustedMax);
 	}
 
 	// Build culling frustum
 	{
 		// Cap min extent to avoid issues with small cascades
-		float extent = std::max(halfExtentZ, MIN_CULL_EXTENT) + settings.testVar;  //MIN_CULL_EXTENT = 5000 @ 2.0 range mult?
+		// If we dont care about moutains having broken culling then mult could be way lower - check for terrain shadows before choosing?
+		float extent = std::max(halfExtentZ * RANGE_MULT * settings.MultTwo, MIN_CULL_EXTENT) + settings.testVar;  //MIN_CULL_EXTENT = 5000 @ 2.0 range mult?  more like MultTwo == 4, testVar == 0 @ 3.0 range mult
 
 		float adjustedMin = centerZ - extent;
 		float adjustedMax = centerZ + extent;
+
+		logger::info("Culling  adjustedMin: {}   adjustedMax: {}", adjustedMin, adjustedMax);
 
 		outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(boundingBox.cornerMin.x, boundingBox.cornerMax.x, boundingBox.cornerMin.y, boundingBox.cornerMax.y, adjustedMin, adjustedMax);
 	}
@@ -324,7 +328,7 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 
 	// Discretize light dir to mitigate variance from time scale
 	XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector));
-	lightDirection = QuantizeLightDirection(lightDirection, settings.lightUpdateAngle);
+	//lightDirection = QuantizeLightDirection(lightDirection, settings.lightUpdateAngle);
 
 	//if (settings.test)
 	//	lightDirection = NiPoint3ToXMVector(globals::features::skySync.GetSunDirectionWithAltitudeLimit(settings.lightMinAngle));
@@ -354,6 +358,7 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	XMMATRIX lightView = {};
 	Frustum lightFrustum;
 	BuildLightFrustum(lightView, lightFrustum, cascadeBoundData.splitDist, rootFrustum, lightDirection);
+	LogMatrix("view", lightView);
 
 	// Set min/max cascade extent corners for first culling round
 	static constexpr int nearFarIndices[8] = { 0, 2, 4, 6, 1, 3, 5, 7 };  // near corners -> far corners
@@ -367,20 +372,27 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 
 	// Build bounding objects
 	BuildCascadeBoundingSphere(cascadeBoundData.boundingSphere, lightFrustum);
+	logger::info("bounding sphere radius: {}", cascadeBoundData.boundingSphere.radius);
+	LogVector("bounding sphere center", cascadeBoundData.boundingSphere.center);
 
 	const XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
 
 	BuildCascadeAABB(cascadeBoundData.boundingBox, lightCameraPos, cascadeBoundData.boundingSphere);
 
+	logger::info("bounding box min: {}, {}, {}", cascadeBoundData.boundingBox.cornerMin.x, cascadeBoundData.boundingBox.cornerMin.y, cascadeBoundData.boundingBox.cornerMin.z);
+	logger::info("bounding box max: {}, {}, {}", cascadeBoundData.boundingBox.cornerMax.x, cascadeBoundData.boundingBox.cornerMax.y, cascadeBoundData.boundingBox.cornerMax.z);
+
 	// Build view projection transforms
 	XMMATRIX lightProj = {};
 	XMMATRIX cullingProj = {};
 	BuildCascadeProjectionMatrices(lightProj, cullingProj, cascadeBoundData.boundingBox);
+	LogMatrix("proj", lightProj);
 
 	const XMMATRIX viewProj = XMMatrixMultiply(lightView, lightProj);
 	XMStoreFloat4x4(&cascadeData[cascadeIndex].viewProj, XMMatrixTranspose(viewProj));
+	LogMatrix("viewProj", viewProj);
 
-	// Relative translation added to shader MS position to avoid dot prod precision loss - DO NOT fuck with
+	// Relative translation added to shader MS position to avoid dot prod precision loss - probably don't fuck with
 	const XMMATRIX texProj = XMMatrixMultiply(XMMatrixScaling(0.5f, -0.5f, 1.0f), XMMatrixTranslation(0.5f, 0.5f, 0.0f));
 	XMStoreFloat4x4(&cascadeData[cascadeIndex].viewProjTex, XMMatrixTranspose(XMMatrixMultiply(viewProj, texProj)));
 
@@ -392,8 +404,6 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 	cascadeData[cascadeIndex].endDepthNDC = cascadeBoundData.splitDist.endSplitNDC[cascadeIndex];
 	cascadeData[cascadeIndex].startDepthNDC = cascadeBoundData.splitDist.startSplitNDC[cascadeIndex];
 
-	//cascadeData[cascadeIndex].width = XMVectorGetX(cascadeBoundData.boundingBox.cornerMax) - XMVectorGetX(cascadeBoundData.boundingBox.cornerMin);
-
 	// Build culling planes
 	const XMMATRIX cullingViewProj = XMMatrixMultiply(lightView, cullingProj);
 	GetCullPlanesFromVPMatrix(cascadeData[cascadeIndex].cullingPlanes, cullingViewProj);
@@ -402,12 +412,19 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 // Stop other cascades from being rendered this frame - other methods to defer the accumulator dispatch cause recursion deadlocks
 void ShadowmapMatrixFix::DisableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int cascadeIndex)
 {
-	for (int i = 0; i < nCascades; i++) {
-		if (i != cascadeIndex) {
-			if (auto cullingProcess = light->GetRuntimeData().shadowmapDescriptors[i].cullingProcess) {
-				for (int j = 0; j < 6; j++)
-					cullingProcess->customCullPlanes.cullingPlanes[j].constant = 0;
-			}
+	if (auto cullingProcess = light->GetRuntimeData().shadowmapDescriptors[cascadeIndex].cullingProcess) {
+		backupPlanes[cascadeIndex] = cullingProcess->customCullPlanes;
+		for (int j = 0; j < 6; j++)
+			cullingProcess->customCullPlanes.cullingPlanes[j].constant = 0;
+	}
+}
+
+void ShadowmapMatrixFix::EnableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int cascadeIndex)
+{
+	if (auto cullingProcess = light->GetRuntimeData().shadowmapDescriptors[cascadeIndex].cullingProcess) {
+		for (int j = 0; j < 6; j++) {
+			cullingProcess->customCullPlanes.cullingPlanes[j].constant = backupPlanes[cascadeIndex].cullingPlanes[j].constant;
+			logger::info("plane: {}", cullingProcess->customCullPlanes.cullingPlanes[j].constant);
 		}
 	}
 }
@@ -429,6 +446,11 @@ bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSSh
 	// Build the cascade we want to render this frame
 	cascadeToRender = ++cascadeToRender < nCascades ? cascadeToRender : 0;
 
+	auto& settings = globals::features::terrainBlending;
+	if (settings.test) {
+		cascadeToRender = settings.cascadeToUse;
+	}
+
 	BuildShadowCascade(light, inputCamera, cascadeToRender);
 
 	// Only set on cascade 0 since result won't differ for 1-3
@@ -438,7 +460,12 @@ bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSSh
 	// Run game func to init and update the frame camera with the new params
 	bool ret = func(light, inputCamera);
 
-	DisableCullingPlanes(light, cascadeToRender);
+	// Disable all planes since we handle VL cascades separately
+	for (int i = 0; i < nCascades; i++) {
+		if (i != cascadeToRender) {
+			DisableCullingPlanes(light, i);
+		}
+	}
 
 	return ret;
 }
@@ -476,11 +503,14 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCam
 	counter = ++counter < nCascades ? counter : 0;
 }
 
-// Update cbuffer and clear RT
-void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade::thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& desc, uint32_t* arg2, uint32_t flags)
+// Update buffer before VL cascades since everything is the same
+// Only render first two VL cascades and enable other cascade planes
+void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderVolumetricCascade::thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& desc, uint32_t* unk, uint32_t flags)
 {
+	static int pass = 0;
+
 	if (!initialized) {
-		return func(light, desc, arg2, flags);
+		return func(light, desc, unk, flags);
 	}
 
 	if (desc.shadowmapIndex == (uint)cascadeToRender) {
@@ -490,7 +520,6 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 			data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
 			data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
 			data.cascadeSplitStarts[i] = cascadeData[i].startDepthNDC;
-			//	data.cascadeWidth[i] = cascadeData[i].width;
 		}
 		data.numCascades = nCascades;
 		shadowCascadeFixCB->Update(data);
@@ -507,7 +536,22 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 
 	desc.clearRenderTarget = desc.shadowmapIndex == (uint)cascadeToRender;
 
-	func(light, desc, arg2, flags);
+	//Only render first 2 VL cascades
+	if (pass < 2)
+		func(light, desc, unk, flags);
+
+	pass = ++pass < nCascades ? pass : 0;
+}
+
+void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade::thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& desc, uint32_t* unk, uint32_t flags)
+{
+	if (!initialized) {
+		return func(light, desc, unk, flags);
+	}
+
+	//desc.clearRenderTarget = desc.shadowmapIndex == (uint)cascadeToRender;
+
+	func(light, desc, unk, flags);
 
 	// Needed because VL shadow maps use the same descriptors...
 	desc.clearRenderTarget = true;
@@ -536,10 +580,11 @@ DirectX::XMVECTOR ShadowmapMatrixFix::QuantizeLightDirection(DirectX::XMVECTOR l
 
 // This is used in True PBR during the render pass list generation
 // It updates the flags for geometry retreiving shadows
-// The flag is set wrong during pre culling when the most distant cascade isn't rendered in the same frame
+// The flag is set wrong during pre culling when rendering more than 2 cascades
+// and when the most distant cascade isn't rendered in the same frame
 bool ShadowmapMatrixFix::GeometryInsideShadowBound(RE::BSGeometry* geometry)
 {
 	auto pos = geometry->worldBound.center - RE::Main::WorldRootCamera()->world.translate;
-	float dist = pos.Length() - geometry->worldBound.radius;
+	float dist = pos.Length() - (geometry->worldBound.radius * 1.5);
 	return dist < maxCascadeCoverageVS;
 }

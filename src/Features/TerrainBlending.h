@@ -45,9 +45,12 @@ public:
 	bool rasterCulling = true;
 
 	float minExtent = 5000.0f;
-	float multiplerRange = 2.0f;
+	float multiplerRange = 3.0f;
+	float MultTwo = 4.0f;
 	float testVar = 0;
 	float blendZone = 100;
+
+	int cascadeToUse = 0;
 
 	bool update = true;
 	//int testScale = 1;

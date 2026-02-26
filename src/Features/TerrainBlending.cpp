@@ -114,7 +114,9 @@ void TerrainBlending::DrawSettings()
 	ImGui::SliderFloat("Z Range Multipler", &multiplerRange, 0.0f, 4.0f);
 	ImGui::SliderFloat("Z Min Extent", &minExtent, 0.0f, 5000.0f);
 	ImGui::SliderFloat("Culling Proj Z Offset", &testVar, 0.0f, 5000.0f);
-	ImGui::SliderFloat("Blend Zone", &blendZone, 0.0f, 500.0f);
+	ImGui::SliderFloat("Culling Mult 2", &MultTwo, 0.0f, 10.0f);
+
+	ImGui::SliderInt("Cascade To Render", &cascadeToUse, 0, 4);
 
 	ImGui::SliderFloat("Light Angle Update Step", &lightUpdateAngle, 0.0f, 0.5f, "%.4f");
 	ImGui::SliderFloat("Light Min Angle", &lightMinAngle, 0.0f, 50.0f);

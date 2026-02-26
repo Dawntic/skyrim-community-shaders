@@ -97,27 +97,41 @@ cbuffer ShadowCascadeFix : register(b7)
 
 	float shadowMapDepth = positionCSShifted.z;
 
+	float4 cascadeStartDepths;
+	float4 cascadeEndDepths;
+	int numCascades;
+	int numVLCascades;
+	#if defined(VR)
+		cascadeStartDepths = StartSplitDistances;
+		cascadeEndDepths = EndSplitDistances;
+		numCascades = ShadowMapCount;
+		numVLCascades = ShadowMapCount;
+	#else
+		cascadeStartDepths = cascadeStartDepth;
+		cascadeEndDepths = cascadeEndDepth;
+		numCascades = nCascades;
+		numVLCascades = min(nCascades, 2);
+	#endif
+
+	float cascadeIndex = 0;
+	float3 positionLS;
 	bool noShadow = true;
-		int cascadeIndex = 0;
-		float3 positionLS;
-#	if defined(VR)
-	if (EndSplitDistances[2] >= shadowMapDepth) {
-		uint cascadeIndex = ShadowMapCount >= 3.0f && shadowMapDepth > EndSplitDistances[1] ? 2 : shadowMapDepth > EndSplitDistances[0] ? 1 : 0;
-		float4x3 lightProjectionMatrix = ShadowMapProj[eyeIndex][cascadeIndex];
-		positionLS = mul(transpose(lightProjectionMatrix), float4(positionWS.xyz, 1)).xyz;
-#	else
-	if(cascadeEndDepth[nCascades - 1] >= shadowMapDepth) {
-		[unroll] for(; cascadeIndex < nCascades; cascadeIndex++){
-			if(shadowMapDepth <= cascadeEndDepth[cascadeIndex])
+	if(cascadeEndDepths[numCascades - 1] >= shadowMapDepth) {
+		[unroll] for(; cascadeIndex < numCascades; cascadeIndex++){
+			if(shadowMapDepth <= cascadeEndDepths[cascadeIndex])
 				break;
 		}
-		positionLS = mul(shadowmapViewProjUV[cascadeIndex], float4(positionWS.xyz + PosAdjust[eyeIndex], 1)).xyz;
-#	endif
+		#if defined(VR)
+			positionLS = mul(transpose(ShadowMapProj[eyeIndex][cascadeIndex]), float4(positionMS.xyz, 1)).xyz;
+		#else
+			positionLS = mul(shadowmapViewProjUV[cascadeIndex], float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[eyeIndex].xyz, 1)).xyz;
+		#endif
+
 		float shadowMapThreshold = cascadeIndex == 0 ? 0.01f : 0.0f;
 		float shadowMapValue = ShadowmapTex.SampleLevel(ShadowmapSampler, float3(positionLS.xy, cascadeIndex), 0);
 		noShadow = shadowMapValue >= positionLS.z - shadowMapThreshold;
 
-		if (EnableShadowCasting < 0.5) {
+		if (EnableShadowCasting < 0.5 && cascadeIndex < numVLCascades) {
 			float shadowMapVLValue = ShadowmapVLTex.SampleLevel(ShadowmapVLSampler, float3(positionLS.xy, cascadeIndex), 0);
 			noShadow = noShadow & shadowMapVLValue >= positionLS.z - shadowMapThreshold;
 		}

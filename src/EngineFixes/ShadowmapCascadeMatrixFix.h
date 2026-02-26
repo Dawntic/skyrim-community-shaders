@@ -51,6 +51,8 @@ struct ShadowmapMatrixFix : EngineFix
 	static inline Frustum primaryCullFrustum = {};
 	static inline RE::NiFrustumPlanes primaryCullPlanes = RE::NiFrustumPlanes();
 
+	static inline RE::NiFrustumPlanes backupPlanes[maxCascades] = {};
+
 	static void BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, const int index);
 	static void SetPrimaryCullPlanes(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
 	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
@@ -64,6 +66,7 @@ struct ShadowmapMatrixFix : EngineFix
 	static void BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, const DirectX::XMVECTOR& lightCameraPos, const CascadeBounds::Sphere& sphere);
 	static void BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullingProj, const CascadeBounds::AABB& boundingBox);
 	static void DisableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int index);
+	static void EnableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int index);
 
 	struct CascadeData
 	{
@@ -88,6 +91,43 @@ struct ShadowmapMatrixFix : EngineFix
 		float _pad[3];
 	};
 	static inline ConstantBuffer* shadowCascadeFixCB = nullptr;
+
+	static inline void LogMatrix(std::string desc, DirectX::XMMATRIX inMatrix)
+	{
+		DirectX::XMFLOAT4X4 matrix;
+		XMStoreFloat4x4(&matrix, inMatrix);
+		logger::info("{} row 1: {}, {}, {}, {}", desc, matrix.m[0][0], matrix.m[0][1], matrix.m[0][2], matrix.m[0][3]);
+		logger::info("{} row 2: {}, {}, {}, {}", desc, matrix.m[1][0], matrix.m[1][1], matrix.m[1][2], matrix.m[1][3]);
+		logger::info("{} row 3: {}, {}, {}, {}", desc, matrix.m[2][0], matrix.m[2][1], matrix.m[2][2], matrix.m[2][3]);
+		logger::info("{} row 4: {}, {}, {}, {}", desc, matrix.m[3][0], matrix.m[3][1], matrix.m[3][2], matrix.m[3][3]);
+	}
+	static inline void LogMatrix(std::string desc, DirectX::XMFLOAT4X4 matrix)
+	{
+		logger::info("{} row 1: {}, {}, {}, {}", desc, matrix.m[0][0], matrix.m[0][1], matrix.m[0][2], matrix.m[0][3]);
+		logger::info("{} row 2: {}, {}, {}, {}", desc, matrix.m[1][0], matrix.m[1][1], matrix.m[1][2], matrix.m[1][3]);
+		logger::info("{} row 3: {}, {}, {}, {}", desc, matrix.m[2][0], matrix.m[2][1], matrix.m[2][2], matrix.m[2][3]);
+		logger::info("{} row 4: {}, {}, {}, {}", desc, matrix.m[3][0], matrix.m[3][1], matrix.m[3][2], matrix.m[3][3]);
+	}
+
+	static inline void LogMatrix(const std::string& desc, const float matrix[4][4])
+	{
+		logger::info("{} row 1: {}, {}, {}, {}", desc,
+			matrix[0][0], matrix[0][1], matrix[0][2], matrix[0][3]);
+
+		logger::info("{} row 2: {}, {}, {}, {}", desc,
+			matrix[1][0], matrix[1][1], matrix[1][2], matrix[1][3]);
+
+		logger::info("{} row 3: {}, {}, {}, {}", desc,
+			matrix[2][0], matrix[2][1], matrix[2][2], matrix[2][3]);
+
+		logger::info("{} row 4: {}, {}, {}, {}", desc,
+			matrix[3][0], matrix[3][1], matrix[3][2], matrix[3][3]);
+	}
+
+	static inline void LogVector(std::string desc, DirectX::XMVECTOR vec)
+	{
+		logger::info("{}: {}, {}, {}, {}", desc, DirectX::XMVectorGetX(vec), DirectX::XMVectorGetY(vec), DirectX::XMVectorGetZ(vec), DirectX::XMVectorGetW(vec));
+	}
 
 	static inline RE::NiPoint3 XMVectorToNiPoint3(DirectX::XMVECTOR vector)
 	{
@@ -135,6 +175,12 @@ struct ShadowmapMatrixFix : EngineFix
 	};
 
 	struct BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
+	{
+		static void thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& arg1, uint32_t* arg2, uint32_t flags);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct BSShadowDirectionalLight_RenderShadowmaps_RenderVolumetricCascade
 	{
 		static void thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& arg1, uint32_t* arg2, uint32_t flags);
 		static inline REL::Relocation<decltype(thunk)> func;
