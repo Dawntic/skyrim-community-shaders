@@ -27,6 +27,7 @@ add time sliced rendering
 // Only render first 2 VL maps
 // Default 1024 cascades
 // Deferred renderer should use my buffer
+// Only render VL cascdes during 2nd frame
 
 //ISSUES:
 // culling breaks when setting very fig cascade distance and disabling culling doesn't fix it
@@ -81,10 +82,12 @@ bool ShadowmapMatrixFix::Install()
 // Ideally the VL cascade will be remvoed in the future
 void ShadowmapMatrixFix::CreateVolumetricCascadeStencilTarget::thunk(RE::BSGraphics::Renderer* renderer, RE::RENDER_TARGETS_DEPTHSTENCIL::RENDER_TARGET_DEPTHSTENCIL stencil, RE::BSGraphics::DepthStencilTargetProperties* prop)
 {
-	if (prop->width < 128) {
-		prop->width = 128;
-		prop->height = 128;
-	}
+	//if (prop->width < 128) {
+	//	prop->width = 128;
+	//	prop->height = 128;
+	//}
+
+	prop->width = prop->height = std::max(prop->height, 128u);
 
 	func(renderer, stencil, prop);
 };
@@ -126,10 +129,10 @@ void ShadowmapMatrixFix::SetCascadeSplit(CascadeBounds::Split& outputSplits, con
 		outputSplits.startSplitNDC[i] = ViewDepthToNDC(blendedVS, viewFrustum);
 	}
 
-	maxCascadeCoverageVS = outputSplits.splitVS[nCascades - 1];  // + 2000;  //Change name
+	maxCascadeCoverageVS = outputSplits.splitVS[nCascades - 1] + 2000;  //Change name
 }
 
-void ShadowmapMatrixFix::BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frustum& outFrustum, const CascadeBounds::Split& cascadeSplits, const Frustum& rootFrustum, const DirectX::XMVECTOR& lightDirection)
+void ShadowmapMatrixFix::BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frustum& outFrustum, const CascadeBounds::Split& cascadeSplits, const Frustum& rootFrustum, const DirectX::XMVECTOR& lightDirection, const int cascadeIndex)
 {
 	using namespace DirectX;
 
@@ -143,8 +146,8 @@ void ShadowmapMatrixFix::BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frus
 	const XMMATRIX lightView = XMMatrixTranspose(lightWorld);  // ViewRot == InvWorld == TrspWorld
 	outLightView = lightView;
 
-	float nearSplit = (cascadeToRender == 0) ? 0.0f : cascadeSplits.splitLin[cascadeToRender - 1];
-	float FarSplit = cascadeSplits.splitLin[cascadeToRender];
+	float nearSplit = (cascadeIndex == 0) ? 0.0f : cascadeSplits.splitLin[cascadeIndex - 1];
+	float FarSplit = cascadeSplits.splitLin[cascadeIndex];
 
 	outFrustum.corner[0] = XMVector3Transform(XMVectorLerp(rootFrustum.corner[4], rootFrustum.corner[0], nearSplit), lightView);  // TR - near
 	outFrustum.corner[1] = XMVector3Transform(XMVectorLerp(rootFrustum.corner[4], rootFrustum.corner[0], FarSplit), lightView);   // TR - far
@@ -216,7 +219,7 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 		float adjustedMin = centerZ - extent;
 		float adjustedMax = centerZ + extent;
 
-		logger::info("adjustedMin: {}   adjustedMax: {}", adjustedMin, adjustedMax);
+		//logger::info("adjustedMin: {}   adjustedMax: {}", adjustedMin, adjustedMax);
 
 		outProj = DirectX::XMMatrixOrthographicOffCenterLH(boundingBox.cornerMin.x, boundingBox.cornerMax.x, boundingBox.cornerMin.y, boundingBox.cornerMax.y, adjustedMin, adjustedMax);
 	}
@@ -230,7 +233,7 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 		float adjustedMin = centerZ - extent;
 		float adjustedMax = centerZ + extent;
 
-		logger::info("Culling  adjustedMin: {}   adjustedMax: {}", adjustedMin, adjustedMax);
+		//logger::info("Culling  adjustedMin: {}   adjustedMax: {}", adjustedMin, adjustedMax);
 
 		outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(boundingBox.cornerMin.x, boundingBox.cornerMax.x, boundingBox.cornerMin.y, boundingBox.cornerMax.y, adjustedMin, adjustedMax);
 	}
@@ -302,7 +305,7 @@ void ShadowmapMatrixFix::SetPrimaryCullPlanes(RE::BSShadowDirectionalLight* ligh
 }
 
 #include "../Features/SkySync.h"
-void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, const int cascadeIndex)
+void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, const int cascadeIndex)
 {
 	using namespace DirectX;
 
@@ -357,8 +360,8 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 
 	XMMATRIX lightView = {};
 	Frustum lightFrustum;
-	BuildLightFrustum(lightView, lightFrustum, cascadeBoundData.splitDist, rootFrustum, lightDirection);
-	LogMatrix("view", lightView);
+	BuildLightFrustum(lightView, lightFrustum, cascadeBoundData.splitDist, rootFrustum, lightDirection, cascadeIndex);
+	//LogMatrix("view", lightView);
 
 	// Set min/max cascade extent corners for first culling round
 	static constexpr int nearFarIndices[8] = { 0, 2, 4, 6, 1, 3, 5, 7 };  // near corners -> far corners
@@ -372,25 +375,25 @@ void ShadowmapMatrixFix::BuildShadowCascade(RE::BSShadowDirectionalLight* light,
 
 	// Build bounding objects
 	BuildCascadeBoundingSphere(cascadeBoundData.boundingSphere, lightFrustum);
-	logger::info("bounding sphere radius: {}", cascadeBoundData.boundingSphere.radius);
-	LogVector("bounding sphere center", cascadeBoundData.boundingSphere.center);
+	//logger::info("bounding sphere radius: {}", cascadeBoundData.boundingSphere.radius);
+	//LogVector("bounding sphere center", cascadeBoundData.boundingSphere.center);
 
 	const XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
 
 	BuildCascadeAABB(cascadeBoundData.boundingBox, lightCameraPos, cascadeBoundData.boundingSphere);
 
-	logger::info("bounding box min: {}, {}, {}", cascadeBoundData.boundingBox.cornerMin.x, cascadeBoundData.boundingBox.cornerMin.y, cascadeBoundData.boundingBox.cornerMin.z);
-	logger::info("bounding box max: {}, {}, {}", cascadeBoundData.boundingBox.cornerMax.x, cascadeBoundData.boundingBox.cornerMax.y, cascadeBoundData.boundingBox.cornerMax.z);
+	//logger::info("bounding box min: {}, {}, {}", cascadeBoundData.boundingBox.cornerMin.x, cascadeBoundData.boundingBox.cornerMin.y, cascadeBoundData.boundingBox.cornerMin.z);
+	//logger::info("bounding box max: {}, {}, {}", cascadeBoundData.boundingBox.cornerMax.x, cascadeBoundData.boundingBox.cornerMax.y, cascadeBoundData.boundingBox.cornerMax.z);
 
 	// Build view projection transforms
 	XMMATRIX lightProj = {};
 	XMMATRIX cullingProj = {};
 	BuildCascadeProjectionMatrices(lightProj, cullingProj, cascadeBoundData.boundingBox);
-	LogMatrix("proj", lightProj);
+	//LogMatrix("proj", lightProj);
 
 	const XMMATRIX viewProj = XMMatrixMultiply(lightView, lightProj);
 	XMStoreFloat4x4(&cascadeData[cascadeIndex].viewProj, XMMatrixTranspose(viewProj));
-	LogMatrix("viewProj", viewProj);
+	//LogMatrix("viewProj", viewProj);
 
 	// Relative translation added to shader MS position to avoid dot prod precision loss - probably don't fuck with
 	const XMMATRIX texProj = XMMatrixMultiply(XMMatrixScaling(0.5f, -0.5f, 1.0f), XMMatrixTranslation(0.5f, 0.5f, 0.0f));
@@ -424,12 +427,13 @@ void ShadowmapMatrixFix::EnableCullingPlanes(const RE::BSShadowDirectionalLight*
 	if (auto cullingProcess = light->GetRuntimeData().shadowmapDescriptors[cascadeIndex].cullingProcess) {
 		for (int j = 0; j < 6; j++) {
 			cullingProcess->customCullPlanes.cullingPlanes[j].constant = backupPlanes[cascadeIndex].cullingPlanes[j].constant;
-			logger::info("plane: {}", cullingProcess->customCullPlanes.cullingPlanes[j].constant);
+			//logger::info("plane: {}", cullingProcess->customCullPlanes.cullingPlanes[j].constant);
 		}
 	}
 }
 
 // Update cascade camera matrices, cull planes etc.
+// Runs once per frame
 bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSShadowDirectionalLight* light, RE::NiCamera& inputCamera)
 {
 	if (!initialized && light) {
@@ -443,29 +447,126 @@ bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSSh
 		return func(light, inputCamera);
 	}
 
-	// Build the cascade we want to render this frame
-	cascadeToRender = ++cascadeToRender < nCascades ? cascadeToRender : 0;
+	static int frameCounter = 0;
 
-	auto& settings = globals::features::terrainBlending;
-	if (settings.test) {
-		cascadeToRender = settings.cascadeToUse;
+	// Bitmask which cascades we render each frame
+	// Slicing across more than 2 frames causes some motion lag for dragons
+	static constexpr uint8_t renderPassMasks[][2] = {
+		{}, {},            // There should always be more than 1 cascade
+		{ 0b01, 0b10 },    // 2 cascades == frame0=[0], frame1=[1]
+		{ 0b11, 0b100 },   // 3 cascades == frame0=[0,1], frame1=[2]
+		{ 0b1001, 0b110 }  // 4 cascades == frame0=[0,3], frame1=[1,2]
+	};
+	activeCascades = renderPassMasks[nCascades][frameCounter];
+
+	//Build cascades we're rendering this frame
+	for (int i = 0; i < nCascades; i++) {
+		if (activeCascades & (1 << i)) {
+			BuildShadowCascadeCameraInput(light, inputCamera, i);
+		}
 	}
 
-	BuildShadowCascade(light, inputCamera, cascadeToRender);
+	//logger::info("set frame cam");
+	// Build the cascade we want to render this frame
+	//cascadeToRender = ++cascadeToRender < 2 ? cascadeToRender : 0; //CHANGED
 
-	// Only set on cascade 0 since result won't differ for 1-3
-	if (cascadeToRender == 0)
+	//auto& settings = globals::features::terrainBlending;
+	//if (settings.test) {
+	//	cascadeToRender = settings.cascadeToUse;
+	//}
+
+	//BuildShadowCascadeCameraInput(light, inputCamera, cascadeToRender);
+	//if(cascadeToRender == 0)
+	//	BuildShadowCascadeCameraInput(light, inputCamera, 3);
+	//if (cascadeToRender == 1)
+	//	BuildShadowCascadeCameraInput(light, inputCamera, 2);
+
+	// Only set on cascade 0 since result is the same
+	if (frameCounter == 0)
 		SetPrimaryCullPlanes(light, inputCamera);
 
 	// Run game func to init and update the frame camera with the new params
 	bool ret = func(light, inputCamera);
 
-	// Disable all planes since we handle VL cascades separately
+	// Disable cascades we're not rendering this frame
 	for (int i = 0; i < nCascades; i++) {
-		if (i != cascadeToRender) {
+		if (!(activeCascades & (1 << i))) {
 			DisableCullingPlanes(light, i);
 		}
 	}
+
+	frameCounter = ++frameCounter < 2 ? frameCounter : 0;
+
+	//if(cascadeToRender == 0){
+	//	DisableCullingPlanes(light, 1);
+	//	DisableCullingPlanes(light, 2);
+	//}
+	// else if (cascadeToRender == 1) {
+	//	DisableCullingPlanes(light, 0);
+	//	DisableCullingPlanes(light, 3);
+	//}
+
+	/*
+	for (int i = 0; i < nCascades; i++) {
+		if (i != cascadeToRender) {
+			if (cascadeToRender == 0 && i != 3){
+				DisableCullingPlanes(light, i);
+				logger::info("disable: {}", i);
+			}
+			if(cascadeToRender == 1 && i != 2){
+				DisableCullingPlanes(light, i);
+				logger::info("disable: {}", i);
+			}
+		}
+	}
+	*/
+
+	/*
+	static int passCounter = 0;
+
+	numCascadesThisFrame = 0;
+	cascadesThisFrame[2] = {};
+	if(nCascades == 2){
+		numCascadesThisFrame = 1;
+		cascadesThisFrame[0] = passCounter;
+	}
+	if(nCascades == 3){
+		if(passCounter == 0){
+			numCascadesThisFrame = 2;
+
+			cascadesThisFrame[0] = 0;
+			cascadesThisFrame[1] = 1;
+		} else{
+			numCascadesThisFrame = 1;
+
+			cascadesThisFrame[0] = 2;
+		}
+	}
+	if(nCascades == 4){
+		numCascadesThisFrame = 2;
+		if (passCounter == 0) {
+			cascadesThisFrame[0] = 0;
+			cascadesThisFrame[1] = 3;
+		} else{
+			cascadesThisFrame[0] = 1;
+			cascadesThisFrame[1] = 2;
+		}
+	}
+
+	if (numCascadesThisFrame == 1){
+		BuildShadowCascadeCameraInput(light, inputCamera, cascadesThisFrame[0]);
+	} else{
+		BuildShadowCascadeCameraInput(light, inputCamera, cascadesThisFrame[0]);
+		BuildShadowCascadeCameraInput(light, inputCamera, cascadesThisFrame[1]);
+	}
+
+	// Disable culling planes of cascades we aren't rendering this frame
+	for (int i = 0; i < nCascades; i++) {
+		if ((numCascadesThisFrame == 1 && i != cascadesThisFrame[0]) || (numCascadesThisFrame == 2 && i != cascadesThisFrame[0] && i != cascadesThisFrame[1])) {
+			DisableCullingPlanes(light, i);
+		}
+	}
+	*/
 
 	return ret;
 }
@@ -513,28 +614,39 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderVolumet
 		return func(light, desc, unk, flags);
 	}
 
-	if (desc.shadowmapIndex == (uint)cascadeToRender) {
-		ShadowDataCB data{};
-		data.lightViewProj = cascadeData[cascadeToRender].viewProj;
-		for (int i = 0; i < nCascades; i++) {
-			data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
-			data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
-			data.cascadeSplitStarts[i] = cascadeData[i].startDepthNDC;
-		}
-		data.numCascades = nCascades;
-		shadowCascadeFixCB->Update(data);
-
-		ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
-		globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
-		globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
-		globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
-
-		//TMP
-		auto& normalRoughness = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kRAWINDIRECT_DOWNSCALED].SRV;
-		globals::d3d::context->PSSetShaderResources(27, 1, &normalRoughness);
+	//if (desc.shadowmapIndex == (uint)cascadeToRender) { // Wont work cuz viewProj
+	ShadowDataCB data{};
+	data.lightViewProj = cascadeData[pass].viewProj;
+	//if(pass == 1){ //if we are onto our 2 cascade of the frame
+	//	if(cascadeToRender == 0)
+	//		data.lightViewProj = cascadeData[3].viewProj;
+	//	if (cascadeToRender == 1)
+	//		data.lightViewProj = cascadeData[2].viewProj;
+	//	}
+	for (int i = 0; i < nCascades; i++) {
+		data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
+		data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
+		data.cascadeSplitStarts[i] = cascadeData[i].startDepthNDC;
 	}
+	data.numCascades = nCascades;
+	shadowCascadeFixCB->Update(data);
 
-	desc.clearRenderTarget = desc.shadowmapIndex == (uint)cascadeToRender;
+	ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
+	globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
+	globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
+	globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
+
+	//TMP
+	auto& normalRoughness = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kRAWINDIRECT_DOWNSCALED].SRV;
+	globals::d3d::context->PSSetShaderResources(27, 1, &normalRoughness);
+	//	}
+
+	//desc.clearRenderTarget = desc.shadowmapIndex == (uint)cascadeToRender;
+	desc.clearRenderTarget = activeCascades & (1 << desc.shadowmapIndex);
+	//if (cascadeToRender == 0 && pass == 3)  //if we are onto our 2 cascade of the frame
+	//	desc.clearRenderTarget = true;
+	//if (cascadeToRender == 1 && pass == 2)
+	//	desc.clearRenderTarget = true;
 
 	//Only render first 2 VL cascades
 	if (pass < 2)
@@ -549,12 +661,36 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 		return func(light, desc, unk, flags);
 	}
 
+	static int pass = 0;
 	//desc.clearRenderTarget = desc.shadowmapIndex == (uint)cascadeToRender;
+
+	ShadowDataCB data{};
+	data.lightViewProj = cascadeData[pass].viewProj;
+	//if(pass == 1){ //if we are onto our 2 cascade of the frame
+	//	if(cascadeToRender == 0)
+	//		data.lightViewProj = cascadeData[3].viewProj;
+	//	if (cascadeToRender == 1)
+	//		data.lightViewProj = cascadeData[2].viewProj;
+	//	}
+	for (int i = 0; i < nCascades; i++) {
+		data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
+		data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
+		data.cascadeSplitStarts[i] = cascadeData[i].startDepthNDC;
+	}
+	data.numCascades = nCascades;
+	shadowCascadeFixCB->Update(data);
+
+	ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
+	globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
+	globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
+	globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
 
 	func(light, desc, unk, flags);
 
 	// Needed because VL shadow maps use the same descriptors...
 	desc.clearRenderTarget = true;
+
+	pass = ++pass < nCascades ? pass : 0;
 }
 
 DirectX::XMVECTOR ShadowmapMatrixFix::QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees)  //0.05 - 0.1 works well
@@ -585,6 +721,6 @@ DirectX::XMVECTOR ShadowmapMatrixFix::QuantizeLightDirection(DirectX::XMVECTOR l
 bool ShadowmapMatrixFix::GeometryInsideShadowBound(RE::BSGeometry* geometry)
 {
 	auto pos = geometry->worldBound.center - RE::Main::WorldRootCamera()->world.translate;
-	float dist = pos.Length() - (geometry->worldBound.radius * 1.5);
+	float dist = pos.Length() - (geometry->worldBound.radius);
 	return dist < maxCascadeCoverageVS;
 }
