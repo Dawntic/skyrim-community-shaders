@@ -969,13 +969,6 @@ bool TruePBR::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader, RE::B
 			shadowState->SetVSConstant(texCoordOffsetScale, RE::BSGraphics::ConstantGroupLevel::PerMaterial, 11);
 		}
 
-		if (shader->shaderType.all(RE::BSShader::Type::Utility)) {
-			logger::info("Is Util Shader");
-			if (lightingFlags & static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::RenderShadowmap)) {
-				logger::info("has shadowmapflag");
-			}
-		}
-
 		if (lightingFlags & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::CharacterLight)) {
 			static const REL::Relocation<RE::ImageSpaceTexture*> characterLightTexture{ RELOCATION_ID(513464, 391302) };
 

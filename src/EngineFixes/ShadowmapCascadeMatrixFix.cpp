@@ -18,9 +18,11 @@ fix cpu geometry translation
 fix bounding aspect ratio
 fix light altitude cap
 fix light dir update variance
+fix terrain light leaks
 disable depth clipping
 add support for 4 cascades
 add time sliced rendering
+remove VL cascades
 */
 
 //TODO:
@@ -109,6 +111,28 @@ RE::BSShaderProperty::RenderPassArray* ShadowmapMatrixFix::Test::thunk(RE::BSSha
 	if (renderingCascades) {
 		logger::info("Cascade RenderPassArray:  flags: {}   prop: {:X}   geometry: {:X}", flags, (uintptr_t)prop, (uintptr_t)geometry);
 
+		//There is really no better way to target specifically mountains
+
+		//logger::info("Coll Layer: {}", CollisionLayerToString(geometry->GetCollisionLayer()));
+
+		//	for(auto& geom : VLGeometry){
+		//	if(geometry == geom){
+		//logger::info("Culling Match:  {}", geometry->name.c_str());
+		//geometry->CullGeometry(true);
+		//geometry->CullNode(true);
+		//}
+		//}
+
+		//return nullptr; // only effects culling in world renders - color buffer
+
+		//if (prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape, RE::BSShaderProperty::EShaderPropertyFlag::kCastShadows)) {
+		//	logger::info("MultiTextureLandscape");
+		//prop->DoClearRenderPasses(); //Effects the whole pipeline not just shadows
+		//currentPass->ClearRenderPass();  //Deadlocks
+		//	return nullptr;
+		//}
+
+		/*
 		if (geometry) {
 			if (RE::TESObjectREFR* refData = geometry->GetUserData()) {
 				if (refData->loadedData) {
@@ -166,26 +190,7 @@ RE::BSShaderProperty::RenderPassArray* ShadowmapMatrixFix::Test::thunk(RE::BSSha
 			}
 		}
 
-		//logger::info("Coll Layer: {}", CollisionLayerToString(geometry->GetCollisionLayer()));
 
-		//	for(auto& geom : VLGeometry){
-		//	if(geometry == geom){
-		//logger::info("Culling Match:  {}", geometry->name.c_str());
-		//geometry->CullGeometry(true);
-		//geometry->CullNode(true);
-		//}
-		//}
-
-		//return nullptr; // only effects culling in world renders - color buffer
-
-		//if (prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape, RE::BSShaderProperty::EShaderPropertyFlag::kCastShadows)) {
-		//	logger::info("MultiTextureLandscape");
-		//prop->DoClearRenderPasses(); //Effects the whole pipeline not just shadows
-		//currentPass->ClearRenderPass();  //Deadlocks
-		//	return nullptr;
-		//}
-
-		/*
 		RE::BSRenderPass* currentPass = renderPasses->head;
 		while (currentPass != nullptr) {
 			constexpr uint32_t LightingTechniqueStart = 0x4800002D;
@@ -793,13 +798,17 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 	globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
 
 	func(light, desc, unk, flags);
-	globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
+
+	//globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
+
 	// Needed because VL shadow maps use the same descriptors...
 	desc.clearRenderTarget = true;
 
 	pass = ++pass < nCascades ? pass : 0;
 
 	if (pass == 0) {
+		auto VLCascades = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
+		globals::d3d::context->PSSetShaderResources(24, 1, &VLCascades);
 		renderingCascades = false;
 		logger::info("End Cascades");
 	}
