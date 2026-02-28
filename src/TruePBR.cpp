@@ -682,7 +682,12 @@ struct BSLightingShaderProperty_GetRenderPasses
 					}
 				}
 
-				if (geometry) {
+				//geometry->Cull();
+				//geometry->CullNode();
+				//geometry->CullGeometry();
+				//geometry->SetAppCulled();
+
+				if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kReceiveShadows)) {
 					ShadowmapMatrixFix& matrixFix = EngineFix::GetPPLEngineFix<ShadowmapMatrixFix>(0);
 					if (matrixFix.installed && matrixFix.initialized && matrixFix.GeometryInsideShadowBound(geometry))
 						lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);
@@ -964,6 +969,13 @@ bool TruePBR::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader, RE::B
 			shadowState->SetVSConstant(texCoordOffsetScale, RE::BSGraphics::ConstantGroupLevel::PerMaterial, 11);
 		}
 
+		if (shader->shaderType.all(RE::BSShader::Type::Utility)) {
+			logger::info("Is Util Shader");
+			if (lightingFlags & static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::RenderShadowmap)) {
+				logger::info("has shadowmapflag");
+			}
+		}
+
 		if (lightingFlags & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::CharacterLight)) {
 			static const REL::Relocation<RE::ImageSpaceTexture*> characterLightTexture{ RELOCATION_ID(513464, 391302) };
 
@@ -1158,7 +1170,7 @@ bool TruePBR::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 			shaderProperty->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kMultiTextureLandscape, true);
 			shaderProperty->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kReceiveShadows, true);
 
-			shaderProperty->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kCastShadows, true);
+			shaderProperty->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kCastShadows, false);
 			shaderProperty->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kNoLODLandBlend, noLODLandBlend);
 
 			shaderProperty->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kVertexLighting, true);

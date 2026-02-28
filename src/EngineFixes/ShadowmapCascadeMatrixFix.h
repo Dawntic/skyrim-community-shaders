@@ -8,17 +8,121 @@ struct ShadowmapMatrixFix : EngineFix
 	bool Install() override;
 
 	static inline int constexpr maxCascades = 4;
+	static inline bool initialized = false;
 	static inline uint cascadePxSize = 0;
 	static inline int nCascades = 0;
-	static inline int cascadeToRender = -1;
-	static inline bool initialized = false;
 
 	static inline float maxCascadeCoverageVS = 0;
-
 	static inline float* gCascadeBlendDist = nullptr;
 
-	static inline int numCascadesThisFrame = 0;
-	static inline int cascadesThisFrame[2] = {};
+	static inline bool renderingCascades = false;
+	static inline bool renderingVLCascades = false;
+
+	static inline std::vector<RE::BSGeometry*> VLGeometry = {};
+
+	static inline void PrintSetShaderFlags(uint64_t flag)
+	{
+		if (flag == 0) {
+			logger::info("No shader flags set");
+			return;
+		}
+
+		logger::info("Set shader flags (0x{:X}):", flag);
+
+		struct FlagInfo
+		{
+			uint64_t value;
+			const char* name;
+		};
+
+		static const FlagInfo flagNames[] = {
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kSpecular), "kSpecular" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned), "kSkinned" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kTempRefraction), "kTempRefraction" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kVertexAlpha), "kVertexAlpha" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kGrayscaleToPaletteColor), "kGrayscaleToPaletteColor" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kGrayscaleToPaletteAlpha), "kGrayscaleToPaletteAlpha" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kFalloff), "kFalloff" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kEnvMap), "kEnvMap" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kReceiveShadows), "kReceiveShadows" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kCastShadows), "kCastShadows" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kFace), "kFace" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kParallax), "kParallax" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kModelSpaceNormals), "kModelSpaceNormals" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kNonProjectiveShadows), "kNonProjectiveShadows" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape), "kMultiTextureLandscape" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kRefraction), "kRefraction" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kRefractionFalloff), "kRefractionFalloff" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kEyeReflect), "kEyeReflect" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kHairTint), "kHairTint" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kScreendoorAlphaFade), "kScreendoorAlphaFade" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kLocalMapClear), "kLocalMapClear" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kFaceGenRGBTint), "kFaceGenRGBTint" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kOwnEmit), "kOwnEmit" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kProjectedUV), "kProjectedUV" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kMultipleTextures), "kMultipleTextures" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kRemappableTextures), "kRemappableTextures" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kDecal), "kDecal" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kDynamicDecal), "kDynamicDecal" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kParallaxOcclusion), "kParallaxOcclusion" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kExternalEmittance), "kExternalEmittance" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kSoftEffect), "kSoftEffect" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kZBufferTest), "kZBufferTest" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kZBufferWrite), "kZBufferWrite" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kLODLandscape), "kLODLandscape" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kLODObjects), "kLODObjects" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kNoFade), "kNoFade" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kTwoSided), "kTwoSided" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kVertexColors), "kVertexColors" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kGlowMap), "kGlowMap" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kAssumeShadowmask), "kAssumeShadowmask" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kCharacterLighting), "kCharacterLighting" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kMultiIndexSnow), "kMultiIndexSnow" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting), "kVertexLighting" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kUniformScale), "kUniformScale" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kFitSlope), "kFitSlope" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kBillboard), "kBillboard" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kNoLODLandBlend), "kNoLODLandBlend" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kEnvmapLightFade), "kEnvmapLightFade" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kWireframe), "kWireframe" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kWeaponBlood), "kWeaponBlood" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kHideOnLocalMap), "kHideOnLocalMap" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kPremultAlpha), "kPremultAlpha" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kCloudLOD), "kCloudLOD" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kAnisotropicLighting), "kAnisotropicLighting" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kNoTransparencyMultiSample), "kNoTransparencyMultiSample" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kMenuScreen), "kMenuScreen" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kMultiLayerParallax), "kMultiLayerParallax" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kSoftLighting), "kSoftLighting" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kRimLighting), "kRimLighting" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kBackLighting), "kBackLighting" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kSnow), "kSnow" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kTreeAnim), "kTreeAnim" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting), "kEffectLighting" },
+			{ static_cast<uint64_t>(RE::BSShaderProperty::EShaderPropertyFlag::kHDLODObjects), "kHDLODObjects" }
+		};
+
+		bool foundAny = false;
+		for (const auto& flagInfo : flagNames) {
+			if (flag & flagInfo.value) {
+				logger::info("  - {}", flagInfo.name);
+				foundAny = true;
+			}
+		}
+
+		if (!foundAny) {
+			logger::info("  - [Unknown/Invalid flags]");
+		}
+	}
+
+	// Bitmask which cascades we render each frame
+	// Slicing across more than 2 frames causes some motion lag for dragons
+	static constexpr uint8_t cascadeMasks[][2] = {
+		{}, {},            // There should always be more than 1 cascade
+		{ 0b01, 0b10 },    // 2 cascades == frame0=[0], frame1=[1]
+		{ 0b11, 0b100 },   // 3 cascades == frame0=[0,1], frame1=[2]
+		{ 0b1001, 0b110 }  // 4 cascades == frame0=[0,3], frame1=[1,2]
+	};
 	static inline uint8_t activeCascades = 0;
 
 	struct Frustum
@@ -58,7 +162,7 @@ struct ShadowmapMatrixFix : EngineFix
 	static inline RE::NiFrustumPlanes backupPlanes[maxCascades] = {};
 
 	static void BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, const int index);
-	static void SetPrimaryCullPlanes(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
+	static void SetupPrimaryCullPlanes(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
 	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
 	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
 	static bool GeometryInsideShadowBound(RE::BSGeometry* geometry);
@@ -187,6 +291,12 @@ struct ShadowmapMatrixFix : EngineFix
 	struct BSShadowDirectionalLight_RenderShadowmaps_RenderVolumetricCascade
 	{
 		static void thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& arg1, uint32_t* arg2, uint32_t flags);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct Test
+	{
+		static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSShaderProperty*, RE::BSGeometry*, std::uint32_t, RE::BSShaderAccumulator*);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 };

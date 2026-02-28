@@ -1,6 +1,8 @@
 #include "ShadowmapCascadeMatrixFix.h"
 #include "../State.h"
 
+#include "../ShaderCache.h"
+
 #include "../Features/TerrainBlending.h"
 /*
 Fixes:
@@ -32,9 +34,9 @@ add time sliced rendering
 //ISSUES:
 // culling breaks when setting very fig cascade distance and disabling culling doesn't fix it
 // Distance things still flicker
-
 // Do i Cap the altitude or find a way to slow down the light updating
 // Do i remove wind from bones?
+// Do VL Cascades render regardless of VL? they need to now for shadows
 
 //RE-CHECK:
 // Need more offset - cascade is wasting lots of room
@@ -72,12 +74,203 @@ bool ShadowmapMatrixFix::Install()
 	//gShadowDistance = reinterpret_cast<float*>(REL::RelocationID(528314, 415263).address());
 	//gInteriorShadowDistance = reinterpret_cast<float*>(REL::RelocationID(513755, 391724).address());
 
+	stl::write_vfunc<0x2A, Test>(RE::VTABLE_BSLightingShaderProperty[0]);
+
 	gCascadeBlendDist = reinterpret_cast<float*>(REL::RelocationID(513805, 391863).address());
 
 	return true;
 }
 #pragma warning(push)
 #pragma warning(disable: 4100 4456 4189)
+
+RE::BSShaderProperty::RenderPassArray* ShadowmapMatrixFix::Test::thunk(RE::BSShaderProperty* prop, RE::BSGeometry* geometry, std::uint32_t flags, RE::BSShaderAccumulator* accumulator)
+{
+	RE::BSShaderProperty::RenderPassArray* renderPasses = func(prop, geometry, flags, accumulator);
+	//if (renderPasses == nullptr) {
+	//	return renderPasses;
+	//}
+
+	//using enum SIE::ShaderCache::LightingShaderTechniques;
+	//using enum RE::BSShaderProperty::EShaderPropertyFlag8;
+	using enum RE::BSShaderProperty::EShaderPropertyFlag;
+
+	//accumulator->GetRuntimeData()->currentActive = false; // Does nothing
+
+	//prop->SetFlags(kCastShadows, false);
+
+	//BGSDefaultObjectManager::GetSingleton()->GetObject()
+
+	if (renderingVLCascades) {
+		//logger::info("Volumetric RenderPassArray:  flags: {}   prop: {:X}   geometry: {:X}", flags, (uintptr_t)prop, (uintptr_t)geometry);
+		//if(geometry)
+		//	VLGeometry.push_back(geometry);
+	}
+
+	if (renderingCascades) {
+		logger::info("Cascade RenderPassArray:  flags: {}   prop: {:X}   geometry: {:X}", flags, (uintptr_t)prop, (uintptr_t)geometry);
+
+		if (geometry) {
+			if (RE::TESObjectREFR* refData = geometry->GetUserData()) {
+				if (refData->loadedData) {
+					if (auto refFlags = refData->loadedData->flags) {
+						if ((refFlags & RE::TESObjectREFR::RecordFlags::kGround) != 0) {
+							logger::info("kGround Found");
+						}
+
+						if ((refFlags & RE::TESObjectREFR::RecordFlags::kIsGroundPiece) != 0) {
+							logger::info("kIsGroundPiece   Geom Name: {}  flags: {}", geometry->name.c_str(), prop->flags.underlying());
+						}
+
+						if (refData->QIsLODLandObject())
+							logger::info("Found Land");
+					}
+				}
+			}
+		}
+		//geometry->GetUserData()->Is(RE::FormType::Land);
+
+		//(GetFormFlags() & RecordFlags::kInitialized) != 0;
+
+		//logger::info("FormType: {}", RE::FormTypeToString(geometry->GetUserData()->GetFormType()));
+
+		if (prop->flags.any(kParallaxOcclusion)) {
+			logger::info("Has kParallaxOcclusion:  {}", geometry->name.c_str());
+		}
+
+		if (prop->flags.any(kFitSlope)) {
+			logger::info("Has kFitSlope:  {}", geometry->name.c_str());
+		}
+
+		PrintSetShaderFlags(prop->flags.underlying());
+		logger::info("Name: {}", geometry->name.c_str());
+		//logger::info("Flags: {}", prop->flags.underlying());
+
+		//if (const auto feature = prop->GetBaseMaterial()->GetFeature();
+		auto& settings = globals::features::terrainBlending;
+		if (settings.test) {
+			geometry->CullGeometry(true);
+			geometry->CullNode(true);
+		}
+
+		if (prop->flags.any(kMultiTextureLandscape, kLODLandscape, kNoLODLandBlend, kMultiIndexSnow)) {
+			if (prop->flags.none(kSpecular, kVertexAlpha, kDecal, kDynamicDecal, kSoftLighting, kTreeAnim)) {
+				logger::info("Culling:  {}    flags: {}", geometry->name.c_str(), prop->flags.underlying());
+				geometry->CullGeometry(true);
+				geometry->CullNode(true);
+
+				//if(geometry->GetCollisionLayer() == RE::COL_LAYER::kTerrain || geometry->GetCollisionLayer() == RE::COL_LAYER::kGround){
+				//geometry->CullGeometry(true);
+				//geometry->CullNode(true);
+				//geometry->AsFadeNode()->GetFlags()
+				//logger::info("Culling:  {}", geometry->name.c_str());
+			}
+		}
+
+		//logger::info("Coll Layer: {}", CollisionLayerToString(geometry->GetCollisionLayer()));
+
+		//	for(auto& geom : VLGeometry){
+		//	if(geometry == geom){
+		//logger::info("Culling Match:  {}", geometry->name.c_str());
+		//geometry->CullGeometry(true);
+		//geometry->CullNode(true);
+		//}
+		//}
+
+		//return nullptr; // only effects culling in world renders - color buffer
+
+		//if (prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape, RE::BSShaderProperty::EShaderPropertyFlag::kCastShadows)) {
+		//	logger::info("MultiTextureLandscape");
+		//prop->DoClearRenderPasses(); //Effects the whole pipeline not just shadows
+		//currentPass->ClearRenderPass();  //Deadlocks
+		//	return nullptr;
+		//}
+
+		/*
+		RE::BSRenderPass* currentPass = renderPasses->head;
+		while (currentPass != nullptr) {
+			constexpr uint32_t LightingTechniqueStart = 0x4800002D;
+			auto lightingTechnique = currentPass->passEnum - LightingTechniqueStart;
+
+			//logger::info("PassEnum: {} : {:X}     lightingTechnique: {} : {:X}", currentPass->passEnum, currentPass->passEnum, lightingTechnique, lightingTechnique);
+		//	if (currentPass->passEnum == 49222 || currentPass->passEnum == 49254) {
+			////	logger::info("Found Enum: {:X}", currentPass->passEnum);
+			//	currentPass->ClearRenderPass();  //Deadlocks
+			//}
+
+
+
+			//if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)) {
+			//	logger::info("MultiTextureLandscape");
+			//	currentPass->ClearRenderPass();  //Deadlocks
+			//}
+
+			if (currentPass->shader->shaderType != RE::BSShader::Type::Lighting) {
+				logger::info("Not lighting pass  type: {}", currentPass->shader->shaderType.underlying());
+				//prop->SetFlags(kCastShadows, false);
+				//prop->SetFlags(kAssumeShadowmask, false);
+				//prop->SetFlags(kReceiveShadows, false);
+				//prop->SetFlags(kZBufferWrite, false);
+			}
+
+
+			if (currentPass->shader->shaderType == RE::BSShader::Type::Lighting) {
+				constexpr uint32_t LightingTechniqueStart = 0x4800002D;
+				auto lightingTechnique = currentPass->passEnum - LightingTechniqueStart;
+				auto lightingFlags = lightingTechnique & ~(~0u << 24);
+				auto lightingType = static_cast<SIE::ShaderCache::LightingShaderTechniques>((lightingTechnique >> 24) & 0x3F);
+				lightingFlags &= ~0b111000u;
+
+				//if (lightingType == MTLand || lightingType == MTLandLODBlend || prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)) {
+
+				// Seems to stop almost everything
+					lightingFlags &= ~(static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow));
+					prop->SetFlags(kCastShadows, false);
+					prop->SetFlags(kAssumeShadowmask, false);
+					prop->SetFlags(kReceiveShadows, false);
+					prop->SetFlags(kZBufferWrite, false);
+				//}
+
+				//prop->InvalidateMaterial(); //Bad clib Addr
+
+
+
+				//if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kReceiveShadows)) {
+
+				lightingTechnique = (static_cast<uint32_t>(lightingType) << 24) | lightingFlags;
+				currentPass->passEnum = lightingTechnique + LightingTechniqueStart;
+
+			//}
+
+			currentPass = currentPass->next;
+		}
+		*/
+	}
+
+	return renderPasses;
+}
+
+/*
+{
+	logger::info("Flags: {},   Prop Ptr: {:X},   Accum Ptr: {:X}", flags, (uintptr_t)prop, (uintptr_t)accumulator);
+
+	//
+	if(renderingCascades){
+		if(prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)){
+			logger::info("kMultiTexture");
+			lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);
+		}
+
+
+	}
+
+
+	if(prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kAssumeShadowmask)){
+		logger::info("assume shadowmask");
+	}
+
+	return func(prop, geometry, flags, accumulator);
+}
+*/
 
 // Ideally the VL cascade will be remvoed in the future
 void ShadowmapMatrixFix::CreateVolumetricCascadeStencilTarget::thunk(RE::BSGraphics::Renderer* renderer, RE::RENDER_TARGETS_DEPTHSTENCIL::RENDER_TARGET_DEPTHSTENCIL stencil, RE::BSGraphics::DepthStencilTargetProperties* prop)
@@ -276,7 +469,7 @@ void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlane
 
 //if cascade == 0 then run this - far plane is only 1 frame out of sync
 // Builds culling frustum
-void ShadowmapMatrixFix::SetPrimaryCullPlanes(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera)
+void ShadowmapMatrixFix::SetupPrimaryCullPlanes(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera)
 {
 	using namespace DirectX;
 
@@ -331,7 +524,7 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLi
 
 	// Discretize light dir to mitigate variance from time scale
 	XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector));
-	//lightDirection = QuantizeLightDirection(lightDirection, settings.lightUpdateAngle);
+	lightDirection = QuantizeLightDirection(lightDirection, settings.lightUpdateAngle);
 
 	//if (settings.test)
 	//	lightDirection = NiPoint3ToXMVector(globals::features::skySync.GetSunDirectionWithAltitudeLimit(settings.lightMinAngle));
@@ -436,137 +629,50 @@ void ShadowmapMatrixFix::EnableCullingPlanes(const RE::BSShadowDirectionalLight*
 // Runs once per frame
 bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSShadowDirectionalLight* light, RE::NiCamera& inputCamera)
 {
-	if (!initialized && light) {
-		cascadePxSize = RE::GetINISetting("iShadowMapResolution:Display")->data.u;
-		nCascades = RE::GetINISetting("iNumSplits:Display")->data.u;
-		if (!shadowCascadeFixCB)
-			shadowCascadeFixCB = new ConstantBuffer(ConstantBufferDesc<ShadowDataCB>());
-
-		initialized = true;
-	} else if (!initialized || !light) {
-		return func(light, inputCamera);
-	}
-
 	static int frameCounter = 0;
 
-	// Bitmask which cascades we render each frame
-	// Slicing across more than 2 frames causes some motion lag for dragons
-	static constexpr uint8_t renderPassMasks[][2] = {
-		{}, {},            // There should always be more than 1 cascade
-		{ 0b01, 0b10 },    // 2 cascades == frame0=[0], frame1=[1]
-		{ 0b11, 0b100 },   // 3 cascades == frame0=[0,1], frame1=[2]
-		{ 0b1001, 0b110 }  // 4 cascades == frame0=[0,3], frame1=[1,2]
-	};
-	activeCascades = renderPassMasks[nCascades][frameCounter];
-
-	//Build cascades we're rendering this frame
-	for (int i = 0; i < nCascades; i++) {
-		if (activeCascades & (1 << i)) {
-			BuildShadowCascadeCameraInput(light, inputCamera, i);
-		}
+	if (!initialized) {
+		cascadePxSize = RE::GetINISetting("iShadowMapResolution:Display")->data.u;
+		nCascades = RE::GetINISetting("iNumSplits:Display")->data.u;
+		shadowCascadeFixCB = new ConstantBuffer(ConstantBufferDesc<ShadowDataCB>());
+		initialized = true;
 	}
 
-	//logger::info("set frame cam");
-	// Build the cascade we want to render this frame
-	//cascadeToRender = ++cascadeToRender < 2 ? cascadeToRender : 0; //CHANGED
+	activeCascades = cascadeMasks[nCascades][frameCounter];
 
-	//auto& settings = globals::features::terrainBlending;
-	//if (settings.test) {
-	//	cascadeToRender = settings.cascadeToUse;
-	//}
+	globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
 
-	//BuildShadowCascadeCameraInput(light, inputCamera, cascadeToRender);
-	//if(cascadeToRender == 0)
-	//	BuildShadowCascadeCameraInput(light, inputCamera, 3);
-	//if (cascadeToRender == 1)
-	//	BuildShadowCascadeCameraInput(light, inputCamera, 2);
+	auto& accum = light->GetRuntimeData().shadowmapDescriptors[0].shaderAccumulator;
+	//logger::info("Cascade Accum Ptr: {:X}", (uintptr_t)accum.get());
 
-	// Only set on cascade 0 since result is the same
+	logger::info("Frame Camera");
+
+	VLGeometry.clear();
+
+	auto& cullProcessArray = light->GetShadowDirectionalLightRuntimeData().fullFrustumCullingProcessArray;
+	for (auto& process : cullProcessArray) {
+		logger::info("culling Process");  //How many?
+	}
+	//Build cascades we're rendering this frame
+	for (int i = 0; i < nCascades; i++) {
+		if (activeCascades & (1 << i))
+			BuildShadowCascadeCameraInput(light, inputCamera, i);
+	}
+
+	// Only set for cascade 0 since result is the same
 	if (frameCounter == 0)
-		SetPrimaryCullPlanes(light, inputCamera);
+		SetupPrimaryCullPlanes(light, inputCamera);
 
-	// Run game func to init and update the frame camera with the new params
+	// Run game func to init and update frame camera with new params
 	bool ret = func(light, inputCamera);
 
 	// Disable cascades we're not rendering this frame
 	for (int i = 0; i < nCascades; i++) {
-		if (!(activeCascades & (1 << i))) {
+		if (!(activeCascades & (1 << i)))
 			DisableCullingPlanes(light, i);
-		}
 	}
 
 	frameCounter = ++frameCounter < 2 ? frameCounter : 0;
-
-	//if(cascadeToRender == 0){
-	//	DisableCullingPlanes(light, 1);
-	//	DisableCullingPlanes(light, 2);
-	//}
-	// else if (cascadeToRender == 1) {
-	//	DisableCullingPlanes(light, 0);
-	//	DisableCullingPlanes(light, 3);
-	//}
-
-	/*
-	for (int i = 0; i < nCascades; i++) {
-		if (i != cascadeToRender) {
-			if (cascadeToRender == 0 && i != 3){
-				DisableCullingPlanes(light, i);
-				logger::info("disable: {}", i);
-			}
-			if(cascadeToRender == 1 && i != 2){
-				DisableCullingPlanes(light, i);
-				logger::info("disable: {}", i);
-			}
-		}
-	}
-	*/
-
-	/*
-	static int passCounter = 0;
-
-	numCascadesThisFrame = 0;
-	cascadesThisFrame[2] = {};
-	if(nCascades == 2){
-		numCascadesThisFrame = 1;
-		cascadesThisFrame[0] = passCounter;
-	}
-	if(nCascades == 3){
-		if(passCounter == 0){
-			numCascadesThisFrame = 2;
-
-			cascadesThisFrame[0] = 0;
-			cascadesThisFrame[1] = 1;
-		} else{
-			numCascadesThisFrame = 1;
-
-			cascadesThisFrame[0] = 2;
-		}
-	}
-	if(nCascades == 4){
-		numCascadesThisFrame = 2;
-		if (passCounter == 0) {
-			cascadesThisFrame[0] = 0;
-			cascadesThisFrame[1] = 3;
-		} else{
-			cascadesThisFrame[0] = 1;
-			cascadesThisFrame[1] = 2;
-		}
-	}
-
-	if (numCascadesThisFrame == 1){
-		BuildShadowCascadeCameraInput(light, inputCamera, cascadesThisFrame[0]);
-	} else{
-		BuildShadowCascadeCameraInput(light, inputCamera, cascadesThisFrame[0]);
-		BuildShadowCascadeCameraInput(light, inputCamera, cascadesThisFrame[1]);
-	}
-
-	// Disable culling planes of cascades we aren't rendering this frame
-	for (int i = 0; i < nCascades; i++) {
-		if ((numCascadesThisFrame == 1 && i != cascadesThisFrame[0]) || (numCascadesThisFrame == 2 && i != cascadesThisFrame[0] && i != cascadesThisFrame[1])) {
-			DisableCullingPlanes(light, i);
-		}
-	}
-	*/
 
 	return ret;
 }
@@ -584,6 +690,7 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_SetCameraRuntim
 	func(cascadeCamera, frustum);
 }
 
+// Defines culling planes of the closest and furthest cascade
 void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes::thunk(
 	RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumSplit& frustumCorners, uint32_t splitCornerIndices[8],
 	uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex)
@@ -592,6 +699,7 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCam
 		outPlanes = primaryCullPlanes;
 }
 
+// Called per cascade
 void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond::thunk(
 	RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumSplit& frustumCorners,
 	uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPosA, uint32_t cornerOffsetIndex)
@@ -605,7 +713,6 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCam
 }
 
 // Update buffer before VL cascades since everything is the same
-// Only render first two VL cascades and enable other cascade planes
 void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderVolumetricCascade::thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& desc, uint32_t* unk, uint32_t flags)
 {
 	static int pass = 0;
@@ -613,16 +720,10 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderVolumet
 	if (!initialized) {
 		return func(light, desc, unk, flags);
 	}
-
-	//if (desc.shadowmapIndex == (uint)cascadeToRender) { // Wont work cuz viewProj
+	globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
+	//Update cascade buffer
 	ShadowDataCB data{};
 	data.lightViewProj = cascadeData[pass].viewProj;
-	//if(pass == 1){ //if we are onto our 2 cascade of the frame
-	//	if(cascadeToRender == 0)
-	//		data.lightViewProj = cascadeData[3].viewProj;
-	//	if (cascadeToRender == 1)
-	//		data.lightViewProj = cascadeData[2].viewProj;
-	//	}
 	for (int i = 0; i < nCascades; i++) {
 		data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
 		data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
@@ -636,42 +737,41 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderVolumet
 	globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
 	globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
 
+	if (pass == 0) {
+		renderingVLCascades = true;
+		logger::info("Start VL Cascades");
+	} else {
+		logger::info("VL Cascades");
+	}
 	//TMP
 	auto& normalRoughness = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kRAWINDIRECT_DOWNSCALED].SRV;
 	globals::d3d::context->PSSetShaderResources(27, 1, &normalRoughness);
-	//	}
 
-	//desc.clearRenderTarget = desc.shadowmapIndex == (uint)cascadeToRender;
 	desc.clearRenderTarget = activeCascades & (1 << desc.shadowmapIndex);
-	//if (cascadeToRender == 0 && pass == 3)  //if we are onto our 2 cascade of the frame
-	//	desc.clearRenderTarget = true;
-	//if (cascadeToRender == 1 && pass == 2)
-	//	desc.clearRenderTarget = true;
 
 	//Only render first 2 VL cascades
 	if (pass < 2)
 		func(light, desc, unk, flags);
 
 	pass = ++pass < nCascades ? pass : 0;
+
+	if (pass == 0) {
+		renderingVLCascades = false;
+		logger::info("End VL Cascades");
+	}
 }
 
+// Render main cascades - called after VL cascades
 void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade::thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& desc, uint32_t* unk, uint32_t flags)
 {
 	if (!initialized) {
 		return func(light, desc, unk, flags);
 	}
-
+	globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
 	static int pass = 0;
-	//desc.clearRenderTarget = desc.shadowmapIndex == (uint)cascadeToRender;
 
 	ShadowDataCB data{};
 	data.lightViewProj = cascadeData[pass].viewProj;
-	//if(pass == 1){ //if we are onto our 2 cascade of the frame
-	//	if(cascadeToRender == 0)
-	//		data.lightViewProj = cascadeData[3].viewProj;
-	//	if (cascadeToRender == 1)
-	//		data.lightViewProj = cascadeData[2].viewProj;
-	//	}
 	for (int i = 0; i < nCascades; i++) {
 		data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
 		data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
@@ -679,6 +779,13 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 	}
 	data.numCascades = nCascades;
 	shadowCascadeFixCB->Update(data);
+
+	if (pass == 0) {
+		renderingCascades = true;
+		logger::info("Start Cascades");
+	} else {
+		logger::info("Cascades");
+	}
 
 	ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
 	globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
@@ -686,11 +793,16 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 	globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
 
 	func(light, desc, unk, flags);
-
+	globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
 	// Needed because VL shadow maps use the same descriptors...
 	desc.clearRenderTarget = true;
 
 	pass = ++pass < nCascades ? pass : 0;
+
+	if (pass == 0) {
+		renderingCascades = false;
+		logger::info("End Cascades");
+	}
 }
 
 DirectX::XMVECTOR ShadowmapMatrixFix::QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees)  //0.05 - 0.1 works well

@@ -104,6 +104,7 @@ RE::TESWorldSpace* InteriorSun::disableInteriorSun = [] {
 
 void InteriorSun::DirShadowLightCulling::thunk(RE::BSShadowDirectionalLight* dirLight, RE::BSTArray<RE::BSTArray<RE::NiPointer<RE::NiAVObject>>>& jobArrays, RE::BSTArray<RE::NiPointer<RE::NiAVObject>>& nodes)
 {
+	logger::info("Dir Light Culling");
 	auto& singleton = globals::features::interiorSun;
 	const auto cell = RE::TES::GetSingleton()->interiorCell;
 	auto* passedJobArrays = &jobArrays;

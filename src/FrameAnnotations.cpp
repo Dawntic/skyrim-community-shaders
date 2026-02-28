@@ -103,6 +103,8 @@ namespace FrameAnnotations
 					static_cast<uint32_t>(shaderAccumulator->GetRuntimeData().renderMode), renderFlags));
 			}
 
+			//logger::info("Finish dispatch");
+
 			func(shaderAccumulator, renderFlags);
 
 			if (frameAnnotations) {
@@ -132,6 +134,8 @@ namespace FrameAnnotations
 		static void thunk(RE::BSShadowLight* light, void* a2)
 		{
 			globals::state->BeginPerfEvent("Directional Light Shadowmaps");
+
+			//logger::info("Render shadowLight");
 
 			func(light, a2);
 
@@ -175,6 +179,8 @@ namespace FrameAnnotations
 			void* passIndexList,
 			uint32_t renderFlags)
 		{
+			//	logger::info("Render Batches");
+
 			const bool frameAnnotations = globals::state->frameAnnotations;
 			if (frameAnnotations) {
 				globals::state->BeginPerfEvent(std::format("BSBatchRenderer::RenderBatches ({:X})[{}] <{}>", *currentPass, *bucketIndex,
