@@ -161,7 +161,7 @@ struct ShadowmapMatrixFix : EngineFix
 
 	static inline RE::NiFrustumPlanes backupPlanes[maxCascades] = {};
 
-	static void BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, const int index);
+	static void BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, DirectX::XMVECTOR lightDirection, const int index, const bool update);
 	static void SetupPrimaryCullPlanes(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
 	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
 	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
@@ -176,10 +176,16 @@ struct ShadowmapMatrixFix : EngineFix
 	static void DisableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int index);
 	static void EnableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int index);
 
+	static inline float LinearStep(float edge0, float edge1, float x)
+	{
+		return (x - edge0) / (edge1 - edge0);
+	}
+
 	struct CascadeData
 	{
 		DirectX::XMFLOAT3 translation;
 		DirectX::XMFLOAT4X4 viewMatrix;
+		DirectX::XMMATRIX projMatrix;
 		DirectX::XMFLOAT4X4 viewProj;
 		DirectX::XMFLOAT4X4 viewProjTex;
 		RE::NiFrustumPlanes cullingPlanes;
@@ -297,6 +303,12 @@ struct ShadowmapMatrixFix : EngineFix
 	struct Test
 	{
 		static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSShaderProperty*, RE::BSGeometry*, std::uint32_t, RE::BSShaderAccumulator*);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct BSShader_SetupGeometry
+	{
+		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 };

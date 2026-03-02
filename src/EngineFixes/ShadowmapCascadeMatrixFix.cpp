@@ -18,35 +18,56 @@ fix cpu geometry translation
 fix bounding aspect ratio
 fix light altitude cap
 fix light dir update variance
-fix terrain light leaks
 disable depth clipping
 add support for 4 cascades
 add time sliced rendering
 remove VL cascades
 */
 
+//fix terrain light leaks
+//fix terrain shadowing
+
+// Low altitude terrain culling is broken in the base game and made worse by sky sync
+// This fix does not address that issue and is likely to make it worse when using > 2 cascades
+// Since most people use terrain shadows it's not a priority
+
 //TODO:
-// Catch ini settings and override shadow settings
 // Find SE addresses
-// Only render first 2 VL maps
 // Default 1024 cascades
-// Deferred renderer should use my buffer
-// Only render VL cascdes during 2nd frame
+// Deferred renderer - use my buffer
+// Handle ini settings
+
+//TEST:
+// Cascade Raster settings
+// Flickering
+// Culling
+// Interiors
 
 //ISSUES:
+// Wind in bones
+// Light dir update changes at lot
+
+// Try not updating Proj matrix whenever the light dir changes
+
+// What about only updating either x,y or z of light direction instead of all at once
+
+// NOT IMPORTANT:
 // culling breaks when setting very fig cascade distance and disabling culling doesn't fix it
-// Distance things still flicker
-// Do i Cap the altitude or find a way to slow down the light updating
-// Do i remove wind from bones?
-// Do VL Cascades render regardless of VL? they need to now for shadows
+// Do i Cap the altitude or find a way to slow down the light updating?
+// Which VL cascades should we render? how far does VL grid extend?
 
 //RE-CHECK:
 // Need more offset - cascade is wasting lots of room
 // Sky sync compat
 // Inteirors
 // Test in base game
+// Distance things still flicker
 
 // Tested at 4k with 4 cascades - everything renders fine including VL maps(time slicing works)
+
+// Instead of blacklisting we can hook material func when loading txtures and set specific flags then check flags when culling
+
+// Other option: use AABB to flag geom then use those flags to set rasterizer bias, eg don't bais surfaces that are currently receiving shadows
 
 bool ShadowmapMatrixFix::Install()
 {
@@ -54,20 +75,23 @@ bool ShadowmapMatrixFix::Install()
 	stl::write_vfunc<0x10, BSShadowDirectionalLight_SetFrameCamera>(RE::VTABLE_BSShadowDirectionalLight[0]);
 
 	//Render a cascade
-	stl::write_thunk_call<BSShadowDirectionalLight_RenderShadowmaps_RenderCascade>(REL::RelocationID(101495, 108489).address() + REL::Relocate(0xC6, 0xC6));
-	stl::write_thunk_call<BSShadowDirectionalLight_RenderShadowmaps_RenderVolumetricCascade>(REL::RelocationID(101495, 108489).address() + REL::Relocate(0x6F, 0x6F));
+	stl::write_thunk_call<BSShadowDirectionalLight_RenderShadowmaps_RenderVolumetricCascade>(REL::RelocationID(101495, 108489).address() + REL::Relocate(0x6F, 0x6F));  // Correct SE
+	stl::write_thunk_call<BSShadowDirectionalLight_RenderShadowmaps_RenderCascade>(REL::RelocationID(101495, 108489).address() + REL::Relocate(0xC6, 0xC6));            // Correct SE
 
 	// Clear the current frustum - we use it to set a new view matrix and translation
-	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_SetCameraRuntimeData2>(REL::RelocationID(108496, 108496).address() + REL::Relocate(0x1918, 0x1918));
+	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_SetCameraRuntimeData2>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x182A, 0x1918));  // Correct SE
 
 	// Culls against min near and max far plane of any cascade
-	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xC59, 0xC59));  //First call    need SE addr
+	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0xB4E, 0xC59));  //First call    // Correct SE
 
 	// Culls individual cascade frustum
-	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //Second call
+	stl::write_thunk_call<BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond>(REL::RelocationID(101499, 108496).address() + REL::Relocate(0x1B12, 0x1C02, 0x1C82));  //Second call  // Correct SE
 
 	// Set limit on VL shadow cascade min size
-	stl::write_thunk_call<CreateVolumetricCascadeStencilTarget>(REL::RelocationID(107175, 107175).address() + REL::Relocate(0x9DC, 0x9DC));
+	stl::write_thunk_call<CreateVolumetricCascadeStencilTarget>(REL::RelocationID(100458, 107175).address() + REL::Relocate(0x9DC, 0x9DC));  // Correct SE
+
+	//stl::write_vfunc<0x6, BSShader_SetupGeometry>(RE::VTABLE_BSUtilityShader[0]);
+	//stl::write_vfunc<0x2A, Test>(RE::VTABLE_BSLightingShaderProperty[0]);
 
 	// Fill VL shadows call
 	//REL::safe_fill(REL::RelocationID(101495, 108489).address() + REL::Relocate(0x30, 0x30), REL::NOP, 76);
@@ -76,7 +100,7 @@ bool ShadowmapMatrixFix::Install()
 	//gShadowDistance = reinterpret_cast<float*>(REL::RelocationID(528314, 415263).address());
 	//gInteriorShadowDistance = reinterpret_cast<float*>(REL::RelocationID(513755, 391724).address());
 
-	stl::write_vfunc<0x2A, Test>(RE::VTABLE_BSLightingShaderProperty[0]);
+	//stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Lighting>>(RE::VTABLE_BSLightingShader[0]);
 
 	gCascadeBlendDist = reinterpret_cast<float*>(REL::RelocationID(513805, 391863).address());
 
@@ -84,6 +108,70 @@ bool ShadowmapMatrixFix::Install()
 }
 #pragma warning(push)
 #pragma warning(disable: 4100 4456 4189)
+
+//Disabling culling does nothing
+//probs not possible to ever have mountains work in cascade 0
+//I think VL map is just never culled
+
+// Keep VL cascades for VL
+// If terrain shadows enabled don't render any mountains in cascade
+
+// Why do shadows without my fixes work? - they dont, sky sync breaks them
+
+#include "../EngineFixes/ShadowmapCascadeRasterizerFix.h"
+void ShadowmapMatrixFix::BSShader_SetupGeometry::thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
+{
+	if (renderingCascades) {
+		logger::info("BSShader_SetupGeometry  Geometry: {}", pass->geometry->name.c_str());
+
+		// This is not good but there is not a better way to target specifically mountains
+		static const std::vector<std::string_view> terrain = {
+			"MountainCliff01",
+			"MountainCliff02",
+			"MountainCliff03",
+			"MountainCliff03Trailer",
+			"MountainCliff04",
+			"MountainCliffCrevasse",
+			"MountainCliffSlope",
+			"MountainCliffSm01",
+			"MountainPeak01",
+			"MountainPeak02",
+			"MountainRidge01",
+			"MountainRidge02",
+			"MountainRidge03",
+			"MountainTrim01",
+			"MountainTrim01Wet",
+			"MountainTrim02",
+			"MountainTrim02Wet",
+			"MountainTrim03",
+			"MountainTrim03Wet",
+			"MountainTrimSlab",
+		};
+
+		//14 min and 22 max, add 3 for uid
+		auto geomName = std::string_view(pass->geometry->name);
+		auto len = geomName.length();
+		if (len >= 14 && len <= 25) {
+			for (const auto& name : terrain) {
+				if (geomName.starts_with(name)) {  // Geometry has a uid field
+					logger::info("Matched Name");
+					auto& shadowState = globals::game::shadowState->GetRuntimeData();
+					ShadowmapRasterizerFix& rasterizerFix = EngineFix::GetPPLEngineFix<ShadowmapRasterizerFix>(1);
+					ID3D11RasterizerState* newRaster = rasterizerFix.shadowmapInteriorRasterStates[shadowState.rasterStateFillMode][0][shadowState.rasterStateDepthBiasMode][shadowState.rasterStateScissorMode];
+					globals::d3d::context->RSSetState(newRaster);
+				}
+			}
+		}
+	}
+
+	func(shader, pass, renderFlags);
+}
+
+/////
+/////
+// We can set the twoSided flag for mountains here???
+/////
+/////
 
 RE::BSShaderProperty::RenderPassArray* ShadowmapMatrixFix::Test::thunk(RE::BSShaderProperty* prop, RE::BSGeometry* geometry, std::uint32_t flags, RE::BSShaderAccumulator* accumulator)
 {
@@ -109,9 +197,8 @@ RE::BSShaderProperty::RenderPassArray* ShadowmapMatrixFix::Test::thunk(RE::BSSha
 	}
 
 	if (renderingCascades) {
-		logger::info("Cascade RenderPassArray:  flags: {}   prop: {:X}   geometry: {:X}", flags, (uintptr_t)prop, (uintptr_t)geometry);
-
-		//There is really no better way to target specifically mountains
+		//logger::info("Cascade RenderPassArray:  flags: {}   prop: {:X}   geometry: {:X}", flags, (uintptr_t)prop, (uintptr_t)geometry);
+		//logger::info("Geometry: {}", geometry->name.c_str());
 
 		//logger::info("Coll Layer: {}", CollisionLayerToString(geometry->GetCollisionLayer()));
 
@@ -280,11 +367,6 @@ RE::BSShaderProperty::RenderPassArray* ShadowmapMatrixFix::Test::thunk(RE::BSSha
 // Ideally the VL cascade will be remvoed in the future
 void ShadowmapMatrixFix::CreateVolumetricCascadeStencilTarget::thunk(RE::BSGraphics::Renderer* renderer, RE::RENDER_TARGETS_DEPTHSTENCIL::RENDER_TARGET_DEPTHSTENCIL stencil, RE::BSGraphics::DepthStencilTargetProperties* prop)
 {
-	//if (prop->width < 128) {
-	//	prop->width = 128;
-	//	prop->height = 128;
-	//}
-
 	prop->width = prop->height = std::max(prop->height, 128u);
 
 	func(renderer, stencil, prop);
@@ -327,7 +409,7 @@ void ShadowmapMatrixFix::SetCascadeSplit(CascadeBounds::Split& outputSplits, con
 		outputSplits.startSplitNDC[i] = ViewDepthToNDC(blendedVS, viewFrustum);
 	}
 
-	maxCascadeCoverageVS = outputSplits.splitVS[nCascades - 1] + 2000;  //Change name
+	maxCascadeCoverageVS = outputSplits.splitVS[nCascades - 1] + 2500;  //Change name
 }
 
 void ShadowmapMatrixFix::BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frustum& outFrustum, const CascadeBounds::Split& cascadeSplits, const Frustum& rootFrustum, const DirectX::XMVECTOR& lightDirection, const int cascadeIndex)
@@ -340,7 +422,33 @@ void ShadowmapMatrixFix::BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frus
 	XMVECTOR right = XMVector3Normalize(XMVector3Cross(forward, up));
 	up = XMVector3Cross(right, forward);
 
-	XMMATRIX lightWorld = XMMATRIX(right, up, forward, XMVectorSet(0, 0, 0, 1));
+	//auto& settings = globals::features::terrainBlending;
+	//static XMVECTOR forwd = lightDirection;
+	//static XMVECTOR rightv2 = XMVector3Normalize(XMVector3Cross(forwd, up));
+	//static XMVECTOR upv2 = XMVector3Cross(rightv2, forwd);
+
+	//if (settings.updateForward)
+	//	forwd = lightDirection;
+
+	//if (settings.updateRight)
+	//	rightv2 = XMVector3Normalize(XMVector3Cross(forwd, XMVectorSet(0, 1, 0, 0)));
+
+	//if(settings.updateUp)
+	//	upv2 = XMVector3Cross(rightv2, forwd);
+
+	//static XMVECTOR newUp = XMVector3Cross(right, forward);
+
+	//
+	// Stagger update of forward and up?? Maybe try lerp current dir to next dir too - does up and forward both cause the same amount of varience?
+	//
+
+	XMMATRIX lightWorld = {};
+	//if (settings.test)
+	//	lightWorld = XMMATRIX(rightv2, upv2, forwd, XMVectorSet(0, 0, 0, 1));
+	//else{
+	lightWorld = XMMATRIX(right, up, forward, XMVectorSet(0, 0, 0, 1));
+	//}
+
 	const XMMATRIX lightView = XMMatrixTranspose(lightWorld);  // ViewRot == InvWorld == TrspWorld
 	outLightView = lightView;
 
@@ -459,8 +567,7 @@ void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlane
 		if (len > 1e-6f) {
 			float invLen = 1.0f / len;
 
-			// After unitize n dot p + d >= 0 (inside)
-			// NiPlane wants n dot p = -d
+			// NiPlane const uses n dot p = -d (outside)
 			XMVECTOR normal = XMVectorScale(planes[i], invLen);
 			auto constant = -XMVectorGetW(planes[i]) * invLen;
 
@@ -503,7 +610,7 @@ void ShadowmapMatrixFix::SetupPrimaryCullPlanes(RE::BSShadowDirectionalLight* li
 }
 
 #include "../Features/SkySync.h"
-void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, const int cascadeIndex)
+void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, DirectX::XMVECTOR lightDirection, const int cascadeIndex, const bool dirChanged)
 {
 	using namespace DirectX;
 
@@ -526,10 +633,6 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLi
 	viewFrustum.fLeft = -unitHalfWidth;
 	viewFrustum.fTop = unitHalfHeight;
 	viewFrustum.fBottom = -unitHalfHeight;
-
-	// Discretize light dir to mitigate variance from time scale
-	XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector));
-	lightDirection = QuantizeLightDirection(lightDirection, settings.lightUpdateAngle);
 
 	//if (settings.test)
 	//	lightDirection = NiPoint3ToXMVector(globals::features::skySync.GetSunDirectionWithAltitudeLimit(settings.lightMinAngle));
@@ -589,13 +692,21 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLi
 	BuildCascadeProjectionMatrices(lightProj, cullingProj, cascadeBoundData.boundingBox);
 	//LogMatrix("proj", lightProj);
 
+	// Add culling later
+	//if (dirChanged || !settings.update) {
+	//	lightProj = cascadeData[cascadeIndex].projMatrix;
+	//} else if (!dirChanged && settings.update) {
+	//	cascadeData[cascadeIndex].projMatrix = lightProj;
+	//}
+
 	const XMMATRIX viewProj = XMMatrixMultiply(lightView, lightProj);
 	XMStoreFloat4x4(&cascadeData[cascadeIndex].viewProj, XMMatrixTranspose(viewProj));
 	//LogMatrix("viewProj", viewProj);
 
-	// Relative translation added to shader MS position to avoid dot prod precision loss - probably don't fuck with
+	// Relative translation added to shader MS position to avoid dot prod precision loss
 	const XMMATRIX texProj = XMMatrixMultiply(XMMatrixScaling(0.5f, -0.5f, 1.0f), XMMatrixTranslation(0.5f, 0.5f, 0.0f));
-	XMStoreFloat4x4(&cascadeData[cascadeIndex].viewProjTex, XMMatrixTranspose(XMMatrixMultiply(viewProj, texProj)));
+	if (settings.update)
+		XMStoreFloat4x4(&cascadeData[cascadeIndex].viewProjTex, XMMatrixTranspose(XMMatrixMultiply(viewProj, texProj)));
 
 	// Set translation for geometry to transform against
 	XMStoreFloat3(&cascadeData[cascadeIndex].translation, rootCameraPos);
@@ -619,7 +730,6 @@ void ShadowmapMatrixFix::DisableCullingPlanes(const RE::BSShadowDirectionalLight
 			cullingProcess->customCullPlanes.cullingPlanes[j].constant = 0;
 	}
 }
-
 void ShadowmapMatrixFix::EnableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int cascadeIndex)
 {
 	if (auto cullingProcess = light->GetRuntimeData().shadowmapDescriptors[cascadeIndex].cullingProcess) {
@@ -650,18 +760,74 @@ bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSSh
 	auto& accum = light->GetRuntimeData().shadowmapDescriptors[0].shaderAccumulator;
 	//logger::info("Cascade Accum Ptr: {:X}", (uintptr_t)accum.get());
 
-	logger::info("Frame Camera");
+	//logger::info("Frame Camera");
 
-	VLGeometry.clear();
+	//VLGeometry.clear();
 
-	auto& cullProcessArray = light->GetShadowDirectionalLightRuntimeData().fullFrustumCullingProcessArray;
-	for (auto& process : cullProcessArray) {
-		logger::info("culling Process");  //How many?
+	//auto& cullProcessArray = light->GetShadowDirectionalLightRuntimeData().fullFrustumCullingProcessArray;
+	//for (auto& process : cullProcessArray) {
+	//logger::info("culling Process");  //How many?
+	//}
+
+	auto& settings = globals::features::terrainBlending;
+	using namespace DirectX;
+	// Discretize light dir to mitigate variance from time scale
+	static XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector));
+	//lightDirection = QuantizeLightDirection(lightDirection, settings.lightUpdateAngle);
+	LogVector("Light dir", lightDirection);
+
+	static int counter = 0;
+	auto qantLightDir = QuantizeLightDirection(XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector)), settings.lightUpdateAngle);
+	if (counter == settings.frameBeforeUpdate)
+		lightDirection = XMVectorSetX(lightDirection, XMVectorGetX(qantLightDir));
+	else if (counter == settings.frameBeforeUpdate * 2)
+		lightDirection = XMVectorSetY(lightDirection, XMVectorGetY(qantLightDir));
+	else if (counter == settings.frameBeforeUpdate * 3)
+		lightDirection = XMVectorSetZ(lightDirection, XMVectorGetZ(qantLightDir));
+
+	counter = ++counter <= (settings.frameBeforeUpdate * 3) ? counter : 0;
+
+	if (settings.alwaysUpdate == 1)
+		lightDirection = XMVectorSetX(lightDirection, XMVectorGetX(qantLightDir));
+	else if (settings.alwaysUpdate == 2)
+		lightDirection = XMVectorSetY(lightDirection, XMVectorGetY(qantLightDir));
+	else if (settings.alwaysUpdate == 3)
+		lightDirection = XMVectorSetZ(lightDirection, XMVectorGetZ(qantLightDir));
+
+	/*
+	static XMVECTOR targetLightDirection = lightDirection;
+	static XMVECTOR currentLightDirection = lightDirection;
+	static int count = 0;
+
+	// Check if target changed
+	if (XMVectorGetX(XMVector3Length(XMVectorSubtract(lightDirection, targetLightDirection))) > 0.001f) {
+		targetLightDirection = lightDirection;
+
 	}
+
+	XMVECTOR lightDir;
+	if (settings.enableLerp && count < settings.lerpFrames) {
+		lightDir = XMVectorLerp(currentLightDirection, targetLightDirection, float(count) / float(settings.lerpFrames));
+		count++;
+	} else {
+		lightDir = targetLightDirection;  // Finished lerping or lerp disabled
+		count = 0;                        // Start new lerp
+	}
+
+	currentLightDirection = lightDir;  // Remember where we are now
+	*/
+
+	bool dirChanged = false;
+	//static XMVECTOR prevLightDir = lightDirection;
+	//if (!XMVector3Equal(lightDirection, prevLightDir)) {
+	//	prevLightDir = lightDirection;
+	//	dirChanged = true;
+	//}
+
 	//Build cascades we're rendering this frame
 	for (int i = 0; i < nCascades; i++) {
 		if (activeCascades & (1 << i))
-			BuildShadowCascadeCameraInput(light, inputCamera, i);
+			BuildShadowCascadeCameraInput(light, inputCamera, lightDirection, i, dirChanged);
 	}
 
 	// Only set for cascade 0 since result is the same
@@ -813,8 +979,8 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 		logger::info("End Cascades");
 	}
 }
-
-DirectX::XMVECTOR ShadowmapMatrixFix::QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees)  //0.05 - 0.1 works well
+//0.05 - 0.1 works well
+DirectX::XMVECTOR ShadowmapMatrixFix::QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees)
 {
 	using namespace DirectX;
 

@@ -103,22 +103,28 @@ namespace
 
 void TerrainBlending::DrawSettings()
 {
-	ImGui::Checkbox("Reload", &reload);
-
-	ImGui::Checkbox("Update", &update);
+	//ImGui::Checkbox("Update", &update);
 
 	ImGui::Checkbox("Test", &test);
-	ImGui::Checkbox("Test 2", &test2);
+	//ImGui::Checkbox("Test 2", &test2);
 	//ImGui::Checkbox("Test 3", &test3);
+
+	//ImGui::Checkbox("Update Forward", &updateForward);
+	//ImGui::Checkbox("Update Right", &updateRight);
+	//ImGui::Checkbox("Update Up", &updateUp);
+
+	ImGui::SliderInt("Always update", &alwaysUpdate, 0, 4);
+	//ImGui::Checkbox("Enable Lerp", &enableLerp);
+	ImGui::SliderFloat("Light Angle Update Step", &lightUpdateAngle, 0.0f, 0.5f, "%.4f");
+	ImGui::SliderInt("Frames before update", &frameBeforeUpdate, 0, 256);
+	//ImGui::SliderInt("Lerp Update", &lerpFrames, 0, 256);
 
 	ImGui::SliderFloat("Z Range Multipler", &multiplerRange, 0.0f, 4.0f);
 	ImGui::SliderFloat("Z Min Extent", &minExtent, 0.0f, 5000.0f);
 	ImGui::SliderFloat("Culling Proj Z Offset", &testVar, 0.0f, 5000.0f);
 	ImGui::SliderFloat("Culling Mult 2", &MultTwo, 0.0f, 10.0f);
 
-	ImGui::SliderInt("Cascade To Render", &cascadeToUse, 0, 4);
-
-	ImGui::SliderFloat("Light Angle Update Step", &lightUpdateAngle, 0.0f, 0.5f, "%.4f");
+	//ImGui::SliderInt("Cascade To Render", &cascadeToUse, 0, 4);
 	ImGui::SliderFloat("Light Min Angle", &lightMinAngle, 0.0f, 50.0f);
 
 	ImGui::SliderInt("Cascade 1 Coverage", &splits[0], 15, 5000);
@@ -127,6 +133,8 @@ void TerrainBlending::DrawSettings()
 	ImGui::SliderInt("Cascade 4 Coverage", &splits[3], splits[2], 40000);
 
 	//ImGui::Text(fmt::format("Cascade 1 Texel Size: {}", float(splits[0]) / 1024.0f).c_str());
+
+	ImGui::Checkbox("Reload", &reload);
 
 	ImGui::Text("Interior Windows Cascade 1");
 	ImGui::SliderInt("Constant Bias ##5", &depthBias[4], -2500, 2500);
