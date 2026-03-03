@@ -459,45 +459,66 @@ void ShadowmapMatrixFix::BuildCascadeBoundingSphere(CascadeBounds::Sphere& outSp
 	outSphere.radius = radius;
 }
 
-void ShadowmapMatrixFix::BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, const DirectX::XMVECTOR& lightCameraPos, const CascadeBounds::Sphere& sphere)
+void ShadowmapMatrixFix::BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, CascadeBounds::AABB& outCullingBoundingBox, const DirectX::XMMATRIX& lightView,
+	const Frustum& lightFrustum, const DirectX::XMVECTOR& lightCameraPos, const CascadeBounds::Sphere& sphere)
 {
 	using namespace DirectX;
 
-	// Build AABB from sphere
-	XMVECTOR vRadius = XMVectorReplicate(sphere.radius);
-	XMVECTOR cornerMin = XMVectorSubtract(sphere.center, vRadius);
-	XMVECTOR cornerMax = XMVectorAdd(sphere.center, vRadius);
+	{
+		// Build AABB from sphere
+		XMVECTOR vRadius = XMVectorReplicate(sphere.radius);
+		XMVECTOR cornerMin = XMVectorSubtract(sphere.center, vRadius);
+		XMVECTOR cornerMax = XMVectorAdd(sphere.center, vRadius);
 
-	// Add trans vec here to avoid variance
-	cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
-	cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
+		// Add trans vec here to avoid variance
+		cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
+		cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
 
-	auto& settings = globals::features::terrainBlending;
-	// Snap texel grid
-	XMVECTOR extent = XMVectorReplicate(2.0f * sphere.radius);
-	XMVECTOR texelSize = extent / float(cascadePxSize);
-	cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
-	cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
+		auto& settings = globals::features::terrainBlending;
+		// Snap texel grid
+		XMVECTOR extent = XMVectorReplicate(2.0f * sphere.radius);
+		XMVECTOR texelSize = extent / float(cascadePxSize);
+		cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
+		cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
 
-	outBoundingBox.cornerMin = cornerMin;  // left, bottom, near
-	outBoundingBox.cornerMax = cornerMax;  // right, top, far
+		outBoundingBox.cornerMin = cornerMin;  // left, bottom, near
+		outBoundingBox.cornerMax = cornerMax;  // right, top, far
+	}
 
-	LogVector("OG cornerMin", cornerMin);
-	LogVector("OG cornerMax", cornerMax);
+	{
+		// Build culling AABB from scratch
+		// This improves culling while retaining the stability of spherical AABB
+		XMVECTOR cornerMin = XMVectorReplicate(FLT_MAX);
+		XMVECTOR cornerMax = XMVectorNegate(cornerMin);
+		for (int i = 0; i < 8; i++) {
+			cornerMin = XMVectorMin(cornerMin, lightFrustum.corner[i]);
+			cornerMax = XMVectorMax(cornerMax, lightFrustum.corner[i]);
+		}
+
+		cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
+		cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
+
+		XMVECTOR extent = XMVectorSubtract(cornerMax, cornerMin);
+		XMVECTOR texelSize = extent / float(cascadePxSize);
+		cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
+		cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
+
+		outCullingBoundingBox.cornerMin = cornerMin;  // left, bottom, near
+		outCullingBoundingBox.cornerMax = cornerMax;  // right, top, far
+	}
 }
 
-void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullProj, const CascadeBounds::AABB& boundingBox)
+void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullProj, const CascadeBounds::AABB& boundingBox, const CascadeBounds::AABB& cullingBoundingBox)
 {
 	auto& settings = globals::features::terrainBlending;
 
 	float RANGE_MULT = settings.multiplerRange;
 	float MIN_CULL_EXTENT = settings.minExtent;
 
-	float centerZ = float3((boundingBox.cornerMin + boundingBox.cornerMax) * 0.5f).z;
-	float halfExtentZ = abs(centerZ - boundingBox.cornerMin.z);
-
 	// Build main proj frustum
 	{
+		float centerZ = float3((boundingBox.cornerMin + boundingBox.cornerMax) * 0.5f).z;
+		float halfExtentZ = abs(centerZ - boundingBox.cornerMin.z);
 		// Adjust depth range for better precision - depth clipping is disabled
 		float extent = halfExtentZ * RANGE_MULT;  // The lower this is the more spread the shadow map depth values are so higher means less precision
 
@@ -533,442 +554,411 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 			outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(boundingBox.cornerMin.x, boundingBox.cornerMax.x, boundingBox.cornerMin.y, boundingBox.cornerMax.y, adjustedMin, adjustedMax);
 		}
 	}
-	//	float extent = std::max(halfExtentZ * settings.MultTwo, MIN_CULL_EXTENT);
+}
+//	float extent = std::max(halfExtentZ * settings.MultTwo, MIN_CULL_EXTENT);
 
-	void ShadowmapMatrixFix::BuildCascadeCullingAABB(RE::NiFrustumPlanes & outPlanes, const Frustum& lightFrustum, const DirectX::XMMATRIX& lightView, const DirectX::XMVECTOR lightCameraPos)
-	{
-		using namespace DirectX;
+// Gribb-Hartmann extraction
+void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj)
+{
+	using namespace DirectX;
 
-		// Build AABB from sphere
-		XMVECTOR cornerMin = XMVectorReplicate(FLT_MAX);
-		XMVECTOR cornerMax = XMVectorNegate(cornerMin);
-		for (int i = 0; i < 8; i++) {
-			cornerMin = XMVectorMin(cornerMin, lightFrustum.corner[i]);
-			cornerMax = XMVectorMax(cornerMax, lightFrustum.corner[i]);
-		}
+	XMMATRIX viewProjCol = XMMatrixTranspose(viewProj);
 
-		// Add trans vec here to avoid variance
-		cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
-		cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
+	XMVECTOR planes[6];
+	planes[0] = XMVectorAdd(viewProjCol.r[3], viewProjCol.r[0]);
+	planes[1] = XMVectorSubtract(viewProjCol.r[3], viewProjCol.r[0]);
+	planes[2] = XMVectorAdd(viewProjCol.r[3], viewProjCol.r[1]);
+	planes[3] = XMVectorSubtract(viewProjCol.r[3], viewProjCol.r[1]);
+	planes[4] = viewProjCol.r[2];
+	planes[5] = XMVectorSubtract(viewProjCol.r[3], viewProjCol.r[2]);
 
-		auto& settings = globals::features::terrainBlending;
-		// Snap texel grid
-		XMVECTOR extent = XMVectorSubtract(cornerMax, cornerMin);
-		XMVECTOR texelSize = extent / float(cascadePxSize);
-		cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
-		cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
+	outPlanes.activePlanes = static_cast<RE::NiFrustumPlanes::ActivePlane>(0);
 
-		LogVector("cornerMin", cornerMin);
-		LogVector("cornerMax", cornerMax);
+	for (uint32_t i = 0; i < 6; i++) {
+		float len = XMVectorGetX(XMVector3Length(planes[i]));
+		if (len > 1e-6f) {
+			float invLen = 1.0f / len;
 
-		float3 cornMin = cornerMin;
-		float3 cornMax = cornerMax;
-		XMMATRIX outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(cornMin.x, cornMax.x, cornMin.y, cornMax.y, cornMin.z, cornMax.z);
+			// NiPlane const uses n dot p = -d (outside)
+			XMVECTOR normal = XMVectorScale(planes[i], invLen);
+			auto constant = -XMVectorGetW(planes[i]) * invLen;
 
-		XMMATRIX tighterViewProj = XMMatrixMultiply(lightView, outCullProj);
-		GetCullPlanesFromVPMatrix(outPlanes, tighterViewProj);
-	}
+			outPlanes.cullingPlanes[i].normal = XMVectorToNiPoint3(normal);
+			outPlanes.cullingPlanes[i].constant = constant;
 
-	// Gribb-Hartmann extraction
-	void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes & outPlanes, const DirectX::XMMATRIX& viewProj)
-	{
-		using namespace DirectX;
-
-		XMMATRIX viewProjCol = XMMatrixTranspose(viewProj);
-
-		XMVECTOR planes[6];
-		planes[0] = XMVectorAdd(viewProjCol.r[3], viewProjCol.r[0]);
-		planes[1] = XMVectorSubtract(viewProjCol.r[3], viewProjCol.r[0]);
-		planes[2] = XMVectorAdd(viewProjCol.r[3], viewProjCol.r[1]);
-		planes[3] = XMVectorSubtract(viewProjCol.r[3], viewProjCol.r[1]);
-		planes[4] = viewProjCol.r[2];
-		planes[5] = XMVectorSubtract(viewProjCol.r[3], viewProjCol.r[2]);
-
-		outPlanes.activePlanes = static_cast<RE::NiFrustumPlanes::ActivePlane>(0);
-
-		for (uint32_t i = 0; i < 6; i++) {
-			float len = XMVectorGetX(XMVector3Length(planes[i]));
-			if (len > 1e-6f) {
-				float invLen = 1.0f / len;
-
-				// NiPlane const uses n dot p = -d (outside)
-				XMVECTOR normal = XMVectorScale(planes[i], invLen);
-				auto constant = -XMVectorGetW(planes[i]) * invLen;
-
-				outPlanes.cullingPlanes[i].normal = XMVectorToNiPoint3(normal);
-				outPlanes.cullingPlanes[i].constant = constant;
-
-				outPlanes.activePlanes.set(static_cast<RE::NiFrustumPlanes::ActivePlane>(1 << i));
-			}
+			outPlanes.activePlanes.set(static_cast<RE::NiFrustumPlanes::ActivePlane>(1 << i));
 		}
 	}
+}
 
-	//if cascade == 0 then run this - far plane is only 1 frame out of sync
-	// Builds culling frustum
-	void ShadowmapMatrixFix::SetupPrimaryCullPlanes(RE::BSShadowDirectionalLight * light, RE::NiCamera & rootCamera)
-	{
-		using namespace DirectX;
+//if cascade == 0 then run this - far plane is only 1 frame out of sync
+// Builds culling frustum
+void ShadowmapMatrixFix::SetupPrimaryCullPlanes(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const Frustum& lightFrustum)
+{
+	using namespace DirectX;
 
-		auto& settings = globals::features::terrainBlending;
+	auto& settings = globals::features::terrainBlending;
 
-		const XMMATRIX lightView = XMMatrixTranspose(XMLoadFloat4x4(&cascadeData[0].viewMatrix));
-		const XMVECTOR rootCameraPos = NiPoint3ToXMVector(rootCamera.world.translate);
-		const XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
+	const XMMATRIX lightView = XMMatrixTranspose(XMLoadFloat4x4(&cascadeData[0].viewMatrix));
+	const XMVECTOR rootCameraPos = NiPoint3ToXMVector(rootCamera.world.translate);
+	const XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
 
-		// Build bounding objects
-		CascadeBounds::Sphere boundingSphere;
-		BuildCascadeBoundingSphere(boundingSphere, primaryCullFrustum);
+	// Build bounding objects
+	CascadeBounds::Sphere boundingSphere;
+	BuildCascadeBoundingSphere(boundingSphere, primaryCullFrustum);
 
-		CascadeBounds::AABB boundingBox;
-		BuildCascadeAABB(boundingBox, lightCameraPos, boundingSphere);
+	CascadeBounds::AABB boundingBox;
+	CascadeBounds::AABB cullingBoundingBox;
+	BuildCascadeAABB(boundingBox, cullingBoundingBox, lightView, lightFrustum, lightCameraPos, boundingSphere);
 
-		// Build projection transforms
-		XMMATRIX lightProj = {};  // Not used
-		XMMATRIX cullingProj = {};
-		BuildCascadeProjectionMatrices(lightProj, cullingProj, boundingBox);
+	// Build projection transforms
+	XMMATRIX lightProj = {};  // Not used
+	XMMATRIX cullingProj = {};
+	BuildCascadeProjectionMatrices(lightProj, cullingProj, boundingBox, cullingBoundingBox);
 
-		const XMMATRIX cullingViewProj = XMMatrixMultiply(lightView, cullingProj);
+	const XMMATRIX cullingViewProj = XMMatrixMultiply(lightView, cullingProj);
 
-		// Build culling planes
-		GetCullPlanesFromVPMatrix(primaryCullPlanes, cullingViewProj);
+	// Build culling planes
+	GetCullPlanesFromVPMatrix(primaryCullPlanes, cullingViewProj);
+}
+
+void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const DirectX::XMVECTOR lightDirection, const int cascadeIndex)
+{
+	using namespace DirectX;
+
+	auto& settings = globals::features::terrainBlending;
+
+	// Get root camera params
+	const XMVECTOR rootCameraPos = NiPoint3ToXMVector(rootCamera.world.translate);
+	RE::NiFrustum viewFrustum = rootCamera.GetRuntimeData2().viewFrustum;
+	const XMMATRIX worldRotation = XMMatrixTranspose(XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.world.rotate.entry)));
+
+	//Re-calculate because root frustum FOV is too dynamic
+	float& cameraFOVDeg = (*(float*)(REL::RelocationID(513786, 388785).address()));
+	float hFOVRad = cameraFOVDeg * (XM_PI / 180.0f);
+	float unitHalfWidth = tan(hFOVRad / 2);
+	float unitHalfHeight = unitHalfWidth / (globals::state->screenSize.x / globals::state->screenSize.y);
+
+	viewFrustum.fRight = unitHalfWidth;
+	viewFrustum.fLeft = -unitHalfWidth;
+	viewFrustum.fTop = unitHalfHeight;
+	viewFrustum.fBottom = -unitHalfHeight;
+
+	static CascadeBounds cascadeBoundData;
+
+	SetCascadeSplit(cascadeBoundData.splitDist, viewFrustum);
+
+	// Add this back once split settings are finalized
+	//static bool setupSplits = true;
+	//if (setupSplits) {
+	//	SetCascadeSplit(cascadeBoundData.splitDist, viewFrustum);
+	//	setupSplits = false;
+	//}
+
+	if (settings.test3) {
+		float frustumSize = viewFrustum.fTop;
+
+		viewFrustum.fRight = frustumSize;
+		viewFrustum.fLeft = -frustumSize;
 	}
 
-	void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLight * light, RE::NiCamera & rootCamera, DirectX::XMVECTOR lightDirection, const int cascadeIndex)
-	{
-		using namespace DirectX;
+	// Build frustums, view matrix
+	Frustum rootFrustum;
+	BuildRootFrustum(rootFrustum, viewFrustum, worldRotation);
 
-		auto& settings = globals::features::terrainBlending;
+	XMMATRIX lightView = {};
+	Frustum lightFrustum;
+	BuildLightFrustum(lightView, lightFrustum, cascadeBoundData.splitDist, rootFrustum, lightDirection, cascadeIndex);
+	//LogMatrix("view", lightView);
 
-		// Get root camera params
-		const XMVECTOR rootCameraPos = NiPoint3ToXMVector(rootCamera.world.translate);
-		RE::NiFrustum viewFrustum = rootCamera.GetRuntimeData2().viewFrustum;
-		const XMMATRIX worldRotation = XMMatrixTranspose(XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.world.rotate.entry)));
-
-		//Re-calculate because root frustum FOV is too dynamic
-		float& cameraFOVDeg = (*(float*)(REL::RelocationID(513786, 388785).address()));
-		float hFOVRad = cameraFOVDeg * (XM_PI / 180.0f);
-		float unitHalfWidth = tan(hFOVRad / 2);
-		float unitHalfHeight = unitHalfWidth / (globals::state->screenSize.x / globals::state->screenSize.y);
-
-		viewFrustum.fRight = unitHalfWidth;
-		viewFrustum.fLeft = -unitHalfWidth;
-		viewFrustum.fTop = unitHalfHeight;
-		viewFrustum.fBottom = -unitHalfHeight;
-
-		static CascadeBounds cascadeBoundData;
-
-		SetCascadeSplit(cascadeBoundData.splitDist, viewFrustum);
-
-		// Add this back once split settings are finalized
-		//static bool setupSplits = true;
-		//if (setupSplits) {
-		//	SetCascadeSplit(cascadeBoundData.splitDist, viewFrustum);
-		//	setupSplits = false;
-		//}
-
-		if (settings.test2) {
-			float frustumSize = viewFrustum.fTop;
-
-			viewFrustum.fRight = frustumSize;
-			viewFrustum.fLeft = -frustumSize;
-		}
-
-		// Build frustums, view matrix
-		Frustum rootFrustum;
-		BuildRootFrustum(rootFrustum, viewFrustum, worldRotation);
-
-		XMMATRIX lightView = {};
-		Frustum lightFrustum;
-		BuildLightFrustum(lightView, lightFrustum, cascadeBoundData.splitDist, rootFrustum, lightDirection, cascadeIndex);
-		//LogMatrix("view", lightView);
-
-		// Set min/max cascade extent corners for first culling round
-		static constexpr int nearFarIndices[8] = { 0, 2, 4, 6, 1, 3, 5, 7 };  // near corners -> far corners
-		if (cascadeIndex == 0 || cascadeIndex == nCascades - 1) {
-			for (int i = 0; i < 4; i++) {
-				int index = (cascadeIndex == 0) ? nearFarIndices[i] : nearFarIndices[i + 4];
-				//cascadeBoundData.cullExtent.frustum.corner[index] = lightFrustum.corner[index];
-				primaryCullFrustum.corner[index] = lightFrustum.corner[index];
-			}
-		}
-
-		// Build bounding objects
-		BuildCascadeBoundingSphere(cascadeBoundData.boundingSphere, lightFrustum);
-		//logger::info("bounding sphere radius: {}", cascadeBoundData.boundingSphere.radius);
-		//LogVector("bounding sphere center", cascadeBoundData.boundingSphere.center);
-
-		const XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
-
-		BuildCascadeAABB(cascadeBoundData.boundingBox, lightCameraPos, cascadeBoundData.boundingSphere);
-
-		//logger::info("bounding box min: {}, {}, {}", cascadeBoundData.boundingBox.cornerMin.x, cascadeBoundData.boundingBox.cornerMin.y, cascadeBoundData.boundingBox.cornerMin.z);
-		//logger::info("bounding box max: {}, {}, {}", cascadeBoundData.boundingBox.cornerMax.x, cascadeBoundData.boundingBox.cornerMax.y, cascadeBoundData.boundingBox.cornerMax.z);
-
-		// Build view projection transforms
-		XMMATRIX lightProj = {};
-		XMMATRIX cullingProj = {};
-		BuildCascadeProjectionMatrices(lightProj, cullingProj, cascadeBoundData.boundingBox);
-		//LogMatrix("proj", lightProj);
-
-		const XMMATRIX viewProj = XMMatrixMultiply(lightView, lightProj);
-		XMStoreFloat4x4(&cascadeData[cascadeIndex].viewProj, XMMatrixTranspose(viewProj));
-		//LogMatrix("viewProj", viewProj);
-
-		// Relative translation added to shader MS position to avoid dot prod precision loss
-		const XMMATRIX texProj = XMMatrixMultiply(XMMatrixScaling(0.5f, -0.5f, 1.0f), XMMatrixTranslation(0.5f, 0.5f, 0.0f));
-		if (settings.update)
-			XMStoreFloat4x4(&cascadeData[cascadeIndex].viewProjTex, XMMatrixTranspose(XMMatrixMultiply(viewProj, texProj)));
-
-		// Set translation for geometry to transform against
-		XMStoreFloat3(&cascadeData[cascadeIndex].translation, rootCameraPos);
-
-		XMStoreFloat4x4(&cascadeData[cascadeIndex].viewMatrix, XMMatrixTranspose(lightView));
-
-		cascadeData[cascadeIndex].endDepthNDC = cascadeBoundData.splitDist.endSplitNDC[cascadeIndex];
-		cascadeData[cascadeIndex].startDepthNDC = cascadeBoundData.splitDist.startSplitNDC[cascadeIndex];
-
-		// Build culling planes
-		const XMMATRIX cullingViewProj = XMMatrixMultiply(lightView, cullingProj);
-		GetCullPlanesFromVPMatrix(cascadeData[cascadeIndex].cullingPlanes, cullingViewProj);
-
-		if (!settings.test2)
-			BuildCascadeCullingAABB(cascadeData[cascadeIndex].cullingPlanes, lightFrustum, lightView, lightCameraPos);
-	}
-
-	// Stop other cascades from being rendered this frame - other methods to defer the accumulator dispatch cause recursion deadlocks
-	void ShadowmapMatrixFix::DisableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int cascadeIndex)
-	{
-		if (auto cullingProcess = light->GetRuntimeData().shadowmapDescriptors[cascadeIndex].cullingProcess) {
-			backupPlanes[cascadeIndex] = cullingProcess->customCullPlanes;
-			for (int j = 0; j < 6; j++)
-				cullingProcess->customCullPlanes.cullingPlanes[j].constant = 0;
-		}
-	}
-	void ShadowmapMatrixFix::EnableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int cascadeIndex)
-	{
-		if (auto cullingProcess = light->GetRuntimeData().shadowmapDescriptors[cascadeIndex].cullingProcess) {
-			for (int j = 0; j < 6; j++) {
-				cullingProcess->customCullPlanes.cullingPlanes[j].constant = backupPlanes[cascadeIndex].cullingPlanes[j].constant;
-				//logger::info("plane: {}", cullingProcess->customCullPlanes.cullingPlanes[j].constant);
-			}
+	// Set min/max cascade extent corners for first culling round
+	static constexpr int nearFarIndices[8] = { 0, 2, 4, 6, 1, 3, 5, 7 };  // near corners -> far corners
+	if (cascadeIndex == 0 || cascadeIndex == nCascades - 1) {
+		for (int i = 0; i < 4; i++) {
+			int index = (cascadeIndex == 0) ? nearFarIndices[i] : nearFarIndices[i + 4];
+			//cascadeBoundData.cullExtent.frustum.corner[index] = lightFrustum.corner[index];
+			primaryCullFrustum.corner[index] = lightFrustum.corner[index];
 		}
 	}
 
-	// Update cascade camera matrices, cull planes etc.
-	// Runs once per frame
-	bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSShadowDirectionalLight * light, RE::NiCamera & inputCamera)
-	{
-		static int frameCounter = 0;
+	// Build bounding objects
+	BuildCascadeBoundingSphere(cascadeBoundData.boundingSphere, lightFrustum);
+	//logger::info("bounding sphere radius: {}", cascadeBoundData.boundingSphere.radius);
+	//LogVector("bounding sphere center", cascadeBoundData.boundingSphere.center);
 
-		if (!initialized) {
-			cascadePxSize = RE::GetINISetting("iShadowMapResolution:Display")->data.u;
-			nCascades = RE::GetINISetting("iNumSplits:Display")->data.u;
-			shadowCascadeFixCB = new ConstantBuffer(ConstantBufferDesc<ShadowDataCB>());
-			initialized = true;
-		}
+	const XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
 
-		activeCascades = cascadeMasks[nCascades][frameCounter];
+	BuildCascadeAABB(cascadeBoundData.boundingBox, cascadeBoundData.cullingBoundingBox, lightView, lightFrustum, lightCameraPos, cascadeBoundData.boundingSphere);
 
-		auto& settings = globals::features::terrainBlending;
-		using namespace DirectX;
-		// Discretize light dir to mitigate variance from time scale
-		static XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector));
+	//logger::info("bounding box min: {}, {}, {}", cascadeBoundData.boundingBox.cornerMin.x, cascadeBoundData.boundingBox.cornerMin.y, cascadeBoundData.boundingBox.cornerMin.z);
+	//logger::info("bounding box max: {}, {}, {}", cascadeBoundData.boundingBox.cornerMax.x, cascadeBoundData.boundingBox.cornerMax.y, cascadeBoundData.boundingBox.cornerMax.z);
 
-		static int counter = 0;
-		auto qantLightDir = QuantizeLightDirection(XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector)), settings.lightUpdateAngle);
-		if (counter == settings.frameBeforeUpdate)
-			lightDirection = XMVectorSetX(lightDirection, XMVectorGetX(qantLightDir));
-		else if (counter == settings.frameBeforeUpdate * 2)
-			lightDirection = XMVectorSetY(lightDirection, XMVectorGetY(qantLightDir));
-		else if (counter == settings.frameBeforeUpdate * 3)
-			lightDirection = XMVectorSetZ(lightDirection, XMVectorGetZ(qantLightDir));
+	// Build view projection transforms
+	XMMATRIX lightProj = {};
+	XMMATRIX cullingProj = {};
+	BuildCascadeProjectionMatrices(lightProj, cullingProj, cascadeBoundData.boundingBox, cascadeBoundData.cullingBoundingBox);
+	//LogMatrix("proj", lightProj);
 
-		counter = ++counter <= (settings.frameBeforeUpdate * 3) ? counter : 0;
+	const XMMATRIX viewProj = XMMatrixMultiply(lightView, lightProj);
+	XMStoreFloat4x4(&cascadeData[cascadeIndex].viewProj, XMMatrixTranspose(viewProj));
+	//LogMatrix("viewProj", viewProj);
 
-		//Build cascades we're rendering this frame
-		for (int i = 0; i < nCascades; i++) {
-			if (activeCascades & (1 << i))
-				BuildShadowCascadeCameraInput(light, inputCamera, lightDirection, i);
-		}
+	// Relative translation added to shader MS position to avoid dot prod precision loss
+	const XMMATRIX texProj = XMMatrixMultiply(XMMatrixScaling(0.5f, -0.5f, 1.0f), XMMatrixTranslation(0.5f, 0.5f, 0.0f));
+	if (settings.update)
+		XMStoreFloat4x4(&cascadeData[cascadeIndex].viewProjTex, XMMatrixTranspose(XMMatrixMultiply(viewProj, texProj)));
 
-		// Only set for cascade 0 since result is the same
-		if (frameCounter == 0)
-			SetupPrimaryCullPlanes(light, inputCamera);
+	// Set translation for geometry to transform against
+	XMStoreFloat3(&cascadeData[cascadeIndex].translation, rootCameraPos);
 
-		// Run game func to init and update frame camera with new params
-		bool ret = func(light, inputCamera);
+	XMStoreFloat4x4(&cascadeData[cascadeIndex].viewMatrix, XMMatrixTranspose(lightView));
 
-		// Disable cascades we're not rendering this frame
-		for (int i = 0; i < nCascades; i++) {
-			if (!(activeCascades & (1 << i)))
-				DisableCullingPlanes(light, i);
-		}
+	cascadeData[cascadeIndex].endDepthNDC = cascadeBoundData.splitDist.endSplitNDC[cascadeIndex];
+	cascadeData[cascadeIndex].startDepthNDC = cascadeBoundData.splitDist.startSplitNDC[cascadeIndex];
 
-		frameCounter = ++frameCounter < 2 ? frameCounter : 0;
+	// Build culling planes
+	const XMMATRIX cullingViewProj = XMMatrixMultiply(lightView, cullingProj);
+	GetCullPlanesFromVPMatrix(cascadeData[cascadeIndex].cullingPlanes, cullingViewProj);
 
-		return ret;
+	SetupPrimaryCullPlanes(light, rootCamera, lightFrustum);  //
+															  //if(!settings.test2)
+															  //	BuildTighterCullingPlanes(cascadeData[cascadeIndex].cullingPlanes, lightFrustum, lightView, lightCameraPos);
+}
+
+// Stop other cascades from being rendered this frame - other methods to defer the accumulator dispatch cause recursion deadlocks
+void ShadowmapMatrixFix::DisableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int cascadeIndex)
+{
+	if (auto cullingProcess = light->GetRuntimeData().shadowmapDescriptors[cascadeIndex].cullingProcess) {
+		backupPlanes[cascadeIndex] = cullingProcess->customCullPlanes;
+		for (int j = 0; j < 6; j++)
+			cullingProcess->customCullPlanes.cullingPlanes[j].constant = 0;
 	}
-
-	// Subsequent call propagates local changes to the rest of the camera
-	void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_SetCameraRuntimeData2::thunk(RE::NiCamera * cascadeCamera, RE::NiFrustum & frustum)
-	{
-		static int counter = 0;
-
-		cascadeCamera->local.rotate = RE::NiMatrix3();
-		cascadeCamera->local.translate = RE::NiPoint3(cascadeData[counter].translation.x, cascadeData[counter].translation.y, cascadeData[counter].translation.z);
-
-		counter = ++counter < nCascades ? counter : 0;
-
-		func(cascadeCamera, frustum);
-	}
-
-	// Defines culling planes of the closest and furthest cascade
-	void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes::thunk(
-		RE::BSShadowDirectionalLight * dirLight, RE::NiFrustumPlanes & outPlanes, FrustumSplit & frustumCorners, uint32_t splitCornerIndices[8],
-		uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex)
-	{
-		if (!globals::features::terrainBlending.disableCulling)
-			outPlanes = primaryCullPlanes;
-	}
-
-	// Called per cascade
-	void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond::thunk(
-		RE::BSShadowDirectionalLight * dirLight, RE::NiFrustumPlanes & outPlanes, FrustumSplit & frustumCorners,
-		uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPosA, uint32_t cornerOffsetIndex)
-	{
-		static int counter = 0;
-
-		if (!globals::features::terrainBlending.disableCulling)  //Cant disable now because time slicing
-			outPlanes = cascadeData[counter].cullingPlanes;
-
-		counter = ++counter < nCascades ? counter : 0;
-	}
-
-	// Update buffer before VL cascades since everything is the same
-	void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderVolumetricCascade::thunk(RE::BSShadowDirectionalLight * light, RE::BSShadowLight::ShadowmapDescriptor & desc, uint32_t* unk, uint32_t flags)
-	{
-		static int pass = 0;
-
-		if (!initialized) {
-			return func(light, desc, unk, flags);
-		}
-		globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
-		//Update cascade buffer
-		ShadowDataCB data{};
-		data.lightViewProj = cascadeData[pass].viewProj;
-		for (int i = 0; i < nCascades; i++) {
-			data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
-			data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
-			data.cascadeSplitStarts[i] = cascadeData[i].startDepthNDC;
-		}
-		data.numCascades = nCascades;
-		shadowCascadeFixCB->Update(data);
-
-		ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
-		globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
-		globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
-		globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
-
-		if (pass == 0) {
-			renderingVLCascades = true;
-			logger::info("Start VL Cascades");
-		} else {
-			logger::info("VL Cascades");
-		}
-		//TMP
-		auto& normalRoughness = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kRAWINDIRECT_DOWNSCALED].SRV;
-		globals::d3d::context->PSSetShaderResources(27, 1, &normalRoughness);
-
-		desc.clearRenderTarget = activeCascades & (1 << desc.shadowmapIndex);
-
-		//Only render first 2 VL cascades
-		if (pass < 2)
-			func(light, desc, unk, flags);
-
-		pass = ++pass < nCascades ? pass : 0;
-
-		if (pass == 0) {
-			renderingVLCascades = false;
-			logger::info("End VL Cascades");
+}
+void ShadowmapMatrixFix::EnableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int cascadeIndex)
+{
+	if (auto cullingProcess = light->GetRuntimeData().shadowmapDescriptors[cascadeIndex].cullingProcess) {
+		for (int j = 0; j < 6; j++) {
+			cullingProcess->customCullPlanes.cullingPlanes[j].constant = backupPlanes[cascadeIndex].cullingPlanes[j].constant;
+			//logger::info("plane: {}", cullingProcess->customCullPlanes.cullingPlanes[j].constant);
 		}
 	}
+}
 
-	// Render main cascades - called after VL cascades
-	void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade::thunk(RE::BSShadowDirectionalLight * light, RE::BSShadowLight::ShadowmapDescriptor & desc, uint32_t* unk, uint32_t flags)
-	{
-		if (!initialized) {
-			return func(light, desc, unk, flags);
-		}
-		globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
-		static int pass = 0;
+// Update cascade camera matrices, cull planes etc.
+// Runs once per frame
+bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSShadowDirectionalLight* light, RE::NiCamera& inputCamera)
+{
+	static int frameCounter = 0;
 
-		ShadowDataCB data{};
-		data.lightViewProj = cascadeData[pass].viewProj;
-		for (int i = 0; i < nCascades; i++) {
-			data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
-			data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
-			data.cascadeSplitStarts[i] = cascadeData[i].startDepthNDC;
-		}
-		data.numCascades = nCascades;
-		shadowCascadeFixCB->Update(data);
+	if (!initialized) {
+		cascadePxSize = RE::GetINISetting("iShadowMapResolution:Display")->data.u;
+		nCascades = RE::GetINISetting("iNumSplits:Display")->data.u;
+		shadowCascadeFixCB = new ConstantBuffer(ConstantBufferDesc<ShadowDataCB>());
+		initialized = true;
+	}
 
-		if (pass == 0) {
-			renderingCascades = true;
-			logger::info("Start Cascades");
-		} else {
-			logger::info("Cascades");
-		}
+	activeCascades = cascadeMasks[nCascades][frameCounter];
 
-		ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
-		globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
-		globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
-		globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
+	auto& settings = globals::features::terrainBlending;
+	using namespace DirectX;
+	// Discretize light dir to mitigate variance from time scale
+	static XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector));
 
+	static int counter = 0;
+	auto qantLightDir = QuantizeLightDirection(XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector)), settings.lightUpdateAngle);
+	if (counter == settings.frameBeforeUpdate)
+		lightDirection = XMVectorSetX(lightDirection, XMVectorGetX(qantLightDir));
+	else if (counter == settings.frameBeforeUpdate * 2)
+		lightDirection = XMVectorSetY(lightDirection, XMVectorGetY(qantLightDir));
+	else if (counter == settings.frameBeforeUpdate * 3)
+		lightDirection = XMVectorSetZ(lightDirection, XMVectorGetZ(qantLightDir));
+
+	counter = ++counter <= (settings.frameBeforeUpdate * 3) ? counter : 0;
+
+	//Build cascades we're rendering this frame
+	for (int i = 0; i < nCascades; i++) {
+		if (activeCascades & (1 << i))
+			BuildShadowCascadeCameraInput(light, inputCamera, lightDirection, i);
+	}
+
+	// Only set for cascade 0 since result is the same
+	//if (frameCounter == 0)
+	//	SetupPrimaryCullPlanes(light, inputCamera);
+
+	// Run game func to init and update frame camera with new params
+	bool ret = func(light, inputCamera);
+
+	// Disable cascades we're not rendering this frame
+	for (int i = 0; i < nCascades; i++) {
+		if (!(activeCascades & (1 << i)))
+			DisableCullingPlanes(light, i);
+	}
+
+	frameCounter = ++frameCounter < 2 ? frameCounter : 0;
+
+	return ret;
+}
+
+// Subsequent call propagates local changes to the rest of the camera
+void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_SetCameraRuntimeData2::thunk(RE::NiCamera* cascadeCamera, RE::NiFrustum& frustum)
+{
+	static int counter = 0;
+
+	cascadeCamera->local.rotate = RE::NiMatrix3();
+	cascadeCamera->local.translate = RE::NiPoint3(cascadeData[counter].translation.x, cascadeData[counter].translation.y, cascadeData[counter].translation.z);
+
+	counter = ++counter < nCascades ? counter : 0;
+
+	func(cascadeCamera, frustum);
+}
+
+// Defines culling planes of the closest and furthest cascade
+void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes::thunk(
+	RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumSplit& frustumCorners, uint32_t splitCornerIndices[8],
+	uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex)
+{
+	if (!globals::features::terrainBlending.disableCulling)
+		outPlanes = primaryCullPlanes;
+}
+
+// Called per cascade
+void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanesSecond::thunk(
+	RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumSplit& frustumCorners,
+	uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPosA, uint32_t cornerOffsetIndex)
+{
+	static int counter = 0;
+
+	if (!globals::features::terrainBlending.disableCulling)  //Cant disable now because time slicing
+		outPlanes = cascadeData[counter].cullingPlanes;
+
+	counter = ++counter < nCascades ? counter : 0;
+}
+
+// Update buffer before VL cascades since everything is the same
+void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderVolumetricCascade::thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& desc, uint32_t* unk, uint32_t flags)
+{
+	static int pass = 0;
+
+	if (!initialized) {
+		return func(light, desc, unk, flags);
+	}
+	globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
+	//Update cascade buffer
+	ShadowDataCB data{};
+	data.lightViewProj = cascadeData[pass].viewProj;
+	for (int i = 0; i < nCascades; i++) {
+		data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
+		data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
+		data.cascadeSplitStarts[i] = cascadeData[i].startDepthNDC;
+	}
+	data.numCascades = nCascades;
+	shadowCascadeFixCB->Update(data);
+
+	ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
+	globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
+	globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
+	globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
+
+	if (pass == 0) {
+		renderingVLCascades = true;
+		logger::info("Start VL Cascades");
+	} else {
+		logger::info("VL Cascades");
+	}
+	//TMP
+	auto& normalRoughness = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kRAWINDIRECT_DOWNSCALED].SRV;
+	globals::d3d::context->PSSetShaderResources(27, 1, &normalRoughness);
+
+	desc.clearRenderTarget = activeCascades & (1 << desc.shadowmapIndex);
+
+	//Only render first 2 VL cascades
+	if (pass < 2)
 		func(light, desc, unk, flags);
 
-		//globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
+	pass = ++pass < nCascades ? pass : 0;
 
-		// Needed because VL shadow maps use the same descriptors...
-		desc.clearRenderTarget = true;
-
-		pass = ++pass < nCascades ? pass : 0;
-
-		if (pass == 0) {
-			auto VLCascades = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
-			globals::d3d::context->PSSetShaderResources(24, 1, &VLCascades);
-			renderingCascades = false;
-			logger::info("End Cascades");
-		}
+	if (pass == 0) {
+		renderingVLCascades = false;
+		logger::info("End VL Cascades");
 	}
-	//0.05 - 0.1 works well
-	DirectX::XMVECTOR ShadowmapMatrixFix::QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees)
-	{
-		using namespace DirectX;
+}
 
-		float stepRadians = XMConvertToRadians(stepDegrees);
+// Render main cascades - called after VL cascades
+void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade::thunk(RE::BSShadowDirectionalLight* light, RE::BSShadowLight::ShadowmapDescriptor& desc, uint32_t* unk, uint32_t flags)
+{
+	if (!initialized) {
+		return func(light, desc, unk, flags);
+	}
+	globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
+	static int pass = 0;
 
-		//Calculate azimuth and elevation
-		float azimuth = atan2f(XMVectorGetX(lightDir), XMVectorGetZ(lightDir));
-		float elevation = asinf(XMVectorGetY(lightDir));
+	ShadowDataCB data{};
+	data.lightViewProj = cascadeData[pass].viewProj;
+	for (int i = 0; i < nCascades; i++) {
+		data.shadowmapViewProjUV[i] = cascadeData[i].viewProjTex;
+		data.cascadeSplitEnds[i] = cascadeData[i].endDepthNDC;
+		data.cascadeSplitStarts[i] = cascadeData[i].startDepthNDC;
+	}
+	data.numCascades = nCascades;
+	shadowCascadeFixCB->Update(data);
 
-		//Quantize angles to nearest step
-		azimuth = roundf(azimuth / stepRadians) * stepRadians;
-		elevation = roundf(elevation / stepRadians) * stepRadians;
-
-		//Convert back to cart coords
-		float cosElev = cosf(elevation);
-		XMVECTOR quantized = XMVectorSet(sinf(azimuth) * cosElev, sinf(elevation), cosf(azimuth) * cosElev, 0.0f);
-
-		return XMVector3Normalize(quantized);
+	if (pass == 0) {
+		renderingCascades = true;
+		logger::info("Start Cascades");
+	} else {
+		logger::info("Cascades");
 	}
 
-	// This is used in True PBR during the render pass list generation
-	// It updates the flags for geometry retreiving shadows
-	// The flag is set wrong during pre culling when rendering more than 2 cascades
-	// and when the most distant cascade isn't rendered in the same frame
-	bool ShadowmapMatrixFix::GeometryInsideShadowBound(RE::BSGeometry * geometry)
-	{
-		auto pos = geometry->worldBound.center - RE::Main::WorldRootCamera()->world.translate;
-		float dist = pos.Length() - (geometry->worldBound.radius);
-		return dist < maxCascadeCoverageVS;
+	ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
+	globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
+	globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
+	globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
+
+	func(light, desc, unk, flags);
+
+	//globals::game::smState->shadowSceneNode[0]->GetRuntimeData().windMagnitude = 0.0f;
+
+	// Needed because VL shadow maps use the same descriptors...
+	desc.clearRenderTarget = true;
+
+	pass = ++pass < nCascades ? pass : 0;
+
+	if (pass == 0) {
+		auto VLCascades = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
+		globals::d3d::context->PSSetShaderResources(24, 1, &VLCascades);
+		renderingCascades = false;
+		logger::info("End Cascades");
 	}
+}
+//0.05 - 0.1 works well
+DirectX::XMVECTOR ShadowmapMatrixFix::QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees)
+{
+	using namespace DirectX;
+
+	float stepRadians = XMConvertToRadians(stepDegrees);
+
+	//Calculate azimuth and elevation
+	float azimuth = atan2f(XMVectorGetX(lightDir), XMVectorGetZ(lightDir));
+	float elevation = asinf(XMVectorGetY(lightDir));
+
+	//Quantize angles to nearest step
+	azimuth = roundf(azimuth / stepRadians) * stepRadians;
+	elevation = roundf(elevation / stepRadians) * stepRadians;
+
+	//Convert back to cart coords
+	float cosElev = cosf(elevation);
+	XMVECTOR quantized = XMVectorSet(sinf(azimuth) * cosElev, sinf(elevation), cosf(azimuth) * cosElev, 0.0f);
+
+	return XMVector3Normalize(quantized);
+}
+
+// This is used in True PBR during the render pass list generation
+// It updates the flags for geometry retreiving shadows
+// The flag is set wrong during pre culling when rendering more than 2 cascades
+// and when the most distant cascade isn't rendered in the same frame
+bool ShadowmapMatrixFix::GeometryInsideShadowBound(RE::BSGeometry* geometry)
+{
+	auto pos = geometry->worldBound.center - RE::Main::WorldRootCamera()->world.translate;
+	float dist = pos.Length() - (geometry->worldBound.radius);
+	return dist < maxCascadeCoverageVS;
+}
