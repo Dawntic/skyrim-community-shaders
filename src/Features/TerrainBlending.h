@@ -52,8 +52,8 @@ public:
 	bool updateRight = true;
 	bool enableLerp = false;
 
-	float minExtent = 5000.0f;
-	float multiplerRange = 3.0f;
+	float minExtent = 1500.0f;
+	float multiplerRange = 2.5f;
 	float MultTwo = 1.0f;
 	float testVar = 0;
 	float blendZone = 100;
