@@ -37,7 +37,7 @@ public:
 	float slopeScaleBias[5] = { 3.2, 3.8, 3.8, 3.8, 3.0 };
 	//bool renderShadowMask = false;
 
-	int splits[4] = { 1500, 3000, 6000, 15000 };
+	int splits[4] = { 1500, 9000, 11000, 15000 };
 	float lightUpdateAngle = 0.001;
 	float lightMinAngle = 10;
 	bool disableCulling = false;
@@ -68,7 +68,7 @@ public:
 
 	bool test = false;
 	bool test2 = false;
-	//bool test3 = false;
+	bool test3 = false;
 	//
 
 	virtual void DrawSettings() override;

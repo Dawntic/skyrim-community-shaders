@@ -106,8 +106,8 @@ void TerrainBlending::DrawSettings()
 	//ImGui::Checkbox("Update", &update);
 
 	ImGui::Checkbox("Test", &test);
-	//ImGui::Checkbox("Test 2", &test2);
-	//ImGui::Checkbox("Test 3", &test3);
+	ImGui::Checkbox("Test 2", &test2);
+	ImGui::Checkbox("Test 3", &test3);
 
 	//ImGui::Checkbox("Update Forward", &updateForward);
 	//ImGui::Checkbox("Update Right", &updateRight);
@@ -121,11 +121,11 @@ void TerrainBlending::DrawSettings()
 
 	ImGui::SliderFloat("Z Range Multipler", &multiplerRange, 0.0f, 4.0f);
 	ImGui::SliderFloat("Z Min Extent", &minExtent, 0.0f, 5000.0f);
-	ImGui::SliderFloat("Culling Proj Z Offset", &testVar, 0.0f, 5000.0f);
-	ImGui::SliderFloat("Culling Mult 2", &MultTwo, 0.0f, 10.0f);
+	//ImGui::SliderFloat("Culling Proj Z Offset", &testVar, 0.0f, 5000.0f);
+	ImGui::SliderFloat("Culling Mult 2", &MultTwo, 0.0f, 2.0f);
 
 	//ImGui::SliderInt("Cascade To Render", &cascadeToUse, 0, 4);
-	ImGui::SliderFloat("Light Min Angle", &lightMinAngle, 0.0f, 50.0f);
+	//ImGui::SliderFloat("Light Min Angle", &lightMinAngle, 0.0f, 50.0f);
 
 	ImGui::SliderInt("Cascade 1 Coverage", &splits[0], 15, 5000);
 	ImGui::SliderInt("Cascade 2 Coverage", &splits[1], splits[0], 10000);

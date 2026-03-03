@@ -154,6 +154,7 @@ struct ShadowmapMatrixFix : EngineFix
 			float3 cornerMax;
 		};
 		AABB boundingBox;
+		AABB cullingBoundingBox;
 	};
 
 	static inline Frustum primaryCullFrustum = {};
@@ -161,8 +162,8 @@ struct ShadowmapMatrixFix : EngineFix
 
 	static inline RE::NiFrustumPlanes backupPlanes[maxCascades] = {};
 
-	static void BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, DirectX::XMVECTOR lightDirection, const int index, const bool update);
-	static void SetupPrimaryCullPlanes(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera);
+	static void BuildShadowCascadeCameraInput(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const DirectX::XMVECTOR lightDirection, const int cascadeIndex);
+	static void SetupPrimaryCullPlanes(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const Frustum& lightFrustum);
 	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
 	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
 	static bool GeometryInsideShadowBound(RE::BSGeometry* geometry);
@@ -171,10 +172,12 @@ struct ShadowmapMatrixFix : EngineFix
 	static void SetCascadeSplit(CascadeBounds::Split& outputSplits, const RE::NiFrustum& viewFrustum);
 	static void BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frustum& outFrustum, const CascadeBounds::Split& cascadeSplits, const Frustum& rootFrustum, const DirectX::XMVECTOR& lightDirection, const int cascadeIndex);
 	static void BuildCascadeBoundingSphere(CascadeBounds::Sphere& outSphere, const Frustum& lightFrustum);
-	static void BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, const DirectX::XMVECTOR& lightCameraPos, const CascadeBounds::Sphere& sphere);
-	static void BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullingProj, const CascadeBounds::AABB& boundingBox);
+	static void BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, CascadeBounds::AABB& outCullingBoundingBox, const DirectX::XMMATRIX& lightView, const Frustum& lightFrustum, const DirectX::XMVECTOR& lightCameraPos, const CascadeBounds::Sphere& sphere);
+	static void BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullProj, const CascadeBounds::AABB& boundingBox, const CascadeBounds::AABB& cullingBoundingBox);
 	static void DisableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int index);
 	static void EnableCullingPlanes(const RE::BSShadowDirectionalLight* light, const int index);
+
+	static void BuildCascadeCullingAABB(RE::NiFrustumPlanes& outPlanes, const Frustum& lightFrustum, const DirectX::XMMATRIX& lightView, const DirectX::XMVECTOR lightCameraPos);
 
 	static inline float LinearStep(float edge0, float edge1, float x)
 	{
