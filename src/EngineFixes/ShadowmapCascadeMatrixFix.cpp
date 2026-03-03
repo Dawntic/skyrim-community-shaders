@@ -459,66 +459,45 @@ void ShadowmapMatrixFix::BuildCascadeBoundingSphere(CascadeBounds::Sphere& outSp
 	outSphere.radius = radius;
 }
 
-void ShadowmapMatrixFix::BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, CascadeBounds::AABB& outCullingBoundingBox, const DirectX::XMMATRIX& lightView,
-	const Frustum& lightFrustum, const DirectX::XMVECTOR& lightCameraPos, const CascadeBounds::Sphere& sphere)
+void ShadowmapMatrixFix::BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, const DirectX::XMVECTOR& lightCameraPos, const CascadeBounds::Sphere& sphere)
 {
 	using namespace DirectX;
 
-	{
-		// Build AABB from sphere
-		XMVECTOR vRadius = XMVectorReplicate(sphere.radius);
-		XMVECTOR cornerMin = XMVectorSubtract(sphere.center, vRadius);
-		XMVECTOR cornerMax = XMVectorAdd(sphere.center, vRadius);
+	// Build AABB from sphere
+	XMVECTOR vRadius = XMVectorReplicate(sphere.radius);
+	XMVECTOR cornerMin = XMVectorSubtract(sphere.center, vRadius);
+	XMVECTOR cornerMax = XMVectorAdd(sphere.center, vRadius);
 
-		// Add trans vec here to avoid variance
-		cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
-		cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
+	// Add trans vec here to avoid variance
+	cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
+	cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
 
-		auto& settings = globals::features::terrainBlending;
-		// Snap texel grid
-		XMVECTOR extent = XMVectorReplicate(2.0f * sphere.radius);
-		XMVECTOR texelSize = extent / float(cascadePxSize);
-		cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
-		cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
+	auto& settings = globals::features::terrainBlending;
+	// Snap texel grid
+	XMVECTOR extent = XMVectorReplicate(2.0f * sphere.radius);
+	XMVECTOR texelSize = extent / float(cascadePxSize);
+	cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
+	cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
 
-		outBoundingBox.cornerMin = cornerMin;  // left, bottom, near
-		outBoundingBox.cornerMax = cornerMax;  // right, top, far
-	}
+	outBoundingBox.cornerMin = cornerMin;  // left, bottom, near
+	outBoundingBox.cornerMax = cornerMax;  // right, top, far
 
-	{
-		// Build culling AABB from scratch
-		// This improves culling while retaining the stability of spherical AABB
-		XMVECTOR cornerMin = XMVectorReplicate(FLT_MAX);
-		XMVECTOR cornerMax = XMVectorNegate(cornerMin);
-		for (int i = 0; i < 8; i++) {
-			cornerMin = XMVectorMin(cornerMin, lightFrustum.corner[i]);
-			cornerMax = XMVectorMax(cornerMax, lightFrustum.corner[i]);
-		}
-
-		cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
-		cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
-
-		XMVECTOR extent = XMVectorSubtract(cornerMax, cornerMin);
-		XMVECTOR texelSize = extent / float(cascadePxSize);
-		cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
-		cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
-
-		outCullingBoundingBox.cornerMin = cornerMin;  // left, bottom, near
-		outCullingBoundingBox.cornerMax = cornerMax;  // right, top, far
-	}
+	LogVector("OG cornerMin", cornerMin);
+	LogVector("OG cornerMax", cornerMax);
 }
 
-void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullProj, const CascadeBounds::AABB& boundingBox, const CascadeBounds::AABB& cullingBoundingBox)
+void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullProj, const CascadeBounds::AABB& boundingBox)
 {
 	auto& settings = globals::features::terrainBlending;
 
 	float RANGE_MULT = settings.multiplerRange;
 	float MIN_CULL_EXTENT = settings.minExtent;
 
+	float centerZ = float3((boundingBox.cornerMin + boundingBox.cornerMax) * 0.5f).z;
+	float halfExtentZ = abs(centerZ - boundingBox.cornerMin.z);
+
 	// Build main proj frustum
 	{
-		float centerZ = float3((boundingBox.cornerMin + boundingBox.cornerMax) * 0.5f).z;
-		float halfExtentZ = abs(centerZ - boundingBox.cornerMin.z);
 		// Adjust depth range for better precision - depth clipping is disabled
 		float extent = halfExtentZ * RANGE_MULT;  // The lower this is the more spread the shadow map depth values are so higher means less precision
 
@@ -530,28 +509,50 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 
 	// Build culling frustum
 	{
-		float centerZ = float3((cullingBoundingBox.cornerMin + cullingBoundingBox.cornerMax) * 0.5f).z;
-		float halfExtentZ = abs(centerZ - cullingBoundingBox.cornerMin.z);
-		float extent = halfExtentZ * settings.MultTwo;
+		// Cap min extent to avoid issues with small cascades
+		float extent = std::max(halfExtentZ, MIN_CULL_EXTENT);
 
 		float adjustedMin = centerZ - extent;
 		float adjustedMax = centerZ + extent;
-		outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(cullingBoundingBox.cornerMin.x, cullingBoundingBox.cornerMax.x, cullingBoundingBox.cornerMin.y, cullingBoundingBox.cornerMax.y, adjustedMin, adjustedMax);
 
-		if (settings.test2) {
-			centerZ = float3((boundingBox.cornerMin + boundingBox.cornerMax) * 0.5f).z;
-			halfExtentZ = abs(centerZ - boundingBox.cornerMin.z);
-			// Cap min extent to avoid issues with small cascades
-			float extent = std::max(halfExtentZ, MIN_CULL_EXTENT);
-
-			float adjustedMin = centerZ - extent;
-			float adjustedMax = centerZ + extent;
-
-			outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(boundingBox.cornerMin.x, boundingBox.cornerMax.x, boundingBox.cornerMin.y, boundingBox.cornerMax.y, adjustedMin, adjustedMax);
-		}
+		outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(boundingBox.cornerMin.x, boundingBox.cornerMax.x, boundingBox.cornerMin.y, boundingBox.cornerMax.y, adjustedMin, adjustedMax);
 	}
 }
 //	float extent = std::max(halfExtentZ * settings.MultTwo, MIN_CULL_EXTENT);
+
+void ShadowmapMatrixFix::BuildCascadeCullingAABB(RE::NiFrustumPlanes& outPlanes, const Frustum& lightFrustum, const DirectX::XMMATRIX& lightView, const DirectX::XMVECTOR lightCameraPos)
+{
+	using namespace DirectX;
+
+	// Build AABB from sphere
+	XMVECTOR cornerMin = XMVectorReplicate(FLT_MAX);
+	XMVECTOR cornerMax = XMVectorNegate(cornerMin);
+	for (int i = 0; i < 8; i++) {
+		cornerMin = XMVectorMin(cornerMin, lightFrustum.corner[i]);
+		cornerMax = XMVectorMax(cornerMax, lightFrustum.corner[i]);
+	}
+
+	// Add trans vec here to avoid variance
+	cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
+	cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
+
+	auto& settings = globals::features::terrainBlending;
+	// Snap texel grid
+	XMVECTOR extent = XMVectorSubtract(cornerMax, cornerMin);
+	XMVECTOR texelSize = extent / float(cascadePxSize);
+	cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
+	cornerMax = XMVectorFloor(cornerMax / texelSize) * texelSize;
+
+	LogVector("cornerMin", cornerMin);
+	LogVector("cornerMax", cornerMax);
+
+	float3 cornMin = cornerMin;
+	float3 cornMax = cornerMax;
+	XMMATRIX outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(cornMin.x, cornMax.x, cornMin.y, cornMax.y, cornMin.z, cornMax.z);
+
+	XMMATRIX tighterViewProj = XMMatrixMultiply(lightView, outCullProj);
+	GetCullPlanesFromVPMatrix(outPlanes, tighterViewProj);
+}
 
 // Gribb-Hartmann extraction
 void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj)
@@ -589,7 +590,7 @@ void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlane
 
 //if cascade == 0 then run this - far plane is only 1 frame out of sync
 // Builds culling frustum
-void ShadowmapMatrixFix::SetupPrimaryCullPlanes(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const Frustum& lightFrustum)
+void ShadowmapMatrixFix::SetupPrimaryCullPlanes(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera)
 {
 	using namespace DirectX;
 
@@ -604,13 +605,12 @@ void ShadowmapMatrixFix::SetupPrimaryCullPlanes(const RE::BSShadowDirectionalLig
 	BuildCascadeBoundingSphere(boundingSphere, primaryCullFrustum);
 
 	CascadeBounds::AABB boundingBox;
-	CascadeBounds::AABB cullingBoundingBox;
-	BuildCascadeAABB(boundingBox, cullingBoundingBox, lightView, lightFrustum, lightCameraPos, boundingSphere);
+	BuildCascadeAABB(boundingBox, lightCameraPos, boundingSphere);
 
 	// Build projection transforms
 	XMMATRIX lightProj = {};  // Not used
 	XMMATRIX cullingProj = {};
-	BuildCascadeProjectionMatrices(lightProj, cullingProj, boundingBox, cullingBoundingBox);
+	BuildCascadeProjectionMatrices(lightProj, cullingProj, boundingBox);
 
 	const XMMATRIX cullingViewProj = XMMatrixMultiply(lightView, cullingProj);
 
@@ -618,7 +618,7 @@ void ShadowmapMatrixFix::SetupPrimaryCullPlanes(const RE::BSShadowDirectionalLig
 	GetCullPlanesFromVPMatrix(primaryCullPlanes, cullingViewProj);
 }
 
-void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const DirectX::XMVECTOR lightDirection, const int cascadeIndex)
+void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(RE::BSShadowDirectionalLight* light, RE::NiCamera& rootCamera, DirectX::XMVECTOR lightDirection, const int cascadeIndex)
 {
 	using namespace DirectX;
 
@@ -651,7 +651,7 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	//	setupSplits = false;
 	//}
 
-	if (settings.test3) {
+	if (settings.test2) {
 		float frustumSize = viewFrustum.fTop;
 
 		viewFrustum.fRight = frustumSize;
@@ -684,7 +684,7 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 
 	const XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
 
-	BuildCascadeAABB(cascadeBoundData.boundingBox, cascadeBoundData.cullingBoundingBox, lightView, lightFrustum, lightCameraPos, cascadeBoundData.boundingSphere);
+	BuildCascadeAABB(cascadeBoundData.boundingBox, lightCameraPos, cascadeBoundData.boundingSphere);
 
 	//logger::info("bounding box min: {}, {}, {}", cascadeBoundData.boundingBox.cornerMin.x, cascadeBoundData.boundingBox.cornerMin.y, cascadeBoundData.boundingBox.cornerMin.z);
 	//logger::info("bounding box max: {}, {}, {}", cascadeBoundData.boundingBox.cornerMax.x, cascadeBoundData.boundingBox.cornerMax.y, cascadeBoundData.boundingBox.cornerMax.z);
@@ -692,7 +692,7 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	// Build view projection transforms
 	XMMATRIX lightProj = {};
 	XMMATRIX cullingProj = {};
-	BuildCascadeProjectionMatrices(lightProj, cullingProj, cascadeBoundData.boundingBox, cascadeBoundData.cullingBoundingBox);
+	BuildCascadeProjectionMatrices(lightProj, cullingProj, cascadeBoundData.boundingBox);
 	//LogMatrix("proj", lightProj);
 
 	const XMMATRIX viewProj = XMMatrixMultiply(lightView, lightProj);
@@ -716,9 +716,8 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	const XMMATRIX cullingViewProj = XMMatrixMultiply(lightView, cullingProj);
 	GetCullPlanesFromVPMatrix(cascadeData[cascadeIndex].cullingPlanes, cullingViewProj);
 
-	SetupPrimaryCullPlanes(light, rootCamera, lightFrustum);  //
-															  //if(!settings.test2)
-															  //	BuildTighterCullingPlanes(cascadeData[cascadeIndex].cullingPlanes, lightFrustum, lightView, lightCameraPos);
+	if (!settings.test2)
+		BuildCascadeCullingAABB(cascadeData[cascadeIndex].cullingPlanes, lightFrustum, lightView, lightCameraPos);
 }
 
 // Stop other cascades from being rendered this frame - other methods to defer the accumulator dispatch cause recursion deadlocks
@@ -778,8 +777,8 @@ bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSSh
 	}
 
 	// Only set for cascade 0 since result is the same
-	//if (frameCounter == 0)
-	//	SetupPrimaryCullPlanes(light, inputCamera);
+	if (frameCounter == 0)
+		SetupPrimaryCullPlanes(light, inputCamera);
 
 	// Run game func to init and update frame camera with new params
 	bool ret = func(light, inputCamera);
