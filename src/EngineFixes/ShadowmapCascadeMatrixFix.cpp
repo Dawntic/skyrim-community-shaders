@@ -18,6 +18,7 @@ fix cpu geometry translation
 fix bounding aspect ratio
 fix light altitude cap
 fix light dir update variance
+fix proj aspect ratio
 disable depth clipping
 add support for 4 cascades
 add time sliced rendering
@@ -44,20 +45,12 @@ remove VL cascades
 // Interiors
 
 //ISSUES:
-// Wind in bones
-// Light dir update changes at lot
-// Need some custom bias so we can cull stuff behind the player but not in front
-
-// Try not updating Proj matrix whenever the light dir changes
-
-// What about only updating either x,y or z of light direction instead of all at once
 
 // NOT IMPORTANT:
 // culling breaks when setting very fig cascade distance and disabling culling doesn't fix it
 // Do i Cap the altitude or find a way to slow down the light updating?
 // Which VL cascades should we render? how far does VL grid extend?
-
-// Stagger update of forward and up?? Maybe try lerp current dir to next dir too - does up and forward both cause the same amount of varience?
+// Wind in bones
 
 //RE-CHECK:
 // Need more offset - cascade is wasting lots of room
@@ -71,6 +64,10 @@ remove VL cascades
 // Instead of blacklisting we can hook material func when loading txtures and set specific flags then check flags when culling
 
 // Other option: use AABB to flag geom then use those flags to set rasterizer bias, eg don't bais surfaces that are currently receiving shadows
+
+// Try not updating Proj matrix whenever the light dir changes
+// What about only updating either x,y or z of light direction instead of all at once
+// Stagger update of forward and up?? Maybe try lerp current dir to next dir too - does up and forward both cause the same amount of varience?
 
 bool ShadowmapMatrixFix::Install()
 {
@@ -93,17 +90,9 @@ bool ShadowmapMatrixFix::Install()
 	// Set limit on VL shadow cascade min size
 	stl::write_thunk_call<CreateVolumetricCascadeStencilTarget>(REL::RelocationID(100458, 107175).address() + REL::Relocate(0x9DC, 0x9DC));  // Correct SE
 
-	//stl::write_vfunc<0x6, BSShader_SetupGeometry>(RE::VTABLE_BSUtilityShader[0]);
-	//stl::write_vfunc<0x2A, Test>(RE::VTABLE_BSLightingShaderProperty[0]);
-
-	// Fill VL shadows call
-	//REL::safe_fill(REL::RelocationID(101495, 108489).address() + REL::Relocate(0x30, 0x30), REL::NOP, 76);
-
 	// Need to use these somewhere
 	//gShadowDistance = reinterpret_cast<float*>(REL::RelocationID(528314, 415263).address());
 	//gInteriorShadowDistance = reinterpret_cast<float*>(REL::RelocationID(513755, 391724).address());
-
-	//stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Lighting>>(RE::VTABLE_BSLightingShader[0]);
 
 	gCascadeBlendDist = reinterpret_cast<float*>(REL::RelocationID(513805, 391863).address());
 
@@ -111,261 +100,6 @@ bool ShadowmapMatrixFix::Install()
 }
 #pragma warning(push)
 #pragma warning(disable: 4100 4456 4189)
-
-//Disabling culling does nothing
-//probs not possible to ever have mountains work in cascade 0
-//I think VL map is just never culled
-
-// Keep VL cascades for VL
-// If terrain shadows enabled don't render any mountains in cascade
-
-// Why do shadows without my fixes work? - they dont, sky sync breaks them
-
-#include "../EngineFixes/ShadowmapCascadeRasterizerFix.h"
-void ShadowmapMatrixFix::BSShader_SetupGeometry::thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
-{
-	if (renderingCascades) {
-		logger::info("BSShader_SetupGeometry  Geometry: {}", pass->geometry->name.c_str());
-
-		// This is not good but there is not a better way to target specifically mountains
-		static const std::vector<std::string_view> terrain = {
-			"MountainCliff01",
-			"MountainCliff02",
-			"MountainCliff03",
-			"MountainCliff03Trailer",
-			"MountainCliff04",
-			"MountainCliffCrevasse",
-			"MountainCliffSlope",
-			"MountainCliffSm01",
-			"MountainPeak01",
-			"MountainPeak02",
-			"MountainRidge01",
-			"MountainRidge02",
-			"MountainRidge03",
-			"MountainTrim01",
-			"MountainTrim01Wet",
-			"MountainTrim02",
-			"MountainTrim02Wet",
-			"MountainTrim03",
-			"MountainTrim03Wet",
-			"MountainTrimSlab",
-		};
-
-		//14 min and 22 max, add 3 for uid
-		auto geomName = std::string_view(pass->geometry->name);
-		auto len = geomName.length();
-		if (len >= 14 && len <= 25) {
-			for (const auto& name : terrain) {
-				if (geomName.starts_with(name)) {  // Geometry has a uid field
-					logger::info("Matched Name");
-					auto& shadowState = globals::game::shadowState->GetRuntimeData();
-					ShadowmapRasterizerFix& rasterizerFix = EngineFix::GetPPLEngineFix<ShadowmapRasterizerFix>(1);
-					ID3D11RasterizerState* newRaster = rasterizerFix.shadowmapInteriorRasterStates[shadowState.rasterStateFillMode][0][shadowState.rasterStateDepthBiasMode][shadowState.rasterStateScissorMode];
-					globals::d3d::context->RSSetState(newRaster);
-				}
-			}
-		}
-	}
-
-	func(shader, pass, renderFlags);
-}
-
-/////
-/////
-// We can set the twoSided flag for mountains here???
-/////
-/////
-
-RE::BSShaderProperty::RenderPassArray* ShadowmapMatrixFix::Test::thunk(RE::BSShaderProperty* prop, RE::BSGeometry* geometry, std::uint32_t flags, RE::BSShaderAccumulator* accumulator)
-{
-	RE::BSShaderProperty::RenderPassArray* renderPasses = func(prop, geometry, flags, accumulator);
-	//if (renderPasses == nullptr) {
-	//	return renderPasses;
-	//}
-
-	//using enum SIE::ShaderCache::LightingShaderTechniques;
-	//using enum RE::BSShaderProperty::EShaderPropertyFlag8;
-	using enum RE::BSShaderProperty::EShaderPropertyFlag;
-
-	//accumulator->GetRuntimeData()->currentActive = false; // Does nothing
-
-	//prop->SetFlags(kCastShadows, false);
-
-	//BGSDefaultObjectManager::GetSingleton()->GetObject()
-
-	if (renderingVLCascades) {
-		//logger::info("Volumetric RenderPassArray:  flags: {}   prop: {:X}   geometry: {:X}", flags, (uintptr_t)prop, (uintptr_t)geometry);
-		//if(geometry)
-		//	VLGeometry.push_back(geometry);
-	}
-
-	if (renderingCascades) {
-		//logger::info("Cascade RenderPassArray:  flags: {}   prop: {:X}   geometry: {:X}", flags, (uintptr_t)prop, (uintptr_t)geometry);
-		//logger::info("Geometry: {}", geometry->name.c_str());
-
-		//logger::info("Coll Layer: {}", CollisionLayerToString(geometry->GetCollisionLayer()));
-
-		//	for(auto& geom : VLGeometry){
-		//	if(geometry == geom){
-		//logger::info("Culling Match:  {}", geometry->name.c_str());
-		//geometry->CullGeometry(true);
-		//geometry->CullNode(true);
-		//}
-		//}
-
-		//return nullptr; // only effects culling in world renders - color buffer
-
-		//if (prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape, RE::BSShaderProperty::EShaderPropertyFlag::kCastShadows)) {
-		//	logger::info("MultiTextureLandscape");
-		//prop->DoClearRenderPasses(); //Effects the whole pipeline not just shadows
-		//currentPass->ClearRenderPass();  //Deadlocks
-		//	return nullptr;
-		//}
-
-		/*
-		if (geometry) {
-			if (RE::TESObjectREFR* refData = geometry->GetUserData()) {
-				if (refData->loadedData) {
-					if (auto refFlags = refData->loadedData->flags) {
-						if ((refFlags & RE::TESObjectREFR::RecordFlags::kGround) != 0) {
-							logger::info("kGround Found");
-						}
-
-						if ((refFlags & RE::TESObjectREFR::RecordFlags::kIsGroundPiece) != 0) {
-							logger::info("kIsGroundPiece   Geom Name: {}  flags: {}", geometry->name.c_str(), prop->flags.underlying());
-						}
-
-						if (refData->QIsLODLandObject())
-							logger::info("Found Land");
-					}
-				}
-			}
-		}
-		//geometry->GetUserData()->Is(RE::FormType::Land);
-
-		//(GetFormFlags() & RecordFlags::kInitialized) != 0;
-
-		//logger::info("FormType: {}", RE::FormTypeToString(geometry->GetUserData()->GetFormType()));
-
-		if (prop->flags.any(kParallaxOcclusion)) {
-			logger::info("Has kParallaxOcclusion:  {}", geometry->name.c_str());
-		}
-
-		if (prop->flags.any(kFitSlope)) {
-			logger::info("Has kFitSlope:  {}", geometry->name.c_str());
-		}
-
-		PrintSetShaderFlags(prop->flags.underlying());
-		logger::info("Name: {}", geometry->name.c_str());
-		//logger::info("Flags: {}", prop->flags.underlying());
-
-		//if (const auto feature = prop->GetBaseMaterial()->GetFeature();
-		auto& settings = globals::features::terrainBlending;
-		if (settings.test) {
-			geometry->CullGeometry(true);
-			geometry->CullNode(true);
-		}
-
-		if (prop->flags.any(kMultiTextureLandscape, kLODLandscape, kNoLODLandBlend, kMultiIndexSnow)) {
-			if (prop->flags.none(kSpecular, kVertexAlpha, kDecal, kDynamicDecal, kSoftLighting, kTreeAnim)) {
-				logger::info("Culling:  {}    flags: {}", geometry->name.c_str(), prop->flags.underlying());
-				geometry->CullGeometry(true);
-				geometry->CullNode(true);
-
-				//if(geometry->GetCollisionLayer() == RE::COL_LAYER::kTerrain || geometry->GetCollisionLayer() == RE::COL_LAYER::kGround){
-				//geometry->CullGeometry(true);
-				//geometry->CullNode(true);
-				//geometry->AsFadeNode()->GetFlags()
-				//logger::info("Culling:  {}", geometry->name.c_str());
-			}
-		}
-
-
-		RE::BSRenderPass* currentPass = renderPasses->head;
-		while (currentPass != nullptr) {
-			constexpr uint32_t LightingTechniqueStart = 0x4800002D;
-			auto lightingTechnique = currentPass->passEnum - LightingTechniqueStart;
-
-			//logger::info("PassEnum: {} : {:X}     lightingTechnique: {} : {:X}", currentPass->passEnum, currentPass->passEnum, lightingTechnique, lightingTechnique);
-		//	if (currentPass->passEnum == 49222 || currentPass->passEnum == 49254) {
-			////	logger::info("Found Enum: {:X}", currentPass->passEnum);
-			//	currentPass->ClearRenderPass();  //Deadlocks
-			//}
-
-
-
-			//if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)) {
-			//	logger::info("MultiTextureLandscape");
-			//	currentPass->ClearRenderPass();  //Deadlocks
-			//}
-
-			if (currentPass->shader->shaderType != RE::BSShader::Type::Lighting) {
-				logger::info("Not lighting pass  type: {}", currentPass->shader->shaderType.underlying());
-				//prop->SetFlags(kCastShadows, false);
-				//prop->SetFlags(kAssumeShadowmask, false);
-				//prop->SetFlags(kReceiveShadows, false);
-				//prop->SetFlags(kZBufferWrite, false);
-			}
-
-
-			if (currentPass->shader->shaderType == RE::BSShader::Type::Lighting) {
-				constexpr uint32_t LightingTechniqueStart = 0x4800002D;
-				auto lightingTechnique = currentPass->passEnum - LightingTechniqueStart;
-				auto lightingFlags = lightingTechnique & ~(~0u << 24);
-				auto lightingType = static_cast<SIE::ShaderCache::LightingShaderTechniques>((lightingTechnique >> 24) & 0x3F);
-				lightingFlags &= ~0b111000u;
-
-				//if (lightingType == MTLand || lightingType == MTLandLODBlend || prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)) {
-
-				// Seems to stop almost everything
-					lightingFlags &= ~(static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow));
-					prop->SetFlags(kCastShadows, false);
-					prop->SetFlags(kAssumeShadowmask, false);
-					prop->SetFlags(kReceiveShadows, false);
-					prop->SetFlags(kZBufferWrite, false);
-				//}
-
-				//prop->InvalidateMaterial(); //Bad clib Addr
-
-
-
-				//if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kReceiveShadows)) {
-
-				lightingTechnique = (static_cast<uint32_t>(lightingType) << 24) | lightingFlags;
-				currentPass->passEnum = lightingTechnique + LightingTechniqueStart;
-
-			//}
-
-			currentPass = currentPass->next;
-		}
-		*/
-	}
-
-	return renderPasses;
-}
-
-/*
-{
-	logger::info("Flags: {},   Prop Ptr: {:X},   Accum Ptr: {:X}", flags, (uintptr_t)prop, (uintptr_t)accumulator);
-
-	//
-	if(renderingCascades){
-		if(prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)){
-			logger::info("kMultiTexture");
-			lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);
-		}
-
-
-	}
-
-
-	if(prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kAssumeShadowmask)){
-		logger::info("assume shadowmask");
-	}
-
-	return func(prop, geometry, flags, accumulator);
-}
-*/
 
 // Ideally the VL cascade will be remvoed in the future
 void ShadowmapMatrixFix::CreateVolumetricCascadeStencilTarget::thunk(RE::BSGraphics::Renderer* renderer, RE::RENDER_TARGETS_DEPTHSTENCIL::RENDER_TARGET_DEPTHSTENCIL stencil, RE::BSGraphics::DepthStencilTargetProperties* prop)
@@ -519,8 +253,8 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 	{
 		float centerZ = float3((boundingBox.cornerMin + boundingBox.cornerMax) * 0.5f).z;
 		float halfExtentZ = abs(centerZ - boundingBox.cornerMin.z);
-		// Adjust depth range for better precision - depth clipping is disabled
-		float extent = halfExtentZ * RANGE_MULT;  // The lower this is the more spread the shadow map depth values are so higher means less precision
+		// Adjust depth range for better capture - depth clipping is disabled
+		float extent = halfExtentZ * RANGE_MULT;
 
 		float adjustedMin = centerZ - extent;
 		float adjustedMax = centerZ + extent;
@@ -534,28 +268,14 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 		float halfExtentZ = abs(centerZ - cullingBoundingBox.cornerMin.z);
 
 		// Cap min extent to avoid issues with small cascades
-		float extent = std::max(halfExtentZ * settings.MultTwo, MIN_CULL_EXTENT);
+		float extent = std::max(halfExtentZ, MIN_CULL_EXTENT);
 
 		float adjustedMin = cullingBoundingBox.cornerMin.z - extent;
 		float adjustedMax = cullingBoundingBox.cornerMax.z + extent;
 
-		//logger::info("extent: {}", extent);
-		//logger::info("adjustedMin: {}  adjustedMax: {}", adjustedMin, adjustedMax);
 		outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(cullingBoundingBox.cornerMin.x, cullingBoundingBox.cornerMax.x, cullingBoundingBox.cornerMin.y, cullingBoundingBox.cornerMax.y, adjustedMin, adjustedMax);
-		if (settings.test2) {
-			centerZ = float3((boundingBox.cornerMin + boundingBox.cornerMax) * 0.5f).z;
-			halfExtentZ = abs(centerZ - boundingBox.cornerMin.z);
-			// Cap min extent to avoid issues with small cascades
-			float extent = std::max(halfExtentZ, MIN_CULL_EXTENT);
-
-			float adjustedMin = centerZ - extent;
-			float adjustedMax = centerZ + extent;
-
-			outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(boundingBox.cornerMin.x, boundingBox.cornerMax.x, boundingBox.cornerMin.y, boundingBox.cornerMax.y, adjustedMin, adjustedMax);
-		}
 	}
 }
-//	float extent = std::max(halfExtentZ * settings.MultTwo, MIN_CULL_EXTENT);
 
 // Gribb-Hartmann extraction
 void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj)
@@ -591,8 +311,6 @@ void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlane
 	}
 }
 
-//if cascade == 0 then run this - far plane is only 1 frame out of sync
-// Builds culling frustum
 void ShadowmapMatrixFix::SetupPrimaryCullPlanes(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const Frustum& lightFrustum)
 {
 	using namespace DirectX;
@@ -639,8 +357,8 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	float unitHalfWidth = tan(hFOVRad / 2);
 	float unitHalfHeight = unitHalfWidth / (globals::state->screenSize.x / globals::state->screenSize.y);
 
-	viewFrustum.fRight = unitHalfWidth;
-	viewFrustum.fLeft = -unitHalfWidth;
+	viewFrustum.fRight = unitHalfHeight;
+	viewFrustum.fLeft = -unitHalfHeight;
 	viewFrustum.fTop = unitHalfHeight;
 	viewFrustum.fBottom = -unitHalfHeight;
 
@@ -654,13 +372,6 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	//	SetCascadeSplit(cascadeBoundData.splitDist, viewFrustum);
 	//	setupSplits = false;
 	//}
-
-	if (settings.test3) {
-		float frustumSize = viewFrustum.fTop;
-
-		viewFrustum.fRight = frustumSize;
-		viewFrustum.fLeft = -frustumSize;
-	}
 
 	// Build frustums, view matrix
 	Frustum rootFrustum;
@@ -720,9 +431,8 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	const XMMATRIX cullingViewProj = XMMatrixMultiply(lightView, cullingProj);
 	GetCullPlanesFromVPMatrix(cascadeData[cascadeIndex].cullingPlanes, cullingViewProj);
 
-	SetupPrimaryCullPlanes(light, rootCamera, lightFrustum);  //
-															  //if(!settings.test2)
-															  //	BuildTighterCullingPlanes(cascadeData[cascadeIndex].cullingPlanes, lightFrustum, lightView, lightCameraPos);
+	// Only set for cascade 0 since result is the same
+	SetupPrimaryCullPlanes(light, rootCamera, lightFrustum);
 }
 
 // Stop other cascades from being rendered this frame - other methods to defer the accumulator dispatch cause recursion deadlocks
@@ -780,10 +490,6 @@ bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSSh
 		if (activeCascades & (1 << i))
 			BuildShadowCascadeCameraInput(light, inputCamera, lightDirection, i);
 	}
-
-	// Only set for cascade 0 since result is the same
-	//if (frameCounter == 0)
-	//	SetupPrimaryCullPlanes(light, inputCamera);
 
 	// Run game func to init and update frame camera with new params
 	bool ret = func(light, inputCamera);
