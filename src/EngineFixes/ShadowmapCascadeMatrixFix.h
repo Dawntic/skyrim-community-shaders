@@ -162,10 +162,10 @@ struct ShadowmapMatrixFix : EngineFix
 
 	static inline RE::NiFrustumPlanes backupPlanes[maxCascades] = {};
 
-	static void BuildShadowCascadeCameraInput(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const DirectX::XMVECTOR lightDirection, const int cascadeIndex);
-	static void SetupPrimaryCullPlanes(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const Frustum& lightFrustum);
+	static void BuildShadowCascadeCameraInput(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const DirectX::XMVECTOR lightDirection, const int cascadeIndex, const int frameIndex);
+	static void SetupPrimaryCullPlanes(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const Frustum& primaryCullFrustum);
 	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
-	static DirectX::XMVECTOR QuantizeLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
+	static DirectX::XMVECTOR GetQuantizedLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
 	static bool GeometryInsideShadowBound(RE::BSGeometry* geometry);
 
 	static void BuildRootFrustum(Frustum& outputFrustum, const RE::NiFrustum& viewFrustum, const DirectX::XMMATRIX& rootWorld);

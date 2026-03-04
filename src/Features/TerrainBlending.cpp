@@ -115,7 +115,7 @@ void TerrainBlending::DrawSettings()
 
 	ImGui::SliderInt("Always update", &alwaysUpdate, 0, 4);
 	//ImGui::Checkbox("Enable Lerp", &enableLerp);
-	ImGui::SliderFloat("Light Angle Update Step", &lightUpdateAngle, 0.0f, 0.5f, "%.4f");
+	ImGui::SliderFloat("Light Angle Update Step", &lightUpdateAngle, 0.0001f, 0.01f, "%.4f");
 	ImGui::SliderInt("Frames before update", &frameBeforeUpdate, 0, 256);
 	//ImGui::SliderInt("Lerp Update", &lerpFrames, 0, 256);
 

@@ -38,7 +38,7 @@ public:
 	//bool renderShadowMask = false;
 
 	int splits[4] = { 1500, 9000, 11000, 15000 };
-	float lightUpdateAngle = 0.001;
+	float lightUpdateAngle = 0.0025;
 	float lightMinAngle = 10;
 	bool disableCulling = false;
 	bool rasterDepthClip = false;
@@ -52,7 +52,7 @@ public:
 	bool updateRight = true;
 	bool enableLerp = false;
 
-	float minExtent = 1500.0f;
+	float minExtent = 2000.0f;
 	float multiplerRange = 2.5f;
 	float MultTwo = 1.0f;
 	float testVar = 0;
