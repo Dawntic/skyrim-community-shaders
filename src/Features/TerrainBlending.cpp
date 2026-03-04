@@ -101,22 +101,374 @@ namespace
 		a_state.fallbackTriggerRva = 0;
 	}
 
+	bool IsDiagnosticSlot2GuardMode()
+	{
+		return globals::state && globals::state->IsDeveloperMode();
+	}
+
+	// Caller identity must come from _ReturnAddress() at each hook callsite.
+	// Normalize to module-relative RVA so values are stable across process ASLR.
+	uint32_t ToModuleRva(const void* a_returnAddress)
+	{
+		return static_cast<uint32_t>(reinterpret_cast<std::uintptr_t>(a_returnAddress) - REL::Module::get().base());
+	}
+
+	bool ShouldUseBlendedDepthSRV()
+	{
+		auto& vr = globals::features::vr;
+		return !globals::game::isVR || !vr.gDepthBufferCulling || !*vr.gDepthBufferCulling;
+	}
+
+	bool IsShadowmaskDepthDescriptorWhitelisted(const uint32_t a_descriptor)
+	{
+		return a_descriptor == kShadowmaskDepthDescriptor0 || a_descriptor == kShadowmaskDepthDescriptor1;
+	}
+
+	template <size_t N>
+	bool IsCallerAllowlisted(const std::array<uint32_t, N>& a_allowlist, const uint32_t a_callerRva)
+	{
+		for (const auto rva : a_allowlist) {
+			if (rva == a_callerRva) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	template <size_t N>
+	bool ShouldAllowCallerWithFallback(
+		CallerFallbackState& a_state,
+		const std::array<uint32_t, N>& a_allowlist,
+		const bool a_enableAutoBroadFallback,
+		const uint64_t a_rejectThreshold,
+		const bool a_requireNoAllowlistedHitForFallback,
+		const char* a_logPrefix,
+		const char* a_fallbackLabel,
+		const uint32_t a_callerRva)
+	{
+		if (IsCallerAllowlisted(a_allowlist, a_callerRva)) {
+			a_state.sawAllowlistedHit = true;
+			// For sensitive paths (depth override), collapse broad fallback as soon as
+			// a known-good allowlisted caller is observed.
+			if (a_requireNoAllowlistedHitForFallback && a_state.broadFallbackActive) {
+				a_state.broadFallbackActive = false;
+			}
+			return true;
+		}
+
+		if (a_state.broadFallbackActive) {
+			return true;
+		}
+
+		a_state.rejectTotal++;
+		a_state.blockedCallerRvas.insert(a_callerRva);
+
+		const bool fallbackEligible = !a_requireNoAllowlistedHitForFallback || !a_state.sawAllowlistedHit;
+		if (a_enableAutoBroadFallback && fallbackEligible && a_state.rejectTotal >= a_rejectThreshold) {
+			a_state.broadFallbackActive = true;
+			a_state.fallbackTriggerRva = a_callerRva;
+			if (!a_state.fallbackActivatedLogged && IsDiagnosticSlot2GuardMode()) {
+				logger::debug(
+					"[{}] {} activated triggerRva=0x{:X} blockedEvents={} blockedUniqueRvas={}",
+					a_logPrefix,
+					a_fallbackLabel,
+					a_state.fallbackTriggerRva,
+					a_state.rejectTotal,
+					a_state.blockedCallerRvas.size());
+				a_state.fallbackActivatedLogged = true;
+			}
+			return true;
+		}
+
+		return false;
+	}
+
+	void MaybeResetCallerFallbackOnGateTransition(
+		CallerFallbackState& a_state,
+		const bool a_gateSatisfied,
+		const char* a_resetLogLine)
+	{
+		if (!a_state.gateActivePrevious && a_gateSatisfied) {
+			ResetCallerFallbackState(a_state);
+			if (IsDiagnosticSlot2GuardMode()) {
+				logger::debug("{}", a_resetLogLine);
+			}
+		}
+		a_state.gateActivePrevious = a_gateSatisfied;
+	}
+
+	bool ShouldApplySlot2Rewrite(const uint32_t a_callerRva)
+	{
+		// Selector for override map item (2): PS slot 2 rewrite path.
+		return ShouldAllowCallerWithFallback(
+			slot2FallbackState,
+			kSlot2CallerAllowlistRvas,
+			kEnableAutoBroadSlot2Fallback,
+			kSlot2AutoFallbackRejectThreshold,
+			true,
+			"TB Override",
+			"slot2 fallback",
+			a_callerRva);
+	}
+
+	bool ShouldApplyDepthOverrideForCaller(const uint32_t a_callerRva)
+	{
+		// Selector for override map item (3): descriptor-scoped OM depth override.
+		return ShouldAllowCallerWithFallback(
+			depthOverrideFallbackState,
+			kDepthOverrideCallerAllowlistRvas,
+			kEnableAutoBroadDepthOverrideFallback,
+			kDepthOverrideAutoFallbackRejectThreshold,
+			true,
+			"TB DepthOverride",
+			"fallback",
+			a_callerRva);
+	}
+
+	bool IsEngineHookFeatureGateSatisfied(const TerrainBlending& a_singleton)
+	{
+		if (!globals::game::isVR || !a_singleton.loaded || !a_singleton.settings.Enabled) {
+			return false;
+		}
+
+		return !ShouldUseBlendedDepthSRV();
+	}
+
+	struct EngineHookPassGateState
+	{
+		bool gateSatisfied = false;
+		bool inShadowmaskPhase = false;
+		bool isUtility = false;
+		bool isWhitelistedDescriptor = false;
+		bool shouldApply = false;
+	};
+
+	EngineHookPassGateState EvaluateEngineHookPassGate(const TerrainBlending& a_singleton, RE::BSShader* a_shader, uint32_t a_descriptor)
+	{
+		EngineHookPassGateState state{};
+		state.gateSatisfied = IsEngineHookFeatureGateSatisfied(a_singleton);
+		state.inShadowmaskPhase = IsInRenderShadowmasksPhase();
+		state.isUtility = a_shader && a_shader->shaderType.get() == RE::BSShader::Type::Utility;
+		state.isWhitelistedDescriptor = IsShadowmaskDepthDescriptorWhitelisted(a_descriptor);
+		state.shouldApply = state.gateSatisfied && state.inShadowmaskPhase && state.isUtility && state.isWhitelistedDescriptor;
+		return state;
+	}
+
+	struct SlotOverrideResult
+	{
+		bool hasSrv = false;
+		bool applied = false;
+		bool alreadyBound = false;
+	};
+
+	using SlotRewriteGate = bool (*)(uint32_t);
+
+	SlotOverrideResult ApplyPixelShaderSlotOverride(
+		ID3D11DeviceContext* a_context,
+		const uint32_t a_slot,
+		ID3D11ShaderResourceView* a_overrideSrv,
+		SlotRewriteGate a_rewriteGate,
+		const uint32_t a_callerRva)
+	{
+		SlotOverrideResult result{};
+		result.hasSrv = a_overrideSrv != nullptr;
+		if (!result.hasSrv) {
+			return result;
+		}
+
+		ID3D11ShaderResourceView* currentSrv = nullptr;
+		a_context->PSGetShaderResources(a_slot, 1, &currentSrv);
+		result.alreadyBound = currentSrv == a_overrideSrv;
+		if (!result.alreadyBound) {
+			const bool canRewrite = a_rewriteGate ? a_rewriteGate(a_callerRva) : true;
+			if (canRewrite) {
+				a_context->PSSetShaderResources(a_slot, 1, &a_overrideSrv);
+				result.applied = true;
+			}
+		}
+
+		if (currentSrv) {
+			currentSrv->Release();
+		}
+
+		return result;
+	}
+
+	template <size_t N>
+	void MaybeLogAllowlistHookActiveOnce(
+		CallerFallbackState& a_state,
+		const char* a_logPrefix,
+		const char* a_countLabel,
+		const char* a_allowlistLabel,
+		const std::array<uint32_t, N>& a_allowlist,
+		const uint64_t a_fallbackThreshold)
+	{
+		if (a_state.hookActiveLogged || !IsDiagnosticSlot2GuardMode()) {
+			return;
+		}
+
+		std::ostringstream allowlist;
+		for (size_t i = 0; i < a_allowlist.size(); i++) {
+			if (i != 0) {
+				allowlist << ", ";
+			}
+			allowlist << "0x" << std::uppercase << std::hex << a_allowlist[i];
+		}
+
+		logger::debug(
+			"[{}] pass-specific hook active {}={} {}=[{}] fallbackThreshold={} fallbackActive={} blockedEvents={} blockedUniqueRvas={} triggerRva=0x{:X}",
+			a_logPrefix,
+			a_countLabel,
+			a_allowlist.size(),
+			a_allowlistLabel,
+			allowlist.str(),
+			a_fallbackThreshold,
+			a_state.broadFallbackActive,
+			a_state.rejectTotal,
+			a_state.blockedCallerRvas.size(),
+			a_state.fallbackTriggerRva);
+		a_state.hookActiveLogged = true;
+	}
+
+	// Restores PS slots 17 and 2 to the SRVs that were bound before this shadowmask
+	// This keeps override scope limited to the targeted pass and avoids leaking TB depth bindings into unrelated draws.
+	void ReleaseEngineHookDepthOverride()
+	{
+		if (!engineHookTechniqueState.depthStateForced) {
+			return;
+		}
+
+		auto* context = globals::d3d::context;
+		if (context) {
+			context->OMSetDepthStencilState(engineHookTechniqueState.previousDepthStencilState, engineHookTechniqueState.previousStencilRef);
+		}
+
+		if (engineHookTechniqueState.previousDepthStencilState) {
+			engineHookTechniqueState.previousDepthStencilState->Release();
+			engineHookTechniqueState.previousDepthStencilState = nullptr;
+		}
+		if (engineHookTechniqueState.forcedDepthStencilState) {
+			engineHookTechniqueState.forcedDepthStencilState->Release();
+			engineHookTechniqueState.forcedDepthStencilState = nullptr;
+		}
+
+		engineHookTechniqueState.previousStencilRef = 0;
+		engineHookTechniqueState.depthStateForced = false;
+	}
+
+	void EnsureEngineHookDepthOverride(const uint32_t a_descriptor, const uint32_t a_callerRva)
+	{
+		// Descriptor-scoped safety gate: never apply this override outside 0x1062002.
+		// This keeps the OM depth override local to the known problematic shadowmask path.
+		if (a_descriptor != kShadowmaskDepthDescriptor1) {
+			ReleaseEngineHookDepthOverride();
+			return;
+		}
+
+		const bool allowCaller = ShouldApplyDepthOverrideForCaller(a_callerRva);
+		if (!allowCaller) {
+			ReleaseEngineHookDepthOverride();
+			return;
+		}
+
+		auto* context = globals::d3d::context;
+		auto* device = globals::d3d::device;
+		if (!context || !device) {
+			return;
+		}
+
+		// OM depth state can be clobbered between late engine hooks; re-assert here
+		// so all four TB hook integration points keep consistent depth behavior.
+		if (engineHookTechniqueState.depthStateForced) {
+			if (!engineHookTechniqueState.forcedDepthStencilState) {
+				ReleaseEngineHookDepthOverride();
+			} else {
+				UINT stencilRef = engineHookTechniqueState.previousStencilRef;
+				ID3D11DepthStencilState* currentDepthStencilState = nullptr;
+				context->OMGetDepthStencilState(&currentDepthStencilState, &stencilRef);
+				if (currentDepthStencilState) {
+					currentDepthStencilState->Release();
+				}
+				context->OMSetDepthStencilState(engineHookTechniqueState.forcedDepthStencilState, stencilRef);
+				return;
+			}
+		}
+
+		ID3D11DepthStencilState* currentDepthStencilState = nullptr;
+		UINT currentStencilRef = 0;
+		context->OMGetDepthStencilState(&currentDepthStencilState, &currentStencilRef);
+		if (!currentDepthStencilState) {
+			return;
+		}
+
+		D3D11_DEPTH_STENCIL_DESC depthStencilDesc{};
+		currentDepthStencilState->GetDesc(&depthStencilDesc);
+
+		if (!depthStencilDesc.DepthEnable || depthStencilDesc.DepthFunc == D3D11_COMPARISON_ALWAYS) {
+			currentDepthStencilState->Release();
+			return;
+		}
+
+		depthStencilDesc.DepthFunc = D3D11_COMPARISON_ALWAYS;
+
+		ID3D11DepthStencilState* forcedDepthStencilState = nullptr;
+		const HRESULT hr = device->CreateDepthStencilState(&depthStencilDesc, &forcedDepthStencilState);
+		if (FAILED(hr) || !forcedDepthStencilState) {
+			currentDepthStencilState->Release();
+			return;
+		}
+
+		engineHookTechniqueState.previousDepthStencilState = currentDepthStencilState;
+		engineHookTechniqueState.previousStencilRef = currentStencilRef;
+		engineHookTechniqueState.forcedDepthStencilState = forcedDepthStencilState;
+		engineHookTechniqueState.depthStateForced = true;
+
+		context->OMSetDepthStencilState(forcedDepthStencilState, currentStencilRef);
+	}
+
+	void ReleaseEngineHookTechniqueOverride()
+	{
+		ReleaseEngineHookDepthOverride();
+
+		if (!engineHookTechniqueState.active) {
+			return;
+		}
+
+		auto* context = globals::d3d::context;
+		if (context) {
+			context->PSSetShaderResources(17, 1, &engineHookTechniqueState.previousObbSrv);
+			context->PSSetShaderResources(2, 1, &engineHookTechniqueState.previousShadowmaskSrv);
+		}
+
+		if (engineHookTechniqueState.previousObbSrv) {
+			engineHookTechniqueState.previousObbSrv->Release();
+			engineHookTechniqueState.previousObbSrv = nullptr;
+		}
+		if (engineHookTechniqueState.previousShadowmaskSrv) {
+			engineHookTechniqueState.previousShadowmaskSrv->Release();
+			engineHookTechniqueState.previousShadowmaskSrv = nullptr;
+		}
+
+		engineHookTechniqueState.active = false;
+	}
+}
+
 void TerrainBlending::DrawSettings()
 {
 	//ImGui::Checkbox("Update", &update);
 
-	ImGui::Checkbox("Test", &test);
-	ImGui::Checkbox("Test 2", &test2);
-	ImGui::Checkbox("Test 3", &test3);
+	//ImGui::Checkbox("Test", &test);
+	//ImGui::Checkbox("Test 2", &test2);
+	//ImGui::Checkbox("Test 3", &test3);
 
 	//ImGui::Checkbox("Update Forward", &updateForward);
 	//ImGui::Checkbox("Update Right", &updateRight);
 	//ImGui::Checkbox("Update Up", &updateUp);
 
-	ImGui::SliderInt("Always update", &alwaysUpdate, 0, 4);
+	//ImGui::SliderInt("Always update", &alwaysUpdate, 0, 4);
 	//ImGui::Checkbox("Enable Lerp", &enableLerp);
-	ImGui::SliderFloat("Light Angle Update Step", &lightUpdateAngle, 0.0001f, 0.01f, "%.4f");
-	ImGui::SliderInt("Frames before update", &frameBeforeUpdate, 0, 256);
+	//ImGui::SliderFloat("Light Angle Update Step", &lightUpdateAngle, 0.0001f, 0.01f, "%.4f");
+	//ImGui::SliderInt("Frames before update", &frameBeforeUpdate, 0, 256);
 	//ImGui::SliderInt("Lerp Update", &lerpFrames, 0, 256);
 
 	//ImGui::SliderFloat("Z Range Multipler", &multiplerRange, 0.0f, 4.0f);

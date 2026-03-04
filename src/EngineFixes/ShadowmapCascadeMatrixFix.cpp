@@ -275,7 +275,7 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 		float centerZ = float3((cullingBoundingBox.cornerMin + cullingBoundingBox.cornerMax) * 0.5f).z;
 		float halfExtentZ = abs(centerZ - cullingBoundingBox.cornerMin.z);
 		// Cap min extent to avoid issues with small cascades
-		float extent = std::max(halfExtentZ, MIN_CULL_EXTENT);
+		float extent = halfExtentZ;  //std::max(halfExtentZ, MIN_CULL_EXTENT);
 
 		float angularFac = 1.0f;
 		float lightElev = DirectX::XMScalarASinEst(DirectX::XMVectorGetY(lightDirection));
@@ -284,7 +284,7 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 			angularFac = std::lerp(CULL_ANGULAR_COMP, 1.0f, lightElev / 0.5f);
 		}
 
-		float adjustedMin = cullingBoundingBox.cornerMin.z - std::min(extent * angularFac, extent + MAX_ANGULAR_COMP);
+		float adjustedMin = cullingBoundingBox.cornerMin.z - extent;  //std::min(extent * angularFac, extent + MAX_ANGULAR_COMP);
 		float adjustedMax = cullingBoundingBox.cornerMax.z + extent;
 
 		outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(cullingBoundingBox.cornerMin.x, cullingBoundingBox.cornerMax.x, cullingBoundingBox.cornerMin.y, cullingBoundingBox.cornerMax.y, adjustedMin, adjustedMax);
@@ -411,7 +411,7 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	BuildCascadeBoundingSphere(cascadeBoundData.boundingSphere, lightFrustum);
 
 	XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
-	LogVector("light camera", lightCameraPos);
+	//LogVector("light camera", lightCameraPos);
 
 	BuildCascadeAABB(cascadeBoundData.boundingBox, cascadeBoundData.cullingBoundingBox, lightView, lightFrustum, lightCameraPos, cascadeBoundData.boundingSphere);
 
@@ -556,12 +556,12 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderVolumet
 	globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
 	globals::d3d::context->CSSetConstantBuffers(7, 1, &buffer);
 
-	if (pass == 0) {
-		renderingVLCascades = true;
-		logger::info("Start VL Cascades");
-	} else {
-		logger::info("VL Cascades");
-	}
+	//if (pass == 0) {
+	//	renderingVLCascades = true;
+	//	logger::info("Start VL Cascades");
+	//} else {
+	//	logger::info("VL Cascades");
+	//}
 	//TMP
 	auto& normalRoughness = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kRAWINDIRECT_DOWNSCALED].SRV;
 	globals::d3d::context->PSSetShaderResources(27, 1, &normalRoughness);
@@ -574,10 +574,10 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderVolumet
 
 	pass = ++pass < nCascades ? pass : 0;
 
-	if (pass == 0) {
-		renderingVLCascades = false;
-		logger::info("End VL Cascades");
-	}
+	//if (pass == 0) {
+	//	renderingVLCascades = false;
+	//	logger::info("End VL Cascades");
+	//}
 }
 
 // Render main cascades - called after VL cascades
@@ -599,12 +599,12 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 	data.numCascades = nCascades;
 	shadowCascadeFixCB->Update(data);
 
-	if (pass == 0) {
-		renderingCascades = true;
-		logger::info("Start Cascades");
-	} else {
-		logger::info("Cascades");
-	}
+	//if (pass == 0) {
+	//	renderingCascades = true;
+	//	logger::info("Start Cascades");
+	//} else {
+	//	logger::info("Cascades");
+	//}
 
 	ID3D11Buffer* buffer = shadowCascadeFixCB->CB();
 	globals::d3d::context->VSSetConstantBuffers(7, 1, &buffer);
@@ -620,12 +620,12 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 
 	pass = ++pass < nCascades ? pass : 0;
 
-	if (pass == 0) {
-		auto VLCascades = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
-		globals::d3d::context->PSSetShaderResources(24, 1, &VLCascades);
-		renderingCascades = false;
-		logger::info("End Cascades");
-	}
+	//if (pass == 0) {
+	//auto VLCascades = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
+	//globals::d3d::context->PSSetShaderResources(24, 1, &VLCascades);
+	//	renderingCascades = false;
+	//logger::info("End Cascades");
+	//}
 }
 
 //0.05 - 0.1 works well

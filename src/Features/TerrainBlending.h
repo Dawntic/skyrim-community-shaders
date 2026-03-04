@@ -21,15 +21,6 @@ public:
 	virtual inline bool HasShaderDefine(RE::BSShader::Type) override { return true; }
 	virtual bool SupportsVR() override { return true; }
 
-	struct Settings
-	{
-		uint32_t Enabled = true;
-		uint32_t pad[3];
-	};
-	STATIC_ASSERT_ALIGNAS_16(Settings);
-
-	Settings settings;
-
 	//
 	bool reload = false;
 	int depthBias[5] = { 160, 100, 100, 100, 150 };
@@ -70,6 +61,15 @@ public:
 	bool test2 = false;
 	bool test3 = false;
 	//
+
+	struct Settings
+	{
+		uint32_t Enabled = true;
+		uint32_t pad[3];
+	};
+	STATIC_ASSERT_ALIGNAS_16(Settings);
+
+	Settings settings;
 
 	virtual void DrawSettings() override;
 	virtual void LoadSettings(json& o_json) override;
