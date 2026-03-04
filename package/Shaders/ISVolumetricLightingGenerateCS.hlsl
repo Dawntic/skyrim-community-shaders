@@ -122,9 +122,9 @@ cbuffer ShadowCascadeFix : register(b7)
 				break;
 		}
 		#if defined(VR)
-			positionLS = mul(transpose(ShadowMapProj[eyeIndex][cascadeIndex]), float4(positionMS.xyz, 1)).xyz;
+			positionLS = mul(transpose(ShadowMapProj[eyeIndex][cascadeIndex]), float4(positionWS.xyz, 1)).xyz;
 		#else
-			positionLS = mul(shadowmapViewProjUV[cascadeIndex], float4(positionMS.xyz + FrameBuffer::CameraPosAdjust[eyeIndex].xyz, 1)).xyz;
+			positionLS = mul(shadowmapViewProjUV[cascadeIndex], float4(positionWS.xyz + PosAdjust[eyeIndex].xyz, 1)).xyz;
 		#endif
 
 		float shadowMapThreshold = cascadeIndex == 0 ? 0.01f : 0.0f;

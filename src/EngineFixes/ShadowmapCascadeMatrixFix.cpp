@@ -251,8 +251,8 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 {
 	auto& settings = globals::features::terrainBlending;
 
-	float RANGE_MULT = settings.multiplerRange;
-	float MIN_CULL_EXTENT = settings.minExtent;
+	float RANGE_MULT = 2.5f;
+	float MIN_CULL_EXTENT = 2000.0f;  //settings.minExtent;
 
 	// Build main proj frustum
 	{
@@ -271,9 +271,8 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 	{
 		float centerZ = float3((cullingBoundingBox.cornerMin + cullingBoundingBox.cornerMax) * 0.5f).z;
 		float halfExtentZ = abs(centerZ - cullingBoundingBox.cornerMin.z);
-		logger::info("halfExtentZ {}", halfExtentZ);
 		// Cap min extent to avoid issues with small cascades
-		float extent = std::max(halfExtentZ * settings.MultTwo, MIN_CULL_EXTENT);
+		float extent = std::max(halfExtentZ, MIN_CULL_EXTENT);
 
 		float adjustedMin = cullingBoundingBox.cornerMin.z - extent;
 		float adjustedMax = cullingBoundingBox.cornerMax.z + extent;
@@ -362,8 +361,9 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	float unitHalfWidth = tan(hFOVRad / 2);
 	float unitHalfHeight = unitHalfWidth / (globals::state->screenSize.x / globals::state->screenSize.y);
 
-	viewFrustum.fRight = unitHalfHeight;
-	viewFrustum.fLeft = -unitHalfHeight;
+	//
+	viewFrustum.fRight = unitHalfWidth;
+	viewFrustum.fLeft = -unitHalfWidth;
 	viewFrustum.fTop = unitHalfHeight;
 	viewFrustum.fBottom = -unitHalfHeight;
 
@@ -400,7 +400,8 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	// Build bounding objects
 	BuildCascadeBoundingSphere(cascadeBoundData.boundingSphere, lightFrustum);
 
-	const XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
+	XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
+	LogVector("light camera", lightCameraPos);
 
 	BuildCascadeAABB(cascadeBoundData.boundingBox, cascadeBoundData.cullingBoundingBox, lightView, lightFrustum, lightCameraPos, cascadeBoundData.boundingSphere);
 
@@ -514,8 +515,8 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCam
 {
 	static int counter = 0;
 
-	//if (!globals::features::terrainBlending.disableCulling)  //Cant disable now because time slicing
-	outPlanes = cascadeData[counter].cullingPlanes;
+	if (!globals::features::terrainBlending.disableCulling)  //Cant disable now because time slicing
+		outPlanes = cascadeData[counter].cullingPlanes;
 
 	counter = ++counter < nCascades ? counter : 0;
 }
@@ -646,6 +647,7 @@ DirectX::XMVECTOR ShadowmapMatrixFix::GetQuantizedLightDirection(DirectX::XMVECT
 	} else{
 		quantized = lightDir; }
 	*/
+
 	// Still looks best
 	//if (settings.test2) {
 	if (counter == settings.frameBeforeUpdate)
