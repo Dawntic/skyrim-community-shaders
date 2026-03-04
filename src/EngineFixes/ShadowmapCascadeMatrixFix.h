@@ -156,7 +156,7 @@ struct ShadowmapMatrixFix : EngineFix
 		AABB boundingBox;
 		AABB cullingBoundingBox;
 	};
-
+	static inline DirectX::XMVECTOR lightDirect = {};
 	static inline Frustum primaryCullFrustum = {};
 	static inline RE::NiFrustumPlanes primaryCullPlanes = RE::NiFrustumPlanes();
 

@@ -252,7 +252,8 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 	auto& settings = globals::features::terrainBlending;
 
 	float RANGE_MULT = 2.5f;
-	float MIN_CULL_EXTENT = 2000.0f;  //settings.minExtent;
+	float MIN_CULL_EXTENT = 2000.0f;                   //settings.minExtent;
+	float CULL_ANGULAR_COMP = settings.lightMinAngle;  // minAngle == 6
 
 	// Build main proj frustum
 	{
@@ -274,7 +275,14 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 		// Cap min extent to avoid issues with small cascades
 		float extent = std::max(halfExtentZ, MIN_CULL_EXTENT);
 
-		float adjustedMin = cullingBoundingBox.cornerMin.z - extent;
+		float angularFac = 1.0f;
+		float lightElev = DirectX::XMScalarASinEst(DirectX::XMVectorGetY(lightDirect));
+		if (lightElev < 0.5f) {
+			// Extend culling frustum near plane at low sun angles
+			angularFac = std::lerp(CULL_ANGULAR_COMP, 1.0f, lightElev / 0.5f);
+		}
+
+		float adjustedMin = cullingBoundingBox.cornerMin.z - extent * angularFac;
 		float adjustedMax = cullingBoundingBox.cornerMax.z + extent;
 
 		outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(cullingBoundingBox.cornerMin.x, cullingBoundingBox.cornerMax.x, cullingBoundingBox.cornerMin.y, cullingBoundingBox.cornerMax.y, adjustedMin, adjustedMax);
@@ -666,7 +674,7 @@ DirectX::XMVECTOR ShadowmapMatrixFix::GetQuantizedLightDirection(DirectX::XMVECT
 	//}
 
 	counter = ++counter <= (settings.frameBeforeUpdate * 3) ? counter : 0;
-
+	lightDirect = lightDirection;
 	return lightDirection;
 }
 
