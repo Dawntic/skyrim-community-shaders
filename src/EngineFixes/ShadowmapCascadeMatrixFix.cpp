@@ -39,6 +39,7 @@ remove VL cascades
 // Handle ini settings
 
 //ISSUES:
+//when cascade == 2, render both VL maps at with cascade 0
 
 // NOT IMPORTANT:
 // culling breaks when setting very fig cascade distance and disabling culling doesn't fix it
@@ -247,13 +248,14 @@ void ShadowmapMatrixFix::BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, C
 	}
 }
 
-void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullProj, const CascadeBounds::AABB& boundingBox, const CascadeBounds::AABB& cullingBoundingBox)
+void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outProj, DirectX::XMMATRIX& outCullProj, const CascadeBounds::AABB& boundingBox, const CascadeBounds::AABB& cullingBoundingBox, const DirectX::XMVECTOR lightDirection)
 {
 	auto& settings = globals::features::terrainBlending;
 
 	float RANGE_MULT = 2.5f;
-	float MIN_CULL_EXTENT = 2000.0f;                   //settings.minExtent;
-	float CULL_ANGULAR_COMP = settings.lightMinAngle;  // minAngle == 6
+	float MIN_CULL_EXTENT = 2000.0f;  //settings.minExtent;
+	float CULL_ANGULAR_COMP = 6.0f;   //settings.lightMinAngle; // minAngle == 6
+	float MAX_ANGULAR_COMP = 8000.0f;
 
 	// Build main proj frustum
 	{
@@ -276,13 +278,13 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 		float extent = std::max(halfExtentZ, MIN_CULL_EXTENT);
 
 		float angularFac = 1.0f;
-		float lightElev = DirectX::XMScalarASinEst(DirectX::XMVectorGetY(lightDirect));
+		float lightElev = DirectX::XMScalarASinEst(DirectX::XMVectorGetY(lightDirection));
 		if (lightElev < 0.5f) {
 			// Extend culling frustum near plane at low sun angles
 			angularFac = std::lerp(CULL_ANGULAR_COMP, 1.0f, lightElev / 0.5f);
 		}
 
-		float adjustedMin = cullingBoundingBox.cornerMin.z - extent * angularFac;
+		float adjustedMin = cullingBoundingBox.cornerMin.z - std::min(extent * angularFac, extent + MAX_ANGULAR_COMP);
 		float adjustedMax = cullingBoundingBox.cornerMax.z + extent;
 
 		outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(cullingBoundingBox.cornerMin.x, cullingBoundingBox.cornerMax.x, cullingBoundingBox.cornerMin.y, cullingBoundingBox.cornerMax.y, adjustedMin, adjustedMax);
@@ -323,7 +325,7 @@ void ShadowmapMatrixFix::GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlane
 	}
 }
 
-void ShadowmapMatrixFix::SetupPrimaryCullPlanes(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const Frustum& primaryCullFrustumA)
+void ShadowmapMatrixFix::SetupPrimaryCullPlanes(const RE::BSShadowDirectionalLight* light, const RE::NiCamera& rootCamera, const Frustum& primaryCullFrustumA, const DirectX::XMVECTOR lightDirection)
 {
 	using namespace DirectX;
 
@@ -344,7 +346,7 @@ void ShadowmapMatrixFix::SetupPrimaryCullPlanes(const RE::BSShadowDirectionalLig
 	// Build projection transforms
 	XMMATRIX lightProj = {};  // Not used
 	XMMATRIX cullingProj = {};
-	BuildCascadeProjectionMatrices(lightProj, cullingProj, boundingBox, cullingBoundingBox);
+	BuildCascadeProjectionMatrices(lightProj, cullingProj, boundingBox, cullingBoundingBox, lightDirection);
 
 	const XMMATRIX cullingViewProj = XMMatrixMultiply(lightView, cullingProj);
 
@@ -369,7 +371,7 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	float unitHalfWidth = tan(hFOVRad / 2);
 	float unitHalfHeight = unitHalfWidth / (globals::state->screenSize.x / globals::state->screenSize.y);
 
-	//
+	// Game culling expects this
 	viewFrustum.fRight = unitHalfWidth;
 	viewFrustum.fLeft = -unitHalfWidth;
 	viewFrustum.fTop = unitHalfHeight;
@@ -394,7 +396,7 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	Frustum lightFrustum;
 	BuildLightFrustum(lightView, lightFrustum, cascadeBoundData.splitDist, rootFrustum, lightDirection, cascadeIndex);
 
-	//static Frustum primaryCullFrustum = {};
+	static Frustum primaryCullFrustum = {};
 	// Set min/max cascade extent corners for first culling round
 	// Update is off by one but frustum is loose enough it doesn't matter
 	static constexpr int nearFarIndices[8] = { 0, 2, 4, 6, 1, 3, 5, 7 };  // near corners -> far corners
@@ -416,7 +418,7 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	// Build view projection transforms
 	XMMATRIX lightProj = {};
 	XMMATRIX cullingProj = {};
-	BuildCascadeProjectionMatrices(lightProj, cullingProj, cascadeBoundData.boundingBox, cascadeBoundData.cullingBoundingBox);
+	BuildCascadeProjectionMatrices(lightProj, cullingProj, cascadeBoundData.boundingBox, cascadeBoundData.cullingBoundingBox, lightDirection);
 
 	const XMMATRIX viewProj = XMMatrixMultiply(lightView, lightProj);
 	XMStoreFloat4x4(&cascadeData[cascadeIndex].viewProj, XMMatrixTranspose(viewProj));
@@ -439,7 +441,7 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 
 	// Only set for cascade 0 since result is the same
 	if (frameIndex == 0)
-		SetupPrimaryCullPlanes(light, rootCamera, primaryCullFrustum);
+		SetupPrimaryCullPlanes(light, rootCamera, primaryCullFrustum, lightDirection);
 }
 
 // Stop other cascades from being rendered this frame - other methods to defer accumulator cause recursion deadlocks
@@ -658,23 +660,25 @@ DirectX::XMVECTOR ShadowmapMatrixFix::GetQuantizedLightDirection(DirectX::XMVECT
 
 	// Still looks best
 	//if (settings.test2) {
-	if (counter == settings.frameBeforeUpdate)
+	int frameSplit = 20;
+	if (counter == frameSplit)
 		lightDirection = XMVectorSetX(lightDirection, XMVectorGetX(lightDir));
-	else if (counter == settings.frameBeforeUpdate * 2)
+	else if (counter == frameSplit * 2)
 		lightDirection = XMVectorSetY(lightDirection, XMVectorGetY(lightDir));
-	else if (counter == settings.frameBeforeUpdate * 3)
+	else if (counter == frameSplit * 3)
 		lightDirection = XMVectorSetZ(lightDirection, XMVectorGetZ(lightDir));
 	//}
 
 	//if(settings.test3){
 	//	if (counter == settings.frameBeforeUpdate){
 	//		lightDirection = quantized;
-	lightDirection = XMVectorFloor(lightDirection / settings.lightUpdateAngle) * settings.lightUpdateAngle;  //0.0025
+	//lightDirection = XMVectorFloor(lightDirection / settings.lightUpdateAngle) * settings.lightUpdateAngle;  //0.0025
+	lightDirection = XMVectorFloor(lightDirection / 0.0025) * 0.0025;
 	//	}
 	//}
 
-	counter = ++counter <= (settings.frameBeforeUpdate * 3) ? counter : 0;
-	lightDirect = lightDirection;
+	counter = ++counter <= (frameSplit * 3) ? counter : 0;
+	//lightDirect = lightDirection;
 	return lightDirection;
 }
 

@@ -122,9 +122,9 @@ void TerrainBlending::DrawSettings()
 	//ImGui::SliderFloat("Z Range Multipler", &multiplerRange, 0.0f, 4.0f);
 	//ImGui::SliderFloat("Z Min Extent", &minExtent, 0.0f, 5000.0f);
 	//ImGui::SliderFloat("Culling Proj Z Offset", &testVar, 0.0f, 5000.0f);
-	ImGui::SliderFloat("Culling Mult 2", &MultTwo, 0.0f, 25.0f);
+	//ImGui::SliderFloat("Culling Mult 2", &MultTwo, 0.0f, 25.0f);
 
-	ImGui::SliderFloat("Horizon Offset", &lightMinAngle, 1.0f, 8.0f);
+	//ImGui::SliderFloat("Horizon Offset", &lightMinAngle, 1.0f, 8.0f);
 
 	//ImGui::SliderInt("Cascade To Render", &cascadeToUse, 0, 4);
 	//ImGui::SliderFloat("Light Min Angle", &lightMinAngle, 0.0f, 50.0f);
