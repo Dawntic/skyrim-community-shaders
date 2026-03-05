@@ -457,9 +457,9 @@ void TerrainBlending::DrawSettings()
 {
 	//ImGui::Checkbox("Update", &update);
 
-	//ImGui::Checkbox("Test", &test);
-	//ImGui::Checkbox("Test 2", &test2);
-	//ImGui::Checkbox("Test 3", &test3);
+	ImGui::Checkbox("Test", &test);
+	ImGui::Checkbox("Test 2", &test2);
+	ImGui::Checkbox("Test 3", &test3);
 
 	//ImGui::Checkbox("Update Forward", &updateForward);
 	//ImGui::Checkbox("Update Right", &updateRight);
@@ -480,6 +480,11 @@ void TerrainBlending::DrawSettings()
 
 	//ImGui::SliderInt("Cascade To Render", &cascadeToUse, 0, 4);
 	//ImGui::SliderFloat("Light Min Angle", &lightMinAngle, 0.0f, 50.0f);
+
+	ImGui::SliderFloat("Min X Offset", &xMinOffset, -10000.0f, 10000.0f);
+	ImGui::SliderFloat("Max X Offset", &xMaxOffset, -10000.0f, 10000.0f);
+	ImGui::SliderFloat("Min Y Offset", &yMinOffset, -10000.0f, 10000.0f);
+	ImGui::SliderFloat("Max Y Offset", &yMaxOffset, -10000.0f, 10000.0f);
 
 	ImGui::SliderInt("Cascade 1 Coverage", &splits[0], 15, 5000);
 	ImGui::SliderInt("Cascade 2 Coverage", &splits[1], splits[0], 10000);

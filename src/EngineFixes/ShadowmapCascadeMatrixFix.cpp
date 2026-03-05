@@ -116,19 +116,20 @@ void ShadowmapMatrixFix::CreateVolumetricCascadeStencilTarget::thunk(RE::BSGraph
 };
 
 //////////////////////////////////////////////
-void ShadowmapMatrixFix::BuildRootFrustum(Frustum& outputFrustum, const RE::NiFrustum& viewFrustum, const DirectX::XMMATRIX& rootWorld)
+void ShadowmapMatrixFix::BuildRootFrustum(Frustum& outputFrustum, const RE::NiFrustum& viewFrustum, const DirectX::XMMATRIX& rootWorldRot)
 {
 	using namespace DirectX;
 
-	outputFrustum.corner[0] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fRight, 0), viewFrustum.fFar), rootWorld);
-	outputFrustum.corner[1] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fLeft, 0), viewFrustum.fFar), rootWorld);
-	outputFrustum.corner[2] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fRight, 0), viewFrustum.fFar), rootWorld);
-	outputFrustum.corner[3] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fFar), rootWorld);
+	//RL, TB are unit half width, height
+	outputFrustum.corner[0] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fRight, 0), viewFrustum.fFar), rootWorldRot);
+	outputFrustum.corner[1] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fLeft, 0), viewFrustum.fFar), rootWorldRot);
+	outputFrustum.corner[2] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fRight, 0), viewFrustum.fFar), rootWorldRot);
+	outputFrustum.corner[3] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fFar), rootWorldRot);
 
-	outputFrustum.corner[4] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fRight, 0), viewFrustum.fNear), rootWorld);
-	outputFrustum.corner[5] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fLeft, 0), viewFrustum.fNear), rootWorld);
-	outputFrustum.corner[6] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fRight, 0), viewFrustum.fNear), rootWorld);
-	outputFrustum.corner[7] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fNear), rootWorld);
+	outputFrustum.corner[4] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fRight, 0), viewFrustum.fNear), rootWorldRot);
+	outputFrustum.corner[5] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fTop, viewFrustum.fLeft, 0), viewFrustum.fNear), rootWorldRot);
+	outputFrustum.corner[6] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fRight, 0), viewFrustum.fNear), rootWorldRot);
+	outputFrustum.corner[7] = XMVector3Transform(XMVectorScale(XMVectorSet(1, viewFrustum.fBottom, viewFrustum.fLeft, 0), viewFrustum.fNear), rootWorldRot);
 }
 
 // Call this only once since all can be static assuming no UI
@@ -159,6 +160,8 @@ void ShadowmapMatrixFix::BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frus
 {
 	using namespace DirectX;
 
+	auto& settings = globals::features::terrainBlending;
+
 	// Build light view matrix - matching game format w/o translation
 	XMVECTOR up = XMVectorSet(0, 1, 0, 0);
 	XMVECTOR forward = lightDirection;  // Light -> eye
@@ -166,6 +169,7 @@ void ShadowmapMatrixFix::BuildLightFrustum(DirectX::XMMATRIX& outLightView, Frus
 	up = XMVector3Cross(right, forward);
 
 	XMMATRIX lightWorld = XMMATRIX(right, up, forward, XMVectorSet(0, 0, 0, 1));
+
 	const XMMATRIX lightView = XMMatrixTranspose(lightWorld);  // ViewRot == InvWorld == TrspWorld
 	outLightView = lightView;
 
@@ -234,10 +238,17 @@ void ShadowmapMatrixFix::BuildCascadeAABB(CascadeBounds::AABB& outBoundingBox, C
 			cornerMin = XMVectorMin(cornerMin, lightFrustum.corner[i]);
 			cornerMax = XMVectorMax(cornerMax, lightFrustum.corner[i]);
 		}
+		//LogVector("first min", cornerMin);
+		//LogVector("first max", cornerMax);
 
+		DirectX::XMVECTOR halfExtent = XMVectorSubtract(XMVectorMultiply(XMVectorAdd(cornerMin, cornerMax), XMVectorReplicate(0.5f)), cornerMin);
+		//LogVector("first half Extent", halfExtent);
+
+		// Add trans vec here to avoid variance
 		cornerMin = XMVectorAdd(cornerMin, lightCameraPos);
 		cornerMax = XMVectorAdd(cornerMax, lightCameraPos);
 
+		// Snap texel grid
 		XMVECTOR extent = XMVectorSubtract(cornerMax, cornerMin);
 		XMVECTOR texelSize = extent / float(cascadePxSize);
 		cornerMin = XMVectorFloor(cornerMin / texelSize) * texelSize;
@@ -287,7 +298,21 @@ void ShadowmapMatrixFix::BuildCascadeProjectionMatrices(DirectX::XMMATRIX& outPr
 		float adjustedMin = cullingBoundingBox.cornerMin.z - extent;  //std::min(extent * angularFac, extent + MAX_ANGULAR_COMP);
 		float adjustedMax = cullingBoundingBox.cornerMax.z + extent;
 
-		outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(cullingBoundingBox.cornerMin.x, cullingBoundingBox.cornerMax.x, cullingBoundingBox.cornerMin.y, cullingBoundingBox.cornerMax.y, adjustedMin, adjustedMax);
+		float adjustedXMin = cullingBoundingBox.cornerMin.x + settings.xMinOffset;
+		float adjustedXMax = cullingBoundingBox.cornerMax.x + settings.xMaxOffset;
+		float adjustedYMin = cullingBoundingBox.cornerMin.y + settings.yMinOffset;
+		float adjustedYMax = cullingBoundingBox.cornerMax.y + settings.yMaxOffset;
+
+		//LogVector("CornerMin", cullingBoundingBox.cornerMin);
+		//LogVector("CornerMax", cullingBoundingBox.cornerMax);
+		using namespace DirectX;
+
+		DirectX::XMVECTOR halfExtent = XMVectorSubtract(XMVectorMultiply(XMVectorAdd(cullingBoundingBox.cornerMin, cullingBoundingBox.cornerMax), XMVectorReplicate(0.5f)), cullingBoundingBox.cornerMin);
+		LogVector("half Extent", halfExtent);
+
+		outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(adjustedXMin, adjustedXMax, adjustedYMin, adjustedYMax, adjustedMin, adjustedMax);
+		//if(settings.test)
+		//	outCullProj = DirectX::XMMatrixOrthographicOffCenterLH(cullingBoundingBox.cornerMin.x, cullingBoundingBox.cornerMax.x, cullingBoundingBox.cornerMin.y, cullingBoundingBox.cornerMax.y, cullingBoundingBox.cornerMin.z, cullingBoundingBox.cornerMax.z);
 	}
 }
 
@@ -363,7 +388,16 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	// Get root camera params
 	const XMVECTOR rootCameraPos = NiPoint3ToXMVector(rootCamera.world.translate);
 	RE::NiFrustum viewFrustum = rootCamera.GetRuntimeData2().viewFrustum;
-	const XMMATRIX worldRotation = XMMatrixTranspose(XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.world.rotate.entry)));
+
+	XMMATRIX rootWorldViewRot = rootWorldViewRot = XMMatrixTranspose(XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.world.rotate.entry)));
+	//XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.world.rotate.entry));
+	//if(settings.test)
+	//	rootWorldViewRot = XMMatrixTranspose(XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.world.rotate.entry)));  //OG
+
+	//XMVECTOR camPos = XMVector3Transform(rootCameraPos, rootWorldRot);
+	//LogVector("cam view pos", camPos);
+	//LogVector("cam world pos", rootCameraPos);
+	//LogMatrix("root local rotate", XMLoadFloat3x3(reinterpret_cast<const XMFLOAT3X3*>(&rootCamera.local.rotate.entry)));
 
 	//Re-calculate because root frustum FOV is too dynamic
 	float& cameraFOVDeg = (*(float*)(REL::RelocationID(513786, 388785).address()));
@@ -376,6 +410,13 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	viewFrustum.fLeft = -unitHalfWidth;
 	viewFrustum.fTop = unitHalfHeight;
 	viewFrustum.fBottom = -unitHalfHeight;
+
+	if (settings.test) {
+		viewFrustum.fRight = unitHalfHeight;
+		viewFrustum.fLeft = -unitHalfHeight;
+		viewFrustum.fTop = unitHalfHeight;
+		viewFrustum.fBottom = -unitHalfHeight;
+	}
 
 	static CascadeBounds cascadeBoundData;
 
@@ -390,7 +431,7 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 
 	// Build frustums, view matrix
 	Frustum rootFrustum;
-	BuildRootFrustum(rootFrustum, viewFrustum, worldRotation);
+	BuildRootFrustum(rootFrustum, viewFrustum, rootWorldViewRot);
 
 	XMMATRIX lightView = {};
 	Frustum lightFrustum;
@@ -474,6 +515,7 @@ bool ShadowmapMatrixFix::BSShadowDirectionalLight_SetFrameCamera::thunk(RE::BSSh
 	// Discretize light dir to mitigate variance from time scale
 	//static XMVECTOR lightDirection = XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector));
 
+	// Y Up
 	XMVECTOR lightDirection = GetQuantizedLightDirection(XMVector3Normalize(NiPoint3ToXMVector(light->GetShadowDirectionalLightRuntimeData().sunVector)), settings.lightUpdateAngle);
 
 	//Build cascades we're rendering this frame
@@ -638,6 +680,7 @@ DirectX::XMVECTOR ShadowmapMatrixFix::GetQuantizedLightDirection(DirectX::XMVECT
 
 	auto& settings = globals::features::terrainBlending;  //
 
+	//LogVector("Sun Dir", lightDir);
 	/*
 	XMVECTOR quantized = {};
 	if(settings.test){

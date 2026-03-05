@@ -21,6 +21,11 @@ public:
 	virtual inline bool HasShaderDefine(RE::BSShader::Type) override { return true; }
 	virtual bool SupportsVR() override { return true; }
 
+	float xMinOffset = 0;
+	float xMaxOffset = 0;
+	float yMinOffset = 0;
+	float yMaxOffset = 0;
+
 	//
 	bool reload = false;
 	int depthBias[5] = { 160, 100, 100, 100, 150 };
