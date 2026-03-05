@@ -19,6 +19,16 @@ struct ShadowmapMatrixFix : EngineFix
 	static inline bool renderingVLCascades = false;
 
 	static inline std::vector<RE::BSGeometry*> VLGeometry = {};
+	//static inline std::vector<RE::BSRenderPass*> renderPassesVec = {};
+
+	struct DeferredShadowPass
+	{
+		RE::BSRenderPass* pass;
+		uint32_t technique;
+		bool alphaTest;
+		uint32_t renderFlags;
+	};
+	static inline std::vector<DeferredShadowPass> deferredShadowPasses = {};
 
 	static inline void PrintSetShaderFlags(uint64_t flag)
 	{

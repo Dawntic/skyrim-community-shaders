@@ -96,6 +96,8 @@ bool ShadowmapMatrixFix::Install()
 	// Set limit on VL shadow cascade min size
 	stl::write_thunk_call<CreateVolumetricCascadeStencilTarget>(REL::RelocationID(100458, 107175).address() + REL::Relocate(0x9DC, 0x9DC));  // Correct SE
 
+	//stl::write_vfunc<0x2A, Test>(RE::VTABLE_BSLightingShaderProperty[0]);
+
 	// Need to use these somewhere
 	//gShadowDistance = reinterpret_cast<float*>(REL::RelocationID(528314, 415263).address());
 	//gInteriorShadowDistance = reinterpret_cast<float*>(REL::RelocationID(513755, 391724).address());
@@ -106,6 +108,202 @@ bool ShadowmapMatrixFix::Install()
 }
 #pragma warning(push)
 #pragma warning(disable: 4100 4456 4189)
+
+RE::BSShaderProperty::RenderPassArray* ShadowmapMatrixFix::Test::thunk(RE::BSShaderProperty* prop, RE::BSGeometry* geometry, std::uint32_t flags, RE::BSShaderAccumulator* accumulator)
+{
+	RE::BSShaderProperty::RenderPassArray* renderPasses = func(prop, geometry, flags, accumulator);
+
+	if (prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kAssumeShadowmask)) {
+		RE::BSRenderPass* currentPassT = prop->renderPassList.head;
+		while (currentPassT != nullptr) {
+			currentPassT = currentPassT->next;
+		}
+	}
+	//if (renderPasses == nullptr) {
+	//	return renderPasses;
+	//}
+	//using enum SIE::ShaderCache::LightingShaderTechniques;
+	//using enum RE::BSShaderProperty::EShaderPropertyFlag8;
+	//using enum RE::BSShaderProperty::EShaderPropertyFlag;
+
+	//accumulator->GetRuntimeData()->currentActive = false; // Does nothing
+	//prop->SetFlags(kCastShadows, false);
+	//BGSDefaultObjectManager::GetSingleton()->GetObject()
+
+	//if (renderingVLCascades) {
+	//logger::info("Volumetric RenderPassArray:  flags: {}   prop: {:X}   geometry: {:X}", flags, (uintptr_t)prop, (uintptr_t)geometry);
+	//if(geometry)
+	//	VLGeometry.push_back(geometry);
+	//}
+
+	if (renderingCascades) {
+		logger::info("render pass array");
+
+		RE::BSRenderPass* currentPass = renderPasses->head;
+		while (currentPass != nullptr) {
+			//logger::info("PassEnum: {} : {:X}     lightingTechnique: {} : {:X}", currentPass->passEnum, currentPass->passEnum, lightingTechnique, lightingTechnique);
+			//	if (currentPass->passEnum == 49222 || currentPass->passEnum == 49254) {
+			////	logger::info("Found Enum: {:X}", currentPass->passEnum);
+			//	currentPass->ClearRenderPass();  //Deadlocks
+			//}
+			if (currentPass->shader) {
+				if (prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kAssumeShadowmask)) {
+					logger::info("kAssumeShadowmask");
+					//auto& shader = currentPass->shader;
+					auto test = reinterpret_cast<RE::BSLightingShader*>(currentPass->shader)->currentRawTechnique;
+					logger::info("raw tech: {}", test);
+					deferredShadowPasses.push_back({
+						currentPass,
+					});
+				}
+			}
+
+			currentPass = currentPass->next;
+		}
+
+		//logger::info("Cascade RenderPassArray:  flags: {}   prop: {:X}   geometry: {:X}", flags, (uintptr_t)prop, (uintptr_t)geometry);
+		//logger::info("Geometry: {}", geometry->name.c_str());
+
+		//logger::info("Coll Layer: {}", CollisionLayerToString(geometry->GetCollisionLayer()));
+
+		//	for(auto& geom : VLGeometry){
+		//	if(geometry == geom){
+		//logger::info("Culling Match:  {}", geometry->name.c_str());
+		//geometry->CullGeometry(true);
+		//geometry->CullNode(true);
+		//}
+		//}
+
+		//return nullptr; // only effects culling in world renders - color buffer
+
+		//if (prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape, RE::BSShaderProperty::EShaderPropertyFlag::kCastShadows)) {
+		//	logger::info("MultiTextureLandscape");
+		//prop->DoClearRenderPasses(); //Effects the whole pipeline not just shadows
+		//currentPass->ClearRenderPass();  //Deadlocks
+		//	return nullptr;
+		//}
+
+		/*
+		if (geometry) {
+			if (RE::TESObjectREFR* refData = geometry->GetUserData()) {
+				if (refData->loadedData) {
+					if (auto refFlags = refData->loadedData->flags) {
+						if ((refFlags & RE::TESObjectREFR::RecordFlags::kGround) != 0) {
+							logger::info("kGround Found");
+						}
+
+						if ((refFlags & RE::TESObjectREFR::RecordFlags::kIsGroundPiece) != 0) {
+							logger::info("kIsGroundPiece   Geom Name: {}  flags: {}", geometry->name.c_str(), prop->flags.underlying());
+						}
+
+						if (refData->QIsLODLandObject())
+							logger::info("Found Land");
+					}
+				}
+			}
+		}
+		//geometry->GetUserData()->Is(RE::FormType::Land);
+
+		//(GetFormFlags() & RecordFlags::kInitialized) != 0;
+
+		//logger::info("FormType: {}", RE::FormTypeToString(geometry->GetUserData()->GetFormType()));
+
+		if (prop->flags.any(kParallaxOcclusion)) {
+			logger::info("Has kParallaxOcclusion:  {}", geometry->name.c_str());
+		}
+
+		if (prop->flags.any(kFitSlope)) {
+			logger::info("Has kFitSlope:  {}", geometry->name.c_str());
+		}
+
+		PrintSetShaderFlags(prop->flags.underlying());
+		logger::info("Name: {}", geometry->name.c_str());
+		//logger::info("Flags: {}", prop->flags.underlying());
+
+		//if (const auto feature = prop->GetBaseMaterial()->GetFeature();
+		auto& settings = globals::features::terrainBlending;
+		if (settings.test) {
+			geometry->CullGeometry(true);
+			geometry->CullNode(true);
+		}
+
+		if (prop->flags.any(kMultiTextureLandscape, kLODLandscape, kNoLODLandBlend, kMultiIndexSnow)) {
+			if (prop->flags.none(kSpecular, kVertexAlpha, kDecal, kDynamicDecal, kSoftLighting, kTreeAnim)) {
+				logger::info("Culling:  {}    flags: {}", geometry->name.c_str(), prop->flags.underlying());
+				geometry->CullGeometry(true);
+				geometry->CullNode(true);
+
+				//if(geometry->GetCollisionLayer() == RE::COL_LAYER::kTerrain || geometry->GetCollisionLayer() == RE::COL_LAYER::kGround){
+				//geometry->CullGeometry(true);
+				//geometry->CullNode(true);
+				//geometry->AsFadeNode()->GetFlags()
+				//logger::info("Culling:  {}", geometry->name.c_str());
+			}
+		}
+
+
+		RE::BSRenderPass* currentPass = renderPasses->head;
+		while (currentPass != nullptr) {
+			constexpr uint32_t LightingTechniqueStart = 0x4800002D;
+			auto lightingTechnique = currentPass->passEnum - LightingTechniqueStart;
+
+			//logger::info("PassEnum: {} : {:X}     lightingTechnique: {} : {:X}", currentPass->passEnum, currentPass->passEnum, lightingTechnique, lightingTechnique);
+		//	if (currentPass->passEnum == 49222 || currentPass->passEnum == 49254) {
+			////	logger::info("Found Enum: {:X}", currentPass->passEnum);
+			//	currentPass->ClearRenderPass();  //Deadlocks
+			//}
+
+
+
+			//if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)) {
+			//	logger::info("MultiTextureLandscape");
+			//	currentPass->ClearRenderPass();  //Deadlocks
+			//}
+
+			if (currentPass->shader->shaderType != RE::BSShader::Type::Lighting) {
+				logger::info("Not lighting pass  type: {}", currentPass->shader->shaderType.underlying());
+				//prop->SetFlags(kCastShadows, false);
+				//prop->SetFlags(kAssumeShadowmask, false);
+				//prop->SetFlags(kReceiveShadows, false);
+				//prop->SetFlags(kZBufferWrite, false);
+			}
+
+
+			if (currentPass->shader->shaderType == RE::BSShader::Type::Lighting) {
+				constexpr uint32_t LightingTechniqueStart = 0x4800002D;
+				auto lightingTechnique = currentPass->passEnum - LightingTechniqueStart;
+				auto lightingFlags = lightingTechnique & ~(~0u << 24);
+				auto lightingType = static_cast<SIE::ShaderCache::LightingShaderTechniques>((lightingTechnique >> 24) & 0x3F);
+				lightingFlags &= ~0b111000u;
+
+				//if (lightingType == MTLand || lightingType == MTLandLODBlend || prop->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)) {
+
+				// Seems to stop almost everything
+					lightingFlags &= ~(static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow));
+					prop->SetFlags(kCastShadows, false);
+					prop->SetFlags(kAssumeShadowmask, false);
+					prop->SetFlags(kReceiveShadows, false);
+					prop->SetFlags(kZBufferWrite, false);
+				//}
+
+				//prop->InvalidateMaterial(); //Bad clib Addr
+
+
+
+				//if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kReceiveShadows)) {
+
+				lightingTechnique = (static_cast<uint32_t>(lightingType) << 24) | lightingFlags;
+				currentPass->passEnum = lightingTechnique + LightingTechniqueStart;
+
+			//}
+
+			currentPass = currentPass->next;
+		}
+		*/
+	}
+
+	return renderPasses;
+}
 
 // Ideally the VL cascade will be remvoed in the future
 void ShadowmapMatrixFix::CreateVolumetricCascadeStencilTarget::thunk(RE::BSGraphics::Renderer* renderer, RE::RENDER_TARGETS_DEPTHSTENCIL::RENDER_TARGET_DEPTHSTENCIL stencil, RE::BSGraphics::DepthStencilTargetProperties* prop)
@@ -641,8 +839,9 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 	data.numCascades = nCascades;
 	shadowCascadeFixCB->Update(data);
 
-	//if (pass == 0) {
-	//	renderingCascades = true;
+	if (pass == 0) {
+		renderingCascades = true;
+	}
 	//	logger::info("Start Cascades");
 	//} else {
 	//	logger::info("Cascades");
@@ -662,12 +861,12 @@ void ShadowmapMatrixFix::BSShadowDirectionalLight_RenderShadowmaps_RenderCascade
 
 	pass = ++pass < nCascades ? pass : 0;
 
-	//if (pass == 0) {
-	//auto VLCascades = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
-	//globals::d3d::context->PSSetShaderResources(24, 1, &VLCascades);
-	//	renderingCascades = false;
-	//logger::info("End Cascades");
-	//}
+	if (pass == 0) {
+		//auto VLCascades = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM].depthSRV;
+		//globals::d3d::context->PSSetShaderResources(24, 1, &VLCascades);
+		renderingCascades = false;
+		//logger::info("End Cascades");
+	}
 }
 
 //0.05 - 0.1 works well
