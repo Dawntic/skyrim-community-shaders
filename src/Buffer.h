@@ -208,6 +208,12 @@ public:
 		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, srv.put()));
 	}
 
+	void CreateSRV(D3D11_SHADER_RESOURCE_VIEW_DESC const* a_desc)
+	{
+		auto device = globals::d3d::device;
+		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), a_desc, srv.put()));
+	}
+
 	void CreateUAV(D3D11_UNORDERED_ACCESS_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
@@ -247,6 +253,12 @@ public:
 	{
 		auto device = globals::d3d::device;
 		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, srv.put()));
+	}
+
+	void CreateSRV(D3D11_SHADER_RESOURCE_VIEW_DESC const* a_desc)
+	{
+		auto device = globals::d3d::device;
+		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), a_desc, srv.put()));
 	}
 
 	void CreateUAV(D3D11_UNORDERED_ACCESS_VIEW_DESC const& a_desc)
@@ -289,6 +301,12 @@ public:
 	{
 		auto device = globals::d3d::device;
 		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, srv.put()));
+	}
+
+	void CreateSRV(D3D11_SHADER_RESOURCE_VIEW_DESC const* a_desc)
+	{
+		auto device = globals::d3d::device;
+		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), a_desc, srv.put()));
 	}
 
 	void CreateUAV(D3D11_UNORDERED_ACCESS_VIEW_DESC const& a_desc)
