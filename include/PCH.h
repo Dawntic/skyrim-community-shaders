@@ -203,6 +203,16 @@ using float3 = DirectX::SimpleMath::Vector3;
 using float4 = DirectX::SimpleMath::Vector4;
 using float4x4 = DirectX::SimpleMath::Matrix;
 using uint = uint32_t;
+struct int2
+{
+	int x, y;
+	int2 operator-(const int2& o) const { return { x - o.x, y - o.y }; }
+	int2 operator+(const int2& o) const { return { x + o.x, y + o.y }; }
+	int2 operator*(const int2& o) const { return { x * o.x, y * o.y }; }
+	int2 operator/(const int2& o) const { return { x / o.x, y / o.y }; }
+	int2 operator*(int s) const { return { x * s, y * s }; }
+	int2 operator/(int s) const { return { x / s, y / s }; }
+};
 
 #include "Globals.h"
 #include "Util.h"
