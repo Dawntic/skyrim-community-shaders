@@ -60,7 +60,10 @@
 #include "Common/Math.hlsli"
 
 #define sh2 float4
-// TODO sh3
+struct sh3
+{
+	float coeff[9];
+};
 
 namespace SphericalHarmonics
 {
@@ -144,6 +147,12 @@ namespace SphericalHarmonics
 		return sh * v;
 	}
 
+	// Integrates the product of two SH functions over the unit sphere.
+	float FuncProductIntegral(sh2 shL, sh2 shR)
+	{
+		return dot(shL, shR);
+	}
+
 	// Operates a rotation of a SH function.
 	sh2 Rotate(sh2 sh, float3x3 rotation)
 	{
@@ -153,12 +162,6 @@ namespace SphericalHarmonics
 		float3 tmp = float3(sh.w, sh.y, sh.z);  // undo direction component shuffle to match source/function space
 		result.yzw = mul(tmp, rotation).yzx;    // apply rotation and re-shuffle
 		return result;
-	}
-
-	// Integrates the product of two SH functions over the unit sphere.
-	float FuncProductIntegral(sh2 shL, sh2 shR)
-	{
-		return dot(shL, shR);
 	}
 
 	// Computes the SH coefficients of a SH function representing the result of the multiplication of two SH functions. (from [4])
@@ -242,6 +245,116 @@ namespace SphericalHarmonics
 		result += 0.25f * zonalL2Coeff * zhDir;
 		return max(0, result);
 	}
+
+	// 3rd Order Functions //
+	sh3 AddSH3(sh3 shL, sh3 shR)
+	{
+		sh3 result;
+		[unroll] for (int i = 0; i < 9; i++)
+			result.coeff[i] = shL.coeff[i] + shR.coeff[i];
+		return result;
+	}
+
+	sh3 ScaleSH3(sh3 sh, float v)
+	{
+		sh3 result;
+		[unroll] for (int i = 0; i < 9; i++)
+			result.coeff[i] = sh.coeff[i] * v;
+		return result;
+	}
+
+	float ProductIntegralSH3(sh3 shL, sh3 shR)
+	{
+		float result = 0.0;
+		[unroll] for (int i = 0; i < 9; i++)
+			result += shL.coeff[i] * shR.coeff[i];
+		return result;
+	}
+
+	sh3 EvaluateSH3(float3 dir)
+	{
+		sh3 result;
+
+		// L=0, M=0
+		result.coeff[0] = 0.28209479177387814f;
+
+		// L=1, M=-1,0,1
+		result.coeff[1] = -0.48860251190291992f * dir.y;
+		result.coeff[2] = 0.48860251190291992f * dir.z;
+		result.coeff[3] = -0.48860251190291992f * dir.x;
+
+		// L=2, M=-2,-1,0,1,2
+		result.coeff[4] = 1.09254843059207908f * dir.x * dir.y;
+		result.coeff[5] = -1.09254843059207908f * dir.y * dir.z;
+		result.coeff[6] = 0.31539156525252001f * (3.0f * dir.z * dir.z - 1.0f);
+		result.coeff[7] = -1.09254843059207908f * dir.x * dir.z;
+		result.coeff[8] = 0.54627421529603954f * (dir.x * dir.x - dir.y * dir.y);
+
+		return result;
+	}
+
+	sh3 EvaluateCosineLobeSH3(float3 dir)
+	{
+		sh3 result;
+		// L=0, M= 0
+		result.coeff[0] = 0.8862269254527580137f;
+		// L=1, M=-1, 0, 1
+		result.coeff[1] = -1.0233267079464884885f * dir.y;
+		result.coeff[2] = 1.0233267079464884885f * dir.z;
+		result.coeff[3] = -1.0233267079464884885f * dir.x;
+		// L=2, M=-2, -1, 0, 1, 2
+		result.coeff[4] = 0.8580855308097834790f * dir.x * dir.y;
+		result.coeff[5] = -0.8580855308097834790f * dir.y * dir.z;
+		result.coeff[6] = 0.2477079561003757808f * (3.0f * dir.z * dir.z - 1.0f);
+		result.coeff[7] = -0.8580855308097834790f * dir.x * dir.z;
+		result.coeff[8] = 0.4290427654048917395f * (dir.x * dir.x - dir.y * dir.y);
+		return result;
+	}
+
+	float UnprojectSH3(sh3 functionSh, float3 dir)
+	{
+		sh3 sh = EvaluateSH3(dir);
+		float result = 0.0;
+		[unroll] for (int i = 0; i < 9; i++)
+			result += functionSh.coeff[i] * sh.coeff[i];
+		return result;
+	}
+
+	float3 UnprojectSH3(sh3 functionShR, sh3 functionShG, sh3 functionShB, float3 dir)
+	{
+		sh3 sh = EvaluateSH3(dir);
+		float3 result = 0.0;
+		[unroll] for (int i = 0; i < 9; i++)
+			result += float3(functionShR.coeff[i], functionShG.coeff[i], functionShB.coeff[i]) * sh.coeff[i];
+		return result;
+	}
+
+	sh3 UnitSH3()
+	{
+		sh3 result = (sh3)0;
+		result.coeff[0] = sqrt(4 * Math::PI);
+		return result;
+	}
+
+	sh3 UnpackSH3(int2 ProbePos, Texture2DArray Array)
+	{
+		sh3 OutputSH;
+		for (int i = 0; i < 3; i++) {
+			float3 Band = Array[uint3(ProbePos.xy, i)].xyz;
+			for (int j = 0; j < 3; j++) {
+				OutputSH.coeff[i * 3 + j] = Band[j];
+			}
+		}
+		return OutputSH;
+	}
+
+	void PackSH3(sh3 SHdata, uint2 ProbePos, RWTexture2DArray<float4> Array)
+	{
+		Array[uint3(ProbePos.xy, 0)] = float4(SHdata.coeff[0], SHdata.coeff[1], SHdata.coeff[2], 0);
+		Array[uint3(ProbePos.xy, 2)] = float4(SHdata.coeff[6], SHdata.coeff[7], SHdata.coeff[8], 0);
+		Array[uint3(ProbePos.xy, 1)] = float4(SHdata.coeff[3], SHdata.coeff[4], SHdata.coeff[5], 0);
+	}
+
 }
 
 #endif  // __SPHERICAL_HARMONICS_DEPENDENCY_HLSL__
