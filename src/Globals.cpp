@@ -15,6 +15,7 @@
 #include "Features/LODBlending.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
+#include "Features/OrthogonalVolumetricLighting.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/RenderDoc.h"
 #include "Features/ScreenSpaceGI.h"
@@ -84,6 +85,7 @@ namespace globals
 		RenderDoc renderDoc{};
 		WeatherEditor weatherEditor{};
 		ExponentialHeightFog exponentialHeightFog{};
+		OrthogonalVolumetricLighting orthogonalVolumetricLighting{};
 
 		namespace llf
 		{

@@ -16,6 +16,7 @@
 #include "Features/LODBlending.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
+#include "Features/OrthogonalVolumetricLighting.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/RenderDoc.h"
 #include "Features/ScreenSpaceGI.h"
@@ -240,6 +241,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::linearLighting,
 		&globals::features::unifiedWater,
 		&globals::features::exponentialHeightFog,
+		&globals::features::orthogonalVolumetricLighting,
 	};
 
 	if (REL::Module::IsVR()) {
