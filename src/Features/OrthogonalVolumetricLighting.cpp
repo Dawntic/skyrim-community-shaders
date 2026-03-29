@@ -683,6 +683,22 @@ void OrthogonalVolumetricLighting::UpdateSparseProbeGrid()
 }
 #pragma warning(pop)
 
+///////////////////////////////////////////////////////////
+#pragma warning(push)
+#pragma warning(disable: 4244)  // Stop cast warnings for buffer update
+OrthogonalVolumetricLighting::GridUpdateCBStruct OrthogonalVolumetricLighting::GetCommonBufferData()
+{
+	GridUpdateCBStruct data;
+	data.InvViewProj = globals::game::frameBufferCached.GetCameraViewProjInverse();
+	data.GridTexSize = int2(PROBE_ARRAY_SIZE, PROBE_ARRAY_SIZE);
+	data.InvGridTexSize = 1.0f / float2(PROBE_ARRAY_SIZE, PROBE_ARRAY_SIZE);
+	data.GridMinCorner = float2(GRID_BOUND_TL.x, GRID_BOUND_BR.y);
+	int2 GridSpan = int2(std::abs(GRID_BOUND_BR.x - GRID_BOUND_TL.x), std::abs(GRID_BOUND_TL.y - GRID_BOUND_BR.y));
+	data.InvGridSpan = 1.0 / float2(GridSpan.x, GridSpan.y);
+
+	return data;
+}
+#pragma warning(pop)
 ///// Settings ////////////////////////////////////////////
 void OrthogonalVolumetricLighting::DrawSettings()
 {

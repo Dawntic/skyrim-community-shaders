@@ -119,7 +119,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	void UpdateSparseProbeGrid();
 
-	static constexpr uint PROBE_ARRAY_SIZE = 32;
+	static constexpr uint PROBE_ARRAY_SIZE = 132;
 
 	struct alignas(16) GridUpdateCBStruct
 	{
@@ -130,6 +130,8 @@ struct OrthogonalVolumetricLighting : Feature
 		float2 InvGridSpan;    // Shared //
 	};
 	ConstantBuffer* gridUpdateBuffer = nullptr;
+
+	GridUpdateCBStruct GetCommonBufferData();
 
 	eastl::unique_ptr<Texture2D> probeGridArray = nullptr;
 
