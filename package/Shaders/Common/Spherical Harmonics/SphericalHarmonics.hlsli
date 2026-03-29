@@ -336,12 +336,12 @@ namespace SphericalHarmonics
 		return result;
 	}
 
-	sh3 UnpackSH3(int2 ProbePos, Texture2DArray Array)
+	sh3 UnpackSH3(uint2 ProbePos, Texture2DArray Array)
 	{
 		sh3 OutputSH;
-		for (int i = 0; i < 3; i++) {
+		for (uint i = 0; i < 3; i++) {
 			float3 Band = Array[uint3(ProbePos.xy, i)].xyz;
-			for (int j = 0; j < 3; j++) {
+			for (uint j = 0; j < 3; j++) {
 				OutputSH.coeff[i * 3 + j] = Band[j];
 			}
 		}
