@@ -108,7 +108,7 @@ struct OrthogonalVolumetricLighting : Feature
 	ID3D11DepthStencilView* mainDepthDSV = nullptr;
 	ID3D11ShaderResourceView* mainDepthSRV = nullptr;
 
-	eastl::unique_ptr<Texture2D> cubemapTexFullDepth = nullptr;
+	eastl::unique_ptr<Texture2D> depthCubemap = nullptr;
 	eastl::unique_ptr<Texture2D> bentNormalTex = nullptr;
 
 	DirectX::ScratchImage heightMapTex;

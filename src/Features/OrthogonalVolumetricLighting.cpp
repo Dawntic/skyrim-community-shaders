@@ -55,7 +55,6 @@ void OrthogonalVolumetricLighting::SetupResources()
 	probeGridArray = eastl::make_unique<Texture2D>(probeDesc);
 	probeGridArray->CreateSRV(nullptr);
 	probeGridArray->CreateUAV(puavDesc);
-
 	//
 
 	// Bent Resources
@@ -103,9 +102,9 @@ void OrthogonalVolumetricLighting::SetupResources()
 	dsvDesc.Texture2DArray.FirstArraySlice = 0;
 	dsvDesc.Texture2DArray.ArraySize = 6;
 
-	cubemapTexFullDepth = eastl::make_unique<Texture2D>(desc);
-	cubemapTexFullDepth->CreateSRV(srvDesc);
-	cubemapTexFullDepth->CreateUAV(uavDesc);
+	depthCubemap = eastl::make_unique<Texture2D>(desc);
+	depthCubemap->CreateSRV(srvDesc);
+	depthCubemap->CreateUAV(uavDesc);
 	//
 
 	// Bent normal tex
@@ -563,7 +562,7 @@ void OrthogonalVolumetricLighting::CopyDepthBufferToCubemap(int face)
 	context->CSSetConstantBuffers(0, 1, &buffer);
 
 	context->CSSetShader(copyDepthCS, nullptr, 0);
-	context->CSSetUnorderedAccessViews(0, 1, cubemapTexFullDepth->uav.address(), nullptr);
+	context->CSSetUnorderedAccessViews(0, 1, depthCubemap->uav.address(), nullptr);
 
 	context->CSSetShaderResources(0, 1, &mainDepthSRV);
 
@@ -589,7 +588,7 @@ void OrthogonalVolumetricLighting::GenerateBentNormalMap()
 	context->CSSetShader(generateBentNormalCS, nullptr, 0);
 	context->CSSetUnorderedAccessViews(0, 1, bentNormalTex->uav.address(), nullptr);
 
-	context->CSSetShaderResources(0, 1, cubemapTexFullDepth->srv.address());
+	context->CSSetShaderResources(0, 1, depthCubemap->srv.address());
 
 	auto buffer = cacheGenBuffer->CB();
 	context->CSSetConstantBuffers(0, 1, &buffer);
