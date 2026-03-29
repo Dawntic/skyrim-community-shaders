@@ -135,7 +135,7 @@ public:
 		srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
 		srv_desc.Buffer.FirstElement = 0;
 		srv_desc.Buffer.NumElements = count;
-		winrt::com_ptr<ID3D11ShaderResourceView> srv;
+		D3D11ComPtr<ID3D11ShaderResourceView> srv;
 		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &srv_desc, srv.put()));
 		srvs.push_back(srv);
 	}
@@ -149,7 +149,7 @@ public:
 		uav_desc.Buffer.Flags = 0;
 		uav_desc.Buffer.FirstElement = 0;
 		uav_desc.Buffer.NumElements = count;
-		winrt::com_ptr<ID3D11UnorderedAccessView> uav;
+		D3D11ComPtr<ID3D11UnorderedAccessView> uav;
 		DX::ThrowIfFailed(device->CreateUnorderedAccessView(resource.get(), &uav_desc, uav.put()));
 		uavs.push_back(uav);
 	}
