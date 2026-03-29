@@ -12,6 +12,20 @@
 	static_assert(sizeof(structName) % 16 == 0, #structName " is not a multiple of 16.");
 
 template <typename T>
+struct D3D11ComPtr : winrt::com_ptr<T>
+{
+	using winrt::com_ptr<T>::com_ptr;
+	T** address()
+	{
+		cached = this->get();
+		return &cached;
+	}
+
+private:
+	T* cached = nullptr;
+};
+
+template <typename T>
 D3D11_BUFFER_DESC StructuredBufferDesc(uint64_t count, bool uav = true, bool dynamic = false)
 {
 	D3D11_BUFFER_DESC desc{};
@@ -80,7 +94,7 @@ public:
 	}
 
 private:
-	winrt::com_ptr<ID3D11Buffer> resource;
+	D3D11ComPtr<ID3D11Buffer> resource;
 	D3D11_BUFFER_DESC desc;
 };
 
@@ -155,11 +169,11 @@ public:
 	{
 		Update(&src_data, sizeof(T) * count);
 	}
-	std::vector<winrt::com_ptr<ID3D11ShaderResourceView>> srvs;
-	std::vector<winrt::com_ptr<ID3D11UnorderedAccessView>> uavs;
+	std::vector<D3D11ComPtr<ID3D11ShaderResourceView>> srvs;
+	std::vector<D3D11ComPtr<ID3D11UnorderedAccessView>> uavs;
 
 private:
-	winrt::com_ptr<ID3D11Buffer> resource;
+	D3D11ComPtr<ID3D11Buffer> resource;
 	D3D11_BUFFER_DESC desc;
 	UINT count;
 };
@@ -187,9 +201,9 @@ public:
 	}
 
 	D3D11_BUFFER_DESC desc;
-	winrt::com_ptr<ID3D11Buffer> resource;
-	winrt::com_ptr<ID3D11ShaderResourceView> srv;
-	winrt::com_ptr<ID3D11UnorderedAccessView> uav;
+	D3D11ComPtr<ID3D11Buffer> resource;
+	D3D11ComPtr<ID3D11ShaderResourceView> srv;
+	D3D11ComPtr<ID3D11UnorderedAccessView> uav;
 };
 
 class Texture1D
@@ -227,10 +241,10 @@ public:
 	}
 
 	D3D11_TEXTURE1D_DESC desc;
-	winrt::com_ptr<ID3D11Texture1D> resource;
-	winrt::com_ptr<ID3D11ShaderResourceView> srv;
-	winrt::com_ptr<ID3D11UnorderedAccessView> uav;
-	winrt::com_ptr<ID3D11RenderTargetView> rtv;
+	D3D11ComPtr<ID3D11Texture1D> resource;
+	D3D11ComPtr<ID3D11ShaderResourceView> srv;
+	D3D11ComPtr<ID3D11UnorderedAccessView> uav;
+	D3D11ComPtr<ID3D11RenderTargetView> rtv;
 };
 
 class Texture2D
@@ -280,11 +294,11 @@ public:
 	}
 
 	D3D11_TEXTURE2D_DESC desc;
-	winrt::com_ptr<ID3D11Texture2D> resource;
-	winrt::com_ptr<ID3D11ShaderResourceView> srv;
-	winrt::com_ptr<ID3D11UnorderedAccessView> uav;
-	winrt::com_ptr<ID3D11RenderTargetView> rtv;
-	winrt::com_ptr<ID3D11DepthStencilView> dsv;
+	D3D11ComPtr<ID3D11Texture2D> resource;
+	D3D11ComPtr<ID3D11ShaderResourceView> srv;
+	D3D11ComPtr<ID3D11UnorderedAccessView> uav;
+	D3D11ComPtr<ID3D11RenderTargetView> rtv;
+	D3D11ComPtr<ID3D11DepthStencilView> dsv;
 };
 
 class Texture3D
@@ -322,8 +336,8 @@ public:
 	}
 
 	D3D11_TEXTURE3D_DESC desc;
-	winrt::com_ptr<ID3D11Texture3D> resource;
-	winrt::com_ptr<ID3D11ShaderResourceView> srv;
-	winrt::com_ptr<ID3D11UnorderedAccessView> uav;
-	winrt::com_ptr<ID3D11RenderTargetView> rtv;
+	D3D11ComPtr<ID3D11Texture3D> resource;
+	D3D11ComPtr<ID3D11ShaderResourceView> srv;
+	D3D11ComPtr<ID3D11UnorderedAccessView> uav;
+	D3D11ComPtr<ID3D11RenderTargetView> rtv;
 };
