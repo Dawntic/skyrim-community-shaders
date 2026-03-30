@@ -261,13 +261,20 @@ namespace SharedData
 		float3 pad;
 	};
 
-	struct SparseSkylighting
+	struct SparseSkylightingSettings
 	{
 		row_major float4x4 InverseViewProj;
 		int2 GridTexSize;
 		float2 InvGridTexSize;
 		float2 GridMinCornerWS;
+		float2 GridMaxCornerWS;
 		float2 InvGridSpan;
+		uint toggleLighting;
+		uint toggleTrees;
+		uint toggleGrass;
+		uint toggleDeferred;
+		uint toggleEffect;
+		float pad[1];
 	};
 
 	cbuffer FeatureData : register(b6)
@@ -288,7 +295,7 @@ namespace SharedData
 		LinearLightingSettings linearLightingSettings;
 		TerrainBlendingSettings terrainBlendingSettings;
 		ExponentialHeightFogSettings exponentialHeightFogSettings;
-		SparseSkylighting sparseSkylightingSettings;
+		SparseSkylightingSettings sparseSkylightingSettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);
