@@ -7,6 +7,7 @@
 #include "Deferred.h"
 #include "FeatureIssues.h"
 #include "Features/CloudShadows.h"
+#include "Features/OrthogonalVolumetricLighting.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainHelper.h"
@@ -35,6 +36,7 @@ void State::Draw()
 	auto truePBR = globals::truePBR;
 	auto context = globals::d3d::context;
 	auto& volumetricShadows = globals::features::volumetricShadows;
+	auto& ovl = globals::features::orthogonalVolumetricLighting;
 
 	if (shaderCache->IsEnabled()) {
 		// Process deferred cell transitions (interior detection)
@@ -64,6 +66,9 @@ void State::Draw()
 			ZoneScopedN("TruePBR::SetShaderResouces");
 			truePBR->SetShaderResouces(context);
 		}
+
+		if (ovl.loaded)
+			ovl.disablePasses();
 
 		if (permutationData != permutationDataPrevious) {
 			permutationCB->Update(permutationData);

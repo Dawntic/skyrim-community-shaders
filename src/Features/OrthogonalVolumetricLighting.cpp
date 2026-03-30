@@ -17,10 +17,18 @@ RE::BSShaderProperty::RenderPassArray* OrthogonalVolumetricLighting::Hooks::GetR
 {
 	RE::BSShaderProperty::RenderPassArray* renderPasses = func(prop, geometry, flags, accumulator);
 
-	if (globals::features::orthogonalVolumetricLighting.disablePipelineUI && globals::features::orthogonalVolumetricLighting.disablePipeline)
+	auto& ovl = globals::features::orthogonalVolumetricLighting;
+	if (ovl.disablePipelineUI && ovl.disablePipeline)
 		renderPasses = nullptr;
 
 	return renderPasses;
+}
+
+void OrthogonalVolumetricLighting::disablePasses()
+{
+	if (disablePipelineUI && disablePipeline) {
+		globals::d3d::context->PSSetShader(nullptr, 0, 0);
+	}
 }
 
 void OrthogonalVolumetricLighting::SetupResources()
@@ -271,62 +279,57 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 			float scale = RE::bhkWorld::GetWorldScale();
 			float2 posScaledXY = float2(position.x * scale, position.y * scale);
 
-			// Cast ray from above, downwards
-			RE::hkpWorldRayCastInput input;
-			input.from.quad.m128_f32[0] = posScaledXY.x;
-			input.from.quad.m128_f32[1] = posScaledXY.y;
-			input.from.quad.m128_f32[2] = (position.z + RAY_OFFSET) * scale;
-			input.from.quad.m128_f32[3] = 0;
-			input.to.quad.m128_f32[0] = posScaledXY.x;
-			input.to.quad.m128_f32[1] = posScaledXY.y;
-			input.to.quad.m128_f32[2] = (position.z - RAY_OFFSET) * scale;
-			input.to.quad.m128_f32[3] = 0;
+			float currentZ = position.z + RAY_OFFSET;
+			float endZ = position.z - RAY_OFFSET;
+			int maxAttempts = 10;
 
-			RE::hkpWorldRayCastOutput output;
-			hkpWorld->CastRay(input, output);
-			bool hit = output.HasHit();
-
-			if (!hit) {
-				logger::trace("no hit");
-				return position.z;
-			}
-
-			bool playerHit = output.rootCollidable->GetCollisionLayer() == RE::COL_LAYER::kCharController;
-
-			if (playerHit)
-				logger::trace("hit player");
-
-			if (hit && !playerHit) {
-				logger::trace("hit but not hit player");
-				float rayStart = position.z + RAY_OFFSET;
-				float rayLength = RAY_OFFSET * 2;
-				float hitZ = rayStart - output.hitFraction * rayLength;
-				return hitZ + EYE_OFFSET;
-			} else {  // player is in air - cast ray from below, downwards
-				if (!playerHit)
-					logger::trace("idk");
+			for (int i = 0; i < maxAttempts; i++) {
+				RE::hkpWorldRayCastInput input;
 				input.from.quad.m128_f32[0] = posScaledXY.x;
 				input.from.quad.m128_f32[1] = posScaledXY.y;
-				input.from.quad.m128_f32[2] = (position.z - EYE_OFFSET) * scale;
+				input.from.quad.m128_f32[2] = currentZ * scale;
 				input.from.quad.m128_f32[3] = 0;
+				input.to.quad.m128_f32[0] = posScaledXY.x;
+				input.to.quad.m128_f32[1] = posScaledXY.y;
+				input.to.quad.m128_f32[2] = endZ * scale;
+				input.to.quad.m128_f32[3] = 0;
 
-				output.Reset();
+				RE::hkpWorldRayCastOutput output;
 				hkpWorld->CastRay(input, output);
 
-				hit = output.HasHit();
-
-				if (!hit) {
-					logger::trace("no second hit");
-					return position.z;
+				if (!output.HasHit()) {
+					logger::info("No hit");
+					break;
 				}
-				float rayStart = position.z - EYE_OFFSET;
-				float rayLength = RAY_OFFSET - EYE_OFFSET;
-				float hitZ = rayStart - output.hitFraction * rayLength;
+				auto collisionObj = output.rootCollidable->GetCollisionLayer();
+
+				// Degenerate case - skipped obj is close to ground, we move currentZ past it and into something solid and dont find any hits
+				if (collisionObj == RE::COL_LAYER::kCharController ||
+					collisionObj == RE::COL_LAYER::kActorZone ||
+					collisionObj == RE::COL_LAYER::kTransparent ||
+					collisionObj == RE::COL_LAYER::kProjectileZone ||
+					collisionObj == RE::COL_LAYER::kTrees) {
+					float rayLength = currentZ - endZ;
+					currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
+					logger::trace("skipping obj: {}", collisionObj);
+					continue;
+				}
+
+				if (i == 9)
+					logger::info("No valid hits");
+				else {
+					logger::trace("good hit on obj: {}", collisionObj);
+				}
+
+				// Valid hit
+				float rayLength = currentZ - endZ;
+				float hitZ = currentZ - output.hitFraction * rayLength;
 				return hitZ + EYE_OFFSET;
 			}
 		}
 	}
-	logger::trace("something is cooked");
+
+	logger::info("something is cooked");
 	return position.z;
 }
 
@@ -336,12 +339,34 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 	auto player = RE::PlayerCharacter::GetSingleton();
 	auto cell = (player) ? player->GetParentCell() : nullptr;
 	auto tes = RE::TES::GetSingleton();
-
 	if (!runIterateWorld || !tes || !globals::features::terrainShadows.IsHeightMapReady() || !cell || cell->IsInteriorCell())
 		return;
 
 	static bool updateLocation = true;
 	auto& [START, END, STEP, TILE_SIZE, TILE_TOTAL, local, tile, wave] = cData;
+
+	// Manual override: jump to specific world coords
+	if (manualOverride) {
+		manualOverride = false;
+
+		// Convert world coords to pixel coords
+		int2 targetPX = (int2((int)manualStartWS.x, (int)manualStartWS.y) - START) / STEP;
+		targetPX = int2(
+			std::clamp(targetPX.x, 0, BENT_NORMAL_SIZE.x - 1),
+			std::clamp(targetPX.y, 0, BENT_NORMAL_SIZE.y - 1));
+
+		// Calculate tile and local from pixel coords
+		tile = targetPX / TILE_SIZE;
+		local = targetPX - tile * TILE_SIZE;
+
+		// Recalculate wave from tile position
+		wave = tile.x + tile.y;
+
+		updateLocation = true;
+		logger::trace("Manual override: WS({}, {}) -> PX({}, {}) -> Tile({}, {}) Local({}, {}) Wave({})",
+			manualStartWS.x, manualStartWS.y, targetPX.x, targetPX.y,
+			tile.x, tile.y, local.x, local.y, wave);
+	}
 
 	DisableCellPortals();
 	RE::GetINISetting("bBorderRegionsEnabled:General")->data.b = false;
@@ -360,11 +385,9 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 			BackupCacheProgress();
 		}
 	};
-
 	auto PixelAtBoundry = [&](int pos, int txPos, int txMax) {
 		return pos >= TILE_SIZE || txPos >= txMax;
 	};
-
 	auto advancePixel = [&]() {
 		local.y++;
 		if (PixelAtBoundry(local.y, tile.y * TILE_SIZE + local.y, BENT_NORMAL_SIZE.y)) {
@@ -383,13 +406,11 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 		int2 worldXY = START + coordsPX * STEP;
 		coordsWS = float3((float)worldXY.x, (float)worldXY.y, 0);
 		coordsWS.z = GetRayIntersectionHeight(coordsWS);
-
 		float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), cell);
 		coordsWS.z += (waterHeight - coordsWS.z) * float(coordsWS.z < waterHeight);
-
 		logger::trace("Stage: Teleport:  Wave: {}  :  CoordsWS: {}, {}, {}", wave, coordsWS.x, coordsWS.y, coordsWS.z);
-
 		RE::PlayerCharacter::GetSingleton()->SetPosition(RE::NiPoint3(coordsWS.x, coordsWS.y, coordsWS.z), false);
+		RE::PlayerCharacter::GetSingleton()->Update(0);  // ADDED
 		updateLocation = false;
 		return;
 	} else {
@@ -466,82 +487,6 @@ bool OrthogonalVolumetricLighting::UpdateCubemapCapture()
 	return false;
 }
 
-/*
-void OrthogonalVolumetricLighting::LoadHeightmap()
-{
-	static auto tes = RE::TES::GetSingleton();
-	auto worldspace = tes->GetRuntimeData2().worldSpace;
-
-	while (worldspace && worldspace->parentWorld && worldspace->parentUseFlags.any(RE::TESWorldSpace::ParentUseFlag::kUseLandData))
-		worldspace = worldspace->parentWorld;
-
-	if (!worldspace)
-		return;
-
-	std::string worldspace_name = worldspace->GetFormEditorID();
-	if (!globals::features::terrainShadows.heightmaps.contains(worldspace_name))
-		return;
-
-	if (cachedHeightmap && cachedHeightmap->worldspace == worldspace_name)
-		return;
-
-	{
-		auto& target_heightmap = globals::features::terrainShadows.heightmaps[worldspace_name];
-
-		// Load DDS from disk
-		DirectX::ScratchImage image;
-		try {
-			std::filesystem::path path{ target_heightmap.dir };
-			path /= target_heightmap.filename;
-			DX::ThrowIfFailed(LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image));
-		} catch (const DX::com_exception& e) {
-			logger::error("{}", e.what());
-			return;
-		}
-
-		// Decompress if needed
-		if (DirectX::IsCompressed(image.GetMetadata().format)) {
-			DirectX::ScratchImage decompressed;
-			try {
-				DX::ThrowIfFailed(DirectX::Decompress(
-					image.GetImages(), image.GetImageCount(),
-					image.GetMetadata(), DXGI_FORMAT_R8G8B8A8_UNORM, decompressed));
-				image = std::move(decompressed);
-			} catch (const DX::com_exception& e) {
-				logger::error("Failed to decompress heightmap: {}", e.what());
-				return;
-			}
-			logger::info("Decompressed heightmap");
-		}
-
-		// Store CPU-side image
-		heightMapTex = std::move(image);
-
-		cachedHeightmap = &globals::features::terrainShadows.heightmaps[worldspace_name];
-	}
-}
-*/
-
-/*
-float OrthogonalVolumetricLighting::SampleHeightMap(int2 coords)
-{
-	LoadHeightmap();
-
-	float normalizedHeight = 0.f;
-	if (heightMapTex.GetImageCount()) {
-		auto& img = *heightMapTex.GetImages();
-		float u = (coords.x - cachedHeightmap->pos0.x) / (cachedHeightmap->pos1.x - cachedHeightmap->pos0.x);
-		float v = (coords.y - cachedHeightmap->pos0.y) / (cachedHeightmap->pos1.y - cachedHeightmap->pos0.y);
-		int ix = std::clamp((int)(u * img.width), 0, (int)img.width - 1);
-		int iy = std::clamp((int)(v * img.height), 0, (int)img.height - 1);
-		auto row = reinterpret_cast<const uint16_t*>(img.pixels + iy * img.rowPitch);
-		normalizedHeight = row[ix];
-	} else {
-		logger::info("INVALID HEIGHTMAP");
-	}
-	return (normalizedHeight - 32767) * 8.0f;
-}
-*/
 // Render depth into seperate 512 tex for cubemap
 void OrthogonalVolumetricLighting::RenderMainDepth()  // just render direct to cubemap??
 {
@@ -762,37 +707,34 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::Checkbox("Enable Grass", (bool*)&settings.toggleGrass);
 	ImGui::Checkbox("Enable Deferred", (bool*)&settings.toggleDeferred);
 	ImGui::Checkbox("Enable Effect", (bool*)&settings.toggleEffect);
-	ImGui::Checkbox("Disable Rendering Pipeline", (bool*)&disablePipelineUI);
 	ImGui::Checkbox("Render Probe Grid", (bool*)&test);
-	ImGui::SliderInt("Frames per pos", &BUFFER_FRAMES, 0, 1000);
-	ImGui::SliderInt("Set Wave", (int*)&settings.bentNormalCacheProgress, 0, 250);
-	static int xCoord = 0;
-	ImGui::SliderInt("Set X", &xCoord, 0, 100);
-	ImGui::Button("Set");
-	if (ImGui::IsItemClicked()) {
-		cData.wave = (int)settings.bentNormalCacheProgress;
-		cData.tile.y = cData.wave;
-		if (cData.tile.y >= cData.TILE_TOTAL.y) {
-			cData.tile.x = cData.wave - (cData.TILE_TOTAL.y - 1) + xCoord;
-			cData.tile.y = cData.TILE_TOTAL.y - 1;  // Don't touch
-		}
-	}
+	//ImGui::SliderInt("Frames per pos", &BUFFER_FRAMES, 0, 1000);
 
+	ImGui::SliderFloat("X", &manualStartWS.x, -230000, 230000);
+	ImGui::SliderFloat("Y", &manualStartWS.y, -230000, 230000);
+	ImGui::Button("Get Player Pos");
+	if (ImGui::IsItemClicked()) {
+		auto pos = RE::PlayerCharacter::GetSingleton()->GetPosition();
+		manualStartWS.x = pos.x;
+		manualStartWS.y = pos.y;
+	}
+	ImGui::Checkbox("Override", (bool*)&manualOverride);
+	ImGui::Checkbox("Disable Rendering Pipeline", (bool*)&disablePipelineUI);
 	ImGui::Checkbox("Iterate World", (bool*)&runIterateWorld);
 
-	static auto validPos = float3(0, 0, 0);
-	ImGui::Button("Check Pos");
-	if (ImGui::IsItemClicked()) {
-		if (auto player = RE::PlayerCharacter::GetSingleton()) {
-			auto pos = player->GetPosition();
-			validPos.z = GetRayIntersectionHeight(float3(pos.x, pos.y, pos.z));
-		}
-	}
-	ImGui::Text(fmt::format("Valid Z: {}", validPos.z).c_str());
+	//static auto validPos = float3(0, 0, 0);
+	//ImGui::Button("Check Pos");
+	//if (ImGui::IsItemClicked()) {
+	//	if (auto player = RE::PlayerCharacter::GetSingleton()) {
+	//		auto pos = player->GetPosition();
+	//		validPos.z = GetRayIntersectionHeight(float3(pos.x, pos.y, pos.z));
+	//	}
+	//}
+	//ImGui::Text(fmt::format("Valid Z: {}", validPos.z).c_str());
 
 	if (ImGui::TreeNode("Buffer Viewer")) {
 		static float debugRescale = 1.0f;
-		ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 1.0f);
+		ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 2.0f);
 		if (bentNormalTex) {
 			ImGui::BulletText("Bent Normal View");
 			auto drawList = ImGui::GetWindowDrawList();
@@ -818,7 +760,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 	if (ImGui::TreeNode("Buffer Viewer 2")) {
 		static float debugRescaleT = 1.0f;
-		ImGui::SliderFloat("View Resize 2", &debugRescaleT, 0.0f, 1.0f);
+		ImGui::SliderFloat("View Resize 2", &debugRescaleT, 0.0f, 2.0f);
 		if (bentNormalTex) {
 			ImGui::BulletText("Placement View");
 			auto drawList = ImGui::GetWindowDrawList();
@@ -835,13 +777,13 @@ void OrthogonalVolumetricLighting::DrawSettings()
 		ImGui::TreePop();
 	}
 
-	static float coordsX = 0;
-	static float coordsY = 0;
-	if (ImGui::Button("Teleport")) {
-		RE::PlayerCharacter::GetSingleton()->SetPosition(RE::NiPoint3(coordsX, coordsY, 0), false);
-	}
-	ImGui::SliderFloat("X", &coordsX, -225000, 225000);
-	ImGui::SliderFloat("Y", &coordsY, -225000, 225000);
+	//static float coordsX = 0;
+	//static float coordsY = 0;
+	//if (ImGui::Button("Teleport")) {
+	//	RE::PlayerCharacter::GetSingleton()->SetPosition(RE::NiPoint3(coordsX, coordsY, 0), false);
+	//}
+	//ImGui::SliderFloat("X", &coordsX, -225000, 225000);
+	//ImGui::SliderFloat("Y", &coordsY, -225000, 225000);
 }
 
 void OrthogonalVolumetricLighting::LoadSettings(json& o_json)

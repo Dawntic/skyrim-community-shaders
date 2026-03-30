@@ -30,6 +30,10 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void EarlyPrepass();
 	virtual void Prepass();
 
+	bool manualOverride = false;
+	float2 manualStartWS = float2(0, 0);  // set these before enabling
+	void disablePasses();
+
 	//// Bent Normal Resources /////////////////////////////////////////////////////////////
 	void IterateWorldFullDepth();
 	void RenderMainDepth();
@@ -208,8 +212,8 @@ struct OrthogonalVolumetricLighting : Feature
 			{
 				func(shaderAccumulator, renderFlags);
 
+				// Only capture first depth dispatch since only weapons and armour are rendered in second and we dont want that in our render
 				auto& ovl = globals::features::orthogonalVolumetricLighting;
-
 				if (ovl.renderingMainDepth) {
 					ovl.renderingMainDepth = false;
 					ovl.RenderMainDepth();
@@ -230,8 +234,7 @@ struct OrthogonalVolumetricLighting : Feature
 					ovl.depthPasses.push_back({ a_pass, a_technique, a_alphaTest, a_renderFlags });
 				}
 
-				// Don't render effects or reflections or game depth passes
-				if (ovl.disablePipelineUI && (ovl.reflectionCubeRender || ovl.renderingMainDepth))
+				if (ovl.disablePipelineUI && ovl.disablePipeline)
 					return;
 
 				func(a_pass, a_technique, a_alphaTest, a_renderFlags);
@@ -239,32 +242,45 @@ struct OrthogonalVolumetricLighting : Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-#pragma warning(push)
-#pragma warning(disable: 4100)
 		struct BSCubeMapCamera_RenderCubemap
 		{
 			static void thunk(RE::NiAVObject* camera, int a2, bool a3, bool a4, bool a5)
 			{
 				auto& ovl = globals::features::orthogonalVolumetricLighting;
-				ovl.reflectionCubeRender = true;
+				ovl.disablePipeline = true;
+
 				func(camera, a2, a3, a4, a5);
-				ovl.reflectionCubeRender = false;
 			}
 
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
-#pragma warning(pop)
+
+		struct Main_RenderFirstPersonView
+		{
+			static void thunk(bool a1, bool a2)
+			{
+				func(a1, a2);
+
+				auto& ovl = globals::features::orthogonalVolumetricLighting;
+				ovl.disablePipeline = false;
+			};
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		static void Install()
 		{
 			logger::info("[Lens Effects] Installed hooks");
 
 			stl::write_vfunc<0x2A, Hooks::GetRenderPassArray>(RE::VTABLE_BSLightingShaderProperty[0]);
-			stl::detour_thunk<Main_RenderDepth>(REL::RelocationID(100421, 107139));
+			//stl::write_vfunc<0x2A, Hooks::GetRenderPassArray>(RE::VTABLE_BSEffectShaderProperty[0]);
+			//stl::detour_thunk<BSShaderAccumulator_RenderPersistentPassList>(REL::RelocationID(100840, 107630));
 
+			stl::write_vfunc<0x35, BSCubeMapCamera_RenderCubemap>(RE::VTABLE_BSCubeMapCamera[0]);  // Set disable pipeline at start of frame
+			stl::detour_thunk<Main_RenderFirstPersonView>(REL::RelocationID(100411, 107129));      // Re-enable pipeline towards end
+
+			stl::detour_thunk<Main_RenderDepth>(REL::RelocationID(100421, 107139));
 			stl::write_vfunc<0x2A, BSShaderAccumulator_FinishAccumulatingDispatch>(RE::VTABLE_BSShaderAccumulator[0]);
 			stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately>(REL::RelocationID(100852, 107642).address() + REL::Relocate(0x29E, 0x28F));
-
-			stl::write_vfunc<0x35, BSCubeMapCamera_RenderCubemap>(RE::VTABLE_BSCubeMapCamera[0]);
 		}
 	};
 };

@@ -551,11 +551,7 @@ float3 GetLightingColor(float3 msPosition, float3 worldPosition, float2 screenPo
 
 	float3 dirColor;
 	float3 ambientColor;
-#		if defined(SKYLIGHTING)
-	ShadowSampling::ExtractLighting(color, dirColor, ambientColor, skylightingDiffuse);
-#		else
 	ShadowSampling::ExtractLighting(color, dirColor, ambientColor);
-#		endif
 
 	float3 viewDirection = normalize(worldPosition.xyz);
 
