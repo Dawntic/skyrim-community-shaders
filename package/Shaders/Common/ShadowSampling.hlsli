@@ -101,11 +101,8 @@ namespace ShadowSampling
 #endif
 	}
 
-#if defined(SKYLIGHTING) && !defined(INTERIOR)
-	void ExtractLighting(float3 inputColor, out float3 dirColor, out float3 ambientColor, float skylightingDiffuse)
-#else
 	void ExtractLighting(float3 inputColor, out float3 dirColor, out float3 ambientColor)
-#endif
+
 	{
 		float3 ambientColorAmb = max(0, SharedData::GetAmbient(float3(0, 0, 1)));
 
