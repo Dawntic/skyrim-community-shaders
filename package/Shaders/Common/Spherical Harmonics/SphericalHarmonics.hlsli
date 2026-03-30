@@ -339,12 +339,23 @@ namespace SphericalHarmonics
 	sh3 UnpackSH3(uint2 ProbePos, Texture2DArray Array)
 	{
 		sh3 OutputSH;
-		for (uint i = 0; i < 3; i++) {
-			float3 Band = Array[uint3(ProbePos.xy, i)].xyz;
-			for (uint j = 0; j < 3; j++) {
-				OutputSH.coeff[i * 3 + j] = Band[j];
-			}
-		}
+
+		float3 band0 = Array[uint3(ProbePos.xy, 0)].xyz;
+		float3 band1 = Array[uint3(ProbePos.xy, 1)].xyz;
+		float3 band2 = Array[uint3(ProbePos.xy, 2)].xyz;
+
+		OutputSH.coeff[0] = band0.x;
+		OutputSH.coeff[1] = band0.y;
+		OutputSH.coeff[2] = band0.z;
+
+		OutputSH.coeff[3] = band1.x;
+		OutputSH.coeff[4] = band1.y;
+		OutputSH.coeff[5] = band1.z;
+
+		OutputSH.coeff[6] = band2.x;
+		OutputSH.coeff[7] = band2.y;
+		OutputSH.coeff[8] = band2.z;
+
 		return OutputSH;
 	}
 
@@ -353,6 +364,28 @@ namespace SphericalHarmonics
 		Array[uint3(ProbePos.xy, 0)] = float4(SHdata.coeff[0], SHdata.coeff[1], SHdata.coeff[2], 0);
 		Array[uint3(ProbePos.xy, 2)] = float4(SHdata.coeff[6], SHdata.coeff[7], SHdata.coeff[8], 0);
 		Array[uint3(ProbePos.xy, 1)] = float4(SHdata.coeff[3], SHdata.coeff[4], SHdata.coeff[5], 0);
+	}
+
+	sh3 FauxSpecularLobeSH3(float3 N, float3 V, float roughness)
+	{
+		// https://www.gdcvault.com/play/1026701/Fast-Denoising-With-Self-Stabilizing
+		// get dominant ggx reflection direction
+		float f = (1 - roughness) * (sqrt(1 - roughness) + roughness);
+		float3 R = reflect(-V, N);
+		float3 D = lerp(N, R, f);
+		float3 dominantDir = normalize(D);
+
+		// lobe half angle
+		// credit: Olivier Therrien
+		float roughness2 = roughness * roughness;
+		float halfAngle = clamp(4.1679 * roughness2 * roughness2 - 9.0127 * roughness2 * roughness + 4.6161 * roughness2 + 1.7048 * roughness + 0.1, 0, Math::HALF_PI);
+		float lerpFactor = halfAngle / Math::HALF_PI;
+
+		sh3 directional = SphericalHarmonics::EvaluateSH3(dominantDir);
+		sh3 cosineLobe = SphericalHarmonics::ScaleSH3(SphericalHarmonics::EvaluateCosineLobeSH3(dominantDir), rcp(Math::PI));
+		sh3 result = SphericalHarmonics::AddSH3(SphericalHarmonics::ScaleSH3(directional, lerpFactor), SphericalHarmonics::ScaleSH3(cosineLobe, 1 - lerpFactor));
+
+		return result;
 	}
 
 }
