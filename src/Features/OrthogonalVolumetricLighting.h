@@ -37,11 +37,11 @@ struct OrthogonalVolumetricLighting : Feature
 	void CopyDepthBufferToCubemap(int face);
 	void GenerateBentNormalMap();
 
-	void LoadHeightmap();
+	//void LoadHeightmap();
+	//float SampleHeightMap(int2 coords);
 	void DisableCellPortals();
 	bool IsPositionValid();
 	float GetRayIntersectionHeight(float3 pos);
-	float SampleHeightMap(int2 coords);
 
 	static constexpr uint CUBE_SIZE = 512;
 	static constexpr int2 BENT_NORMAL_SIZE = int2(1104, 768);
@@ -82,6 +82,8 @@ struct OrthogonalVolumetricLighting : Feature
 	bool renderingMainDepth = false;
 	bool reflectionCubeRender = false;
 
+	bool cacheComplete = false;  // NEEDS LOGIC
+
 	struct Pass
 	{
 		RE::BSRenderPass* a_pass;
@@ -98,6 +100,13 @@ struct OrthogonalVolumetricLighting : Feature
 		float4 CubemapParams;
 	};
 	ConstantBuffer* cacheGenBuffer = nullptr;
+
+	struct alignas(16) CacheClipAlphaRefOverrideCBStruct
+	{
+		float AlphaTestRefRS;
+		float pad[3];
+	};
+	ConstantBuffer* clipRefOverrideBuffer = nullptr;
 
 	D3D11_VIEWPORT viewport = {};
 
@@ -164,7 +173,7 @@ struct OrthogonalVolumetricLighting : Feature
 		uint toggleGrass = true;
 		uint toggleDeferred = true;
 		uint toggleEffect = true;
-		uint toggleAll = false;
+		uint toggleAll = true;
 	};
 	Settings settings;
 

@@ -31,6 +31,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 
 	// Probe Resources
 	gridUpdateBuffer = new ConstantBuffer(ConstantBufferDesc<GridUpdateCBStruct>());
+	clipRefOverrideBuffer = new ConstantBuffer(ConstantBufferDesc<GridUpdateCBStruct>());
 
 	// Probe grid
 	D3D11_TEXTURE2D_DESC probeDesc{};
@@ -176,7 +177,18 @@ void OrthogonalVolumetricLighting::EarlyPrepass()
 	//	}
 	//}
 
-	IterateWorldFullDepth();
+	if (auto tes = globals::game::tes) {
+		if (auto worldSpace = tes->GetRuntimeData2().worldSpace) {
+			logger::info("Min: {}, {}", worldSpace->minimumCoords.x, worldSpace->minimumCoords.y);
+			logger::info("Max: {}, {}", worldSpace->maximumCoords.x, worldSpace->maximumCoords.y);
+		}
+	}
+
+	//cacheComplete = CheckWorldspaceCache();
+	auto cell = RE::PlayerCharacter::GetSingleton()->parentCell;
+	if (!cacheComplete && cell && !cell->IsInteriorCell()) {
+		IterateWorldFullDepth();
+	}
 }
 
 void OrthogonalVolumetricLighting::Prepass()
@@ -250,7 +262,7 @@ void OrthogonalVolumetricLighting::DisableCellPortals()
 
 float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 {
-	static constexpr float RAY_OFFSET = 10000.0f;  // We check +- offset
+	static constexpr float RAY_OFFSET = 40000.0f;  // We check +- offset
 	static constexpr float EYE_OFFSET = 50.0f;
 
 	auto player = RE::PlayerCharacter::GetSingleton();
@@ -274,17 +286,25 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 			hkpWorld->CastRay(input, output);
 			bool hit = output.HasHit();
 
-			if (!hit)
+			if (!hit) {
+				logger::trace("no hit");
 				return position.z;
+			}
 
 			bool playerHit = output.rootCollidable->GetCollisionLayer() == RE::COL_LAYER::kCharController;
 
+			if (playerHit)
+				logger::trace("hit player");
+
 			if (hit && !playerHit) {
+				logger::trace("hit but not hit player");
 				float rayStart = position.z + RAY_OFFSET;
 				float rayLength = RAY_OFFSET * 2;
 				float hitZ = rayStart - output.hitFraction * rayLength;
 				return hitZ + EYE_OFFSET;
 			} else {  // player is in air - cast ray from below, downwards
+				if (!playerHit)
+					logger::trace("idk");
 				input.from.quad.m128_f32[0] = posScaledXY.x;
 				input.from.quad.m128_f32[1] = posScaledXY.y;
 				input.from.quad.m128_f32[2] = (position.z - EYE_OFFSET) * scale;
@@ -295,9 +315,10 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 
 				hit = output.HasHit();
 
-				if (!hit)
+				if (!hit) {
+					logger::trace("no second hit");
 					return position.z;
-
+				}
 				float rayStart = position.z - EYE_OFFSET;
 				float rayLength = RAY_OFFSET - EYE_OFFSET;
 				float hitZ = rayStart - output.hitFraction * rayLength;
@@ -305,7 +326,7 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 			}
 		}
 	}
-
+	logger::trace("something is cooked");
 	return position.z;
 }
 
@@ -319,7 +340,7 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 	if (!runIterateWorld || !tes || !globals::features::terrainShadows.IsHeightMapReady() || !cell || cell->IsInteriorCell())
 		return;
 
-	static bool updateLocation = false;
+	static bool updateLocation = true;
 	auto& [START, END, STEP, TILE_SIZE, TILE_TOTAL, local, tile, wave] = cData;
 
 	DisableCellPortals();
@@ -360,7 +381,7 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 
 	if (updateLocation) {
 		int2 worldXY = START + coordsPX * STEP;
-		coordsWS = float3((float)worldXY.x, (float)worldXY.y, SampleHeightMap(worldXY));
+		coordsWS = float3((float)worldXY.x, (float)worldXY.y, 0);
 		coordsWS.z = GetRayIntersectionHeight(coordsWS);
 
 		float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), cell);
@@ -445,6 +466,7 @@ bool OrthogonalVolumetricLighting::UpdateCubemapCapture()
 	return false;
 }
 
+/*
 void OrthogonalVolumetricLighting::LoadHeightmap()
 {
 	static auto tes = RE::TES::GetSingleton();
@@ -498,7 +520,9 @@ void OrthogonalVolumetricLighting::LoadHeightmap()
 		cachedHeightmap = &globals::features::terrainShadows.heightmaps[worldspace_name];
 	}
 }
+*/
 
+/*
 float OrthogonalVolumetricLighting::SampleHeightMap(int2 coords)
 {
 	LoadHeightmap();
@@ -517,7 +541,7 @@ float OrthogonalVolumetricLighting::SampleHeightMap(int2 coords)
 	}
 	return (normalizedHeight - 32767) * 8.0f;
 }
-
+*/
 // Render depth into seperate 512 tex for cubemap
 void OrthogonalVolumetricLighting::RenderMainDepth()  // just render direct to cubemap??
 {
@@ -528,10 +552,18 @@ void OrthogonalVolumetricLighting::RenderMainDepth()  // just render direct to c
 	globals::d3d::context->OMSetRenderTargets(0, nullptr, mainDepthDSV);
 	globals::d3d::context->RSSetViewports(1, &viewport);
 
+	CacheClipAlphaRefOverrideCBStruct data;
+	data.AlphaTestRefRS = 0.1;
+	clipRefOverrideBuffer->Update(data);
+
+	auto buffer = clipRefOverrideBuffer->CB();
+
 	globals::game::stateUpdateFlags->reset(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
 	globals::game::stateUpdateFlags->reset(RE::BSGraphics::ShaderFlags::DIRTY_VIEWPORT);
 
 	for (const auto& pass : depthPasses) {
+		globals::d3d::context->PSSetConstantBuffers(11, 1, &buffer);
+		globals::game::stateUpdateFlags->reset(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_TEST_REF);
 		Hooks::BSBatchRenderer_RenderPassImmediately::func(pass.a_pass, pass.a_technique, pass.a_alphaTest, pass.a_renderFlags);
 	}
 
@@ -698,11 +730,11 @@ OrthogonalVolumetricLighting::GridUpdateCBStruct OrthogonalVolumetricLighting::G
 	data.GridMaxCorner = float2(GRID_BOUND_TL.y, GRID_BOUND_BR.x);
 	int2 GridSpan = int2(std::abs(GRID_BOUND_BR.x - GRID_BOUND_TL.x), std::abs(GRID_BOUND_TL.y - GRID_BOUND_BR.y));
 	data.InvGridSpan = 1.0 / float2(GridSpan.x, GridSpan.y);
-	data.toggleLighting = settings.toggleLighting || settings.toggleAll;
-	data.toggleTrees = settings.toggleTrees || settings.toggleAll;
-	data.toggleGrass = settings.toggleGrass || settings.toggleAll;
-	data.toggleDeferred = settings.toggleDeferred || settings.toggleAll;
-	data.toggleEffect = settings.toggleEffect || settings.toggleAll;
+	data.toggleLighting = settings.toggleLighting | settings.toggleAll;
+	data.toggleTrees = settings.toggleTrees | settings.toggleAll;
+	data.toggleGrass = settings.toggleGrass | settings.toggleAll;
+	data.toggleDeferred = settings.toggleDeferred | settings.toggleAll;
+	data.toggleEffect = settings.toggleEffect | settings.toggleAll;
 
 	return data;
 }
@@ -733,6 +765,19 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::Checkbox("Disable Rendering Pipeline", (bool*)&disablePipelineUI);
 	ImGui::Checkbox("Render Probe Grid", (bool*)&test);
 	ImGui::SliderInt("Frames per pos", &BUFFER_FRAMES, 0, 1000);
+	ImGui::SliderInt("Set Wave", (int*)&settings.bentNormalCacheProgress, 0, 250);
+	static int xCoord = 0;
+	ImGui::SliderInt("Set X", &xCoord, 0, 100);
+	ImGui::Button("Set");
+	if (ImGui::IsItemClicked()) {
+		cData.wave = (int)settings.bentNormalCacheProgress;
+		cData.tile.y = cData.wave;
+		if (cData.tile.y >= cData.TILE_TOTAL.y) {
+			cData.tile.x = cData.wave - (cData.TILE_TOTAL.y - 1) + xCoord;
+			cData.tile.y = cData.TILE_TOTAL.y - 1;  // Don't touch
+		}
+	}
+
 	ImGui::Checkbox("Iterate World", (bool*)&runIterateWorld);
 
 	static auto validPos = float3(0, 0, 0);
