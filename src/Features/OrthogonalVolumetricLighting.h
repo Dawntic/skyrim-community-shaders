@@ -119,7 +119,7 @@ struct OrthogonalVolumetricLighting : Feature
 
 	void UpdateSparseProbeGrid();
 
-	static constexpr uint PROBE_ARRAY_SIZE = 132;
+	static constexpr uint PROBE_ARRAY_SIZE = 128;
 
 	struct alignas(16) GridUpdateCBStruct
 	{
@@ -127,7 +127,14 @@ struct OrthogonalVolumetricLighting : Feature
 		int2 GridTexSize;  // Shared //
 		float2 InvGridTexSize;
 		float2 GridMinCorner;  // Shared //
+		float2 GridMaxCorner;  // Shared //
 		float2 InvGridSpan;    // Shared //
+		uint toggleLighting;
+		uint toggleTrees;
+		uint toggleGrass;
+		uint toggleDeferred;
+		uint toggleEffect;
+		float _pad[1];
 	};
 	ConstantBuffer* gridUpdateBuffer = nullptr;
 
@@ -152,6 +159,12 @@ struct OrthogonalVolumetricLighting : Feature
 	struct Settings
 	{
 		uint bentNormalCacheProgress = 0;
+		uint toggleLighting = true;
+		uint toggleTrees = true;
+		uint toggleGrass = true;
+		uint toggleDeferred = true;
+		uint toggleEffect = true;
+		uint toggleAll = false;
 	};
 	Settings settings;
 

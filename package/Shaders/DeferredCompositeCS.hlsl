@@ -182,11 +182,18 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		float3 positionMS = positionWS.xyz;
 #		endif
 
-		sh2 skylighting = Skylighting::sample(SharedData::skylightingSettings, SkylightingProbeArray, stbn_vec3_2Dx1D_128x128x64, dispatchID.xy, positionMS.xyz, R);
-
-		float skylightingSpecular = SphericalHarmonics::FuncProductIntegral(skylighting, specularLobe);
-		skylightingSpecular = saturate(skylightingSpecular);
-		skylightingSpecular = Skylighting::mixSpecular(SharedData::skylightingSettings, skylightingSpecular);
+		float skylightingSpecular = 0.0;
+		if (!SharedData::InInterior) {
+			sh2 skylighting = Skylighting::sample(SharedData::skylightingSettings, SkylightingProbeArray, stbn_vec3_2Dx1D_128x128x64, dispatchID.xy, positionMS.xyz, R);
+			float skylightingSpecular = SphericalHarmonics::FuncProductIntegral(skylighting, specularLobe);
+			if (SharedData::sparseSkylightingSettings.toggleDeferred) {
+				sh3 specularLobeSH3 = SphericalHarmonics::FauxSpecularLobeSH3(normalWS, V, roughness);
+				sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(Skylighting::ProbeArray, SharedData::sparseSkylightingSettings, positionMS.xyz);
+				float sparseAO = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, specularLobeSH3);
+				skylightingSpecular = min(skylightingSpecular, sparseAO);
+			}
+			skylightingSpecular = Skylighting::mixSpecular(SharedData::skylightingSettings, saturate(skylightingSpecular));
+		}
 #	endif
 
 #	if defined(IBL)

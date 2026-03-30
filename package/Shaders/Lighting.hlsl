@@ -2771,13 +2771,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	if (!SharedData::InInterior) {
 		skylightingFadeOutFactor = Skylighting::getFadeOutFactor(input.WorldPosition.xyz);
 		skylightingDiffuse = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(ambientNormal)) / Math::PI;
-		skylightingDiffuse = saturate(skylightingDiffuse);
-		skylightingDiffuse = lerp(1.0, skylightingDiffuse, skylightingFadeOutFactor);
+		skylightingDiffuse = lerp(saturate(skylightingDiffuse), 1.0, 1.0 - skylightingFadeOutFactor);
+		if (SharedData::sparseSkylightingSettings.toggleLighting) {  /////////////////////////// MINE
+			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(Skylighting::ProbeArray, SharedData::sparseSkylightingSettings, input.WorldPosition.xyz);
+			float sparseAO = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(worldNormal.xyz)) / Math::PI;
+			skylightingDiffuse = min(skylightingDiffuse, saturate(sparseAO));
+		}
 		skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);
 	}
 #	endif
 
-#	if defined(IBL)
+#	if defined(IBL)  // Reflection, world, not static
 	float3 envIBLColor = 0;
 	if (SharedData::iblSettings.EnableIBL) {
 		if (!(SharedData::iblSettings.UseStaticIBL && !inWorld && !inReflection)) {
@@ -2832,9 +2836,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif
 #	elif defined(SKYLIGHTING)
 	float3 vertexColor = input.Color.xyz;
-	float vertexAO = max(max(vertexColor.r, vertexColor.g), vertexColor.b);
 	// Modify skylightingDiffuse such that skylightingDiffuse * vertexAO = min(skylightingDiffuse, vertexAO)
-	skylightingDiffuse = saturate(skylightingDiffuse / max(vertexAO, 1e-5));
+	float vertexAO = max(max(vertexColor.r, vertexColor.g), vertexColor.b);
+	skylightingDiffuse = saturate(skylightingDiffuse / max(vertexAO, 1e-5));  // Not sure if this is needed
 #	else
 	float3 vertexColor = input.Color.xyz;
 #	endif  // defined (HAIR)
@@ -2851,7 +2855,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		else
 	float3 wetnessReflectance = 0.0;
 #		endif
-#	endif
+#	endif  // WETNESS_EFFECTS
 #	if defined(ENVMAP) || defined(MULTI_LAYER_PARALLAX) || defined(EYE)
 	indirectLobeWeights.specular *= envMask;
 #	endif
@@ -2879,7 +2883,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	else
 	color.xyz += diffuseColor * material.BaseColor;
-#	endif
+#	endif  // TRUE_PBR
 
 	color.xyz += indirectLobeWeights.diffuse * directionalAmbientColor;
 	color.xyz += transmissionColor;

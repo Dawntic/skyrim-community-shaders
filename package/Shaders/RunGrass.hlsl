@@ -650,14 +650,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float3 vertexColor = input.VertexColor.xyz;
 
-#				if defined(SKYLIGHTING)
-	float skylightingFadeOutFactor = 1.0;
-	if (!SharedData::InInterior) {
-		skylightingFadeOutFactor = Skylighting::getFadeOutFactor(input.WorldPosition.xyz);
-		vertexColor = lerp(input.VertexColor.xyz * input.VertexMult, vertexColor, skylightingFadeOutFactor);
-	}
-#				endif
-
 	float3 albedo = max(0, baseColor.xyz * Color::ColorToLinear(vertexColor));
 
 	float3 subsurfaceColor = lerp(dot(albedo, 1.0 / 3.0), albedo, 2.0) * saturate(input.VertexNormal.w * 10.0);
@@ -767,7 +759,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		sh2 skylightingSH = Skylighting::sample(SharedData::skylightingSettings, Skylighting::SkylightingProbeArray, Skylighting::stbn_vec3_2Dx1D_128x128x64, input.HPosition.xy, positionMSSkylight, normal);
 		skylightingDiffuse = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(normal)) / Math::PI;
 		skylightingDiffuse = saturate(skylightingDiffuse);
+		float skylightingFadeOutFactor = Skylighting::getFadeOutFactor(positionMSSkylight);
 		skylightingDiffuse = lerp(1.0, skylightingDiffuse, skylightingFadeOutFactor);
+		if (SharedData::sparseSkylightingSettings.toggle) {
+			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(Skylighting::ProbeArray, SharedData::sparseSkylightingSettings, positionMSSkylight);
+			float sparseAO = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;
+			skylightingDiffuse = min(skylightingDiffuse, saturate(sparseAO))
+		}
 		skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);
 	}
 #				endif  // SKYLIGHTING
@@ -943,17 +941,22 @@ PS_OUTPUT main(PS_INPUT input)
 
 	normal = normalize(float3(normal.xy, max(0, normal.z)));
 
-	float3 vertexColor = input.VertexColor.xyz;
+	float3 directionalAmbientColor = Color::Ambient(max(0, SharedData::GetAmbient(normal)));
 
-#			if defined(SKYLIGHTING)
-	float skylightingFadeOutFactor = 1.0;
-	if (!SharedData::InInterior) {
-		skylightingFadeOutFactor = Skylighting::getFadeOutFactor(input.WorldPosition.xyz);
-		vertexColor = lerp(input.VertexColor.xyz * input.VertexMult, vertexColor, skylightingFadeOutFactor);
+#			if defined(IBL)
+	if (SharedData::iblSettings.EnableIBL) {
+		float3 skyIBL = Color::IrradianceToGamma(ImageBasedLighting::GetSkyIBLColor(-normal));
+		if (SharedData::iblSettings.DALCMode == 2) {
+			directionalAmbientColor = directionalAmbientColor * SharedData::iblSettings.DALCAmount + skyIBL;
+		} else {
+			directionalAmbientColor = Color::IrradianceToGamma(ImageBasedLighting::GetEnvIBLColor(-normal)) + skyIBL;
+		}
 	}
 #			endif
 
-	float3 directionalAmbientColor = Color::Ambient(max(0, SharedData::GetAmbient(normal)));
+	float3 albedo = baseColor.xyz * input.VertexColor.xyz;
+
+	diffuseColor += directionalAmbientColor;
 
 #			if defined(SKYLIGHTING)
 	float skylightingDiffuse = 1.0;
@@ -965,46 +968,19 @@ PS_OUTPUT main(PS_INPUT input)
 #				endif
 		sh2 skylightingSH = Skylighting::sample(SharedData::skylightingSettings, Skylighting::SkylightingProbeArray, Skylighting::stbn_vec3_2Dx1D_128x128x64, input.HPosition.xy, positionMSSkylight, normal);
 		skylightingDiffuse = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(normal)) / Math::PI;
-		skylightingDiffuse = saturate(skylightingDiffuse);
-		skylightingDiffuse = lerp(1.0, skylightingDiffuse, skylightingFadeOutFactor);
+		float skylightingFadeOutFactor = Skylighting::getFadeOutFactor(positionMSSkylight);
+		skylightingDiffuse = lerp(saturate(skylightingDiffuse), 1.0, 1.0 - skylightingFadeOutFactor);
+		if (SharedData::sparseSkylightingSettings.toggleGrass) {
+			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(Skylighting::ProbeArray, SharedData::sparseSkylightingSettings, positionMSSkylight);
+			float sparseAO = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;
+			skylightingDiffuse = min(skylightingDiffuse, saturate(sparseAO));
+		}
 		skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);
+		Skylighting::applySkylighting(diffuseColor, directionalAmbientColor, albedo, skylightingDiffuse);
 	}
 #			endif  // SKYLIGHTING
 
-#			if defined(IBL)
-	float3 envIBLColor = 0;
-	if (SharedData::iblSettings.EnableIBL) {
-		if (SharedData::iblSettings.DALCMode == 2) {
-			// Mode 2: keep vanilla DALC scaled by DALCAmount, add sky IBL overlay
-			envIBLColor = directionalAmbientColor * SharedData::iblSettings.DALCAmount;
-			directionalAmbientColor = envIBLColor + Color::IrradianceToGamma(ImageBasedLighting::GetSkyIBLColor(-normal));
-		} else {
-			envIBLColor = Color::IrradianceToGamma(ImageBasedLighting::GetEnvIBLColor(-normal));
-			float3 skyIBLColor = Color::IrradianceToGamma(ImageBasedLighting::GetSkyIBLColor(-normal));
-			directionalAmbientColor = envIBLColor + skyIBLColor;
-		}
-	}
-#			endif
-
-	diffuseColor += directionalAmbientColor;
-
-	float3 albedo = baseColor.xyz * vertexColor;
-
-	diffuseColor *= albedo;
-#			if defined(IBL) && defined(SKYLIGHTING)
-	directionalAmbientColor -= envIBLColor;
-#			endif
-	directionalAmbientColor *= albedo;
-
-#			if defined(SKYLIGHTING)
-	Skylighting::applySkylighting(diffuseColor, directionalAmbientColor, albedo, skylightingDiffuse);
-#			endif
-
-#			if defined(IBL) && defined(SKYLIGHTING)
-	directionalAmbientColor += envIBLColor * albedo;
-#			endif
-
-	psout.Diffuse.xyz = diffuseColor;
+	psout.Diffuse.xyz = diffuseColor * albedo;
 
 	psout.Diffuse.w = 1;
 

@@ -663,6 +663,7 @@ void OrthogonalVolumetricLighting::UpdateSparseProbeGrid()
 	data.GridTexSize = int2(PROBE_ARRAY_SIZE, PROBE_ARRAY_SIZE);
 	data.InvGridTexSize = 1.0f / float2(PROBE_ARRAY_SIZE, PROBE_ARRAY_SIZE);
 	data.GridMinCorner = float2(GRID_BOUND_TL.x, GRID_BOUND_BR.y);
+	data.GridMaxCorner = float2(GRID_BOUND_TL.y, GRID_BOUND_BR.x);
 	int2 GridSpan = int2(std::abs(GRID_BOUND_BR.x - GRID_BOUND_TL.x), std::abs(GRID_BOUND_TL.y - GRID_BOUND_BR.y));
 	data.InvGridSpan = 1.0 / float2(GridSpan.x, GridSpan.y);
 	gridUpdateBuffer->Update(data);
@@ -677,6 +678,7 @@ void OrthogonalVolumetricLighting::UpdateSparseProbeGrid()
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
 
 	context->PSSetShaderResources(69, 1, probeGridArray->srv.address());
+	context->CSSetShaderResources(69, 1, probeGridArray->srv.address());
 
 	if (globals::state->frameAnnotations)
 		globals::state->EndPerfEvent();
@@ -693,12 +695,19 @@ OrthogonalVolumetricLighting::GridUpdateCBStruct OrthogonalVolumetricLighting::G
 	data.GridTexSize = int2(PROBE_ARRAY_SIZE, PROBE_ARRAY_SIZE);
 	data.InvGridTexSize = 1.0f / float2(PROBE_ARRAY_SIZE, PROBE_ARRAY_SIZE);
 	data.GridMinCorner = float2(GRID_BOUND_TL.x, GRID_BOUND_BR.y);
+	data.GridMaxCorner = float2(GRID_BOUND_TL.y, GRID_BOUND_BR.x);
 	int2 GridSpan = int2(std::abs(GRID_BOUND_BR.x - GRID_BOUND_TL.x), std::abs(GRID_BOUND_TL.y - GRID_BOUND_BR.y));
 	data.InvGridSpan = 1.0 / float2(GridSpan.x, GridSpan.y);
+	data.toggleLighting = settings.toggleLighting || settings.toggleAll;
+	data.toggleTrees = settings.toggleTrees || settings.toggleAll;
+	data.toggleGrass = settings.toggleGrass || settings.toggleAll;
+	data.toggleDeferred = settings.toggleDeferred || settings.toggleAll;
+	data.toggleEffect = settings.toggleEffect || settings.toggleAll;
 
 	return data;
 }
 #pragma warning(pop)
+
 ///// Settings ////////////////////////////////////////////
 void OrthogonalVolumetricLighting::DrawSettings()
 {
@@ -715,13 +724,15 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	}
 	ImGui::Spacing();
 
-	//ImGui::Checkbox("Override Depth", (bool*)&overrideDepthUI);
-	//ImGui::Checkbox("Render Custom Depth", &UIrenderCustomDepth);
-	ImGui::Checkbox("Render Probe Grid", (bool*)&test);
+	ImGui::Checkbox("Toggle All", (bool*)&settings.toggleAll);
+	ImGui::Checkbox("Enable Lighting", (bool*)&settings.toggleLighting);
+	ImGui::Checkbox("Enable Trees", (bool*)&settings.toggleTrees);
+	ImGui::Checkbox("Enable Grass", (bool*)&settings.toggleGrass);
+	ImGui::Checkbox("Enable Deferred", (bool*)&settings.toggleDeferred);
+	ImGui::Checkbox("Enable Effect", (bool*)&settings.toggleEffect);
 	ImGui::Checkbox("Disable Rendering Pipeline", (bool*)&disablePipelineUI);
-	//ImGui::SliderInt("Run Limit", &runLimit, 0, 14462464);
+	ImGui::Checkbox("Render Probe Grid", (bool*)&test);
 	ImGui::SliderInt("Frames per pos", &BUFFER_FRAMES, 0, 1000);
-	//	ImGui::SliderFloat("Height Offset", &HEIGHT_OFFSET, 0, 1000);
 	ImGui::Checkbox("Iterate World", (bool*)&runIterateWorld);
 
 	static auto validPos = float3(0, 0, 0);
@@ -735,7 +746,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	ImGui::Text(fmt::format("Valid Z: {}", validPos.z).c_str());
 
 	if (ImGui::TreeNode("Buffer Viewer")) {
-		static float debugRescale = 8.5f;
+		static float debugRescale = 1.0f;
 		ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 1.0f);
 		if (bentNormalTex) {
 			ImGui::BulletText("Bent Normal View");
@@ -752,7 +763,6 @@ void OrthogonalVolumetricLighting::DrawSettings()
 
 			drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 		}
-		ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 12.0f);
 		ImGui::TreePop();
 	}
 
@@ -762,7 +772,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	}
 
 	if (ImGui::TreeNode("Buffer Viewer 2")) {
-		static float debugRescaleT = 8.5f;
+		static float debugRescaleT = 1.0f;
 		ImGui::SliderFloat("View Resize 2", &debugRescaleT, 0.0f, 1.0f);
 		if (bentNormalTex) {
 			ImGui::BulletText("Placement View");

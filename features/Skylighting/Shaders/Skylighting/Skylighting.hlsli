@@ -13,6 +13,7 @@ namespace Skylighting
 	Texture3D<sh2> SkylightingProbeArray : register(t50);
 	Texture2DArray<float3> stbn_vec3_2Dx1D_128x128x64 : register(t51);
 #endif
+	Texture2DArray ProbeArray : register(t69);
 
 	const static uint3 ARRAY_DIM = uint3(256, 256, 128);
 	const static float3 ARRAY_SIZE = 4096.f * 2.5f * float3(1, 1, 0.5);
@@ -57,6 +58,16 @@ namespace Skylighting
 		diffuseColor += directionalAmbientColor;
 	}
 #endif
+
+	sh3 SampleSparseProbeGrid(Texture2DArray ProbeArrayIn, SharedData::SparseSkylightingSettings settings, float3 CoordsWS)
+	{
+		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
+		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
+			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
+			return SphericalHarmonics::UnpackSH3(Probe, ProbeArrayIn);
+		}
+		return SphericalHarmonics::UnitSH3();
+	}
 
 	sh2 sample(SharedData::SkylightingSettings params, Texture3D<sh2> probeArray, Texture2DArray<float3> blueNoise, float2 screenPosition, float3 positionMS, float3 normalWS)
 	{

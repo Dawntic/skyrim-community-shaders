@@ -257,7 +257,20 @@ PS_OUTPUT main(PS_INPUT input)
 		}
 	}
 #			endif
+
 	diffuseColor += directionalAmbientColor;
+
+#			if defined(SKYLIGHTING)
+	float skylightingDiffuse = 1.0;
+	if (!SharedData::InInterior) {
+		if (SharedData::sparseSkylightingSettings.toggleTrees) {
+			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(Skylighting::ProbeArray, SharedData::sparseSkylightingSettings, input.WorldPosition.xyz);
+			skylightingDiffuse = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;  // Maybe it would be better to use up dir here
+			skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);
+			Skylighting::applySkylighting(diffuseColor, directionalAmbientColor, baseColor.xyz, skylightingDiffuse);
+		}
+	}
+#			endif
 
 	psout.Diffuse.xyz = diffuseColor * baseColor.xyz;
 	psout.Diffuse.w = 1;
@@ -269,7 +282,9 @@ PS_OUTPUT main(PS_INPUT input)
 
 	psout.Albedo = float4(baseColor.xyz, 1);
 	psout.Masks = float4(0, 0, 1, 0);
-#		else
+
+#		else  // ! DEFERRED
+
 	float dirShadow = ShadowSampling::GetWorldShadow(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, eyeIndex);
 
 	float llDirLightMult = (SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear) ? SharedData::linearLightingSettings.dirLightMult : 1.0f;
@@ -298,7 +313,20 @@ PS_OUTPUT main(PS_INPUT input)
 		}
 	}
 #			endif
+
 	diffuseColor += directionalAmbientColor;
+
+#			if defined(SKYLIGHTING)
+	float skylightingDiffuse = 1.0;
+	if (!SharedData::InInterior) {
+		if (SharedData::sparseSkylightingSettings.toggleTrees) {
+			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(Skylighting::ProbeArray, SharedData::sparseSkylightingSettings, input.WorldPosition.xyz);
+			skylightingDiffuse = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;
+			skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);
+			Skylighting::applySkylighting(diffuseColor, directionalAmbientColor, baseColor.xyz, skylightingDiffuse);
+		}
+	}
+#			endif
 
 	float3 color = diffuseColor * baseColor.xyz;
 	psout.Diffuse = float4(color, 1.0);
