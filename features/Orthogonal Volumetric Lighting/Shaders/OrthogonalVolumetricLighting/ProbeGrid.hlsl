@@ -8,19 +8,14 @@ cbuffer buffer : register(b0)
 	int2 GridTexSize;
 	float2 InvGridTexSize;
 	float2 GridMinCornerWS;
+	float2 GridMaxCornerWS;
 	float2 InvGridSpan;
-}
-
-sh3 SampleProbeGrid(Texture2DArray ProbeArray, float3 CoordsWS)
-{
-	if (!SharedData::InInterior) {
-		float2 CoordsUV = (CoordsWS.xy - GridMinCornerWS) * InvGridSpan;
-		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
-			int2 Probe = clamp(int2(CoordsUV * GridTexSize), 0, GridTexSize - 1);
-			return SphericalHarmonics::UnpackSH3(Probe, ProbeArray);
-		}
-	}
-	return SphericalHarmonics::ScaleSH3(SphericalHarmonics::UnitSH3(), rcp(1e-8));
+	uint toggleLighting;
+	uint toggleTrees;
+	uint toggleGrass;
+	uint toggleDeferred;
+	uint toggleEffect;
+	float pad[1];
 }
 
 #ifdef UPDATE_GRID
@@ -32,25 +27,24 @@ RWTexture2D<float4> PlacementMap : register(u1);
 
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	float2 CoordsUV = (ThreadID.xy + 0.5) * InvGridTexSize.xy;
-	//float2 CoordsNDC = CoordsUV * 2.0 - 1.0;
-	//float2 CoordsWS = mul(InverseViewProj, float4(CoordsNDC.x, -CoordsNDC.y, 0, 1)).xy;
 
 	float4 BNSample = BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);
-	float3 BentNormalDir = BNSample.xyz;
+	float3 BentNormalDir = BNSample.xyz * 2.0 - 1.0;
 	float BentNormalAO = BNSample.w;
 
 	sh3 OcclusionSH = SphericalHarmonics::ScaleSH3(SphericalHarmonics::EvaluateSH3(BentNormalDir), BentNormalAO * 4.0 * Math::PI);
 
 	SphericalHarmonics::PackSH3(OcclusionSH, ThreadID.xy, ProbeArray);
 
-	float2 center = CoordsUV * float2(1104, 768);
-	int radius = 3;
+	float2 placementMapSize = float2(1104, 768);
+	float2 center = (float2(ThreadID.xy) + 0.5) / float2(GridTexSize.x, GridTexSize.y) * placementMapSize;
+	int radius = 2;
 
 	for (int y = -radius; y <= radius; y++) {
 		for (int x = -radius; x <= radius; x++) {
 			if (x * x + y * y <= radius * radius) {
 				int2 px = int2(center) + int2(x, y);
-				if (px.x >= 0 && px.x < 1104 && px.y >= 0 && px.y < 768)
+				if (px.x >= 0 && px.x < placementMapSize.x && px.y >= 0 && px.y < placementMapSize.y)
 					PlacementMap[px] = float4(1, 1, 1, 1);
 			}
 		}
