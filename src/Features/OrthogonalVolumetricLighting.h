@@ -242,6 +242,7 @@ struct OrthogonalVolumetricLighting : Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		// Set disable pipeline at start of frame
 		struct BSCubeMapCamera_RenderCubemap
 		{
 			static void thunk(RE::NiAVObject* camera, int a2, bool a3, bool a4, bool a5)
@@ -255,6 +256,7 @@ struct OrthogonalVolumetricLighting : Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		// Re-enable pipeline before end of frame
 		struct Main_RenderFirstPersonView
 		{
 			static void thunk(bool a1, bool a2)

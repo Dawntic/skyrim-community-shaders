@@ -187,8 +187,8 @@ void OrthogonalVolumetricLighting::EarlyPrepass()
 
 	if (auto tes = globals::game::tes) {
 		if (auto worldSpace = tes->GetRuntimeData2().worldSpace) {
-			logger::info("Min: {}, {}", worldSpace->minimumCoords.x, worldSpace->minimumCoords.y);
-			logger::info("Max: {}, {}", worldSpace->maximumCoords.x, worldSpace->maximumCoords.y);
+			//logger::info("Min: {}, {}", worldSpace->minimumCoords.x, worldSpace->minimumCoords.y);
+			//logger::info("Max: {}, {}", worldSpace->maximumCoords.x, worldSpace->maximumCoords.y);
 		}
 	}
 
@@ -273,6 +273,7 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 	static constexpr float RAY_OFFSET = 40000.0f;  // We check +- offset
 	static constexpr float EYE_OFFSET = 50.0f;
 
+	static float prevZ = 0.0f;
 	auto player = RE::PlayerCharacter::GetSingleton();
 	if (player && player->GetParentCell() && player->GetParentCell()->GetbhkWorld()) {
 		if (auto hkpWorld = player->GetParentCell()->GetbhkWorld()->GetWorld1()) {
@@ -299,7 +300,7 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 
 				if (!output.HasHit()) {
 					logger::info("No hit");
-					break;
+					return prevZ + EYE_OFFSET;
 				}
 				auto collisionObj = output.rootCollidable->GetCollisionLayer();
 
@@ -315,22 +316,24 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 					continue;
 				}
 
-				if (i == 9)
+				if (i + 1 == maxAttempts) {
 					logger::info("No valid hits");
-				else {
-					logger::trace("good hit on obj: {}", collisionObj);
+					return prevZ + EYE_OFFSET;
 				}
+
+				logger::trace("good hit on obj: {}", collisionObj);
 
 				// Valid hit
 				float rayLength = currentZ - endZ;
 				float hitZ = currentZ - output.hitFraction * rayLength;
+				prevZ = hitZ;
 				return hitZ + EYE_OFFSET;
 			}
 		}
 	}
 
 	logger::info("something is cooked");
-	return position.z;
+	return prevZ + EYE_OFFSET;
 }
 
 //check if cache complete
@@ -606,7 +609,7 @@ bool OrthogonalVolumetricLighting::IsPositionValid()
 		sequCounter = 0;
 	}
 
-	if (sequCounter == 10) {  // Probs water
+	if (sequCounter == 10) {  // should never happen
 		coordsWS.z = playerPos.z;
 		sequCounter = 0;
 	}
