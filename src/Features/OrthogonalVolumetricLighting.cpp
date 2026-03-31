@@ -185,12 +185,12 @@ void OrthogonalVolumetricLighting::EarlyPrepass()
 	//	}
 	//}
 
-	if (auto tes = globals::game::tes) {
-		if (auto worldSpace = tes->GetRuntimeData2().worldSpace) {
-			//logger::info("Min: {}, {}", worldSpace->minimumCoords.x, worldSpace->minimumCoords.y);
-			//logger::info("Max: {}, {}", worldSpace->maximumCoords.x, worldSpace->maximumCoords.y);
-		}
-	}
+	//if (auto tes = globals::game::tes) {
+	//	if (auto worldSpace = tes->GetRuntimeData2().worldSpace) {
+	//logger::info("Min: {}, {}", worldSpace->minimumCoords.x, worldSpace->minimumCoords.y);
+	//logger::info("Max: {}, {}", worldSpace->maximumCoords.x, worldSpace->maximumCoords.y);
+	//	}
+	//}
 
 	//cacheComplete = CheckWorldspaceCache();
 	auto cell = RE::PlayerCharacter::GetSingleton()->parentCell;
@@ -270,13 +270,49 @@ void OrthogonalVolumetricLighting::DisableCellPortals()
 
 float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 {
-	static constexpr float RAY_OFFSET = 40000.0f;  // We check +- offset
+	static constexpr float RAY_OFFSET = 20000.0f;  // We check +- offset
 	static constexpr float EYE_OFFSET = 50.0f;
 
 	static float prevZ = 0.0f;
 	auto player = RE::PlayerCharacter::GetSingleton();
-	if (player && player->GetParentCell() && player->GetParentCell()->GetbhkWorld()) {
-		if (auto hkpWorld = player->GetParentCell()->GetbhkWorld()->GetWorld1()) {
+	auto cell = (player) ? player->GetParentCell() : nullptr;
+	auto worldspace = (player) ? player->GetWorldspace() : nullptr;
+
+	//cell->GetbhkWorld()->worldLock.LockForRead();
+	//globals::game::tes->lodLandRoot->AsMultiBoundNode()->
+
+	if (worldspace && cell && cell->GetbhkWorld() && cell->cellState.any(RE::TESObjectCELL::CellState::kAttached)) {
+		//if (auto terrainManager = worldspace->terrainManager) {
+		//logger::trace("terrainManager");
+		//if (!terrainManager->needsImmediateUpdate) {
+		//return false;  //need to return from prev func too
+		//if (auto terrainRootNode = terrainManager->rootNode){
+		//	logger::trace("rootNode");
+
+		//if(terrainRootNode->terrain)
+		//	logger::trace("terrain");
+
+		//if (terrainRootNode->nodeState.any(RE::BGSTerrainNode::Flag::kLandLoaded))
+		//	logger::trace("kLandLoaded");
+
+		//auto& data = cell->GetRuntimeData();
+		//if (data.loadedData->refsFullyLoaded)
+		//	logger::trace("refsFullyLoaded");
+
+		//if (data.loadedData->multiBoundNode) // Invalid
+		//	logger::trace("multiBoundNode");
+
+		//if(data.loadedData->cell3D)
+		//	logger::trace("cell3D");
+
+		//if(data.loadedData->refsFullyLoaded && data.loadedData->cell3D) {
+		//if(auto terrainNode = terrainManager->rootNode->terrain){ //nope
+		//logger::trace("terrainManager + 1");
+		//if (auto terrainBlock = terrainNode->block) {
+		//logger::trace("terrainManager + 2");
+		//if (terrainBlock && terrainBlock->attached && terrainBlock->loaded) {
+		//logger::trace("terrainManager + 3");
+		if (auto hkpWorld = cell->GetbhkWorld()->GetWorld1()) {
 			float scale = RE::bhkWorld::GetWorldScale();
 			float2 posScaledXY = float2(position.x * scale, position.y * scale);
 
@@ -305,17 +341,25 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 				auto collisionObj = output.rootCollidable->GetCollisionLayer();
 
 				// Degenerate case - skipped obj is close to ground, we move currentZ past it and into something solid and dont find any hits
-				if (collisionObj == RE::COL_LAYER::kCharController ||
-					collisionObj == RE::COL_LAYER::kActorZone ||
-					collisionObj == RE::COL_LAYER::kTransparent ||
-					collisionObj == RE::COL_LAYER::kProjectileZone ||
-					collisionObj == RE::COL_LAYER::kTrees) {
+				if (!(collisionObj == RE::COL_LAYER::kTerrain || collisionObj == RE::COL_LAYER::kGround || collisionObj == RE::COL_LAYER::kStatic)) {
 					float rayLength = currentZ - endZ;
 					currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
 					logger::trace("skipping obj: {}", collisionObj);
 					continue;
 				}
-
+				/*
+									if (collisionObj == RE::COL_LAYER::kCharController ||
+										collisionObj == RE::COL_LAYER::kActorZone ||
+										collisionObj == RE::COL_LAYER::kTransparent ||
+										collisionObj == RE::COL_LAYER::kTrigger ||
+										collisionObj == RE::COL_LAYER::kProjectileZone ||
+										collisionObj == RE::COL_LAYER::kTrees) {
+										float rayLength = currentZ - endZ;
+										currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
+										logger::trace("skipping obj: {}", collisionObj);
+										continue;
+									}
+									*/
 				if (i + 1 == maxAttempts) {
 					logger::info("No valid hits");
 					return prevZ + EYE_OFFSET;
@@ -330,7 +374,13 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 				return hitZ + EYE_OFFSET;
 			}
 		}
+		//}
+		//}
+		//}
+		//}
+		//}
 	}
+	//cell->GetbhkWorld()->worldLock.UnlockForRead();
 
 	logger::info("something is cooked");
 	return prevZ + EYE_OFFSET;
@@ -342,7 +392,8 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 	auto player = RE::PlayerCharacter::GetSingleton();
 	auto cell = (player) ? player->GetParentCell() : nullptr;
 	auto tes = RE::TES::GetSingleton();
-	if (!runIterateWorld || !tes || !globals::features::terrainShadows.IsHeightMapReady() || !cell || cell->IsInteriorCell())
+
+	if (!runIterateWorld || !tes || !cell || !cell->IsAttached() || !cell->IsExteriorCell() || !cell->IsInitialized() || !player->Is3DLoaded())
 		return;
 
 	static bool updateLocation = true;
@@ -351,20 +402,13 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 	// Manual override: jump to specific world coords
 	if (manualOverride) {
 		manualOverride = false;
-
-		// Convert world coords to pixel coords
 		int2 targetPX = (int2((int)manualStartWS.x, (int)manualStartWS.y) - START) / STEP;
 		targetPX = int2(
 			std::clamp(targetPX.x, 0, BENT_NORMAL_SIZE.x - 1),
 			std::clamp(targetPX.y, 0, BENT_NORMAL_SIZE.y - 1));
-
-		// Calculate tile and local from pixel coords
 		tile = targetPX / TILE_SIZE;
 		local = targetPX - tile * TILE_SIZE;
-
-		// Recalculate wave from tile position
 		wave = tile.x + tile.y;
-
 		updateLocation = true;
 		logger::trace("Manual override: WS({}, {}) -> PX({}, {}) -> Tile({}, {}) Local({}, {}) Wave({})",
 			manualStartWS.x, manualStartWS.y, targetPX.x, targetPX.y,
@@ -408,22 +452,21 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 	if (updateLocation) {
 		int2 worldXY = START + coordsPX * STEP;
 		coordsWS = float3((float)worldXY.x, (float)worldXY.y, 0);
+		tes->GetLandHeight(RE::NiPoint3(coordsWS.x, coordsWS.y, 0), coordsWS.z);
+		logger::trace("land height: {}", coordsWS.z);
 		coordsWS.z = GetRayIntersectionHeight(coordsWS);
 		float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), cell);
 		coordsWS.z += (waterHeight - coordsWS.z) * float(coordsWS.z < waterHeight);
 		logger::trace("Stage: Teleport:  Wave: {}  :  CoordsWS: {}, {}, {}", wave, coordsWS.x, coordsWS.y, coordsWS.z);
 		RE::PlayerCharacter::GetSingleton()->SetPosition(RE::NiPoint3(coordsWS.x, coordsWS.y, coordsWS.z), false);
-		RE::PlayerCharacter::GetSingleton()->Update(0);  // ADDED
 		updateLocation = false;
 		return;
 	} else {
 		if (!IsPositionValid()) {
 			RE::PlayerCharacter::GetSingleton()->SetPosition(RE::NiPoint3(coordsWS.x, coordsWS.y, coordsWS.z), false);
-			RE::PlayerCharacter::GetSingleton()->Update(0);
-			return;  // Early out so position updates
+			return;
 		}
-
-		if (UpdateCubemapCapture()) {  // True once all cubemap sides and a bent normal have been generated
+		if (UpdateCubemapCapture()) {
 			advancePixel();
 			updateLocation = true;
 		}
