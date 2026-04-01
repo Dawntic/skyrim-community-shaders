@@ -260,6 +260,9 @@ void OrthogonalVolumetricLighting::DisableCellPortals()
 					if (auto door = ref->GetBaseObject()->As<RE::TESObjectDOOR>()) {
 						ref->SetActivationBlocked(true);
 					}
+					//if (auto npc = ref->GetBaseObject()->As<RE::TESNPC>()) {
+					//	ref->SetActivationBlocked(true);
+					//}
 				}
 
 				return RE::BSContainer::ForEachResult::kContinue;
@@ -381,9 +384,11 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 			BackupCacheProgress();
 		}
 	};
+
 	auto PixelAtBoundry = [&](int pos, int txPos, int txMax) {
 		return pos >= TILE_SIZE || txPos >= txMax;
 	};
+
 	auto advancePixel = [&]() {
 		local.y++;
 		if (PixelAtBoundry(local.y, tile.y * TILE_SIZE + local.y, BENT_NORMAL_SIZE.y)) {
@@ -401,12 +406,20 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 	if (updateLocation) {
 		int2 worldXY = START + coordsPX * STEP;
 		coordsWS = float3((float)worldXY.x, (float)worldXY.y, 0);
+
 		tes->GetLandHeight(RE::NiPoint3(coordsWS.x, coordsWS.y, 0), coordsWS.z);
+
 		logger::trace("land height: {}", coordsWS.z);
+
 		coordsWS.z = GetRayIntersectionHeight(coordsWS);
+
 		float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), cell);
 		coordsWS.z += (waterHeight - coordsWS.z) * float(coordsWS.z < waterHeight);
+
+		logger::trace("eye: {}", player->GetInfoRuntimeData().eyeHeight);
+
 		logger::trace("Stage: Teleport:  Wave: {}  :  CoordsWS: {}, {}, {}", wave, coordsWS.x, coordsWS.y, coordsWS.z);
+
 		RE::PlayerCharacter::GetSingleton()->SetPosition(RE::NiPoint3(coordsWS.x, coordsWS.y, coordsWS.z), false);
 		updateLocation = false;
 		return;
@@ -727,6 +740,14 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	//	}
 	//}
 	//ImGui::Text(fmt::format("Valid Z: {}", validPos.z).c_str());
+
+	float2 posA = float2(0, 0);
+	ImGui::SliderFloat("X", &posA.x, -230000, 230000);
+	ImGui::SliderFloat("Y", &posA.y, -230000, 230000);
+	ImGui::Button("Set camera pos");
+	if (ImGui::IsItemClicked()) {
+		RE::Main::WorldRootCamera()->world.translate = RE::NiPoint3(posA.x, posA.x, 10000.0f);
+	}
 
 	if (ImGui::TreeNode("Buffer Viewer")) {
 		static float debugRescale = 1.0f;
