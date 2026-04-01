@@ -315,20 +315,6 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 					continue;
 				}
 
-				/*
-									if (collisionObj == RE::COL_LAYER::kCharController ||
-										collisionObj == RE::COL_LAYER::kActorZone ||
-										collisionObj == RE::COL_LAYER::kTransparent ||
-										collisionObj == RE::COL_LAYER::kTrigger ||
-										collisionObj == RE::COL_LAYER::kProjectileZone ||
-										collisionObj == RE::COL_LAYER::kTrees) {
-										float rayLength = currentZ - endZ;
-										currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
-										logger::trace("skipping obj: {}", collisionObj);
-										continue;
-									}
-									*/
-
 				if (i + 1 == maxAttempts) {
 					logger::info("No valid hits");
 					return prevZ + EYE_OFFSET;
@@ -343,13 +329,7 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 				return hitZ + EYE_OFFSET;
 			}
 		}
-		//}
-		//}
-		//}
-		//}
-		//}
 	}
-	//cell->GetbhkWorld()->worldLock.UnlockForRead();
 
 	logger::info("something is cooked");
 	return prevZ + EYE_OFFSET;
