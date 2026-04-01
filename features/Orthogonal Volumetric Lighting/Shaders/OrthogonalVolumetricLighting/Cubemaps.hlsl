@@ -3,8 +3,12 @@ cbuffer ShadowBuffer : register(b0)
 {
 	int2 BentNormalWriteCoords;
 	int2 BentNormalTexSize;
-	float4 CubemapParams;  //size in xy, face in z
+	float4 CubemapParams;  // Dimension, 1.0 / Dimension,  Dimension^2, Dimension^2 * Sides Used
+	int CubeMapWriteFace;
 };
+
+#define GROUP_SIZE 256
+#define REDUCTION (GROUP_SIZE / 2)
 
 #ifdef BENT_NORMAL_CS
 
@@ -39,64 +43,61 @@ float3 CubemapDirection(float2 CoordsNDC, uint face)
 
 float GetSolidAngleWeight(float2 Coords)
 {
-	// texels near cubemap corners subtend less solid angle
 	float lenSq = 1.0 + dot(Coords, Coords);
-	return rcp((lenSq * sqrt(lenSq)));
+	return rsqrt(lenSq) * rcp(lenSq);
 }
-groupshared float3 gs_BentSum[256];
-groupshared float gs_VisWeight[256];
-groupshared float gs_TotalWeight[256];
 
-[numthreads(256, 1, 1)] void main(uint threadIdx : SV_GroupIndex) {
+groupshared float3 gs_DirSum[GROUP_SIZE];
+groupshared float gs_VisWeight[GROUP_SIZE];
+groupshared float gs_WeightTotal[GROUP_SIZE];
+
+[numthreads(GROUP_SIZE, 1, 1)] void main(uint ThreadID : SV_GroupIndex) {
 	float3 localBent = 0;
 	float localVis = 0;
 	float localTotal = 0;
 
-	float CubePxSize = CubemapParams.x;
 	// each thread processes multiple texels
-	uint totalTexels = CubePxSize * CubePxSize * 6;
-	for (uint i = threadIdx; i < totalTexels; i += 256) {
-		uint face = i / (CubePxSize * CubePxSize);
-		uint rem = i % (CubePxSize * CubePxSize);
-		uint x = rem % CubePxSize;
-		uint y = rem / CubePxSize;
+	for (uint t = ThreadID; t < CubemapParams.w; t += GROUP_SIZE) {
+		uint Face = t / CubemapParams.z;  // 0-4
+		uint r = t % CubemapParams.z;
+		int2 CoordsFace = int2(r % CubemapParams.x, r / CubemapParams.x);
 
-		float2 CoordsNDC = (float2(x, y) + 0.5) * rcp(CubePxSize) * 2.0 - 1.0;
-		float3 Direction = CubemapDirection(CoordsNDC, face);
+		float2 CoordsNDC = (float2(CoordsFace.x, CoordsFace.y) + 0.5) * CubemapParams.y * 2.0 - 1.0;
+		float3 Direction = CubemapDirection(CoordsNDC, Face);
+
 		if (Direction.z <= 0)
 			continue;
 
-		float Weight = Direction.z * GetSolidAngleWeight(CoordsNDC);
-		float depth = DepthCubeTex.Load(int4(x, y, face, 0));
-		bool visible = depth > 0.9999999;
+		float Weight = GetSolidAngleWeight(CoordsNDC) * Direction.z;
 
-		if (visible) {
-			localBent += Direction * Weight;
-			localVis += Weight;
-		}
+		float depth = DepthCubeTex[int3(CoordsFace.xy, Face)];
+		float visible = float(depth > 0.9999999);
+
+		localBent += Direction * Weight * visible;
+		localVis += Weight * visible;
 		localTotal += Weight;
 	}
 
-	gs_BentSum[threadIdx] = localBent;
-	gs_VisWeight[threadIdx] = localVis;
-	gs_TotalWeight[threadIdx] = localTotal;
+	gs_DirSum[ThreadID] = localBent;
+	gs_VisWeight[ThreadID] = localVis;
+	gs_WeightTotal[ThreadID] = localTotal;
 
 	GroupMemoryBarrierWithGroupSync();
 
-	for (uint s = 128; s > 0; s >>= 1) {
-		if (threadIdx < s) {
-			gs_BentSum[threadIdx] += gs_BentSum[threadIdx + s];
-			gs_VisWeight[threadIdx] += gs_VisWeight[threadIdx + s];
-			gs_TotalWeight[threadIdx] += gs_TotalWeight[threadIdx + s];
+	for (uint s = REDUCTION; s > 0; s >>= 1) {
+		if (ThreadID < s) {
+			gs_DirSum[ThreadID] += gs_DirSum[ThreadID + s];
+			gs_VisWeight[ThreadID] += gs_VisWeight[ThreadID + s];
+			gs_WeightTotal[ThreadID] += gs_WeightTotal[ThreadID + s];
 		}
 		GroupMemoryBarrierWithGroupSync();
 	}
 
-	if (threadIdx == 0) {
-		float3 bent = (length(gs_BentSum[0]) > 0.001) ? normalize(gs_BentSum[0]) : float3(0, 0, 1);
-		float AO = (gs_TotalWeight[0] > 0) ? gs_VisWeight[0] / gs_TotalWeight[0] : 1.0;
+	if (ThreadID == 0) {
+		float3 BentNormal = (length(gs_DirSum[0]) > 1e-6) ? normalize(gs_DirSum[0]) : float3(0, 0, 1);
+		float AO = gs_VisWeight[0] / max(gs_WeightTotal[0], 1e-6);
 
-		OutputBentNormalMap[BentNormalWriteCoords.xy] = float4(bent * 0.5 + 0.5, AO);
+		OutputBentNormalMap[BentNormalWriteCoords.xy] = float4(BentNormal * 0.5 + 0.5, AO);
 	}
 }
 #endif
@@ -107,11 +108,11 @@ Texture2D<float> SourceDepth : register(t0);
 RWTexture2DArray<float> DestCubemap : register(u0);
 
 [numthreads(8, 8, 1)] void main(uint2 ThreadID : SV_DispatchThreadID) {
-	if (any(ThreadID >= (uint2)CubemapParams.xy))
+	if (any(ThreadID >= (uint2)CubemapParams.xx))
 		return;
 
 	float depth = SourceDepth.Load(int3(ThreadID, 0));
 
-	DestCubemap[uint3(ThreadID, CubemapParams.z)] = depth;
+	DestCubemap[uint3(ThreadID, CubeMapWriteFace)] = depth;
 }
 #endif

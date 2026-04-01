@@ -47,7 +47,7 @@ struct OrthogonalVolumetricLighting : Feature
 	bool IsPositionValid();
 	float GetRayIntersectionHeight(float3 pos);
 
-	static constexpr uint CUBE_SIZE = 512;
+	static constexpr uint CUBE_SIZE = 128;
 	static constexpr int2 BENT_NORMAL_SIZE = int2(1104, 768);
 
 	//static constexpr float4 MapBounds = float4(-230000, 160000, 230000, -160000); // completed with float4(-200000, 130000, 230000, -180000);
@@ -101,7 +101,9 @@ struct OrthogonalVolumetricLighting : Feature
 	{
 		int2 BentNormalWritePx;
 		int2 BentNormalTexSize;
-		float4 CubemapParams;
+		float4 CubemapParams;  // Dimension, 1.0 / Dimension,  Dimension^2, Dimension^2 * valid sides
+		int CubeMapWriteFace;
+		float _pad[3];
 	};
 	ConstantBuffer* cacheGenBuffer = nullptr;
 

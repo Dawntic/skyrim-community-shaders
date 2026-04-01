@@ -76,7 +76,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 	viewport.MinDepth = 0.0f;
 	viewport.MaxDepth = 1.0f;
 
-	// Bent normal cubemap(tex array)
+	// depth cubemap
 	D3D11_TEXTURE2D_DESC desc{};
 	desc.Width = (uint)CUBE_SIZE;
 	desc.Height = (uint)CUBE_SIZE;
@@ -139,7 +139,7 @@ void OrthogonalVolumetricLighting::SetupResources()
 	bentNormalTex->CreateUAV(UAVDesc);
 	//
 
-	// Main depth override tex
+	// Main depth override tex  - remove when merging into skylighting
 	D3D11_TEXTURE2D_DESC depthDesc = {};
 	depthDesc.Width = CUBE_SIZE;
 	depthDesc.Height = CUBE_SIZE;
@@ -271,47 +271,14 @@ void OrthogonalVolumetricLighting::DisableCellPortals()
 float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 {
 	static constexpr float RAY_OFFSET = 20000.0f;  // We check +- offset
-	static constexpr float EYE_OFFSET = 50.0f;
+	static constexpr float EYE_OFFSET = 0.0f;
 
 	static float prevZ = 0.0f;
 	auto player = RE::PlayerCharacter::GetSingleton();
 	auto cell = (player) ? player->GetParentCell() : nullptr;
 	auto worldspace = (player) ? player->GetWorldspace() : nullptr;
 
-	//cell->GetbhkWorld()->worldLock.LockForRead();
-	//globals::game::tes->lodLandRoot->AsMultiBoundNode()->
-
 	if (worldspace && cell && cell->GetbhkWorld() && cell->cellState.any(RE::TESObjectCELL::CellState::kAttached)) {
-		//if (auto terrainManager = worldspace->terrainManager) {
-		//logger::trace("terrainManager");
-		//if (!terrainManager->needsImmediateUpdate) {
-		//return false;  //need to return from prev func too
-		//if (auto terrainRootNode = terrainManager->rootNode){
-		//	logger::trace("rootNode");
-
-		//if(terrainRootNode->terrain)
-		//	logger::trace("terrain");
-
-		//if (terrainRootNode->nodeState.any(RE::BGSTerrainNode::Flag::kLandLoaded))
-		//	logger::trace("kLandLoaded");
-
-		//auto& data = cell->GetRuntimeData();
-		//if (data.loadedData->refsFullyLoaded)
-		//	logger::trace("refsFullyLoaded");
-
-		//if (data.loadedData->multiBoundNode) // Invalid
-		//	logger::trace("multiBoundNode");
-
-		//if(data.loadedData->cell3D)
-		//	logger::trace("cell3D");
-
-		//if(data.loadedData->refsFullyLoaded && data.loadedData->cell3D) {
-		//if(auto terrainNode = terrainManager->rootNode->terrain){ //nope
-		//logger::trace("terrainManager + 1");
-		//if (auto terrainBlock = terrainNode->block) {
-		//logger::trace("terrainManager + 2");
-		//if (terrainBlock && terrainBlock->attached && terrainBlock->loaded) {
-		//logger::trace("terrainManager + 3");
 		if (auto hkpWorld = cell->GetbhkWorld()->GetWorld1()) {
 			float scale = RE::bhkWorld::GetWorldScale();
 			float2 posScaledXY = float2(position.x * scale, position.y * scale);
@@ -347,6 +314,7 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 					logger::trace("skipping obj: {}", collisionObj);
 					continue;
 				}
+
 				/*
 									if (collisionObj == RE::COL_LAYER::kCharController ||
 										collisionObj == RE::COL_LAYER::kActorZone ||
@@ -360,6 +328,7 @@ float OrthogonalVolumetricLighting::GetRayIntersectionHeight(float3 position)
 										continue;
 									}
 									*/
+
 				if (i + 1 == maxAttempts) {
 					logger::info("No valid hits");
 					return prevZ + EYE_OFFSET;
@@ -507,8 +476,6 @@ bool OrthogonalVolumetricLighting::UpdateCubemapCapture()
 
 		if (!IsPositionValid()) {
 			RE::PlayerCharacter::GetSingleton()->SetPosition(RE::NiPoint3(coordsWS.x, coordsWS.y, coordsWS.z), false);
-			RE::PlayerCharacter::GetSingleton()->Update(0);
-
 			return false;  // Early out so position updates
 		}
 		CopyDepthBufferToCubemap(currentFace);
@@ -536,7 +503,8 @@ bool OrthogonalVolumetricLighting::UpdateCubemapCapture()
 // Render depth into seperate 512 tex for cubemap
 void OrthogonalVolumetricLighting::RenderMainDepth()  // just render direct to cubemap??
 {
-	globals::state->BeginPerfEvent("Bent Normal Depth Pass");
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Bent Normal Depth Pass");
 
 	globals::d3d::context->ClearDepthStencilView(mainDepthDSV, D3D11_CLEAR_DEPTH, 1.0f, 0);
 
@@ -563,7 +531,8 @@ void OrthogonalVolumetricLighting::RenderMainDepth()  // just render direct to c
 
 	depthPasses.clear();
 
-	globals::state->EndPerfEvent();
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 }
 
 void OrthogonalVolumetricLighting::CopyDepthBufferToCubemap(int face)
@@ -578,7 +547,8 @@ void OrthogonalVolumetricLighting::CopyDepthBufferToCubemap(int face)
 	CacheGenCBStruct data;
 	data.BentNormalWritePx = coordsPX;
 	data.BentNormalTexSize = BENT_NORMAL_SIZE;
-	data.CubemapParams = float4(CUBE_SIZE, CUBE_SIZE, (float)face, 0);
+	data.CubemapParams = float4(CUBE_SIZE, 1.0 / (float)CUBE_SIZE, CUBE_SIZE * CUBE_SIZE, CUBE_SIZE * CUBE_SIZE * 5);
+	data.CubeMapWriteFace = face;
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
