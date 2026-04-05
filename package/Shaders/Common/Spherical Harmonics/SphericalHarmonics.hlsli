@@ -359,11 +359,12 @@ namespace SphericalHarmonics
 		return OutputSH;
 	}
 
+	// ScalarPackSH3
 	void PackSH3(sh3 SHdata, uint2 ProbePos, RWTexture2DArray<float4> Array)
 	{
 		Array[uint3(ProbePos.xy, 0)] = float4(SHdata.coeff[0], SHdata.coeff[1], SHdata.coeff[2], 0);
-		Array[uint3(ProbePos.xy, 2)] = float4(SHdata.coeff[6], SHdata.coeff[7], SHdata.coeff[8], 0);
 		Array[uint3(ProbePos.xy, 1)] = float4(SHdata.coeff[3], SHdata.coeff[4], SHdata.coeff[5], 0);
+		Array[uint3(ProbePos.xy, 2)] = float4(SHdata.coeff[6], SHdata.coeff[7], SHdata.coeff[8], 0);
 	}
 
 	sh3 FauxSpecularLobeSH3(float3 N, float3 V, float roughness)
