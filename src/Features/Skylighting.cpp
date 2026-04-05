@@ -265,6 +265,9 @@ void Skylighting::PostPostLoad()
 	else
 		stl::write_thunk_call<SetViewFrustum>(REL::RelocationID(25643, 26185).address() + REL::Relocate(0x5D9, 0x59D, 0x5DC));
 
+	// Remove call to update local camera translation - need to add logic for when not building cache!!
+	REL::safe_fill(REL::RelocationID(25643, 26185).address() + REL::Relocate(0x511, 0x511), REL::NOP, 15);  // TEMP
+
 	MenuOpenCloseEventHandler::Register();
 }
 
@@ -404,7 +407,10 @@ RE::BSShaderProperty::RenderPassArray* Skylighting::BSLightingShaderProperty_Get
 	bool valid = false;
 
 	if (skylighting.inOcclusion) {
-		valid = property->flags.any(kZBufferWrite) && property->flags.none(kRefraction, kTempRefraction, kLODLandscape, kEyeReflect, kDecal, kDynamicDecal);
+		if (!skylighting.buildingCache)
+			valid = property->flags.any(kZBufferWrite) && property->flags.none(kRefraction, kTempRefraction, kLODLandscape, kEyeReflect, kDecal, kDynamicDecal);
+		else
+			valid = property->flags.any(kZBufferWrite) && property->flags.none(kRefraction, kTempRefraction, kEyeReflect, kDecal, kDynamicDecal);
 	} else {
 		valid = property->flags.any(kZBufferWrite) && property->flags.none(kRefraction, kTempRefraction, kMultiTextureLandscape, kNoLODLandBlend, kLODLandscape, kEyeReflect, kDecal, kDynamicDecal);
 	}
@@ -432,6 +438,10 @@ RE::BSShaderProperty::RenderPassArray* Skylighting::BSLightingShaderProperty_Get
 				technique.set(TreeAnim);
 			}
 
+			if (property->flags.any(kLODLandscape)) {
+				technique.set(LodLandscape);
+			}
+
 			precipitationOcclusionMapRenderPassList->EmplacePass(
 				globals::game::utilityShader,
 				property,
@@ -439,6 +449,7 @@ RE::BSShaderProperty::RenderPassArray* Skylighting::BSLightingShaderProperty_Get
 				technique.underlying() + static_cast<uint32_t>(ShaderTechnique::UtilityGeneralStart));
 		}
 	}
+
 	return precipitationOcclusionMapRenderPassList;
 }
 
@@ -447,14 +458,20 @@ void Skylighting::SetViewFrustum::thunk(RE::NiCamera* a_camera, RE::NiFrustum* a
 	auto& skylighting = globals::features::skylighting;
 
 	if (skylighting.inOcclusion) {
-		uint corner = skylighting.frameCount % 4;
+		if (!skylighting.buildingCache) {
+			uint corner = skylighting.frameCount % 4;
 
-		float frustumSize = a_frustum->fTop;
-
-		a_frustum->fBottom = (corner == 0 || corner == 1) ? -frustumSize : 0.0f;
-		a_frustum->fLeft = (corner == 0 || corner == 2) ? -frustumSize : 0.0f;
-		a_frustum->fRight = (corner == 1 || corner == 3) ? frustumSize : 0.0f;
-		a_frustum->fTop = (corner == 2 || corner == 3) ? frustumSize : 0.0f;
+			float frustumSize = a_frustum->fTop;
+			a_frustum->fBottom = (corner == 0 || corner == 1) ? -frustumSize : 0.0f;
+			a_frustum->fLeft = (corner == 0 || corner == 2) ? -frustumSize : 0.0f;
+			a_frustum->fRight = (corner == 1 || corner == 3) ? frustumSize : 0.0f;
+			a_frustum->fTop = (corner == 2 || corner == 3) ? frustumSize : 0.0f;
+		} else {
+			auto& rootCameraData = RE::Main::WorldRootCamera()->GetRuntimeData2();
+			*a_frustum = rootCameraData.viewFrustum;
+			a_frustum->fLeft = -a_frustum->fTop;
+			a_frustum->fRight = a_frustum->fTop;
+		}
 	}
 
 	func(a_camera, a_frustum);
@@ -465,14 +482,20 @@ void Skylighting::SetViewFrustumVR::thunk(RE::NiCamera* a_camera, RE::NiFrustum*
 	auto& skylighting = globals::features::skylighting;
 
 	if (skylighting.inOcclusion) {
-		uint corner = skylighting.frameCount % 4;
+		if (!skylighting.buildingCache) {
+			uint corner = skylighting.frameCount % 4;
 
-		float frustumSize = a_frustum->fTop;
-
-		a_frustum->fBottom = (corner == 0 || corner == 1) ? -frustumSize : 0.0f;
-		a_frustum->fLeft = (corner == 0 || corner == 2) ? -frustumSize : 0.0f;
-		a_frustum->fRight = (corner == 1 || corner == 3) ? frustumSize : 0.0f;
-		a_frustum->fTop = (corner == 2 || corner == 3) ? frustumSize : 0.0f;
+			float frustumSize = a_frustum->fTop;
+			a_frustum->fBottom = (corner == 0 || corner == 1) ? -frustumSize : 0.0f;
+			a_frustum->fLeft = (corner == 0 || corner == 2) ? -frustumSize : 0.0f;
+			a_frustum->fRight = (corner == 1 || corner == 3) ? frustumSize : 0.0f;
+			a_frustum->fTop = (corner == 2 || corner == 3) ? frustumSize : 0.0f;
+		} else {
+			auto& rootCameraData = RE::Main::WorldRootCamera()->GetRuntimeData2();
+			*a_frustum = rootCameraData.viewFrustum;
+			a_frustum->fLeft = -a_frustum->fTop;
+			a_frustum->fRight = a_frustum->fTop;
+		}
 	}
 
 	func(a_camera, a_frustum, a_eyeIndex);
@@ -485,6 +508,8 @@ void Skylighting::RenderOcclusion()
 	auto renderer = globals::game::renderer;
 	auto sky = globals::game::sky;
 
+	auto& skylighting = globals::features::skylighting;
+
 	if (!shaderCache->IsEnabled()) {
 		state->BeginPerfEvent("Precipitation Mask");
 		Main_Precipitation_RenderOcclusion::func();
@@ -494,19 +519,15 @@ void Skylighting::RenderOcclusion()
 
 	if (sky) {
 		if (!Util::IsInterior()) {
-			static bool doPrecip = false;
-
 			auto precip = sky->precip;
-
-			{
+			if (!buildingCache) {
 				state->BeginPerfEvent("Precipitation Mask");
-
-				doPrecip = false;
 
 				auto precipObject = precip->currentPrecip;
 				if (!precipObject) {
 					precipObject = precip->lastPrecip;
 				}
+
 				if (precipObject) {
 					precip->SetupMask();
 					auto& effect = precipObject->GetGeometryRuntimeData().shaderProperty;
@@ -538,46 +559,96 @@ void Skylighting::RenderOcclusion()
 				static float& PrecipitationShaderCubeSize = (*(float*)REL::RelocationID(515451, 401590).address());
 				float originalPrecipitationShaderCubeSize = PrecipitationShaderCubeSize;
 
-				static RE::NiPoint3& PrecipitationShaderDirection = (*(RE::NiPoint3*)REL::RelocationID(515509, 401648).address());
-				RE::NiPoint3 originalParticleShaderDirection = PrecipitationShaderDirection;
+				static RE::NiPoint3& PrecipitationShaderForward = (*(RE::NiPoint3*)REL::RelocationID(515509, 401648).address());
+				RE::NiPoint3 originalParticleShaderDirection = PrecipitationShaderForward;
 
 				inOcclusion = true;
-				PrecipitationShaderCubeSize = occlusionDistance;
+				PrecipitationShaderCubeSize = occlusionDistance * !buildingCache;
 
 				float originaLastCubeSize = precip->lastCubeSize;
 				precip->lastCubeSize = PrecipitationShaderCubeSize;
 
-				float2 vPoint;
-				{
-					constexpr float rcpRandMax = 1.f / RAND_MAX;
-					static int randSeed = std::rand();
-					static uint randFrameCount = 0;
+				static REL::Relocation<void(RE::Precipitation*, RE::NiPointer<RE::NiCamera>)> _computeProjection{ REL::RelocationID(25643, 26185) };
 
-					// r2 sequence
-					vPoint = float2(randSeed * rcpRandMax) + (float)randFrameCount * float2(0.245122333753f, 0.430159709002f);
-					vPoint.x -= static_cast<unsigned long long>(vPoint.x);
-					vPoint.y -= static_cast<unsigned long long>(vPoint.y);
+				float3 PrecipitationShaderDirectionF;
+				if (!buildingCache) {
+					float2 vPoint;
+					{
+						constexpr float rcpRandMax = 1.f / RAND_MAX;
+						static int randSeed = std::rand();
+						static uint randFrameCount = 0;
 
-					randFrameCount++;
-					if (randFrameCount == 1000) {
-						randFrameCount = 0;
-						randSeed = std::rand();
+						// r2 sequence
+						vPoint = float2(randSeed * rcpRandMax) + (float)randFrameCount * float2(0.245122333753f, 0.430159709002f);
+						vPoint.x -= static_cast<unsigned long long>(vPoint.x);
+						vPoint.y -= static_cast<unsigned long long>(vPoint.y);
+
+						randFrameCount++;
+						if (randFrameCount == 1000) {
+							randFrameCount = 0;
+							randSeed = std::rand();
+						}
+
+						// disc transformation
+						vPoint.x = sqrt(vPoint.x * sin(settings.MaxZenith));
+						vPoint.y *= 6.28318530718f;
+
+						vPoint = { vPoint.x * cos(vPoint.y), vPoint.x * sin(vPoint.y) };
 					}
 
-					// disc transformation
-					vPoint.x = sqrt(vPoint.x * sin(settings.MaxZenith));
-					vPoint.y *= 6.28318530718f;
+					PrecipitationShaderDirectionF = -float3{ vPoint.x, vPoint.y, sqrt(1 - vPoint.LengthSquared()) };
+					PrecipitationShaderDirectionF.Normalize();
 
-					vPoint = { vPoint.x * cos(vPoint.y), vPoint.x * sin(vPoint.y) };
+					PrecipitationShaderForward = { PrecipitationShaderDirectionF.x, PrecipitationShaderDirectionF.y, PrecipitationShaderDirectionF.z };
+				} else {
+					static std::array<std::pair<RE::NiPoint3, RE::NiPoint3>, 5> cubemapDirs = { {
+						{ { 1, 0, 0 }, { 0, 1, 0 } },
+						{ { -1, 0, 0 }, { 0, 1, 0 } },
+						{ { 0, 1, 0 }, { 0, 0, -1 } },
+						{ { 0, -1, 0 }, { 0, 0, 1 } },
+						{ { 0, 0, 1 }, { 0, 1, 0 } },
+						//{ { 0, 0, -1 }, { 0, 1, 0 } },
+					} };
+
+					static RE::NiPoint3& PrecipitationShaderUp = (*(RE::NiPoint3*)REL::RelocationID(388555, 388555).address());
+
+					PrecipitationShaderDirectionF = *reinterpret_cast<float3*>(&cubemapDirs[skylighting.cubemapSide].first);
+					PrecipitationShaderUp = cubemapDirs[skylighting.cubemapSide].second;
+					PrecipitationShaderForward = cubemapDirs[skylighting.cubemapSide].first;
+
+					precip->occlusionData.camera->local.translate = RE::Main::WorldRootCamera()->world.translate;  // disable the mem fill if removing
+
+					_computeProjection(precip, precip->occlusionData.camera);
+
+					if (skylighting.buildingCache && skylighting.cubemapSide == 0) {
+						static auto* precipObjectArrayList = *(RE::BSTArray<RE::NiPointer<RE::NiAVObject>>**)REL::RelocationID(415017, 415017).address();
+						static uint& precipObjectArrayListSize = *(uint*)REL::RelocationID(415019, 415019).address();
+
+						static auto* rootNodeLandLOD = *(RE::NiNode**)REL::RelocationID(402324, 402324).address();
+						static auto* rootNodeObjectLOD = *(RE::NiNode**)REL::RelocationID(402325, 402325).address();
+						static auto* rootNodeTreeLOD = *(RE::NiNode**)REL::RelocationID(402321, 402321).address();  // It makes sense for trees to contribute to the extent that they do not cause probe self shadowing
+
+						std::array<RE::NiNode*, 3> nodeLODList = { rootNodeLandLOD, rootNodeObjectLOD, rootNodeTreeLOD };
+
+						for (uint node = 0; node < nodeLODList.size(); node++) {
+							auto& children = nodeLODList[node]->GetChildren();
+
+							for (uint16_t child = 0, arrayIdx = 0; child < children.size(); child += !children[child]) {
+								if (children[child]) {
+									if (precipObjectArrayList[arrayIdx].size() < precipObjectArrayList[arrayIdx].capacity()) {
+										precipObjectArrayList[arrayIdx].push_back(children[child++]);
+									} else {
+										if (++arrayIdx == precipObjectArrayListSize) {
+											logger::error("No more room in culling object array");
+											break;
+										}
+									}
+								}
+							}
+						}
+					}
 				}
 
-				float3 PrecipitationShaderDirectionF = -float3{ vPoint.x, vPoint.y, sqrt(1 - vPoint.LengthSquared()) };
-				PrecipitationShaderDirectionF.Normalize();
-
-				PrecipitationShaderDirection = { PrecipitationShaderDirectionF.x, PrecipitationShaderDirectionF.y, PrecipitationShaderDirectionF.z };
-
-				static REL::Relocation<void(RE::Precipitation*, RE::NiPointer<RE::NiCamera>)> _computeProjection{ REL::RelocationID(25643, 26185) };
-				_computeProjection(precip, precip->occlusionData.camera);
 				precip->SetupMask();
 
 				BSParticleShaderRainEmitter* rain = new BSParticleShaderRainEmitter;
@@ -595,7 +666,7 @@ void Skylighting::RenderOcclusion()
 				PrecipitationShaderCubeSize = originalPrecipitationShaderCubeSize;
 				precip->lastCubeSize = originaLastCubeSize;
 
-				PrecipitationShaderDirection = originalParticleShaderDirection;
+				PrecipitationShaderForward = originalParticleShaderDirection;
 
 				precipitation = precipitationCopy;
 
@@ -609,7 +680,15 @@ void Skylighting::RenderOcclusion()
 
 void Skylighting::Main_Precipitation_RenderOcclusion::thunk()
 {
-	globals::features::skylighting.RenderOcclusion();
+	auto& skylighting = globals::features::skylighting;
+
+	if (!skylighting.buildingCache) {
+		skylighting.RenderOcclusion();
+	} else {
+		for (skylighting.cubemapSide = 0; skylighting.cubemapSide < 5; skylighting.cubemapSide++) {
+			skylighting.RenderOcclusion();
+		}
+	}
 }
 
 RE::BSEventNotifyControl Skylighting::MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)

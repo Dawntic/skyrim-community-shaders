@@ -88,6 +88,9 @@ public:
 	float4 OcclusionDir;
 	uint frameCount = 0;
 
+	bool buildingCache = true;
+	int cubemapSide = 0;
+
 	void ResetSkylighting();
 
 	std::chrono::time_point<std::chrono::system_clock> lastUpdateTimer = std::chrono::system_clock::now();
