@@ -88,8 +88,21 @@ public:
 	float4 OcclusionDir;
 	uint frameCount = 0;
 
+	// caching system
+	struct INIConfig
+	{
+		std::pair<int*, int> frameClamp;
+		std::pair<bool*, bool> frameLock;
+		std::pair<bool*, bool> interval;
+		std::pair<bool*, bool> borderLock;
+		std::pair<float*, float> maxTime;
+	};
+	INIConfig cachedINIValues;
+
 	bool buildingCache = true;
 	int cubemapSide = 0;
+
+	void FinishCaching();
 
 	void ResetSkylighting();
 

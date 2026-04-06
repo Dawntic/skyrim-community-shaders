@@ -129,6 +129,20 @@ void Skylighting::SetupResources()
 		DirectX::CreateDDSTextureFromFile(device, globals::d3d::context, L"Data\\Shaders\\Skylighting\\SpatiotemporalBlueNoise\\stbn_vec3_2Dx1D_128x128x64.dds", nullptr, stbn_vec3_2Dx1D_128x128x64.put());
 	}
 
+	if (buildingCache) {
+		cachedINIValues.frameClamp = { &RE::GetINISetting("iFPSClamp:General")->data.i, RE::GetINISetting("iFPSClamp:General")->data.i };
+		cachedINIValues.frameLock = { &RE::GetINISetting("bLockFramerate:Display")->data.b, RE::GetINISetting("bLockFramerate:Display")->data.b };
+		cachedINIValues.interval = { &RE::GetINISetting("iVSyncPresentInterval:Display")->data.b, RE::GetINISetting("iVSyncPresentInterval:Display")->data.b };
+		cachedINIValues.borderLock = { &RE::GetINISetting("bBorderRegionsEnabled:General")->data.b, RE::GetINISetting("bBorderRegionsEnabled:General")->data.b };
+		cachedINIValues.maxTime = { &RE::GetINISetting("fMaxTime:HAVOK")->data.f, RE::GetINISetting("fMaxTime:HAVOK")->data.f };
+
+		*cachedINIValues.frameClamp.first = 0;
+		*cachedINIValues.frameClamp.first = false;
+		*cachedINIValues.interval.first = false;
+		*cachedINIValues.borderLock.first = false;
+		*cachedINIValues.maxTime.first = 0.001f;
+	}
+
 	CompileComputeShaders();
 }
 
@@ -607,14 +621,13 @@ void Skylighting::RenderOcclusion()
 						{ { 0, 1, 0 }, { 0, 0, -1 } },
 						{ { 0, -1, 0 }, { 0, 0, 1 } },
 						{ { 0, 0, 1 }, { 0, 1, 0 } },
-						//{ { 0, 0, -1 }, { 0, 1, 0 } },
 					} };
 
 					static RE::NiPoint3& PrecipitationShaderUp = (*(RE::NiPoint3*)REL::RelocationID(388555, 388555).address());
 
-					PrecipitationShaderDirectionF = *reinterpret_cast<float3*>(&cubemapDirs[skylighting.cubemapSide].first);
 					PrecipitationShaderUp = cubemapDirs[skylighting.cubemapSide].second;
 					PrecipitationShaderForward = cubemapDirs[skylighting.cubemapSide].first;
+					PrecipitationShaderDirectionF = *reinterpret_cast<float3*>(&cubemapDirs[skylighting.cubemapSide].first);
 
 					precip->occlusionData.camera->local.translate = RE::Main::WorldRootCamera()->world.translate;  // disable the mem fill if removing
 
@@ -700,4 +713,16 @@ RE::BSEventNotifyControl Skylighting::MenuOpenCloseEventHandler::ProcessEvent(co
 	}
 
 	return RE::BSEventNotifyControl::kContinue;
+}
+
+void Skylighting::FinishCaching()
+{
+	*cachedINIValues.frameClamp.first = cachedINIValues.frameClamp.second;
+	*cachedINIValues.frameClamp.first = cachedINIValues.frameClamp.second;
+	*cachedINIValues.interval.first = cachedINIValues.interval.second;
+	*cachedINIValues.borderLock.first = cachedINIValues.borderLock.second;
+	*cachedINIValues.maxTime.first = cachedINIValues.maxTime.second;
+
+	// Logic for if cache is fully finished or not?
+	//buildingCache = false;
 }
