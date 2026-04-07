@@ -89,6 +89,11 @@ public:
 	uint frameCount = 0;
 
 	// caching system
+	static constexpr uint DEPTH_CUBE_SIZE = 128;
+
+	eastl::unique_ptr<Texture2D> depthCubemap = nullptr;
+	eastl::unique_ptr<Texture2D> bentNormalMap = nullptr;
+
 	struct INIConfig
 	{
 		std::pair<int*, int> frameClamp;
@@ -100,9 +105,20 @@ public:
 	INIConfig cachedINIValues;
 
 	bool buildingCache = true;
-	int cubemapSide = 0;
 
+	void CreateCachingResources(int2 totalCells);
+	void GenerateWorldspaceCache();
+	void SetWorldPosition(const int2& cellPos, const RE::NiPoint2 minXY, RE::NiPoint3& posSet);
+	void BackupCacheProgress(int2 currentCellXY);
+	float GetRayIntersectionHeight(float3 pos);
+	bool IsPositionValid(RE::NiPoint3 pos);
+	void GenerateVisibilityCubemap();
+	void GenerateBentNormal();
 	void FinishCaching();
+
+	float3 sampleCoordsWS = float3();
+	int cubemapSide = 0;
+	//
 
 	void ResetSkylighting();
 

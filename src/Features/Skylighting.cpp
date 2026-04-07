@@ -230,6 +230,9 @@ void Skylighting::Prepass()
 	if (interior)
 		return;
 
+	if (buildingCache)
+		return;
+
 	TracyD3D11Zone(globals::state->tracyCtx, "Skylighting - Update Probes");
 
 	auto context = globals::d3d::context;
@@ -698,9 +701,7 @@ void Skylighting::Main_Precipitation_RenderOcclusion::thunk()
 	if (!skylighting.buildingCache) {
 		skylighting.RenderOcclusion();
 	} else {
-		for (skylighting.cubemapSide = 0; skylighting.cubemapSide < 5; skylighting.cubemapSide++) {
-			skylighting.RenderOcclusion();
-		}
+		skylighting.GenerateWorldspaceCache();
 	}
 }
 
@@ -713,6 +714,169 @@ RE::BSEventNotifyControl Skylighting::MenuOpenCloseEventHandler::ProcessEvent(co
 	}
 
 	return RE::BSEventNotifyControl::kContinue;
+}
+
+// Caching System //
+void Skylighting::SetWorldPosition(const int2& currentCellXY, const RE::NiPoint2 minWorldCoords, RE::NiPoint3& worldPos)
+{
+	static constexpr float CELL = 4096.0f;
+
+	auto tes = RE::TES::GetSingleton();
+	auto player = RE::PlayerCharacter::GetSingleton();
+
+	int2 worldXY = int2(minWorldCoords.x, minWorldCoords.y) + currentCellXY * CELL;
+
+	float groundHeight = GetRayIntersectionHeight(sampleCoordsWS);
+	float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
+	groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
+
+	sampleCoordsWS = float3(worldXY.x, worldXY.y, groundHeight);
+
+	worldPos = RE::NiPoint3(sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z + 1500.0f);  // place character in air to avoid crap happening
+	player->SetPosition(worldPos, false);
+}
+
+void Skylighting::CreateCachingResources(int2 totalCells)
+{
+	auto device = globals::d3d::device;
+
+	// depth cubemap
+	D3D11_TEXTURE2D_DESC desc{};
+	desc.Width = DEPTH_CUBE_SIZE;
+	desc.Height = DEPTH_CUBE_SIZE;
+	desc.MipLevels = 1;
+	desc.Format = DXGI_FORMAT_R32_FLOAT;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+	desc.CPUAccessFlags = 0;
+	desc.MiscFlags = 0;
+	desc.ArraySize = 6;
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+	srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+	srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+	srvDesc.Texture2DArray.MostDetailedMip = 0;
+	srvDesc.Texture2DArray.MipLevels = 1;
+	srvDesc.Texture2DArray.FirstArraySlice = 0;
+	srvDesc.Texture2DArray.ArraySize = 6;
+
+	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+	uavDesc.Format = DXGI_FORMAT_R32_FLOAT;
+	uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
+	uavDesc.Texture2DArray.MipSlice = 0;
+	uavDesc.Texture2DArray.FirstArraySlice = 0;
+	uavDesc.Texture2DArray.ArraySize = 6;
+
+	D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+	dsvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+	dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
+	dsvDesc.Texture2DArray.MipSlice = 0;
+	dsvDesc.Texture2DArray.FirstArraySlice = 0;
+	dsvDesc.Texture2DArray.ArraySize = 6;
+
+	depthCubemap = eastl::make_unique<Texture2D>(desc);
+	depthCubemap->CreateSRV(srvDesc);
+	depthCubemap->CreateUAV(uavDesc);
+
+	// bent normal
+	D3D11_TEXTURE2D_DESC bentNormalDesc{};
+	bentNormalDesc.Width = totalCells.x;
+	bentNormalDesc.Height = totalCells.y;
+	bentNormalDesc.MipLevels = 1;
+	bentNormalDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	bentNormalDesc.SampleDesc.Count = 1;
+	bentNormalDesc.Usage = D3D11_USAGE_DEFAULT;
+	bentNormalDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+	bentNormalDesc.CPUAccessFlags = 0;
+	bentNormalDesc.MiscFlags = 0;
+	bentNormalDesc.ArraySize = 1;
+
+	D3D11_UNORDERED_ACCESS_VIEW_DESC UAVDesc{};
+	UAVDesc.Format = bentNormalDesc.Format;
+	UAVDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+	UAVDesc.Texture2D.MipSlice = 0;
+
+	bentNormalMap = eastl::make_unique<Texture2D>(bentNormalDesc);
+	bentNormalMap->CreateSRV(nullptr);
+	bentNormalMap->CreateUAV(UAVDesc);
+}
+
+void Skylighting::GenerateWorldspaceCache()
+{
+	static constexpr float CELL = 4096.0f;
+
+	auto tes = RE::TES::GetSingleton();
+	auto player = RE::PlayerCharacter::GetSingleton();
+	auto worldSpace = player ? player->GetWorldspace() : nullptr;
+	auto cell = (player) ? player->GetParentCell() : nullptr;
+
+	if (tes && worldSpace) {
+		static auto currentCellXY = int2();
+		static auto worldPositionSet = RE::NiPoint3();
+
+		static auto tmp = RE::NiPoint2(worldSpace->minimumCoords + worldSpace->maximumCoords) / CELL;
+		static auto totalCells = int2(std::ceil(tmp.x), std::ceil(tmp.y));
+
+		static bool init = true;
+		if (init) {
+			CreateCachingResources(totalCells);
+			SetWorldPosition(currentCellXY, worldSpace->minimumCoords, worldPositionSet);
+			init = false;
+			return;
+		}
+
+		bool valid = IsPositionValid(worldPositionSet);
+		static int failedCount = 0;
+		failedCount = valid ? 0 : ++failedCount;
+		if (!valid) {
+			if (failedCount >= 10) {  // This should never happen but since its possible for the game to refuse an update we should handle it anyway.
+				logger::error("[Skylighting] Sample position was unable to be updated");
+				failedCount = 0;
+				// Add more logic here - move to next position
+			} else {
+				player->SetPosition(worldPositionSet, false);
+			}
+			return;
+		}
+
+		GenerateVisibilityCubemap();
+
+		GenerateBentNormal();
+
+		BackupCacheProgress(currentCellXY);
+
+		if (++currentCellXY.x >= totalCells.x) {
+			currentCellXY.x = 0;
+			if (++currentCellXY.y >= totalCells.y) {
+				currentCellXY.y = 0;
+				FinishCaching();
+				return;
+			}
+		}
+
+		SetWorldPosition(currentCellXY, worldSpace->minimumCoords, worldPositionSet);
+	}
+}
+
+void Skylighting::BackupCacheProgress(int2 currentCellXY)
+{
+}
+
+bool Skylighting::IsPositionValid(RE::NiPoint3 pos)
+{
+}
+
+float Skylighting::GetRayIntersectionHeight(float3 pos)
+{
+}
+
+void Skylighting::GenerateVisibilityCubemap()
+{
+}
+
+void Skylighting::GenerateBentNormal()
+{
 }
 
 void Skylighting::FinishCaching()
