@@ -128,6 +128,7 @@ public:
 	bool buildingCache = true;
 	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
 
+	void TryLoadCacheProgress(std::string name, int2& outProgress);
 	void CreateCachingResources(int2 totalCells);
 	void GenerateWorldspaceCache();
 	void SetWorldPosition(const int2& cellPos, const RE::NiPoint2 minXY, RE::NiPoint3& posSet);

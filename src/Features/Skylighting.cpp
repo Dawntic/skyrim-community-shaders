@@ -718,6 +718,27 @@ RE::BSEventNotifyControl Skylighting::MenuOpenCloseEventHandler::ProcessEvent(co
 }
 
 // Caching System //
+void Skylighting::TryLoadCacheProgress(std::string name, int2& outProgress)
+{
+	auto loadPath = cachePath / (name + ".dds");
+	if (!std::filesystem::exists(loadPath)) {
+		logger::info("[Skylighting] No cache found; one will be generated");
+		return;
+	}
+
+	outProgress = settings.cacheProgress;
+
+	DirectX::ScratchImage bentTex;
+	DX::ThrowIfFailed(DirectX::LoadFromDDSFile(loadPath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, bentTex));
+
+	ID3D11Resource* resource = nullptr;
+	DX::ThrowIfFailed(DirectX::CreateTexture(globals::d3d::device, bentTex.GetImages(), bentTex.GetImageCount(), bentTex.GetMetadata(), &resource));
+
+	globals::d3d::context->CopyResource(bentNormalMap->resource.get(), resource);
+
+	resource->Release();
+}
+
 void Skylighting::SetWorldPosition(const int2& currentCellXY, const RE::NiPoint2 minWorldCoords, RE::NiPoint3& worldPos)
 {
 	static constexpr float CELL = 4096.0f;
@@ -828,6 +849,7 @@ void Skylighting::GenerateWorldspaceCache()
 		static bool init = true;
 		if (init) {
 			CreateCachingResources(totalCells);
+			TryLoadCacheProgress(worldSpace->GetName(), currentCellXY);
 			SetWorldPosition(currentCellXY, worldSpace->minimumCoords, worldPositionSet);
 			init = false;
 			return;
@@ -989,7 +1011,7 @@ void Skylighting::GenerateBentNormal()
 	auto context = globals::d3d::context;
 
 	if (globals::state->frameAnnotations)
-		globals::state->BeginPerfEvent("Generate Bent Normals");
+		globals::state->BeginPerfEvent("Generate Bent Normal");
 
 	context->CSSetShader(bentNormalComputeShader, nullptr, 0);
 	context->CSSetUnorderedAccessViews(0, 1, bentNormalMap->uav.address(), nullptr);
