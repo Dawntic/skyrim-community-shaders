@@ -872,8 +872,17 @@ void Skylighting::BackupCacheProgress(int2 currentCellXY, std::string name)
 	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
 }
 
-bool Skylighting::IsPositionValid(RE::NiPoint3 pos)
+bool Skylighting::IsPositionValid(RE::NiPoint3 inputPosition)
 {
+	static constexpr float HALF_CELL = 2048.0f;
+
+	bool valid = false;
+	if (auto player = RE::PlayerCharacter::GetSingleton()) {
+		auto diff = player->GetPosition() - inputPosition;
+		valid = std::max(diff.x, std::max(diff.y, diff.z)) < HALF_CELL;
+	}
+
+	return valid;
 }
 
 float Skylighting::GetRayIntersectionHeight(float3 pos)
