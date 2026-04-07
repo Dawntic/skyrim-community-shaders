@@ -1,6 +1,7 @@
 #include "Skylighting.h"
 
 #include <DDSTextureLoader.h>
+#include <DirectXTex.h>
 
 #include "ShaderCache.h"
 #include "State.h"
@@ -844,7 +845,7 @@ void Skylighting::GenerateWorldspaceCache()
 
 		GenerateBentNormal();
 
-		BackupCacheProgress(currentCellXY);
+		BackupCacheProgress(currentCellXY, worldSpace->GetName());
 
 		if (++currentCellXY.x >= totalCells.x) {
 			currentCellXY.x = 0;
@@ -859,8 +860,16 @@ void Skylighting::GenerateWorldspaceCache()
 	}
 }
 
-void Skylighting::BackupCacheProgress(int2 currentCellXY)
+void Skylighting::BackupCacheProgress(int2 currentCellXY, std::string name)
 {
+	settings.cacheProgress = currentCellXY;
+	globals::state->Save();
+
+	auto outputPath = cachePath / (name + ".dds");
+
+	DirectX::ScratchImage ouputImage;
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, bentNormalMap->resource.get(), ouputImage));
+	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
 }
 
 bool Skylighting::IsPositionValid(RE::NiPoint3 pos)

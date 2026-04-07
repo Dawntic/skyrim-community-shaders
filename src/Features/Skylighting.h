@@ -47,6 +47,8 @@ public:
 		float MaxZenith = 3.1415926f / 2.f;  // 90 deg
 		float MinDiffuseVisibility = 0.1f;
 		float MinSpecularVisibility = 0.1f;
+
+		int2 cacheProgress = int2();
 	} settings;
 
 	struct SkylightingCB
@@ -105,11 +107,12 @@ public:
 	INIConfig cachedINIValues;
 
 	bool buildingCache = true;
+	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
 
 	void CreateCachingResources(int2 totalCells);
 	void GenerateWorldspaceCache();
 	void SetWorldPosition(const int2& cellPos, const RE::NiPoint2 minXY, RE::NiPoint3& posSet);
-	void BackupCacheProgress(int2 currentCellXY);
+	void BackupCacheProgress(int2 currentCellXY, std::string name);
 	float GetRayIntersectionHeight(float3 pos);
 	bool IsPositionValid(RE::NiPoint3 pos);
 	void GenerateVisibilityCubemap();
