@@ -125,9 +125,6 @@ public:
 	};
 	INIConfig cachedINIValues;
 
-	bool buildingCache = true;
-	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
-
 	void TryLoadCacheProgress(std::string name, int2& outProgress);
 	void CreateCachingResources(int2 totalCells);
 	void GenerateWorldspaceCache();
@@ -136,9 +133,11 @@ public:
 	float GetRayIntersectionHeight(float3 pos);
 	bool IsPositionValid(RE::NiPoint3 pos);
 	void GenerateVisibilityCubemap();
-	void GenerateBentNormal();
+	void GenerateBentNormal(int2 currentCellXY, int2 totalCells);
 	void FinishCaching();
 
+	bool buildingCache = true;
+	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
 	float3 sampleCoordsWS = float3();
 	int cubemapSide = 0;
 	//

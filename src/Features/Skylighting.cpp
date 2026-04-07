@@ -872,7 +872,7 @@ void Skylighting::GenerateWorldspaceCache()
 
 		GenerateVisibilityCubemap();
 
-		GenerateBentNormal();
+		GenerateBentNormal(currentCellXY);
 
 		BackupCacheProgress(currentCellXY, worldSpace->GetName());
 
@@ -1007,7 +1007,7 @@ void Skylighting::GenerateVisibilityCubemap()
 		globals::state->EndPerfEvent();
 }
 
-void Skylighting::GenerateBentNormal()
+void Skylighting::GenerateBentNormal(int2 currentCellXY, int2 totalCells)
 {
 	auto context = globals::d3d::context;
 
@@ -1018,6 +1018,13 @@ void Skylighting::GenerateBentNormal()
 	context->CSSetUnorderedAccessViews(0, 1, bentNormalMap->uav.address(), nullptr);
 
 	context->CSSetShaderResources(0, 1, depthCubemap->srv.address());
+
+	CacheGenCBStruct data;
+	data.BentNormalWritePx = currentCellXY;
+	data.BentNormalTexSize = totalCells;
+	data.CubemapParams = float4(DEPTH_CUBE_SIZE, 1.0f / (float)DEPTH_CUBE_SIZE, DEPTH_CUBE_SIZE * DEPTH_CUBE_SIZE, DEPTH_CUBE_SIZE * DEPTH_CUBE_SIZE * 5);
+	data.CubeMapWriteFace = cubemapSide;
+	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
 	context->CSSetConstantBuffers(0, 1, &buffer);
