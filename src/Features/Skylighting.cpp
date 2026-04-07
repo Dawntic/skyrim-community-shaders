@@ -803,7 +803,10 @@ void Skylighting::CreateCachingResources(int2 totalCells)
 	bentNormalMap->CreateSRV(nullptr);
 	bentNormalMap->CreateUAV(UAVDesc);
 
+	cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 	clipRefOverrideBuffer = new ConstantBuffer(ConstantBufferDesc<AlphaRefCBStruct>());
+
+	bentNormalComputeShader = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\Skylighting\\GenerateBentNormalCS.hlsl", { { "BENT_NORMAL_COMPUTE", "" } }, "cs_5_0");
 }
 
 void Skylighting::GenerateWorldspaceCache()
@@ -952,7 +955,7 @@ void Skylighting::GenerateVisibilityCubemap()
 	if (globals::state->frameAnnotations)
 		globals::state->BeginPerfEvent("Bent Normal Depth Pass");
 
-	globals::d3d::context->ClearDepthStencilView(depthCubemap->dsv.get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+	context->ClearDepthStencilView(depthCubemap->dsv.get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
 
 	D3D11_VIEWPORT port = {};
 	port.Width = DEPTH_CUBE_SIZE;
@@ -960,14 +963,14 @@ void Skylighting::GenerateVisibilityCubemap()
 	port.MaxDepth = 1.0f;
 	context->RSSetViewports(1, &port);
 
-	globals::d3d::context->OMSetRenderTargets(0, nullptr, depthCubemap->dsv.get());
+	context->OMSetRenderTargets(0, nullptr, depthCubemap->dsv.get());
 
 	AlphaRefCBStruct data;
 	data.AlphaTestRefRS = 0.1;
 	clipRefOverrideBuffer->Update(data);
 
 	auto buffer = clipRefOverrideBuffer->CB();
-	globals::d3d::context->PSSetConstantBuffers(11, 1, &buffer);
+	context->PSSetConstantBuffers(11, 1, &buffer);
 
 	globals::game::stateUpdateFlags->reset(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
 	globals::game::stateUpdateFlags->reset(RE::BSGraphics::ShaderFlags::DIRTY_VIEWPORT);
@@ -983,6 +986,25 @@ void Skylighting::GenerateVisibilityCubemap()
 
 void Skylighting::GenerateBentNormal()
 {
+	auto context = globals::d3d::context;
+
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Generate Bent Normals");
+
+	context->CSSetShader(bentNormalComputeShader, nullptr, 0);
+	context->CSSetUnorderedAccessViews(0, 1, bentNormalMap->uav.address(), nullptr);
+
+	context->CSSetShaderResources(0, 1, depthCubemap->srv.address());
+
+	auto buffer = cacheGenBuffer->CB();
+	context->CSSetConstantBuffers(0, 1, &buffer);
+
+	context->Dispatch(1, 1, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 }
 
 void Skylighting::FinishCaching()

@@ -96,6 +96,18 @@ public:
 	eastl::unique_ptr<Texture2D> depthCubemap = nullptr;
 	eastl::unique_ptr<Texture2D> bentNormalMap = nullptr;
 
+	ID3D11ComputeShader* bentNormalComputeShader = nullptr;
+
+	struct alignas(16) CacheGenCBStruct
+	{
+		int2 BentNormalWritePx;
+		int2 BentNormalTexSize;
+		float4 CubemapParams;  // Dimension, 1.0 / Dimension,  Dimension^2, Dimension^2 * valid sides
+		int CubeMapWriteFace;
+		float _pad[3];
+	};
+	ConstantBuffer* cacheGenBuffer = nullptr;
+
 	struct alignas(16) AlphaRefCBStruct
 	{
 		float AlphaTestRefRS;
