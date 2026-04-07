@@ -746,9 +746,12 @@ void Skylighting::SetWorldPosition(const int2& currentCellXY, const RE::NiPoint2
 	auto tes = RE::TES::GetSingleton();
 	auto player = RE::PlayerCharacter::GetSingleton();
 
-	int2 worldXY = int2(minWorldCoords.x, minWorldCoords.y) + currentCellXY * CELL;
+	float2 worldXY = float2(minWorldCoords.x, minWorldCoords.y) + float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
 
-	float groundHeight = GetRayIntersectionHeight(sampleCoordsWS);
+	float landHeight;
+	tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
+
+	float groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight));
 	float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
 	groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
 
@@ -760,8 +763,6 @@ void Skylighting::SetWorldPosition(const int2& currentCellXY, const RE::NiPoint2
 
 void Skylighting::CreateCachingResources(int2 totalCells)
 {
-	auto device = globals::d3d::device;
-
 	// depth cubemap
 	D3D11_TEXTURE2D_DESC desc{};
 	desc.Width = DEPTH_CUBE_SIZE;
@@ -837,14 +838,14 @@ void Skylighting::GenerateWorldspaceCache()
 	auto tes = RE::TES::GetSingleton();
 	auto player = RE::PlayerCharacter::GetSingleton();
 	auto worldSpace = player ? player->GetWorldspace() : nullptr;
-	auto cell = (player) ? player->GetParentCell() : nullptr;
+	//auto cell = (player) ? player->GetParentCell() : nullptr;
 
 	if (tes && worldSpace) {
 		static auto currentCellXY = int2();
 		static auto worldPositionSet = RE::NiPoint3();
 
 		static auto tmp = RE::NiPoint2(worldSpace->minimumCoords + worldSpace->maximumCoords) / CELL;
-		static auto totalCells = int2(std::ceil(tmp.x), std::ceil(tmp.y));
+		static auto totalCells = int2((int)std::ceil(tmp.x), (int)std::ceil(tmp.y));
 
 		static bool init = true;
 		if (init) {
