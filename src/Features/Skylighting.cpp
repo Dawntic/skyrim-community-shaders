@@ -779,6 +779,7 @@ void Skylighting::CreateCachingResources(int2 totalCells)
 	depthCubemap = eastl::make_unique<Texture2D>(desc);
 	depthCubemap->CreateSRV(srvDesc);
 	depthCubemap->CreateUAV(uavDesc);
+	depthCubemap->CreateDSV(dsvDesc);
 
 	// bent normal
 	D3D11_TEXTURE2D_DESC bentNormalDesc{};
@@ -801,6 +802,8 @@ void Skylighting::CreateCachingResources(int2 totalCells)
 	bentNormalMap = eastl::make_unique<Texture2D>(bentNormalDesc);
 	bentNormalMap->CreateSRV(nullptr);
 	bentNormalMap->CreateUAV(UAVDesc);
+
+	clipRefOverrideBuffer = new ConstantBuffer(ConstantBufferDesc<AlphaRefCBStruct>());
 }
 
 void Skylighting::GenerateWorldspaceCache()
@@ -944,6 +947,38 @@ float Skylighting::GetRayIntersectionHeight(float3 position)
 
 void Skylighting::GenerateVisibilityCubemap()
 {
+	auto context = globals::d3d::context;
+
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Bent Normal Depth Pass");
+
+	globals::d3d::context->ClearDepthStencilView(depthCubemap->dsv.get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+
+	D3D11_VIEWPORT port = {};
+	port.Width = DEPTH_CUBE_SIZE;
+	port.Height = DEPTH_CUBE_SIZE;
+	port.MaxDepth = 1.0f;
+	context->RSSetViewports(1, &port);
+
+	globals::d3d::context->OMSetRenderTargets(0, nullptr, depthCubemap->dsv.get());
+
+	AlphaRefCBStruct data;
+	data.AlphaTestRefRS = 0.1;
+	clipRefOverrideBuffer->Update(data);
+
+	auto buffer = clipRefOverrideBuffer->CB();
+	globals::d3d::context->PSSetConstantBuffers(11, 1, &buffer);
+
+	globals::game::stateUpdateFlags->reset(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
+	globals::game::stateUpdateFlags->reset(RE::BSGraphics::ShaderFlags::DIRTY_VIEWPORT);
+
+	for (cubemapSide = 0; cubemapSide < 5; cubemapSide++) {
+		globals::game::stateUpdateFlags->reset(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_TEST_REF);
+		RenderOcclusion();
+	}
+
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 }
 
 void Skylighting::GenerateBentNormal()

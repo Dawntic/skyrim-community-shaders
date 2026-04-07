@@ -96,6 +96,13 @@ public:
 	eastl::unique_ptr<Texture2D> depthCubemap = nullptr;
 	eastl::unique_ptr<Texture2D> bentNormalMap = nullptr;
 
+	struct alignas(16) AlphaRefCBStruct
+	{
+		float AlphaTestRefRS;
+		float _pad[3];
+	};
+	ConstantBuffer* clipRefOverrideBuffer = nullptr;
+
 	struct INIConfig
 	{
 		std::pair<int*, int> frameClamp;
