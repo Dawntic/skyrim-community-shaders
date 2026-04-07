@@ -885,8 +885,61 @@ bool Skylighting::IsPositionValid(RE::NiPoint3 inputPosition)
 	return valid;
 }
 
-float Skylighting::GetRayIntersectionHeight(float3 pos)
+float Skylighting::GetRayIntersectionHeight(float3 position)
 {
+	static constexpr float RAY_OFFSET = 20000.0f;
+	static constexpr int MAX_ATTEMPTS = 10;
+
+	static float prevZ = 0.0f;
+	auto player = RE::PlayerCharacter::GetSingleton();
+	auto cell = player->GetParentCell();
+	auto bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
+
+	if (auto hkpWorld = bhkWorld ? cell->GetbhkWorld()->GetWorld1() : nullptr; hkpWorld) {
+		float scale = RE::bhkWorld::GetWorldScale();
+		float2 posScaledXY = float2(position.x * scale, position.y * scale);
+		float currentZ = position.z + RAY_OFFSET;
+		float endZ = position.z - RAY_OFFSET;
+
+		for (int i = 0; i < MAX_ATTEMPTS; i++) {
+			RE::hkpWorldRayCastInput input;
+			input.from.quad.m128_f32[0] = posScaledXY.x;
+			input.from.quad.m128_f32[1] = posScaledXY.y;
+			input.from.quad.m128_f32[2] = currentZ * scale;
+			input.from.quad.m128_f32[3] = 0;
+			input.to.quad.m128_f32[0] = posScaledXY.x;
+			input.to.quad.m128_f32[1] = posScaledXY.y;
+			input.to.quad.m128_f32[2] = endZ * scale;
+			input.to.quad.m128_f32[3] = 0;
+
+			RE::hkpWorldRayCastOutput output;
+			hkpWorld->CastRay(input, output);
+
+			if (!output.HasHit()) {
+				logger::error("[Skylighting] Ray cast failed to find surface");
+				return prevZ;
+			}
+			auto collisionObj = output.rootCollidable->GetCollisionLayer();
+
+			if (!(collisionObj == RE::COL_LAYER::kTerrain || collisionObj == RE::COL_LAYER::kGround || collisionObj == RE::COL_LAYER::kStatic)) {
+				float rayLength = currentZ - endZ;
+				currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
+				continue;
+			}
+
+			if (i + 1 == MAX_ATTEMPTS) {
+				logger::error("[Skylighting] Ray cast had no valid hit; last recorded collision was: {}", collisionObj);
+				return prevZ;
+			}
+
+			float rayLength = currentZ - endZ;
+			float hitZ = currentZ - output.hitFraction * rayLength;
+			prevZ = hitZ;
+			return hitZ;
+		}
+	}
+
+	return prevZ;
 }
 
 void Skylighting::GenerateVisibilityCubemap()
