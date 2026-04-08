@@ -57,6 +57,17 @@ namespace nlohmann
 		v = { temp[0], temp[1], temp[2], temp[3] };
 	}
 
+	void to_json(json& j, const int2& v)
+	{
+		j = json{ v.x, v.y };
+	}
+
+	void from_json(const json& j, int2& v)
+	{
+		std::array<int, 2> temp = j;
+		v = { temp[0], temp[1] };
+	}
+
 	void to_json(json& section, const RE::NiColor& result)
 	{
 		section = { result[0],
