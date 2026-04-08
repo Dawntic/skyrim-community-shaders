@@ -763,67 +763,32 @@ void Skylighting::SetWorldPosition(const int2& currentCellXY, const RE::NiPoint2
 
 void Skylighting::CreateCachingResources(int2 totalCells)
 {
-	// depth cubemap
-	D3D11_TEXTURE2D_DESC desc{};
-	desc.Width = DEPTH_CUBE_SIZE;
-	desc.Height = DEPTH_CUBE_SIZE;
-	desc.MipLevels = 1;
-	desc.Format = DXGI_FORMAT_R32_FLOAT;
-	desc.SampleDesc.Count = 1;
-	desc.Usage = D3D11_USAGE_DEFAULT;
-	desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
-	desc.CPUAccessFlags = 0;
-	desc.MiscFlags = 0;
-	desc.ArraySize = 6;
+	CD3D11_TEXTURE2D_DESC cubeDesc(DXGI_FORMAT_R32_TYPELESS, DEPTH_CUBE_SIZE, DEPTH_CUBE_SIZE);
+	cubeDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+	cubeDesc.ArraySize = 6;
 
-	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-	srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-	srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-	srvDesc.Texture2DArray.MostDetailedMip = 0;
-	srvDesc.Texture2DArray.MipLevels = 1;
-	srvDesc.Texture2DArray.FirstArraySlice = 0;
+	CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2DARRAY, DXGI_FORMAT_R32_FLOAT);
 	srvDesc.Texture2DArray.ArraySize = 6;
 
-	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
-	uavDesc.Format = DXGI_FORMAT_R32_FLOAT;
-	uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
-	uavDesc.Texture2DArray.MipSlice = 0;
-	uavDesc.Texture2DArray.FirstArraySlice = 0;
-	uavDesc.Texture2DArray.ArraySize = 6;
-
-	D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
-	dsvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-	dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
-	dsvDesc.Texture2DArray.MipSlice = 0;
-	dsvDesc.Texture2DArray.FirstArraySlice = 0;
+	CD3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc(D3D11_DSV_DIMENSION_TEXTURE2DARRAY, DXGI_FORMAT_D32_FLOAT);
 	dsvDesc.Texture2DArray.ArraySize = 6;
 
-	depthCubemap = eastl::make_unique<Texture2D>(desc);
+	depthCubemap = eastl::make_unique<Texture2D>(cubeDesc);
 	depthCubemap->CreateSRV(srvDesc);
 	depthCubemap->CreateUAV(uavDesc);
 	depthCubemap->CreateDSV(dsvDesc);
 
-	// bent normal
-	D3D11_TEXTURE2D_DESC bentNormalDesc{};
-	bentNormalDesc.Width = totalCells.x;
-	bentNormalDesc.Height = totalCells.y;
-	bentNormalDesc.MipLevels = 1;
-	bentNormalDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-	bentNormalDesc.SampleDesc.Count = 1;
-	bentNormalDesc.Usage = D3D11_USAGE_DEFAULT;
+	CD3D11_TEXTURE2D_DESC bentNormalDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, totalCells.x, totalCells.y);
 	bentNormalDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
 	bentNormalDesc.CPUAccessFlags = 0;
 	bentNormalDesc.MiscFlags = 0;
 	bentNormalDesc.ArraySize = 1;
 
-	D3D11_UNORDERED_ACCESS_VIEW_DESC UAVDesc{};
-	UAVDesc.Format = bentNormalDesc.Format;
-	UAVDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-	UAVDesc.Texture2D.MipSlice = 0;
+	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, bentNormalDesc.Format);
 
 	bentNormalMap = eastl::make_unique<Texture2D>(bentNormalDesc);
 	bentNormalMap->CreateSRV(nullptr);
-	bentNormalMap->CreateUAV(UAVDesc);
+	bentNormalMap->CreateUAV(uavDesc);
 
 	cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 	clipRefOverrideBuffer = new ConstantBuffer(ConstantBufferDesc<AlphaRefCBStruct>());
