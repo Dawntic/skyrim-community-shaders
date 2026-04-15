@@ -96,11 +96,21 @@ public:
 	float4 OcclusionDir;
 	uint frameCount = 0;
 
-	// caching system
+	RE::NiPoint3 cachedActorPosition;
+	float cachedActorFOV;
+	eastl::unique_ptr<Texture2D> bentNormalMap = nullptr;
+	std::unordered_set<std::string> bentNormalMaps;
+	std::string currentBentNormalMap = "";
+	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
+
+	void GetCachedWorldspaces();
+	void LoadWorldspaceBentNormalMap();
+
+	// cache gen resources
 	static constexpr uint DEPTH_CUBE_SIZE = 128;
 
 	eastl::unique_ptr<Texture2D> depthCubemap = nullptr;
-	eastl::unique_ptr<Texture2D> bentNormalMap = nullptr;
+	eastl::unique_ptr<Texture2D> bentNormalCacheTex = nullptr;
 	std::array<ID3D11DepthStencilView*, 6> depthCubemapDSVs{};
 
 	eastl::unique_ptr<Texture2D> stagingDepthTex = nullptr;
@@ -112,7 +122,7 @@ public:
 	{
 		int2 BentNormalWritePx;
 		int2 BentNormalTexSize;
-		float4 CubemapParams;  // Dimension, 1.0 / Dimension,  Dimension^2, Dimension^2 * valid sides
+		float4 CubemapParams;  // dimension, 1.0 / dimension,  dimension^2, dimension^2 * valid_cube_sides
 		int CubeMapWriteFace;
 		float _pad[3];
 	};
@@ -125,30 +135,23 @@ public:
 	};
 	ConstantBuffer* clipRefOverrideBuffer = nullptr;
 
-	RE::NiPoint3 cachedActorPosition;
-	float cachedActorFOV;
-
 	void SetInitalState(RE::NiPoint3& initalPos);
 	void CreateCachingResources();
 	bool CreateUniqueCachingResources(int2 totalCells);
 	void GenerateWorldspaceCache();
 	void GenerateVisibilityCubemap();
 	void GenerateBentNormal(int2 currentCellID, int2 totalCells);
+	float SampleHeightMap(float2 coords);
 	void FinishCaching(std::string worldName);
 
-	bool buildingCache = true;
-	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
+	bool buildingCache = false;
 	float3 sampleCoordsWS = float3();
 	int cubemapSide = 0;
-	bool test = false;
-	int cellCount = 0;
-	//
+	int cellCount = 0;  //tmp
 
 	void ResetSkylighting();
 
 	std::chrono::time_point<std::chrono::system_clock> lastUpdateTimer = std::chrono::system_clock::now();
-
-	float SampleHeightMap(float2 coords);
 
 	//////////////////////////////////////////////////////////////////////////////////
 

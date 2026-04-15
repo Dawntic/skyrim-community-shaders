@@ -37,7 +37,9 @@ void Skylighting::DrawSettings()
 
 	ImGui::Separator();
 
-	ImGui::Checkbox("Test", &test);
+	if (ImGui::Button("Generate Worldspace Cache"))
+		buildingCache = true;
+
 	ImGui::Text(fmt::format("Cells Completed: {}", cellCount).c_str());
 
 	if (ImGui::Button("Rebuild Skylighting"))
@@ -52,9 +54,9 @@ void Skylighting::DrawSettings()
 
 	static float debugRescale = 5.0f;
 	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
-	if (bentNormalMap) {
+	if (bentNormalCacheTex) {
 		ImGui::BulletText("Bent Normal View");
-		BUFFER_VIEWER_NODE_BULLET(bentNormalMap, debugRescale)
+		BUFFER_VIEWER_NODE_BULLET(bentNormalCacheTex, debugRescale)
 	}
 }
 
@@ -133,6 +135,8 @@ void Skylighting::SetupResources()
 	{
 		DirectX::CreateDDSTextureFromFile(device, globals::d3d::context, L"Data\\Shaders\\Skylighting\\SpatiotemporalBlueNoise\\stbn_vec3_2Dx1D_128x128x64.dds", nullptr, stbn_vec3_2Dx1D_128x128x64.put());
 	}
+
+	GetCachedWorldspaces();
 
 	CompileComputeShaders();
 }
@@ -223,6 +227,8 @@ void Skylighting::Prepass()
 
 	if (buildingCache)
 		return;
+
+	LoadWorldspaceBentNormalMap();
 
 	TracyD3D11Zone(globals::state->tracyCtx, "Skylighting - Update Probes");
 
@@ -711,7 +717,7 @@ void Skylighting::Main_Precipitation_RenderOcclusion::thunk()
 
 	if (!skylighting.buildingCache) {
 		skylighting.RenderOcclusion();
-	} else if (skylighting.test) {
+	} else {
 		skylighting.GenerateWorldspaceCache();
 	}
 }
@@ -727,7 +733,56 @@ RE::BSEventNotifyControl Skylighting::MenuOpenCloseEventHandler::ProcessEvent(co
 	return RE::BSEventNotifyControl::kContinue;
 }
 
-// Caching System //
+void Skylighting::GetCachedWorldspaces()
+{
+	for (const auto& entry : std::filesystem::directory_iterator(cachePath)) {
+		auto& path = entry.path();
+		if (path.extension() == ".dds") {
+			auto name = path.stem().string();
+			logger::debug("Found cache: {}", name);
+			if (bentNormalMaps.contains(name))
+				logger::warn("{} has multiple bent normal maps", name);
+			bentNormalMaps.insert(name);
+		}
+	}
+}
+
+void Skylighting::LoadWorldspaceBentNormalMap()
+{
+	static auto tes = RE::TES::GetSingleton();
+
+	auto worldspace = tes->GetRuntimeData2().worldSpace;
+	while (worldspace && worldspace->parentWorld)
+		worldspace = worldspace->parentWorld;
+
+	if (!worldspace)
+		return;
+
+	std::string worldspace_name = worldspace->GetFormEditorID();
+	if (currentBentNormalMap == worldspace_name)
+		return;
+
+	if (!bentNormalMaps.contains(worldspace_name)) {
+		logger::info("[Skylighting] No bent normal map for worldspace");
+		return;
+	}
+
+	logger::debug("[Skylighting] Loading bent normal map...");
+
+	auto path = cachePath / (worldspace_name + ".dds");
+	DirectX::ScratchImage image;
+	DX::ThrowIfFailed(LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image));
+
+	ID3D11Resource* pResource = nullptr;
+	DX::ThrowIfFailed(DirectX::CreateTexture(globals::d3d::device, image.GetImages(), image.GetImageCount(), image.GetMetadata(), &pResource));
+
+	bentNormalMap.reset();
+	bentNormalMap = eastl::make_unique<Texture2D>(reinterpret_cast<ID3D11Texture2D*>(pResource));
+	bentNormalMap->CreateSRV(nullptr);
+
+	currentBentNormalMap = worldspace_name;
+}
+
 void Skylighting::CreateCachingResources()
 {
 	CD3D11_TEXTURE2D_DESC cubeDesc(DXGI_FORMAT_R32_TYPELESS, DEPTH_CUBE_SIZE, DEPTH_CUBE_SIZE, 6, 1, D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE);
@@ -752,7 +807,7 @@ void Skylighting::CreateCachingResources()
 bool Skylighting::CreateUniqueCachingResources(int2 totalCells)
 {
 	stagingHeightMapTex.Release();
-	bentNormalMap.reset();
+	bentNormalCacheTex.reset();
 
 	auto& terrainShadows = globals::features::terrainShadows;
 	if (terrainShadows.loaded && terrainShadows.IsHeightMapReady()) {
@@ -769,9 +824,9 @@ bool Skylighting::CreateUniqueCachingResources(int2 totalCells)
 
 	CD3D11_TEXTURE2D_DESC bentNormalDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, totalCells.x, totalCells.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, bentNormalDesc.Format);
-	bentNormalMap = eastl::make_unique<Texture2D>(bentNormalDesc);
-	bentNormalMap->CreateSRV(nullptr);
-	bentNormalMap->CreateUAV(uavDesc);
+	bentNormalCacheTex = eastl::make_unique<Texture2D>(bentNormalDesc);
+	bentNormalCacheTex->CreateSRV(nullptr);
+	bentNormalCacheTex->CreateUAV(uavDesc);
 
 	return true;
 }
@@ -799,7 +854,6 @@ void Skylighting::SetInitalState(RE::NiPoint3& initalPos)
 
 	auto worldCenterCoords = worldspace->minimumCoords + worldspace->maximumCoords;
 	initalPos = RE::NiPoint3(worldCenterCoords.x, worldCenterCoords.y, distZ);
-	logger::info("Set Pos: {}, {}, {}", initalPos.x, initalPos.y, initalPos.z);
 
 	// Look at -Z
 	player->data.angle.x = 3.14159265f / 2.0f;
@@ -847,7 +901,7 @@ void Skylighting::GenerateWorldspaceCache()
 				CreateCachingResources();
 				firstLoad = false;
 
-				logger::info("caching system loaded");
+				logger::info("[Skylighting] Beginning worldspace cache...");
 			}
 
 			prevWorldspaceID = worldspaceID;
@@ -867,7 +921,7 @@ void Skylighting::GenerateWorldspaceCache()
 		auto positionStray = player->GetPosition() - worldPositionSet;
 		bool validPosition = std::abs(std::max(positionStray.x, std::max(positionStray.y, positionStray.z))) < CELL / 2;
 		if (!validPosition) {
-			logger::error("[Skylighting] Invalid position: actual: {} : diff: {}... trying again", player->GetPosition(), positionStray);
+			logger::error("[Skylighting] Invalid position; actual: {} : diff: {}... trying again", player->GetPosition(), positionStray);
 			player->SetPosition(worldPositionSet, false);
 			return;
 		}
@@ -909,7 +963,7 @@ void Skylighting::GenerateWorldspaceCache()
 
 		sampleCoordsWS.z = groundHeight + 100;
 
-		logger::trace("Sample coords: {}, {}, {}", sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z);
+		logger::trace("Sample coords: {}, {}, {}", sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z);  //
 
 		GenerateVisibilityCubemap();
 
@@ -920,7 +974,7 @@ void Skylighting::GenerateWorldspaceCache()
 		auto rowEnd = targetCellID.y & 1 ? 0 : totalCells.x - 1;
 		if (targetCellID.x == rowEnd) {
 			if (--targetCellID.y < 0) {
-				logger::info("Finished caching worldspace");
+				logger::info("[Skylighting] Finished caching worldspace");
 				FinishCaching(worldspaceID);
 				return;
 			}
@@ -971,7 +1025,7 @@ void Skylighting::GenerateBentNormal(int2 currentCellXY, int2 totalCells)
 		globals::state->BeginPerfEvent("Generate Bent Normal");
 
 	context->CSSetShader(bentNormalComputeShader, nullptr, 0);
-	context->CSSetUnorderedAccessViews(0, 1, bentNormalMap->uav.address(), nullptr);
+	context->CSSetUnorderedAccessViews(0, 1, bentNormalCacheTex->uav.address(), nullptr);
 
 	context->CSSetShaderResources(0, 1, depthCubemap->srv.address());
 
@@ -1001,7 +1055,7 @@ void Skylighting::FinishCaching(std::string worldName)
 	auto outputPath = cachePath / (worldName + ".dds");
 
 	DirectX::ScratchImage ouputImage;
-	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, bentNormalMap->resource.get(), ouputImage));
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, bentNormalCacheTex->resource.get(), ouputImage));
 	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
 
 	auto player = RE::PlayerCharacter::GetSingleton();
