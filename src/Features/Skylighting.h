@@ -1,5 +1,13 @@
 #pragma once
 
+#include <DDSTextureLoader.h>
+#include <DirectXTex.h>
+
+#include "ShaderCache.h"
+#include "State.h"
+
+#include "Features/TerrainShadows.h"
+
 struct Skylighting : Feature
 {
 private:
@@ -47,8 +55,6 @@ public:
 		float MaxZenith = 3.1415926f / 2.f;  // 90 deg
 		float MinDiffuseVisibility = 0.1f;
 		float MinSpecularVisibility = 0.1f;
-
-		int2 cacheProgress = int2();
 	} settings;
 
 	struct SkylightingCB
@@ -95,6 +101,10 @@ public:
 
 	eastl::unique_ptr<Texture2D> depthCubemap = nullptr;
 	eastl::unique_ptr<Texture2D> bentNormalMap = nullptr;
+	std::array<ID3D11DepthStencilView*, 6> depthCubemapDSVs{};
+
+	eastl::unique_ptr<Texture2D> stagingDepthTex = nullptr;
+	DirectX::ScratchImage stagingHeightMapTex;
 
 	ID3D11ComputeShader* bentNormalComputeShader = nullptr;
 
@@ -115,36 +125,30 @@ public:
 	};
 	ConstantBuffer* clipRefOverrideBuffer = nullptr;
 
-	struct INIConfig
-	{
-		std::pair<int*, int> frameClamp;
-		std::pair<bool*, bool> frameLock;
-		std::pair<bool*, bool> interval;
-		std::pair<bool*, bool> borderLock;
-		std::pair<float*, float> maxTime;
-	};
-	INIConfig cachedINIValues;
+	RE::NiPoint3 cachedActorPosition;
+	float cachedActorFOV;
 
-	void TryLoadCacheProgress(std::string name, int2& outProgress);
-	void CreateCachingResources(int2 totalCells);
+	void SetInitalState(RE::NiPoint3& initalPos);
+	void CreateCachingResources();
+	bool CreateUniqueCachingResources(int2 totalCells);
 	void GenerateWorldspaceCache();
-	void SetWorldPosition(const int2& cellPos, const RE::NiPoint2 minXY, RE::NiPoint3& posSet);
-	void BackupCacheProgress(int2 currentCellXY, std::string name);
-	float GetRayIntersectionHeight(float3 pos);
-	bool IsPositionValid(RE::NiPoint3 pos);
 	void GenerateVisibilityCubemap();
-	void GenerateBentNormal(int2 currentCellXY, int2 totalCells);
-	void FinishCaching();
+	void GenerateBentNormal(int2 currentCellID, int2 totalCells);
+	void FinishCaching(std::string worldName);
 
 	bool buildingCache = true;
 	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
 	float3 sampleCoordsWS = float3();
 	int cubemapSide = 0;
+	bool test = false;
+	int cellCount = 0;
 	//
 
 	void ResetSkylighting();
 
 	std::chrono::time_point<std::chrono::system_clock> lastUpdateTimer = std::chrono::system_clock::now();
+
+	float SampleHeightMap(float2 coords);
 
 	//////////////////////////////////////////////////////////////////////////////////
 
@@ -156,6 +160,12 @@ public:
 	};
 
 	void RenderOcclusion();
+
+	struct SetViewport
+	{
+		static void thunk(RE::BSGraphics::Renderer* renderer, uint32_t arg1, uint32_t arg2, uint32_t arg3);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
 
 	struct Main_Precipitation_RenderOcclusion
 	{

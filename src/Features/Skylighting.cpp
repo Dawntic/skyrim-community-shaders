@@ -1,11 +1,5 @@
 #include "Skylighting.h"
 
-#include <DDSTextureLoader.h>
-#include <DirectXTex.h>
-
-#include "ShaderCache.h"
-#include "State.h"
-
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Skylighting::Settings,
 	MaxZenith,
@@ -43,6 +37,9 @@ void Skylighting::DrawSettings()
 
 	ImGui::Separator();
 
+	ImGui::Checkbox("Test", &test);
+	ImGui::Text(fmt::format("Cells Completed: {}", cellCount).c_str());
+
 	if (ImGui::Button("Rebuild Skylighting"))
 		ResetSkylighting();
 
@@ -52,6 +49,13 @@ void Skylighting::DrawSettings()
 	ImGui::SliderAngle("Max Zenith Angle", &settings.MaxZenith, 0, 90);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("Smaller angles creates more focused top-down shadow.");
+
+	static float debugRescale = 5.0f;
+	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
+	if (bentNormalMap) {
+		ImGui::BulletText("Bent Normal View");
+		BUFFER_VIEWER_NODE_BULLET(bentNormalMap, debugRescale)
+	}
 }
 
 void Skylighting::SetupResources()
@@ -128,20 +132,6 @@ void Skylighting::SetupResources()
 
 	{
 		DirectX::CreateDDSTextureFromFile(device, globals::d3d::context, L"Data\\Shaders\\Skylighting\\SpatiotemporalBlueNoise\\stbn_vec3_2Dx1D_128x128x64.dds", nullptr, stbn_vec3_2Dx1D_128x128x64.put());
-	}
-
-	if (buildingCache) {
-		cachedINIValues.frameClamp = { &RE::GetINISetting("iFPSClamp:General")->data.i, RE::GetINISetting("iFPSClamp:General")->data.i };
-		cachedINIValues.frameLock = { &RE::GetINISetting("bLockFramerate:Display")->data.b, RE::GetINISetting("bLockFramerate:Display")->data.b };
-		cachedINIValues.interval = { &RE::GetINISetting("iVSyncPresentInterval:Display")->data.b, RE::GetINISetting("iVSyncPresentInterval:Display")->data.b };
-		cachedINIValues.borderLock = { &RE::GetINISetting("bBorderRegionsEnabled:General")->data.b, RE::GetINISetting("bBorderRegionsEnabled:General")->data.b };
-		cachedINIValues.maxTime = { &RE::GetINISetting("fMaxTime:HAVOK")->data.f, RE::GetINISetting("fMaxTime:HAVOK")->data.f };
-
-		*cachedINIValues.frameClamp.first = 0;
-		*cachedINIValues.frameClamp.first = false;
-		*cachedINIValues.interval.first = false;
-		*cachedINIValues.borderLock.first = false;
-		*cachedINIValues.maxTime.first = 0.001f;
 	}
 
 	CompileComputeShaders();
@@ -285,10 +275,25 @@ void Skylighting::PostPostLoad()
 
 	// Remove call to update local camera translation - need to add logic for when not building cache!!
 	REL::safe_fill(REL::RelocationID(25643, 26185).address() + REL::Relocate(0x511, 0x511), REL::NOP, 15);  // TEMP
+	stl::detour_thunk<SetViewport>(REL::RelocationID(77240, 77240));
 
 	MenuOpenCloseEventHandler::Register();
 }
 
+void Skylighting::SetViewport::thunk(RE::BSGraphics::Renderer* renderer, uint32_t arg1, uint32_t arg2, uint32_t arg3)
+{
+	func(renderer, arg1, arg2, arg3);
+
+	auto& skylighting = globals::features::skylighting;
+	if (skylighting.inOcclusion && skylighting.buildingCache) {
+		D3D11_VIEWPORT port = {};
+		port.Width = DEPTH_CUBE_SIZE;
+		port.Height = DEPTH_CUBE_SIZE;
+		port.MaxDepth = 1.0f;
+
+		globals::game::shadowState->GetRuntimeData().viewPort = port;
+	}
+}
 //////////////////////////////////////////////////////////////
 
 struct BSParticleShaderRainEmitter
@@ -427,8 +432,9 @@ RE::BSShaderProperty::RenderPassArray* Skylighting::BSLightingShaderProperty_Get
 	if (skylighting.inOcclusion) {
 		if (!skylighting.buildingCache)
 			valid = property->flags.any(kZBufferWrite) && property->flags.none(kRefraction, kTempRefraction, kLODLandscape, kEyeReflect, kDecal, kDynamicDecal);
-		else
-			valid = property->flags.any(kZBufferWrite) && property->flags.none(kRefraction, kTempRefraction, kEyeReflect, kDecal, kDynamicDecal);
+		else {
+			valid = property->flags.any(kZBufferWrite) && property->flags.none(kRefraction, kTempRefraction, kEyeReflect, kDecal, kDynamicDecal) && !(property->flags.any(kTreeAnim) && property->flags.none(kLODObjects));
+		}
 	} else {
 		valid = property->flags.any(kZBufferWrite) && property->flags.none(kRefraction, kTempRefraction, kMultiTextureLandscape, kNoLODLandBlend, kLODLandscape, kEyeReflect, kDecal, kDynamicDecal);
 	}
@@ -619,12 +625,13 @@ void Skylighting::RenderOcclusion()
 
 					PrecipitationShaderForward = { PrecipitationShaderDirectionF.x, PrecipitationShaderDirectionF.y, PrecipitationShaderDirectionF.z };
 				} else {
-					static std::array<std::pair<RE::NiPoint3, RE::NiPoint3>, 5> cubemapDirs = { {
+					static std::array<std::pair<RE::NiPoint3, RE::NiPoint3>, 6> cubemapDirs = { {
 						{ { 1, 0, 0 }, { 0, 1, 0 } },
 						{ { -1, 0, 0 }, { 0, 1, 0 } },
 						{ { 0, 1, 0 }, { 0, 0, -1 } },
 						{ { 0, -1, 0 }, { 0, 0, 1 } },
 						{ { 0, 0, 1 }, { 0, 1, 0 } },
+						{ { 0, 0, -1 }, { 0, 1, 0 } },
 					} };
 
 					static RE::NiPoint3& PrecipitationShaderUp = (*(RE::NiPoint3*)REL::RelocationID(388555, 388555).address());
@@ -633,11 +640,15 @@ void Skylighting::RenderOcclusion()
 					PrecipitationShaderForward = cubemapDirs[skylighting.cubemapSide].first;
 					PrecipitationShaderDirectionF = *reinterpret_cast<float3*>(&cubemapDirs[skylighting.cubemapSide].first);
 
-					precip->occlusionData.camera->local.translate = RE::Main::WorldRootCamera()->world.translate;  // disable the mem fill if removing
+					precip->occlusionData.camera->local.translate = float3(sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z);  // disable the mem fill if removing
 
 					_computeProjection(precip, precip->occlusionData.camera);
 
-					if (skylighting.buildingCache && skylighting.cubemapSide == 0) {
+					precipitation.depthSRV = depthCubemap->srv.get();
+					precipitation.texture = depthCubemap->resource.get();
+					precipitation.views[0] = depthCubemapDSVs[cubemapSide];
+
+					if (skylighting.buildingCache && skylighting.cubemapSide == 5) {  // change back to cubemapSide == 0 when we get rid of height prepass /////////////////////////////////
 						static auto* precipObjectArrayList = *(RE::BSTArray<RE::NiPointer<RE::NiAVObject>>**)REL::RelocationID(415017, 415017).address();
 						static uint& precipObjectArrayListSize = *(uint*)REL::RelocationID(415019, 415019).address();
 
@@ -649,7 +660,6 @@ void Skylighting::RenderOcclusion()
 
 						for (uint node = 0; node < nodeLODList.size(); node++) {
 							auto& children = nodeLODList[node]->GetChildren();
-
 							for (uint16_t child = 0, arrayIdx = 0; child < children.size(); child += !children[child]) {
 								if (children[child]) {
 									if (precipObjectArrayList[arrayIdx].size() < precipObjectArrayList[arrayIdx].capacity()) {
@@ -701,7 +711,7 @@ void Skylighting::Main_Precipitation_RenderOcclusion::thunk()
 
 	if (!skylighting.buildingCache) {
 		skylighting.RenderOcclusion();
-	} else {
+	} else if (skylighting.test) {
 		skylighting.GenerateWorldspaceCache();
 	}
 }
@@ -718,82 +728,87 @@ RE::BSEventNotifyControl Skylighting::MenuOpenCloseEventHandler::ProcessEvent(co
 }
 
 // Caching System //
-void Skylighting::TryLoadCacheProgress(std::string name, int2& outProgress)
+void Skylighting::CreateCachingResources()
 {
-	auto loadPath = cachePath / (name + ".dds");
-	if (!std::filesystem::exists(loadPath)) {
-		logger::info("[Skylighting] No cache found; one will be generated");
-		return;
-	}
-
-	outProgress = settings.cacheProgress;
-
-	DirectX::ScratchImage bentTex;
-	DX::ThrowIfFailed(DirectX::LoadFromDDSFile(loadPath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, bentTex));
-
-	ID3D11Resource* resource = nullptr;
-	DX::ThrowIfFailed(DirectX::CreateTexture(globals::d3d::device, bentTex.GetImages(), bentTex.GetImageCount(), bentTex.GetMetadata(), &resource));
-
-	globals::d3d::context->CopyResource(bentNormalMap->resource.get(), resource);
-
-	resource->Release();
-}
-
-void Skylighting::SetWorldPosition(const int2& currentCellXY, const RE::NiPoint2 minWorldCoords, RE::NiPoint3& worldPos)
-{
-	static constexpr float CELL = 4096.0f;
-
-	auto tes = RE::TES::GetSingleton();
-	auto player = RE::PlayerCharacter::GetSingleton();
-
-	float2 worldXY = float2(minWorldCoords.x, minWorldCoords.y) + float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
-
-	float landHeight;
-	tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
-
-	float groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight));
-	float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
-	groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
-
-	sampleCoordsWS = float3(worldXY.x, worldXY.y, groundHeight);
-
-	worldPos = RE::NiPoint3(sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z + 1500.0f);  // place character in air to avoid crap happening
-	player->SetPosition(worldPos, false);
-}
-
-void Skylighting::CreateCachingResources(int2 totalCells)
-{
-	CD3D11_TEXTURE2D_DESC cubeDesc(DXGI_FORMAT_R32_TYPELESS, DEPTH_CUBE_SIZE, DEPTH_CUBE_SIZE);
-	cubeDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
-	cubeDesc.ArraySize = 6;
-
-	CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2DARRAY, DXGI_FORMAT_R32_FLOAT);
-	srvDesc.Texture2DArray.ArraySize = 6;
-
-	CD3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc(D3D11_DSV_DIMENSION_TEXTURE2DARRAY, DXGI_FORMAT_D32_FLOAT);
-	dsvDesc.Texture2DArray.ArraySize = 6;
-
+	CD3D11_TEXTURE2D_DESC cubeDesc(DXGI_FORMAT_R32_TYPELESS, DEPTH_CUBE_SIZE, DEPTH_CUBE_SIZE, 6, 1, D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2DARRAY, DXGI_FORMAT_R32_FLOAT, 0, 1, 0, 6);
+	CD3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc(D3D11_DSV_DIMENSION_TEXTURE2DARRAY, DXGI_FORMAT_D32_FLOAT, 0, 0, 1);
 	depthCubemap = eastl::make_unique<Texture2D>(cubeDesc);
 	depthCubemap->CreateSRV(srvDesc);
-	depthCubemap->CreateUAV(uavDesc);
-	depthCubemap->CreateDSV(dsvDesc);
+	for (uint32_t i = 0; i < cubeDesc.ArraySize; i++) {
+		dsvDesc.Texture2DArray.FirstArraySlice = i;
+		globals::d3d::device->CreateDepthStencilView(depthCubemap->resource.get(), &dsvDesc, &depthCubemapDSVs[i]);
+	}
 
-	CD3D11_TEXTURE2D_DESC bentNormalDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, totalCells.x, totalCells.y);
-	bentNormalDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
-	bentNormalDesc.CPUAccessFlags = 0;
-	bentNormalDesc.MiscFlags = 0;
-	bentNormalDesc.ArraySize = 1;
-
-	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, bentNormalDesc.Format);
-
-	bentNormalMap = eastl::make_unique<Texture2D>(bentNormalDesc);
-	bentNormalMap->CreateSRV(nullptr);
-	bentNormalMap->CreateUAV(uavDesc);
+	CD3D11_TEXTURE2D_DESC stagingDepthDesc(DXGI_FORMAT_R32_FLOAT, DEPTH_CUBE_SIZE, DEPTH_CUBE_SIZE, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
+	stagingDepthTex = eastl::make_unique<Texture2D>(stagingDepthDesc);
 
 	cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 	clipRefOverrideBuffer = new ConstantBuffer(ConstantBufferDesc<AlphaRefCBStruct>());
 
 	bentNormalComputeShader = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\Skylighting\\GenerateBentNormalCS.hlsl", { { "BENT_NORMAL_COMPUTE", "" } }, "cs_5_0");
+}
+
+bool Skylighting::CreateUniqueCachingResources(int2 totalCells)
+{
+	stagingHeightMapTex.Release();
+	bentNormalMap.reset();
+
+	auto& terrainShadows = globals::features::terrainShadows;
+	if (terrainShadows.loaded && terrainShadows.IsHeightMapReady()) {
+		DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, terrainShadows.texHeightMap->resource.get(), stagingHeightMapTex);
+		if (DirectX::IsCompressed(stagingHeightMapTex.GetMetadata().format)) {
+			DirectX::ScratchImage decompressed;
+			DirectX::Decompress(*stagingHeightMapTex.GetImages(), DXGI_FORMAT_R16_UNORM, decompressed);
+			stagingHeightMapTex = std::move(decompressed);
+		}
+	} else {
+		logger::error("Unable to retrieve a heightmap for the current worldspace from TerrainShadows");
+		return false;
+	}
+
+	CD3D11_TEXTURE2D_DESC bentNormalDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, totalCells.x, totalCells.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, bentNormalDesc.Format);
+	bentNormalMap = eastl::make_unique<Texture2D>(bentNormalDesc);
+	bentNormalMap->CreateSRV(nullptr);
+	bentNormalMap->CreateUAV(uavDesc);
+
+	return true;
+}
+
+void Skylighting::SetInitalState(RE::NiPoint3& initalPos)
+{
+	auto player = RE::PlayerCharacter::GetSingleton();
+	auto worldspace = player ? player->GetWorldspace() : nullptr;
+
+	const auto& rootFrustum = RE::Main::WorldRootCamera()->GetRuntimeData2().viewFrustum;
+
+	auto& camData = RE::PlayerCamera::GetSingleton()->GetRuntimeData2();
+	cachedActorFOV = camData.worldFOV;
+	cachedActorPosition = player->GetPosition();
+
+	static constexpr float viewFOV = 120.0f;  // Makes sure terrain chunks do not get culled
+	camData.worldFOV = viewFOV;
+	camData.firstPersonFOV = viewFOV;
+
+	auto worldArea = worldspace->maximumCoords - worldspace->minimumCoords;
+	float fovYRad = viewFOV * (DirectX::XM_PI / 180.0f);
+	float fovXRad = 2.0f * atan(tan(fovYRad * 0.5f) * (globals::state->screenSize.x / globals::state->screenSize.y));
+	float distZ = std::max((worldArea.x * 0.5f) / tan(fovXRad * 0.5f), (worldArea.y * 0.5f) / tan(fovYRad * 0.5f)) + 50000.0f;
+	distZ = std::min(distZ, rootFrustum.fFar);
+
+	auto worldCenterCoords = worldspace->minimumCoords + worldspace->maximumCoords;
+	initalPos = RE::NiPoint3(worldCenterCoords.x, worldCenterCoords.y, distZ);
+	logger::info("Set Pos: {}, {}, {}", initalPos.x, initalPos.y, initalPos.z);
+
+	// Look at -Z
+	player->data.angle.x = 3.14159265f / 2.0f;
+	player->data.angle.z = 0.0f;
+
+	static REL::Relocation<void(uint64_t, uint64_t, uint64_t)> _toggleCollision{ REL::RelocationID(22825, 22825) };
+	_toggleCollision(0, 0, 0);
+
+	player->SetPosition(initalPos, false);
 }
 
 void Skylighting::GenerateWorldspaceCache()
@@ -802,156 +817,136 @@ void Skylighting::GenerateWorldspaceCache()
 
 	auto tes = RE::TES::GetSingleton();
 	auto player = RE::PlayerCharacter::GetSingleton();
-	auto worldSpace = player ? player->GetWorldspace() : nullptr;
-	//auto cell = (player) ? player->GetParentCell() : nullptr;
+	auto worldspace = player ? player->GetWorldspace() : nullptr;
+	auto cell = (player) ? player->GetParentCell() : nullptr;
 
-	if (tes && worldSpace) {
-		static auto currentCellXY = int2();
-		static auto worldPositionSet = RE::NiPoint3();
+	static auto totalCells = int2();
+	static auto targetCellID = int2();
+	static auto worldPositionSet = RE::NiPoint3();
 
-		static auto tmp = RE::NiPoint2(worldSpace->minimumCoords + worldSpace->maximumCoords) / CELL;
-		static auto totalCells = int2((int)std::ceil(tmp.x), (int)std::ceil(tmp.y));
+	if (tes && worldspace && cell && cell->IsExteriorCell()) {
+		static auto prevWorldspaceID = "0";
+		auto worldspaceID = worldspace->GetFormEditorID();
+		static int bufferFrames = 30;
 
-		static bool init = true;
-		if (init) {
-			CreateCachingResources(totalCells);
-			TryLoadCacheProgress(worldSpace->GetName(), currentCellXY);
-			SetWorldPosition(currentCellXY, worldSpace->minimumCoords, worldPositionSet);
-			init = false;
-			return;
-		}
+		if (worldspaceID != prevWorldspaceID) {
+			totalCells = int2((int)std::ceil((std::abs(worldspace->minimumCoords.x) + worldspace->maximumCoords.x) / CELL),
+				(int)std::ceil((std::abs(worldspace->minimumCoords.y) + worldspace->maximumCoords.y) / CELL));
 
-		bool valid = IsPositionValid(worldPositionSet);
-		static int failedCount = 0;
-		failedCount = valid ? 0 : ++failedCount;
-		if (!valid) {
-			if (failedCount >= 10) {  // This should never happen but since its possible for the game to refuse an update we should handle it anyway.
-				logger::error("[Skylighting] Sample position was unable to be updated");
-				failedCount = 0;
-				// Add more logic here - move to next position
-			} else {
-				player->SetPosition(worldPositionSet, false);
+			targetCellID = int2(0, totalCells.y);
+
+			bool loadedResources = CreateUniqueCachingResources(totalCells);
+
+			if (!loadedResources)
+				return;
+
+			SetInitalState(worldPositionSet);
+
+			static bool firstLoad = true;
+			if (firstLoad) {
+				CreateCachingResources();
+				firstLoad = false;
+
+				logger::info("caching system loaded");
 			}
+
+			prevWorldspaceID = worldspaceID;
+			bufferFrames = 30;
+			return;  // Let position update
+		}
+
+		// Let world chunks load when entering new worldspace
+		if (bufferFrames) {
+			--bufferFrames;
 			return;
 		}
+
+		const auto& rootFrustum = RE::Main::WorldRootCamera()->GetRuntimeData2().viewFrustum;
+		RE::PlayerCamera::GetSingleton()->GetRuntimeData2().idleTimer = 0;
+
+		auto positionStray = player->GetPosition() - worldPositionSet;
+		bool validPosition = std::abs(std::max(positionStray.x, std::max(positionStray.y, positionStray.z))) < CELL / 2;
+		if (!validPosition) {
+			logger::error("[Skylighting] Invalid position: actual: {} : diff: {}... trying again", player->GetPosition(), positionStray);
+			player->SetPosition(worldPositionSet, false);
+			return;
+		}
+
+		float2 targetCellOffset = float2((float)targetCellID.x * CELL, (float)targetCellID.y * CELL);
+		float2 cellWorldCorner = float2(worldspace->minimumCoords.x, worldspace->minimumCoords.y) + targetCellOffset;
+		float2 cellWorldCenter = cellWorldCorner + float2(CELL * 0.5f, CELL * 0.5f);
+
+		float heightMapHeight = SampleHeightMap(float2(cellWorldCenter.x, cellWorldCenter.y));
+		heightMapHeight += CELL;
+
+		sampleCoordsWS = float3(cellWorldCenter.x, cellWorldCenter.y, heightMapHeight);  // needed for terrain height render
+
+		// Get accurate terrain height
+		cubemapSide = 5;
+		RenderOcclusion();
+
+		auto context = globals::d3d::context;
+		context->OMSetRenderTargets(0, nullptr, nullptr);
+		context->CopySubresourceRegion(stagingDepthTex->resource.get(), D3D11CalcSubresource(0, 0, 1), 0, 0, 0, depthCubemap->resource.get(), D3D11CalcSubresource(0, 5, 1), nullptr);
+		D3D11_MAPPED_SUBRESOURCE mapped{};
+		context->Map(stagingDepthTex->resource.get(), 0, D3D11_MAP_READ, 0, &mapped);
+
+		auto center = uint((float)DEPTH_CUBE_SIZE * 0.5f);
+		auto row1 = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(mapped.pData) + center * mapped.RowPitch)[center];
+		auto row2 = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(mapped.pData) + center * mapped.RowPitch)[center - 1];
+		auto row3 = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(mapped.pData) + (center - 1) * mapped.RowPitch)[center];
+		auto row4 = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(mapped.pData) + (center - 1) * mapped.RowPitch)[center - 1];
+
+		float nearPlane = 35.0f;
+		float groundDiff = std::max({ row1, row2, row3, row4 });
+		groundDiff = (nearPlane * rootFrustum.fFar) / (-groundDiff * (rootFrustum.fFar - nearPlane) + rootFrustum.fFar);
+
+		context->Unmap(stagingDepthTex->resource.get(), 0);
+
+		float groundHeight = sampleCoordsWS.z - groundDiff;
+		float waterHeight = worldspace->GetDefaultWaterHeight();
+		groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
+
+		sampleCoordsWS.z = groundHeight + 100;
+
+		logger::trace("Sample coords: {}, {}, {}", sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z);
 
 		GenerateVisibilityCubemap();
 
-		GenerateBentNormal(currentCellXY);
+		GenerateBentNormal(targetCellID, totalCells);
 
-		BackupCacheProgress(currentCellXY, worldSpace->GetName());
+		++cellCount;
 
-		if (++currentCellXY.x >= totalCells.x) {
-			currentCellXY.x = 0;
-			if (++currentCellXY.y >= totalCells.y) {
-				currentCellXY.y = 0;
-				FinishCaching();
+		auto rowEnd = targetCellID.y & 1 ? 0 : totalCells.x - 1;
+		if (targetCellID.x == rowEnd) {
+			if (--targetCellID.y < 0) {
+				logger::info("Finished caching worldspace");
+				FinishCaching(worldspaceID);
 				return;
 			}
-		}
-
-		SetWorldPosition(currentCellXY, worldSpace->minimumCoords, worldPositionSet);
-	}
-}
-
-void Skylighting::BackupCacheProgress(int2 currentCellXY, std::string name)
-{
-	settings.cacheProgress = currentCellXY;
-	globals::state->Save();
-
-	auto outputPath = cachePath / (name + ".dds");
-
-	DirectX::ScratchImage ouputImage;
-	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, bentNormalMap->resource.get(), ouputImage));
-	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
-}
-
-bool Skylighting::IsPositionValid(RE::NiPoint3 inputPosition)
-{
-	static constexpr float HALF_CELL = 2048.0f;
-
-	bool valid = false;
-	if (auto player = RE::PlayerCharacter::GetSingleton()) {
-		auto diff = player->GetPosition() - inputPosition;
-		valid = std::max(diff.x, std::max(diff.y, diff.z)) < HALF_CELL;
-	}
-
-	return valid;
-}
-
-float Skylighting::GetRayIntersectionHeight(float3 position)
-{
-	static constexpr float RAY_OFFSET = 20000.0f;
-	static constexpr int MAX_ATTEMPTS = 10;
-
-	static float prevZ = 0.0f;
-	auto player = RE::PlayerCharacter::GetSingleton();
-	auto cell = player->GetParentCell();
-	auto bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
-
-	if (auto hkpWorld = bhkWorld ? cell->GetbhkWorld()->GetWorld1() : nullptr; hkpWorld) {
-		float scale = RE::bhkWorld::GetWorldScale();
-		float2 posScaledXY = float2(position.x * scale, position.y * scale);
-		float currentZ = position.z + RAY_OFFSET;
-		float endZ = position.z - RAY_OFFSET;
-
-		for (int i = 0; i < MAX_ATTEMPTS; i++) {
-			RE::hkpWorldRayCastInput input;
-			input.from.quad.m128_f32[0] = posScaledXY.x;
-			input.from.quad.m128_f32[1] = posScaledXY.y;
-			input.from.quad.m128_f32[2] = currentZ * scale;
-			input.from.quad.m128_f32[3] = 0;
-			input.to.quad.m128_f32[0] = posScaledXY.x;
-			input.to.quad.m128_f32[1] = posScaledXY.y;
-			input.to.quad.m128_f32[2] = endZ * scale;
-			input.to.quad.m128_f32[3] = 0;
-
-			RE::hkpWorldRayCastOutput output;
-			hkpWorld->CastRay(input, output);
-
-			if (!output.HasHit()) {
-				logger::error("[Skylighting] Ray cast failed to find surface");
-				return prevZ;
-			}
-			auto collisionObj = output.rootCollidable->GetCollisionLayer();
-
-			if (!(collisionObj == RE::COL_LAYER::kTerrain || collisionObj == RE::COL_LAYER::kGround || collisionObj == RE::COL_LAYER::kStatic)) {
-				float rayLength = currentZ - endZ;
-				currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
-				continue;
-			}
-
-			if (i + 1 == MAX_ATTEMPTS) {
-				logger::error("[Skylighting] Ray cast had no valid hit; last recorded collision was: {}", collisionObj);
-				return prevZ;
-			}
-
-			float rayLength = currentZ - endZ;
-			float hitZ = currentZ - output.hitFraction * rayLength;
-			prevZ = hitZ;
-			return hitZ;
+		} else {
+			targetCellID.y & 1 ? --targetCellID.x : ++targetCellID.x;
 		}
 	}
+}
 
-	return prevZ;
+float Skylighting::SampleHeightMap(float2 coords)
+{
+	auto& cachedHeightmap = globals::features::terrainShadows.cachedHeightmap;
+	float u = (coords.x - cachedHeightmap->pos0.x) / (cachedHeightmap->pos1.x - cachedHeightmap->pos0.x);
+	float v = (coords.y - cachedHeightmap->pos0.y) / (cachedHeightmap->pos1.y - cachedHeightmap->pos0.y);
+	auto& img = *stagingHeightMapTex.GetImages();
+	int ix = std::clamp((int)(u * img.width), 0, (int)img.width - 1);
+	int iy = std::clamp((int)(v * img.height), 0, (int)img.height - 1);
+	auto row = reinterpret_cast<const uint16_t*>(img.pixels + iy * img.rowPitch);
+	float normalizedHeight = row[ix];
+
+	return (normalizedHeight - 32767) * 8.0f;
 }
 
 void Skylighting::GenerateVisibilityCubemap()
 {
 	auto context = globals::d3d::context;
-
-	if (globals::state->frameAnnotations)
-		globals::state->BeginPerfEvent("Bent Normal Depth Pass");
-
-	context->ClearDepthStencilView(depthCubemap->dsv.get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
-
-	D3D11_VIEWPORT port = {};
-	port.Width = DEPTH_CUBE_SIZE;
-	port.Height = DEPTH_CUBE_SIZE;
-	port.MaxDepth = 1.0f;
-	context->RSSetViewports(1, &port);
-
-	context->OMSetRenderTargets(0, nullptr, depthCubemap->dsv.get());
 
 	AlphaRefCBStruct data;
 	data.AlphaTestRefRS = 0.1;
@@ -960,16 +955,12 @@ void Skylighting::GenerateVisibilityCubemap()
 	auto buffer = clipRefOverrideBuffer->CB();
 	context->PSSetConstantBuffers(11, 1, &buffer);
 
-	globals::game::stateUpdateFlags->reset(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
-	globals::game::stateUpdateFlags->reset(RE::BSGraphics::ShaderFlags::DIRTY_VIEWPORT);
-
 	for (cubemapSide = 0; cubemapSide < 5; cubemapSide++) {
 		globals::game::stateUpdateFlags->reset(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_TEST_REF);
 		RenderOcclusion();
 	}
 
-	if (globals::state->frameAnnotations)
-		globals::state->EndPerfEvent();
+	context->OMSetRenderTargets(0, nullptr, nullptr);
 }
 
 void Skylighting::GenerateBentNormal(int2 currentCellXY, int2 totalCells)
@@ -1002,14 +993,27 @@ void Skylighting::GenerateBentNormal(int2 currentCellXY, int2 totalCells)
 		globals::state->EndPerfEvent();
 }
 
-void Skylighting::FinishCaching()
+void Skylighting::FinishCaching(std::string worldName)
 {
-	*cachedINIValues.frameClamp.first = cachedINIValues.frameClamp.second;
-	*cachedINIValues.frameClamp.first = cachedINIValues.frameClamp.second;
-	*cachedINIValues.interval.first = cachedINIValues.interval.second;
-	*cachedINIValues.borderLock.first = cachedINIValues.borderLock.second;
-	*cachedINIValues.maxTime.first = cachedINIValues.maxTime.second;
+	if (!std::filesystem::exists(cachePath))
+		std::filesystem::create_directories(cachePath);
+
+	auto outputPath = cachePath / (worldName + ".dds");
+
+	DirectX::ScratchImage ouputImage;
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, bentNormalMap->resource.get(), ouputImage));
+	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+
+	auto player = RE::PlayerCharacter::GetSingleton();
+	player->SetPosition(cachedActorPosition, false);
+
+	auto& camData = RE::PlayerCamera::GetSingleton()->GetRuntimeData2();
+	camData.worldFOV = cachedActorFOV;
+	camData.firstPersonFOV = cachedActorFOV;
+
+	static REL::Relocation<void(uint64_t, uint64_t, uint64_t)> _toggleCollision{ REL::RelocationID(22825, 22825) };  // need to run frame before setting coll?
+	_toggleCollision(0, 0, 0);
 
 	// Logic for if cache is fully finished or not?
-	//buildingCache = false;
+	buildingCache = false;
 }
