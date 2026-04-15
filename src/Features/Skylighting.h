@@ -50,6 +50,9 @@ public:
 
 	//////////////////////////////////////////////////////////////////////////////////
 
+	void UpdateDenseProbeGrid();
+	void UpdateSparseProbeGrid();
+
 	struct Settings
 	{
 		float MaxZenith = 3.1415926f / 2.f;  // 90 deg

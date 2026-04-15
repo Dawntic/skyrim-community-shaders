@@ -212,26 +212,8 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 	};
 }
 
-void Skylighting::Prepass()
+void Skylighting::UpdateDenseProbeGrid()
 {
-	if (globals::state->isMapMenuOpen)
-		return;
-
-	bool interior = true;
-
-	if (auto sky = globals::game::sky)
-		interior = sky->mode.get() != RE::Sky::Mode::kFull;
-
-	if (interior)
-		return;
-
-	if (buildingCache)
-		return;
-
-	LoadWorldspaceBentNormalMap();
-
-	TracyD3D11Zone(globals::state->tracyCtx, "Skylighting - Update Probes");
-
 	auto context = globals::d3d::context;
 
 	{
@@ -260,11 +242,34 @@ void Skylighting::Prepass()
 			context->CSSetShader(nullptr, nullptr, 0);
 		}
 	}
+}
+
+void Skylighting::Prepass()
+{
+	if (globals::state->isMapMenuOpen)
+		return;
+
+	bool interior = true;
+
+	if (auto sky = globals::game::sky)
+		interior = sky->mode.get() != RE::Sky::Mode::kFull;
+
+	if (interior)
+		return;
+
+	if (buildingCache)
+		return;
+
+	LoadWorldspaceBentNormalMap();
+
+	TracyD3D11Zone(globals::state->tracyCtx, "Skylighting - Update Probes");
+
+	UpdateDenseProbeGrid();
 
 	// Set PS shader resources
 	{
 		ID3D11ShaderResourceView* srvs[2] = { texProbeArray->srv.get(), stbn_vec3_2Dx1D_128x128x64.get() };
-		context->PSSetShaderResources(50, 2, srvs);
+		globals::d3d::context->PSSetShaderResources(50, 2, srvs);
 	}
 }
 
@@ -286,20 +291,6 @@ void Skylighting::PostPostLoad()
 	MenuOpenCloseEventHandler::Register();
 }
 
-void Skylighting::SetViewport::thunk(RE::BSGraphics::Renderer* renderer, uint32_t arg1, uint32_t arg2, uint32_t arg3)
-{
-	func(renderer, arg1, arg2, arg3);
-
-	auto& skylighting = globals::features::skylighting;
-	if (skylighting.inOcclusion && skylighting.buildingCache) {
-		D3D11_VIEWPORT port = {};
-		port.Width = DEPTH_CUBE_SIZE;
-		port.Height = DEPTH_CUBE_SIZE;
-		port.MaxDepth = 1.0f;
-
-		globals::game::shadowState->GetRuntimeData().viewPort = port;
-	}
-}
 //////////////////////////////////////////////////////////////
 
 struct BSParticleShaderRainEmitter
@@ -1065,9 +1056,23 @@ void Skylighting::FinishCaching(std::string worldName)
 	camData.worldFOV = cachedActorFOV;
 	camData.firstPersonFOV = cachedActorFOV;
 
-	static REL::Relocation<void(uint64_t, uint64_t, uint64_t)> _toggleCollision{ REL::RelocationID(22825, 22825) };  // need to run frame before setting coll?
+	static REL::Relocation<void(uint64_t, uint64_t, uint64_t)> _toggleCollision{ REL::RelocationID(22825, 22825) };
 	_toggleCollision(0, 0, 0);
 
-	// Logic for if cache is fully finished or not?
 	buildingCache = false;
+}
+
+void Skylighting::SetViewport::thunk(RE::BSGraphics::Renderer* renderer, uint32_t arg1, uint32_t arg2, uint32_t arg3)
+{
+	func(renderer, arg1, arg2, arg3);
+
+	auto& skylighting = globals::features::skylighting;
+	if (skylighting.inOcclusion && skylighting.buildingCache) {
+		D3D11_VIEWPORT port = {};
+		port.Width = DEPTH_CUBE_SIZE;
+		port.Height = DEPTH_CUBE_SIZE;
+		port.MaxDepth = 1.0f;
+
+		globals::game::shadowState->GetRuntimeData().viewPort = port;
+	}
 }
