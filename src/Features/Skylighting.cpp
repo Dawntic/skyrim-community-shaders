@@ -43,6 +43,17 @@ void Skylighting::DrawSettings()
 	ImGui::Checkbox("Enable Deferred", (bool*)&settings.toggleDeferred);
 	ImGui::Checkbox("Enable Effect", (bool*)&settings.toggleEffect);
 
+	std::string curr_worldspace = "N/A";
+	auto tes = RE::TES::GetSingleton();
+	if (tes) {
+		auto worldspace = tes->GetRuntimeData2().worldSpace;
+		if (worldspace) {
+			curr_worldspace = worldspace->GetFormEditorID();
+		}
+	}
+	ImGui::Text(fmt::format("Worldspace has cache: {}", bentNormalMaps.contains(curr_worldspace)).c_str());
+	ImGui::Text("Cache is loaded: %s", (currentBentNormalMap == curr_worldspace) ? "true" : "false");
+
 	if (ImGui::Button("Generate Worldspace Cache"))
 		buildingCache = true;
 	ImGui::Text(fmt::format("Cells Completed: {}", cellCount).c_str());  //tmp
@@ -237,6 +248,7 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 		.InvGridTexSize = 1.0f / float2(sparseGridSize, sparseGridSize),
 		.GridMinWorldCorner = worldspace->minimumCoords,
 		.InvGridSpan = 1.0 / gridSpan,
+		.HasCache = worldHasCache,
 		.toggleLighting = settings.toggleLighting,
 		.toggleTrees = settings.toggleTrees,
 		.toggleGrass = settings.toggleGrass,
@@ -317,7 +329,7 @@ void Skylighting::Prepass()
 	if (buildingCache)
 		return;
 
-	LoadWorldspaceBentNormalMap();
+	worldHasCache = LoadWorldspaceBentNormalMap();
 
 	UpdateDenseProbeGrid();
 
@@ -793,7 +805,7 @@ void Skylighting::GetCachedWorldspaces()
 	}
 }
 
-void Skylighting::LoadWorldspaceBentNormalMap()
+bool Skylighting::LoadWorldspaceBentNormalMap()
 {
 	static auto tes = RE::TES::GetSingleton();
 
@@ -802,20 +814,21 @@ void Skylighting::LoadWorldspaceBentNormalMap()
 		worldspace = worldspace->parentWorld;
 
 	if (!worldspace)
-		return;
+		return false;
 
-	std::string worldspace_name = worldspace->GetFormEditorID();
-	if (currentBentNormalMap == worldspace_name)
-		return;
+	std::string worldspaceID = worldspace->GetFormEditorID();
 
-	if (!bentNormalMaps.contains(worldspace_name)) {
-		logger::info("[Skylighting] No bent normal map for worldspace");
-		return;
+	if (currentBentNormalMap == worldspaceID)
+		return true;
+
+	if (!bentNormalMaps.contains(worldspaceID)) {
+		logger::info("[Skylighting] No cache found for current worldspace");  //tmp otherwise flooding log
+		return false;
 	}
 
 	logger::debug("[Skylighting] Loading bent normal map...");
 
-	auto path = cachePath / (worldspace_name + ".dds");
+	auto path = cachePath / (worldspaceID + ".dds");
 	DirectX::ScratchImage image;
 	DX::ThrowIfFailed(LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image));
 
@@ -826,7 +839,9 @@ void Skylighting::LoadWorldspaceBentNormalMap()
 	bentNormalMap = eastl::make_unique<Texture2D>(reinterpret_cast<ID3D11Texture2D*>(pResource));
 	bentNormalMap->CreateSRV(nullptr);
 
-	currentBentNormalMap = worldspace_name;
+	currentBentNormalMap = worldspaceID;
+
+	return true;
 }
 
 void Skylighting::CreateCachingResources()

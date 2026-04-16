@@ -61,14 +61,15 @@ namespace Skylighting
 
 	sh3 SampleSparseProbeGrid(SharedData::SkylightingSettings settings, Texture2DArray ProbeArrayIn, float3 CoordsWS)
 	{
-		sh3 output;
+		sh3 output = SphericalHarmonics::UnitSH3();
+
+		if (!WorldHasCache)
+			return output;
 
 		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
 		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
 			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
 			output = SphericalHarmonics::UnpackSH3(Probe, ProbeArrayIn);
-		} else {
-			output = SphericalHarmonics::UnitSH3();
 		}
 
 		return output;

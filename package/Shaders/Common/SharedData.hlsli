@@ -137,6 +137,7 @@ namespace SharedData
 		float2 InvGridTexSize;
 		float2 GridMinCornerWS;
 		float2 InvGridSpan;
+		uint WorldHasCache;
 		uint toggleLighting;  //tmp
 		uint toggleTrees;
 		uint toggleGrass;

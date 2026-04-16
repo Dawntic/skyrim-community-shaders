@@ -82,12 +82,13 @@ public:
 		float2 InvGridTexSize;
 		float2 GridMinWorldCorner;
 		float2 InvGridSpan;
+		uint HasCache;
 		uint toggleLighting;
 		uint toggleTrees;
 		uint toggleGrass;
 		uint toggleDeferred;
 		uint toggleEffect;
-		float _pad[3];
+		float _pad[2];
 
 		float MinDiffuseVisibility;
 		float MinSpecularVisibility;
@@ -132,7 +133,8 @@ public:
 	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
 
 	void GetCachedWorldspaces();
-	void LoadWorldspaceBentNormalMap();
+	bool LoadWorldspaceBentNormalMap();
+	bool worldHasCache = false;
 
 	// cache gen resources
 	static constexpr uint depthCubeSize = 128;
