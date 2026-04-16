@@ -198,7 +198,17 @@ struct ankerl::unordered_dense::hash<std::string>
 
 #include "SimpleMath.h"
 
-using float2 = DirectX::SimpleMath::Vector2;
+struct float2 : DirectX::SimpleMath::Vector2
+{
+	using DirectX::SimpleMath::Vector2::Vector2;
+
+	float2(const DirectX::SimpleMath::Vector2& v) : DirectX::SimpleMath::Vector2(v) {}
+	float2(const RE::NiPoint2& v) : DirectX::SimpleMath::Vector2(v.x, v.y) {}
+
+	operator RE::NiPoint2() const { return { x, y }; }
+
+	float2 operator-() const { return float2(-x, -y); }
+};
 
 struct float3 : DirectX::SimpleMath::Vector3
 {
