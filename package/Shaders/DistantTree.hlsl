@@ -267,7 +267,7 @@ PS_OUTPUT main(PS_INPUT input)
 #			if defined(SKYLIGHTING)
 	float skylightingDiffuse = 1.0;
 	if (!SharedData::InInterior) {
-		if (SharedData::sparseSkylightingSettings.toggleTrees) {
+		if (SharedData::skylightingSettings.toggleTrees) {
 			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, Skylighting::SparseProbeArray, input.WorldPosition.xyz);
 			skylightingDiffuse = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;  // Maybe it would be better to use up dir here
 			skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);
@@ -323,7 +323,7 @@ PS_OUTPUT main(PS_INPUT input)
 #			if defined(SKYLIGHTING)
 	float skylightingDiffuse = 1.0;
 	if (!SharedData::InInterior) {
-		if (SharedData::sparseSkylightingSettings.toggleTrees) {
+		if (SharedData::skylightingSettings.toggleTrees) {
 			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, Skylighting::SparseProbeArray, input.WorldPosition.xyz);
 			skylightingDiffuse = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;
 			skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);

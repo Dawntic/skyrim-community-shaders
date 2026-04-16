@@ -2772,7 +2772,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		skylightingFadeOutFactor = Skylighting::getFadeOutFactor(input.WorldPosition.xyz);
 		skylightingDiffuse = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(ambientNormal)) / Math::PI;
 		skylightingDiffuse = lerp(saturate(skylightingDiffuse), 1.0, 1.0 - skylightingFadeOutFactor);
-		if (SharedData::sparseSkylightingSettings.toggleLighting) {  /////////////////////////// MINE
+		if (SharedData::skylightingSettings.toggleLighting) {  /////////////////////////// MINE
 			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, Skylighting::SparseProbeArray, input.WorldPosition.xyz);
 			float sparseAO = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(worldNormal.xyz)) / Math::PI;
 			skylightingDiffuse = min(skylightingDiffuse, saturate(sparseAO));

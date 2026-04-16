@@ -761,7 +761,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		skylightingDiffuse = saturate(skylightingDiffuse);
 		float skylightingFadeOutFactor = Skylighting::getFadeOutFactor(positionMSSkylight);
 		skylightingDiffuse = lerp(1.0, skylightingDiffuse, skylightingFadeOutFactor);
-		if (SharedData::sparseSkylightingSettings.toggle) {
+		if (SharedData::skylightingSettings.toggle) {
 			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, Skylighting::SparseProbeArray, positionMSSkylight);
 			float sparseAO = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;
 			skylightingDiffuse = min(skylightingDiffuse, saturate(sparseAO))
@@ -970,7 +970,7 @@ PS_OUTPUT main(PS_INPUT input)
 		skylightingDiffuse = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(normal)) / Math::PI;
 		float skylightingFadeOutFactor = Skylighting::getFadeOutFactor(positionMSSkylight);
 		skylightingDiffuse = lerp(saturate(skylightingDiffuse), 1.0, 1.0 - skylightingFadeOutFactor);
-		if (SharedData::sparseSkylightingSettings.toggleGrass) {
+		if (SharedData::skylightingSettings.toggleGrass) {
 			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, Skylighting::SparseProbeArray, positionMSSkylight);
 			float sparseAO = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;
 			skylightingDiffuse = min(skylightingDiffuse, saturate(sparseAO));
