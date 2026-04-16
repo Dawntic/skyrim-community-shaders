@@ -30,16 +30,17 @@ SamplerState LinearSampler : register(s0);
 #if defined(SKYLIGHTING)
 #	include "Skylighting/Skylighting.hlsli"
 
-Texture3D<sh2> SkylightingProbeArray : register(t8);
-Texture2DArray<float3> stbn_vec3_2Dx1D_128x128x64 : register(t9);
+Texture3D<sh2> SkylightingDenseProbeArray : register(t8);
+Texture2DArray SkylightingSparseProbeArray : register(t9);
+Texture2DArray<float3> stbn_vec3_2Dx1D_128x128x64 : register(t10);
 
 #endif
 
 #if defined(SSGI)
-Texture2D<float4> SsgiAoTexture : register(t10);
-Texture2D<float4> SsgiYTexture : register(t11);
-Texture2D<float4> SsgiCoCgTexture : register(t12);
-Texture2D<float4> SsgiSpecularTexture : register(t13);
+Texture2D<float4> SsgiAoTexture : register(t11);
+Texture2D<float4> SsgiYTexture : register(t12);
+Texture2D<float4> SsgiCoCgTexture : register(t13);
+Texture2D<float4> SsgiSpecularTexture : register(t14);
 
 void SampleSSGI(uint2 pixCoord, float3 normalWS, out float ao, out float3 il)
 {
@@ -184,11 +185,11 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 		float skylightingSpecular = 0.0;
 		if (!SharedData::InInterior) {
-			sh2 skylighting = Skylighting::sample(SharedData::skylightingSettings, SkylightingProbeArray, stbn_vec3_2Dx1D_128x128x64, dispatchID.xy, positionMS.xyz, R);
+			sh2 skylighting = Skylighting::sample(SharedData::skylightingSettings, SkylightingDenseProbeArray, stbn_vec3_2Dx1D_128x128x64, dispatchID.xy, positionMS.xyz, R);
 			float skylightingSpecular = SphericalHarmonics::FuncProductIntegral(skylighting, specularLobe);
-			if (SharedData::sparseSkylightingSettings.toggleDeferred) {
+			if (SharedData::skylightingSettings.toggleDeferred) {
 				sh3 specularLobeSH3 = SphericalHarmonics::FauxSpecularLobeSH3(normalWS, V, roughness);
-				sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(Skylighting::ProbeArray, SharedData::sparseSkylightingSettings, positionMS.xyz);
+				sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, SkylightingDenseProbeArray, positionMS.xyz);
 				float sparseAO = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, specularLobeSH3);
 				skylightingSpecular = min(skylightingSpecular, sparseAO);
 			}

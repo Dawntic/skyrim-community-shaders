@@ -5,6 +5,7 @@
 
 #include "ShaderCache.h"
 #include "State.h"
+#include "../Deferred.h"
 
 #include "Features/TerrainShadows.h"
 
@@ -58,6 +59,12 @@ public:
 		float MaxZenith = 3.1415926f / 2.f;  // 90 deg
 		float MinDiffuseVisibility = 0.1f;
 		float MinSpecularVisibility = 0.1f;
+
+		uint toggleLighting = true;
+		uint toggleTrees = true;
+		uint toggleGrass = true;
+		uint toggleDeferred = true;
+		uint toggleEffect = true;
 	} settings;
 
 	struct SkylightingCB
@@ -71,6 +78,17 @@ public:
 		uint _pad1;
 		int ValidMargin[4];
 
+		int2 GridTexSize;  
+		float2 InvGridTexSize;
+		float2 GridMinWorldCorner;  
+		float2 InvGridSpan;  
+		uint toggleLighting;
+		uint toggleTrees;
+		uint toggleGrass;
+		uint toggleDeferred;
+		uint toggleEffect;
+		float _pad[3];
+
 		float MinDiffuseVisibility;
 		float MinSpecularVisibility;
 		uint _pad2[2];
@@ -82,7 +100,7 @@ public:
 	winrt::com_ptr<ID3D11SamplerState> comparisonSampler = nullptr;
 
 	Texture2D* texOcclusion = nullptr;
-	Texture3D* texProbeArray = nullptr;
+	Texture3D* texDenseProbeArray = nullptr;
 	Texture3D* texAccumFramesArray = nullptr;
 
 	winrt::com_ptr<ID3D11ComputeShader> probeUpdateCompute = nullptr;

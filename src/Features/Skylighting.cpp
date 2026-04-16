@@ -37,8 +37,15 @@ void Skylighting::DrawSettings()
 
 	ImGui::Separator();
 
+	ImGui::Checkbox("Enable Lighting", (bool*)&settings.toggleLighting); //tmp
+	ImGui::Checkbox("Enable Trees", (bool*)&settings.toggleTrees);
+	ImGui::Checkbox("Enable Grass", (bool*)&settings.toggleGrass);
+	ImGui::Checkbox("Enable Deferred", (bool*)&settings.toggleDeferred);
+	ImGui::Checkbox("Enable Effect", (bool*)&settings.toggleEffect);
+
 	if (ImGui::Button("Generate Worldspace Cache"))
 		buildingCache = true;
+	ImGui::Text(fmt::format("Cells Completed: {}", cellCount).c_str()); //tmp
 
 	ImGui::Text(fmt::format("Cells Completed: {}", cellCount).c_str());
 
@@ -109,9 +116,9 @@ void Skylighting::SetupResources()
 				.WSize = texDesc.Depth }
 		};
 
-		texProbeArray = new Texture3D(texDesc);
-		texProbeArray->CreateSRV(srvDesc);
-		texProbeArray->CreateUAV(uavDesc);
+		texDenseProbeArray = new Texture3D(texDesc);
+		texDenseProbeArray->CreateSRV(srvDesc);
+		texDenseProbeArray->CreateUAV(uavDesc);
 
 		texDesc.Format = srvDesc.Format = uavDesc.Format = DXGI_FORMAT_R8_UINT;
 
@@ -198,6 +205,9 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 	float3 cellIDDiff = prevCellID - cellID;
 	prevCellID = cellID;
 
+	auto worldspace = globals::game::tes->GetRuntimeData2().worldSpace;
+	float2 GridSpan = worldspace->maximumCoords - worldspace->minimumCoords;
+
 	return {
 		.OcclusionViewProj = OcclusionTransform,
 		.OcclusionDir = OcclusionDir,
@@ -207,6 +217,17 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 			((int)cellID.y - probeArrayDims[1] / 2) % probeArrayDims[1],
 			((int)cellID.z - probeArrayDims[2] / 2) % probeArrayDims[2] },
 		.ValidMargin = { (int)cellIDDiff.x, (int)cellIDDiff.y, (int)cellIDDiff.z },
+
+		.GridTexSize = int2(sparseGridSize, sparseGridSize),
+		.InvGridTexSize = 1.0f / float2(sparseGridSize, sparseGridSize),
+		.GridMinWorldCorner = worldspace->minimumCoords,	
+		.InvGridSpan = 1.0 / float2(std::abs(GridSpan.x), std::abs(GridSpan.y)),
+		.toggleLighting = settings.toggleLighting, 
+		.toggleTrees = settings.toggleTrees,
+		.toggleGrass = settings.toggleGrass, 
+		.toggleDeferred = settings.toggleDeferred,
+		.toggleEffect = settings.toggleEffect,
+
 		.MinDiffuseVisibility = settings.MinDiffuseVisibility,
 		.MinSpecularVisibility = settings.MinSpecularVisibility
 	};
@@ -870,6 +891,7 @@ void Skylighting::GenerateWorldspaceCache()
 	static auto worldPositionSet = RE::NiPoint3();
 
 	if (tes && worldspace && cell && cell->IsExteriorCell()) {
+	if (tes && worldspace && cell) {
 		static auto prevWorldspaceID = "0";
 		auto worldspaceID = worldspace->GetFormEditorID();
 		static int bufferFrames = 30;
