@@ -169,8 +169,8 @@ void Skylighting::CompileComputeShaders()
 
 	std::vector<ShaderCompileInfo>
 		shaderInfos = {
-			{ &probeUpdateCompute, "UpdateProbesCS.hlsl", { "DENSE_PROBE_GRID" } },
-			{ &updateSparseGridCS, "UpdateProbesCS.hlsl", { "SPRASE_PROBE_GRID" } },
+			{ &probeUpdateCompute, "UpdateProbesCS.hlsl", { { "DENSE_PROBE_GRID", "" } } },
+			{ &updateSparseGridCS, "UpdateProbesCS.hlsl", { { "SPRASE_PROBE_GRID", "" } } },
 		};
 
 	for (auto& info : shaderInfos) {
