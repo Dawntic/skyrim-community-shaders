@@ -102,7 +102,6 @@ namespace ShadowSampling
 	}
 
 	void ExtractLighting(float3 inputColor, out float3 dirColor, out float3 ambientColor)
-
 	{
 		float3 ambientColorAmb = max(0, SharedData::GetAmbient(float3(0, 0, 1)));
 
