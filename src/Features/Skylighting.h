@@ -135,7 +135,7 @@ public:
 	void LoadWorldspaceBentNormalMap();
 
 	// cache gen resources
-	static constexpr uint DEPTH_CUBE_SIZE = 128;
+	static constexpr uint depthCubeSize = 128;
 
 	eastl::unique_ptr<Texture2D> depthCubemap = nullptr;
 	eastl::unique_ptr<Texture2D> bentNormalCacheTex = nullptr;

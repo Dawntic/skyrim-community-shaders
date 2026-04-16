@@ -126,6 +126,16 @@ void Skylighting::SetupResources()
 	}
 
 	{
+		CD3D11_TEXTURE2D_DESC texDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, sparseGridSize, sparseGridSize, 3, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2DARRAY, texDesc.Format, 0, 1, 0, 3);
+		CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2DARRAY, texDesc.Format, 0, 0, 3);
+
+		texSparseProbeArray = eastl::make_unique<Texture2D>(texDesc);
+		texSparseProbeArray->CreateSRV(srvDesc);
+		texSparseProbeArray->CreateUAV(uavDesc);
+	}
+
+	{
 		D3D11_SAMPLER_DESC samplerDesc = {};
 		samplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;  // Use comparison filtering
 		samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;               // Address mode (Clamp for shadow maps)
@@ -821,7 +831,7 @@ void Skylighting::LoadWorldspaceBentNormalMap()
 
 void Skylighting::CreateCachingResources()
 {
-	CD3D11_TEXTURE2D_DESC cubeDesc(DXGI_FORMAT_R32_TYPELESS, DEPTH_CUBE_SIZE, DEPTH_CUBE_SIZE, 6, 1, D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_TEXTURE2D_DESC cubeDesc(DXGI_FORMAT_R32_TYPELESS, depthCubeSize, depthCubeSize, 6, 1, D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE);
 	CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2DARRAY, DXGI_FORMAT_R32_FLOAT, 0, 1, 0, 6);
 	CD3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc(D3D11_DSV_DIMENSION_TEXTURE2DARRAY, DXGI_FORMAT_D32_FLOAT, 0, 0, 1);
 	depthCubemap = eastl::make_unique<Texture2D>(cubeDesc);
@@ -831,7 +841,7 @@ void Skylighting::CreateCachingResources()
 		globals::d3d::device->CreateDepthStencilView(depthCubemap->resource.get(), &dsvDesc, &depthCubemapDSVs[i]);
 	}
 
-	CD3D11_TEXTURE2D_DESC stagingDepthDesc(DXGI_FORMAT_R32_FLOAT, DEPTH_CUBE_SIZE, DEPTH_CUBE_SIZE, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
+	CD3D11_TEXTURE2D_DESC stagingDepthDesc(DXGI_FORMAT_R32_FLOAT, depthCubeSize, depthCubeSize, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
 	stagingDepthTex = eastl::make_unique<Texture2D>(stagingDepthDesc);
 
 	cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
@@ -986,7 +996,7 @@ void Skylighting::GenerateWorldspaceCache()
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		context->Map(stagingDepthTex->resource.get(), 0, D3D11_MAP_READ, 0, &mapped);
 
-		auto center = uint((float)DEPTH_CUBE_SIZE * 0.5f);
+		auto center = uint((float)depthCubeSize * 0.5f);
 		auto row1 = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(mapped.pData) + center * mapped.RowPitch)[center];
 		auto row2 = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(mapped.pData) + center * mapped.RowPitch)[center - 1];
 		auto row3 = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(mapped.pData) + (center - 1) * mapped.RowPitch)[center];
@@ -1073,7 +1083,7 @@ void Skylighting::GenerateBentNormal(int2 currentCellXY, int2 totalCells)
 	CacheGenCBStruct data;
 	data.BentNormalWritePx = currentCellXY;
 	data.BentNormalTexSize = totalCells;
-	data.CubemapParams = float4(DEPTH_CUBE_SIZE, 1.0f / (float)DEPTH_CUBE_SIZE, DEPTH_CUBE_SIZE * DEPTH_CUBE_SIZE, DEPTH_CUBE_SIZE * DEPTH_CUBE_SIZE * 5);
+	data.CubemapParams = float4(depthCubeSize, 1.0f / (float)depthCubeSize, depthCubeSize * depthCubeSize, depthCubeSize * depthCubeSize * 5);
 	data.CubeMapWriteFace = cubemapSide;
 	cacheGenBuffer->Update(data);
 
@@ -1119,8 +1129,8 @@ void Skylighting::SetViewport::thunk(RE::BSGraphics::Renderer* renderer, uint32_
 	auto& skylighting = globals::features::skylighting;
 	if (skylighting.inOcclusion && skylighting.buildingCache) {
 		D3D11_VIEWPORT port = {};
-		port.Width = DEPTH_CUBE_SIZE;
-		port.Height = DEPTH_CUBE_SIZE;
+		port.Width = depthCubeSize;
+		port.Height = depthCubeSize;
 		port.MaxDepth = 1.0f;
 
 		globals::game::shadowState->GetRuntimeData().viewPort = port;
