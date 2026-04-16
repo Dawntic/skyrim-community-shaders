@@ -189,7 +189,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 			float skylightingSpecular = SphericalHarmonics::FuncProductIntegral(skylighting, specularLobe);
 			if (SharedData::skylightingSettings.toggleDeferred) {
 				sh3 specularLobeSH3 = SphericalHarmonics::FauxSpecularLobeSH3(normalWS, V, roughness);
-				sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, SkylightingDenseProbeArray, positionMS.xyz);
+				sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, SkylightingSparseProbeArray, positionMS.xyz);
 				float sparseAO = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, specularLobeSH3);
 				skylightingSpecular = min(skylightingSpecular, sparseAO);
 			}

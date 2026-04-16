@@ -63,7 +63,7 @@ namespace Skylighting
 	{
 		sh3 output = SphericalHarmonics::UnitSH3();
 
-		if (!WorldHasCache)
+		if (!settings.WorldHasCache)
 			return output;
 
 		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
