@@ -37,7 +37,7 @@ void Skylighting::DrawSettings()
 
 	ImGui::Separator();
 
-	ImGui::Checkbox("Enable Lighting", (bool*)&settings.toggleLighting); //tmp
+	ImGui::Checkbox("Enable Lighting", (bool*)&settings.toggleLighting);  //tmp
 	ImGui::Checkbox("Enable Trees", (bool*)&settings.toggleTrees);
 	ImGui::Checkbox("Enable Grass", (bool*)&settings.toggleGrass);
 	ImGui::Checkbox("Enable Deferred", (bool*)&settings.toggleDeferred);
@@ -45,9 +45,7 @@ void Skylighting::DrawSettings()
 
 	if (ImGui::Button("Generate Worldspace Cache"))
 		buildingCache = true;
-	ImGui::Text(fmt::format("Cells Completed: {}", cellCount).c_str()); //tmp
-
-	ImGui::Text(fmt::format("Cells Completed: {}", cellCount).c_str());
+	ImGui::Text(fmt::format("Cells Completed: {}", cellCount).c_str());  //tmp
 
 	if (ImGui::Button("Rebuild Skylighting"))
 		ResetSkylighting();
@@ -171,7 +169,8 @@ void Skylighting::CompileComputeShaders()
 
 	std::vector<ShaderCompileInfo>
 		shaderInfos = {
-			{ &probeUpdateCompute, "UpdateProbesCS.hlsl", {} },
+			{ &probeUpdateCompute, "UpdateProbesCS.hlsl", { "DENSE_PROBE_GRID" } },
+			{ &updateSparseGridCS, "UpdateProbesCS.hlsl", { "SPRASE_PROBE_GRID" } },
 		};
 
 	for (auto& info : shaderInfos) {
@@ -220,11 +219,11 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 
 		.GridTexSize = int2(sparseGridSize, sparseGridSize),
 		.InvGridTexSize = 1.0f / float2(sparseGridSize, sparseGridSize),
-		.GridMinWorldCorner = worldspace->minimumCoords,	
+		.GridMinWorldCorner = worldspace->minimumCoords,
 		.InvGridSpan = 1.0 / float2(std::abs(GridSpan.x), std::abs(GridSpan.y)),
-		.toggleLighting = settings.toggleLighting, 
+		.toggleLighting = settings.toggleLighting,
 		.toggleTrees = settings.toggleTrees,
-		.toggleGrass = settings.toggleGrass, 
+		.toggleGrass = settings.toggleGrass,
 		.toggleDeferred = settings.toggleDeferred,
 		.toggleEffect = settings.toggleEffect,
 
@@ -237,9 +236,11 @@ void Skylighting::UpdateDenseProbeGrid()
 {
 	auto context = globals::d3d::context;
 
+	TracyD3D11Zone(globals::state->tracyCtx, "Skylighting - Update Dense Probes");
+
 	{
 		std::array<ID3D11ShaderResourceView*, 1> srvs = { texOcclusion->srv.get() };
-		std::array<ID3D11UnorderedAccessView*, 2> uavs = { texProbeArray->uav.get(), texAccumFramesArray->uav.get() };
+		std::array<ID3D11UnorderedAccessView*, 2> uavs = { texDenseProbeArray->uav.get(), texAccumFramesArray->uav.get() };
 		std::array<ID3D11SamplerState*, 1> samplers = { comparisonSampler.get() };
 
 		// Update probe array
@@ -265,6 +266,25 @@ void Skylighting::UpdateDenseProbeGrid()
 	}
 }
 
+void Skylighting::UpdateSparseProbeGrid()
+{
+	auto context = globals::d3d::context;
+
+	TracyD3D11Zone(state->tracyCtx, "Skylighting - Update Sparse Probes");
+
+	context->CSSetShader(updateSparseGridCS.get(), nullptr, 0);
+	context->CSSetUnorderedAccessViews(0, 1, texSparseProbeArray->uav.address(), nullptr);
+
+	context->CSSetSamplers(0, 1, &globals::deferred->linearSampler);
+	context->CSSetShaderResources(0, 1, bentNormalMap->srv.address());
+
+	auto dispatch = sparseGridSize / 8;
+	context->Dispatch(dispatch, dispatch, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[2] = { nullptr, nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+}
+
 void Skylighting::Prepass()
 {
 	if (globals::state->isMapMenuOpen)
@@ -283,15 +303,13 @@ void Skylighting::Prepass()
 
 	LoadWorldspaceBentNormalMap();
 
-	TracyD3D11Zone(globals::state->tracyCtx, "Skylighting - Update Probes");
-
 	UpdateDenseProbeGrid();
 
-	// Set PS shader resources
-	{
-		ID3D11ShaderResourceView* srvs[2] = { texProbeArray->srv.get(), stbn_vec3_2Dx1D_128x128x64.get() };
-		globals::d3d::context->PSSetShaderResources(50, 2, srvs);
-	}
+	UpdateSparseProbeGrid();
+
+	auto context = globals::d3d::context;
+	ID3D11ShaderResourceView* srvs[3] = { texDenseProbeArray->srv.get(), stbn_vec3_2Dx1D_128x128x64.get(), texSparseProbeArray->srv.get() };
+	context->PSSetShaderResources(50, 3, srvs);
 }
 
 void Skylighting::PostPostLoad()
@@ -890,7 +908,11 @@ void Skylighting::GenerateWorldspaceCache()
 	static auto targetCellID = int2();
 	static auto worldPositionSet = RE::NiPoint3();
 
-	if (tes && worldspace && cell && cell->IsExteriorCell()) {
+	if (!cell->IsExteriorCell()) {
+		logger::error("No exterior worldspace found");
+		return;
+	}
+
 	if (tes && worldspace && cell) {
 		static auto prevWorldspaceID = "0";
 		auto worldspaceID = worldspace->GetFormEditorID();

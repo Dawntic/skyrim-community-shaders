@@ -3,9 +3,9 @@
 #include <DDSTextureLoader.h>
 #include <DirectXTex.h>
 
+#include "../Deferred.h"
 #include "ShaderCache.h"
 #include "State.h"
-#include "../Deferred.h"
 
 #include "Features/TerrainShadows.h"
 
@@ -78,10 +78,10 @@ public:
 		uint _pad1;
 		int ValidMargin[4];
 
-		int2 GridTexSize;  
+		int2 GridTexSize;
 		float2 InvGridTexSize;
-		float2 GridMinWorldCorner;  
-		float2 InvGridSpan;  
+		float2 GridMinWorldCorner;
+		float2 InvGridSpan;
 		uint toggleLighting;
 		uint toggleTrees;
 		uint toggleGrass;
@@ -105,6 +105,13 @@ public:
 
 	winrt::com_ptr<ID3D11ComputeShader> probeUpdateCompute = nullptr;
 	winrt::com_ptr<ID3D11ShaderResourceView> stbn_vec3_2Dx1D_128x128x64;
+
+	// sparse grid
+	static constexpr uint sparseGridSize = 128;
+
+	eastl::unique_ptr<Texture2D> texSparseProbeArray = nullptr;
+
+	winrt::com_ptr<ID3D11ComputeShader> updateSparseGridCS = nullptr;
 
 	// misc parameters
 	uint probeArrayDims[3] = { 256, 256, 128 };
