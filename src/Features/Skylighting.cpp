@@ -808,9 +808,9 @@ void Skylighting::GetCachedWorldspaces()
 		auto& path = entry.path();
 		if (path.extension() == ".dds") {
 			auto name = path.stem().string();
-			logger::debug("Found cache: {}", name);
+			logger::debug("[Skylighting] Found cache: {}", name);
 			if (bentNormalMaps.contains(name))
-				logger::warn("{} has multiple bent normal maps", name);
+				logger::warn("[Skylighting] Error: {} has multiple bent normal maps", name);
 			bentNormalMaps.insert(name);
 		}
 	}
@@ -837,7 +837,7 @@ bool Skylighting::LoadWorldspaceBentNormalMap()
 		return false;
 	}
 
-	logger::debug("[Skylighting] Loading bent normal map...");
+	logger::info("[Skylighting] Loading bent normal map...");
 
 	auto path = cachePath / (worldspaceID + ".dds");
 	DirectX::ScratchImage image;
@@ -940,6 +940,8 @@ void Skylighting::SetInitalState(RE::NiPoint3& initalPos)
 void Skylighting::GenerateWorldspaceCache()
 {
 	static constexpr float CELL = 4096.0f;
+	static constexpr float SAMPLES_PER_AXIS = 2;
+	static const float CELL_DIV = CELL / SAMPLES_PER_AXIS;
 
 	auto tes = RE::TES::GetSingleton();
 	auto player = RE::PlayerCharacter::GetSingleton();
@@ -961,8 +963,8 @@ void Skylighting::GenerateWorldspaceCache()
 		static int bufferFrames = 30;
 
 		if (worldspaceID != prevWorldspaceID) {
-			totalCells = int2((int)std::ceil((std::abs(worldspace->minimumCoords.x) + worldspace->maximumCoords.x) / CELL),
-				(int)std::ceil((std::abs(worldspace->minimumCoords.y) + worldspace->maximumCoords.y) / CELL));
+			totalCells = int2((int)std::ceil((std::abs(worldspace->minimumCoords.x) + worldspace->maximumCoords.x) / CELL_DIV),
+				(int)std::ceil((std::abs(worldspace->minimumCoords.y) + worldspace->maximumCoords.y) / CELL_DIV));
 
 			targetCellID = int2(0, totalCells.y);
 
@@ -1003,14 +1005,14 @@ void Skylighting::GenerateWorldspaceCache()
 			return;
 		}
 
-		float2 targetCellOffset = float2((float)targetCellID.x * CELL, (float)targetCellID.y * CELL);
-		float2 cellWorldCorner = float2(worldspace->minimumCoords.x, worldspace->minimumCoords.y) + targetCellOffset;
-		float2 cellWorldCenter = cellWorldCorner + float2(CELL * 0.5f, CELL * 0.5f);
+		float2 WorldCorner = float2(worldspace->minimumCoords.x, worldspace->minimumCoords.y);
+		float2 targetCellOffset = float2(((float)targetCellID.x + 0.5f) * CELL_DIV, ((float)targetCellID.y + 0.5f) * CELL_DIV);
+		float2 samplePosition = WorldCorner + targetCellOffset;
 
-		float heightMapHeight = SampleHeightMap(float2(cellWorldCenter.x, cellWorldCenter.y));
+		float heightMapHeight = SampleHeightMap(float2(samplePosition.x, samplePosition.y));
 		heightMapHeight += CELL;
 
-		sampleCoordsWS = float3(cellWorldCenter.x, cellWorldCenter.y, heightMapHeight);  // needed for terrain height render
+		sampleCoordsWS = float3(samplePosition.x, samplePosition.y, heightMapHeight);  // needed for terrain height render
 
 		// Get accurate terrain height
 		cubemapSide = 5;
