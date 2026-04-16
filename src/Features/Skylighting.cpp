@@ -209,7 +209,7 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 	if (globals::state->isMapMenuOpen)
 		return Skylighting::SkylightingCB{};
 
-	auto tes = globals::game::tes;
+	auto tes = RE::TES::GetSingleton();
 	auto worldspace = tes ? tes->GetRuntimeData2().worldSpace : nullptr;
 
 	if (!worldspace)
@@ -264,39 +264,47 @@ void Skylighting::UpdateDenseProbeGrid()
 {
 	auto context = globals::d3d::context;
 
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Skylighting - Update Dense Probes");
+
 	TracyD3D11Zone(globals::state->tracyCtx, "Skylighting - Update Dense Probes");
 
+	std::array<ID3D11ShaderResourceView*, 1> srvs = { texOcclusion->srv.get() };
+	std::array<ID3D11UnorderedAccessView*, 2> uavs = { texDenseProbeArray->uav.get(), texAccumFramesArray->uav.get() };
+	std::array<ID3D11SamplerState*, 1> samplers = { comparisonSampler.get() };
+
+	// Update probe array
 	{
-		std::array<ID3D11ShaderResourceView*, 1> srvs = { texOcclusion->srv.get() };
-		std::array<ID3D11UnorderedAccessView*, 2> uavs = { texDenseProbeArray->uav.get(), texAccumFramesArray->uav.get() };
-		std::array<ID3D11SamplerState*, 1> samplers = { comparisonSampler.get() };
-
-		// Update probe array
-		{
-			context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
-			context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-			context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-			context->CSSetShader(probeUpdateCompute.get(), nullptr, 0);
-			context->Dispatch((probeArrayDims[0] + 7u) >> 3, (probeArrayDims[1] + 7u) >> 3, probeArrayDims[2]);
-		}
-
-		// Reset
-		{
-			srvs.fill(nullptr);
-			uavs.fill(nullptr);
-			samplers.fill(nullptr);
-
-			context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
-			context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-			context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-			context->CSSetShader(nullptr, nullptr, 0);
-		}
+		context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
+		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+		context->CSSetShader(probeUpdateCompute.get(), nullptr, 0);
+		context->Dispatch((probeArrayDims[0] + 7u) >> 3, (probeArrayDims[1] + 7u) >> 3, probeArrayDims[2]);
 	}
+
+	// Reset
+	/*
+	{
+		srvs.fill(nullptr);
+		uavs.fill(nullptr);
+		samplers.fill(nullptr);
+
+		context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
+		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+		context->CSSetShader(nullptr, nullptr, 0);
+	}
+	*/
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 }
 
 void Skylighting::UpdateSparseProbeGrid()
 {
 	auto context = globals::d3d::context;
+
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Skylighting - Update Sparse Probes");
 
 	TracyD3D11Zone(state->tracyCtx, "Skylighting - Update Sparse Probes");
 
@@ -311,6 +319,9 @@ void Skylighting::UpdateSparseProbeGrid()
 
 	ID3D11UnorderedAccessView* nullUAVs[2] = { nullptr, nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
 }
 
 void Skylighting::Prepass()
