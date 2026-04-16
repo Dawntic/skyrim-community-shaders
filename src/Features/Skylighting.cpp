@@ -188,6 +188,12 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 	if (globals::state->isMapMenuOpen)
 		return Skylighting::SkylightingCB{};
 
+	auto tes = globals::game::tes;
+	auto worldspace = tes ? tes->GetRuntimeData2().worldSpace : nullptr;
+
+	if (!worldspace)
+		return Skylighting::SkylightingCB{};
+
 	static float3 prevCellID = { 0, 0, 0 };
 
 	auto eyePosNI = Util::GetEyePosition(0);
@@ -204,8 +210,8 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 	float3 cellIDDiff = prevCellID - cellID;
 	prevCellID = cellID;
 
-	auto worldspace = globals::game::tes->GetRuntimeData2().worldSpace;
-	float2 GridSpan = worldspace->maximumCoords - worldspace->minimumCoords;
+	float2 gridSpan = worldspace->maximumCoords - worldspace->minimumCoords;
+	gridSpan = float2(std::abs(gridSpan.x), std::abs(gridSpan.y));
 
 	return {
 		.OcclusionViewProj = OcclusionTransform,
@@ -220,7 +226,7 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 		.GridTexSize = int2(sparseGridSize, sparseGridSize),
 		.InvGridTexSize = 1.0f / float2(sparseGridSize, sparseGridSize),
 		.GridMinWorldCorner = worldspace->minimumCoords,
-		.InvGridSpan = 1.0 / float2(std::abs(GridSpan.x), std::abs(GridSpan.y)),
+		.InvGridSpan = 1.0 / gridSpan,
 		.toggleLighting = settings.toggleLighting,
 		.toggleTrees = settings.toggleTrees,
 		.toggleGrass = settings.toggleGrass,
