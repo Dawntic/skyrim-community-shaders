@@ -153,8 +153,8 @@ public:
 		int2 BentNormalWritePx;
 		int2 BentNormalTexSize;
 		float4 CubemapParams;  // dimension, 1.0 / dimension,  dimension^2, dimension^2 * valid_cube_sides
-		int CubeMapWriteFace;
-		float _pad[3];
+		int2 BentNormalWritePx;
+		float _pad[2];
 	};
 	ConstantBuffer* cacheGenBuffer = nullptr;
 
@@ -170,7 +170,7 @@ public:
 	bool CreateUniqueCachingResources(int2 totalCells);
 	void GenerateWorldspaceCache();
 	void GenerateVisibilityCubemap();
-	void GenerateBentNormal(int2 currentCellID, int2 totalCells);
+	void GenerateBentNormal(int2 currentCellID);
 	float SampleHeightMap(float2 coords);
 	void FinishCaching(std::string worldName);
 

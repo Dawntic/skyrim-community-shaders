@@ -1,10 +1,8 @@
 
-cbuffer ShadowBuffer : register(b0)
+cbuffer CacheGenBuffer : register(b0)
 {
-	int2 BentNormalWriteCoords;
-	int2 BentNormalTexSize;
 	float4 CubemapParams;  // Dimension, 1.0 / Dimension,  Dimension^2, Dimension^2 * Sides Used
-	int CubeMapWriteFace;
+	int2 BentNormalWriteCoords;
 };
 
 #define GROUP_SIZE 256

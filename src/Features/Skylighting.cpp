@@ -699,6 +699,8 @@ void Skylighting::RenderOcclusion()
 					PrecipitationShaderDirectionF.Normalize();
 
 					PrecipitationShaderForward = { PrecipitationShaderDirectionF.x, PrecipitationShaderDirectionF.y, PrecipitationShaderDirectionF.z };
+
+					precip->occlusionData.camera->local.translate = RE::PlayerCamera::GetSingleton()->cameraRoot->world.translate;
 				} else {
 					static std::array<std::pair<RE::NiPoint3, RE::NiPoint3>, 6> cubemapDirs = { {
 						{ { 1, 0, 0 }, { 0, 1, 0 } },
@@ -940,7 +942,7 @@ void Skylighting::SetInitalState(RE::NiPoint3& initalPos)
 void Skylighting::GenerateWorldspaceCache()
 {
 	static constexpr float CELL = 4096.0f;
-	static constexpr float SAMPLES_PER_AXIS = 2;
+	static constexpr float SAMPLES_PER_AXIS = 1;
 	static const float CELL_DIV = CELL / SAMPLES_PER_AXIS;
 
 	auto tes = RE::TES::GetSingleton();
@@ -1046,7 +1048,7 @@ void Skylighting::GenerateWorldspaceCache()
 
 		GenerateVisibilityCubemap();
 
-		GenerateBentNormal(targetCellID, totalCells);
+		GenerateBentNormal(targetCellID);
 
 		++cellCount;
 
@@ -1063,11 +1065,11 @@ void Skylighting::GenerateWorldspaceCache()
 	}
 }
 
-float Skylighting::SampleHeightMap(float2 coords)
+float Skylighting::SampleHeightMap(float2 coordsIN)
 {
 	auto& cachedHeightmap = globals::features::terrainShadows.cachedHeightmap;
-	float u = (coords.x - cachedHeightmap->pos0.x) / (cachedHeightmap->pos1.x - cachedHeightmap->pos0.x);
-	float v = (coords.y - cachedHeightmap->pos0.y) / (cachedHeightmap->pos1.y - cachedHeightmap->pos0.y);
+	float u = (coordsIN.x - cachedHeightmap->pos0.x) / (cachedHeightmap->pos1.x - cachedHeightmap->pos0.x);
+	float v = (coordsIN.y - cachedHeightmap->pos0.y) / (cachedHeightmap->pos1.y - cachedHeightmap->pos0.y);
 	auto& img = *stagingHeightMapTex.GetImages();
 	int ix = std::clamp((int)(u * img.width), 0, (int)img.width - 1);
 	int iy = std::clamp((int)(v * img.height), 0, (int)img.height - 1);
@@ -1109,6 +1111,7 @@ void Skylighting::GenerateBentNormal(int2 currentCellXY, int2 totalCells)
 	context->CSSetShaderResources(0, 1, depthCubemap->srv.address());
 
 	CacheGenCBStruct data;
+	data.CubemapParams = float4(depthCubeSize, 1.0f / (float)depthCubeSize, depthCubeSize * depthCubeSize, depthCubeSize * depthCubeSize * 5);
 	data.BentNormalWritePx = currentCellXY;
 	data.BentNormalTexSize = totalCells;
 	data.CubemapParams = float4(depthCubeSize, 1.0f / (float)depthCubeSize, depthCubeSize * depthCubeSize, depthCubeSize * depthCubeSize * 5);
