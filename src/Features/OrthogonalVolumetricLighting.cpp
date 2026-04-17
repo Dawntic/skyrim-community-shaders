@@ -26,9 +26,9 @@ RE::BSShaderProperty::RenderPassArray* OrthogonalVolumetricLighting::Hooks::GetR
 
 void OrthogonalVolumetricLighting::disablePasses()
 {
-	if (disablePipelineUI && disablePipeline) {
-		globals::d3d::context->PSSetShader(nullptr, 0, 0);
-	}
+	//if (disablePipelineUI && disablePipeline) {
+	//	globals::d3d::context->PSSetShader(nullptr, 0, 0);
+	//	}
 }
 
 void OrthogonalVolumetricLighting::SetupResources()
@@ -349,11 +349,15 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 		return;
 
 	auto worldSpace = tes->GetRuntimeData2().worldSpace;  //tmp
-	GRID_BOUND_TL = int2((int)worldSpace->minimumCoords.x, (int)worldSpace->minimumCoords.y);
-	GRID_BOUND_BR = int2((int)worldSpace->maximumCoords.x, (int)worldSpace->maximumCoords.y);
+	GRID_BOUND_TL = int2((int)worldSpace->minimumCoords.x, (int)worldSpace->maximumCoords.y);
+	GRID_BOUND_BR = int2((int)worldSpace->maximumCoords.x, (int)(int)worldSpace->minimumCoords.y);
 
 	static bool updateLocation = true;
 	auto& [START, END, STEP, TILE_SIZE, TILE_TOTAL, local, tile, wave] = cData;
+
+	START = GRID_BOUND_TL;
+	END = GRID_BOUND_BR;
+	STEP = (END - START) / BENT_NORMAL_SIZE;
 
 	// Manual override: jump to specific world coords
 	if (manualOverride) {
@@ -433,7 +437,8 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 			return;
 		}
 		if (UpdateCubemapCapture()) {
-			advancePixel();
+			if (!lock)
+				advancePixel();
 			updateLocation = true;
 		}
 	}
@@ -443,8 +448,9 @@ bool OrthogonalVolumetricLighting::UpdateCubemapCapture()
 {
 	logger::trace("Updating cubemap");
 
-	static int currentFace = -1;
+	static int currentFace = 0;
 	static RE::NiPoint3 valueSet;
+	static bool firstCall = true;
 
 	static const float pitchYaw[6][2] = {
 		{ 0.0f, 3.14159265f / 2.0f },   // +X (east)
@@ -459,7 +465,7 @@ bool OrthogonalVolumetricLighting::UpdateCubemapCapture()
 	auto camera = RE::PlayerCamera::GetSingleton();
 	camera->GetRuntimeData2().idleTimer = 0;
 
-	if (currentFace >= 0 && currentFace < 6) {  // Needs to happen before clearing last frames depth buffer
+	if (!firstCall && currentFace < 6) {  // Needs to happen before clearing last frames depth buffer
 		auto& rot = camera->cameraRoot->world.rotate;
 		RE::NiPoint3 currentForward = { std::round(rot.entry[0][1]), std::round(rot.entry[1][1]), std::round(rot.entry[2][1]) };  // Direction we just rendered for
 		if (currentForward != valueSet) {
@@ -471,18 +477,27 @@ bool OrthogonalVolumetricLighting::UpdateCubemapCapture()
 			return false;  // Let function run again
 		}
 
-		if (!IsPositionValid()) {
+		bool valid = IsPositionValid();
+
+		if (!valid) {
 			RE::PlayerCharacter::GetSingleton()->SetPosition(RE::NiPoint3(coordsWS.x, coordsWS.y, coordsWS.z), false);
 			return false;  // Early out so position updates
 		}
-		CopyDepthBufferToCubemap(currentFace);
+
+		auto testD = currentFace - 1 < 0 ? 5 : currentFace - 1;
+		CopyDepthBufferToCubemap(testD);
+
+		if (valid)
+			currentFace++;
 	}
-	currentFace++;
+
+	firstCall = false;
 
 	if (currentFace >= 6) {
 		logger::trace("Finished cubemap and rendered bent normal");
 		GenerateBentNormalMap();
-		currentFace = -1;
+		currentFace = 0;
+		firstCall = true;
 		return true;
 	}
 
@@ -734,6 +749,7 @@ void OrthogonalVolumetricLighting::DrawSettings()
 		manualStartWS.y = pos.y;
 	}
 	ImGui::Checkbox("Override", (bool*)&manualOverride);
+	ImGui::Checkbox("Lock override pos", &lock);
 	ImGui::Checkbox("Disable Rendering Pipeline", (bool*)&disablePipelineUI);
 	ImGui::Checkbox("Iterate World", (bool*)&runIterateWorld);
 
@@ -747,13 +763,13 @@ void OrthogonalVolumetricLighting::DrawSettings()
 	//}
 	//ImGui::Text(fmt::format("Valid Z: {}", validPos.z).c_str());
 
-	float2 posA = float2(0, 0);
-	ImGui::SliderFloat("X", &posA.x, -230000, 230000);
-	ImGui::SliderFloat("Y", &posA.y, -230000, 230000);
-	ImGui::Button("Set camera pos");
-	if (ImGui::IsItemClicked()) {
-		RE::Main::WorldRootCamera()->world.translate = RE::NiPoint3(posA.x, posA.x, 10000.0f);
-	}
+	//float2 posA = float2(0, 0);
+	//ImGui::SliderFloat("X", &posA.x, -230000, 230000);
+	//ImGui::SliderFloat("Y", &posA.y, -230000, 230000);
+	//ImGui::Button("Set camera pos");
+	//if (ImGui::IsItemClicked()) {
+	//	RE::Main::WorldRootCamera()->world.translate = RE::NiPoint3(posA.x, posA.x, 10000.0f);
+	//}
 
 	if (ImGui::TreeNode("Buffer Viewer")) {
 		static float debugRescale = 1.0f;

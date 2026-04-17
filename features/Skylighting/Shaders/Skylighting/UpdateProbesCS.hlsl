@@ -49,7 +49,7 @@ SamplerComparisonState comparisonSampler : register(s0);
 }
 #endif
 
-#ifdef SPRASE_PROBE_GRID
+#ifdef SPARSE_PROBE_GRID
 
 SamplerState LinearSampler : register(s0);
 Texture2D BentNormalTex : register(t0);
@@ -57,6 +57,9 @@ RWTexture2DArray<float4> ProbeArray : register(u0);
 
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
+
+	if (ThreadID.x >= settings.GridTexSize.x || ThreadID.y >= settings.GridTexSize.y)
+		return;
 
 	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvGridTexSize.xy;
 

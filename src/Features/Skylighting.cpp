@@ -141,7 +141,7 @@ void Skylighting::SetupResources()
 	}
 
 	{
-		CD3D11_TEXTURE2D_DESC texDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, sparseGridSize, sparseGridSize, 3, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+		CD3D11_TEXTURE2D_DESC texDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, sparseGridSize.x, sparseGridSize.y, 3, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
 		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2DARRAY, texDesc.Format, 0, 1, 0, 3);
 		CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2DARRAY, texDesc.Format, 0, 0, 3);
 
@@ -195,7 +195,7 @@ void Skylighting::CompileComputeShaders()
 	std::vector<ShaderCompileInfo>
 		shaderInfos = {
 			{ &probeUpdateCompute, "UpdateProbesCS.hlsl", { { "DENSE_PROBE_GRID", "" } } },
-			{ &updateSparseGridCS, "UpdateProbesCS.hlsl", { { "SPRASE_PROBE_GRID", "" } } },
+			{ &updateSparseGridCS, "UpdateProbesCS.hlsl", { { "SPARSE_PROBE_GRID", "" } } },
 		};
 
 	for (auto& info : shaderInfos) {
@@ -248,8 +248,8 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 			((int)cellID.z - probeArrayDims[2] / 2) % probeArrayDims[2] },
 		.ValidMargin = { (int)cellIDDiff.x, (int)cellIDDiff.y, (int)cellIDDiff.z },
 
-		.GridTexSize = int2(sparseGridSize, sparseGridSize),
-		.InvGridTexSize = 1.0f / float2(sparseGridSize, sparseGridSize),
+		.GridTexSize = sparseGridSize,
+		.InvGridTexSize = 1.0f / float2((float)sparseGridSize.x, (float)sparseGridSize.y),
 		.GridMinWorldCorner = worldspace->minimumCoords,
 		.InvGridSpan = 1.0 / gridSpan,
 		.HasCache = worldHasCache,
@@ -305,8 +305,7 @@ void Skylighting::UpdateSparseProbeGrid()
 	context->CSSetSamplers(0, 1, &globals::deferred->linearSampler);
 	context->CSSetShaderResources(0, 1, bentNormalMap->srv.address());
 
-	auto dispatch = sparseGridSize / 8;
-	context->Dispatch(dispatch, dispatch, 1);
+	context->Dispatch((sparseGridSize.x + 7) / 8, (sparseGridSize.y + 7) / 8, 1);
 
 	ID3D11UnorderedAccessView* nullUAVs[2] = { nullptr, nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
@@ -557,19 +556,11 @@ void Skylighting::SetViewFrustum::thunk(RE::NiCamera* a_camera, RE::NiFrustum* a
 			a_frustum->fRight = (corner == 1 || corner == 3) ? frustumSize : 0.0f;
 			a_frustum->fTop = (corner == 2 || corner == 3) ? frustumSize : 0.0f;
 		} else {
-			auto& cd = a_camera->GetRuntimeData2();
-			logger::info("Params: {}, {}, {}, {}, {}", cd.lodAdjust, cd.maxFarNearRatio, cd.minNearPlaneDist, cd.port.GetHeight(), cd.port.GetWidth());
-
 			auto& rootCameraData = RE::Main::WorldRootCamera()->GetRuntimeData2();
-			logger::info("Root Params: {}, {}, {}, {}, {}", rootCameraData.lodAdjust, rootCameraData.maxFarNearRatio, rootCameraData.minNearPlaneDist, rootCameraData.port.GetHeight(), rootCameraData.port.GetWidth());
-			logger::info("Root unitHalfWidth, height: {}, {}", rootCameraData.viewFrustum.fLeft, rootCameraData.viewFrustum.fTop);
 
-			float hFOVRad = 90 * (3.14159265359f / 180.0f);
-			float unitHalfWidth = tan(hFOVRad / 2);
-			logger::info("unitHalfWidth: {}", unitHalfWidth);
-
-			float unitHalfHeight = unitHalfWidth / (globals::state->screenSize.x / globals::state->screenSize.y);  // frustum TB
-			float vFOVRad = 2.0f * atan(unitHalfHeight);
+			//float hFOVRad = 90 * (3.14159265359f / 180.0f);
+			//float unitHalfWidth = tan(hFOVRad / 2);
+			float unitHalfWidth = 1.0f;
 
 			*a_frustum = rootCameraData.viewFrustum;
 			a_frustum->fLeft = -unitHalfWidth;  //-a_frustum->fTop;
@@ -939,8 +930,10 @@ void Skylighting::SetInitalState(RE::NiPoint3& initalPos)
 	player->data.angle.x = 3.14159265f / 2.0f;
 	player->data.angle.z = 0.0f;
 
-	static REL::Relocation<void(uint64_t, uint64_t, uint64_t)> _toggleCollision{ REL::RelocationID(22825, 22825) };
-	_toggleCollision(0, 0, 0);
+	if (player->HasCollision()) {
+		static REL::Relocation<void(uint64_t, uint64_t, uint64_t)> _toggleCollision{ REL::RelocationID(22825, 22825) };
+		_toggleCollision(0, 0, 0);
+	}
 
 	player->SetPosition(initalPos, false);
 }
@@ -948,7 +941,7 @@ void Skylighting::SetInitalState(RE::NiPoint3& initalPos)
 void Skylighting::GenerateWorldspaceCache()
 {
 	static constexpr float CELL = 4096.0f;
-	static constexpr float SAMPLES_PER_AXIS = 1;
+	static constexpr float SAMPLES_PER_AXIS = 4;
 	static const float CELL_DIV = CELL / SAMPLES_PER_AXIS;
 
 	auto tes = RE::TES::GetSingleton();
@@ -1017,7 +1010,7 @@ void Skylighting::GenerateWorldspaceCache()
 		float2 targetCellOffset = float2(((float)targetCellID.x + 0.5f) * CELL_DIV, ((float)targetCellID.y + 0.5f) * CELL_DIV);
 		float2 samplePosition = WorldCorner + targetCellOffset;
 
-		if (override) {
+		if (override) {  //tmp
 			samplePosition = float2(coords.x, coords.y);
 		}
 

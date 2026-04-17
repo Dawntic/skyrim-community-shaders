@@ -108,7 +108,7 @@ public:
 	winrt::com_ptr<ID3D11ShaderResourceView> stbn_vec3_2Dx1D_128x128x64;
 
 	// sparse grid
-	static constexpr uint sparseGridSize = 128;
+	static constexpr int2 sparseGridSize = int2(476, 376);
 
 	eastl::unique_ptr<Texture2D> texSparseProbeArray = nullptr;
 
@@ -177,7 +177,7 @@ public:
 	int cubemapSide = 0;
 	int cellCount = 0;  //tmp
 
-	bool override = false;
+	bool override = false;  //tmp
 	float3 coords = float3();
 
 	void ResetSkylighting();
