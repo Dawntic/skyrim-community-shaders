@@ -150,8 +150,6 @@ public:
 
 	struct alignas(16) CacheGenCBStruct
 	{
-		int2 BentNormalWritePx;
-		int2 BentNormalTexSize;
 		float4 CubemapParams;  // dimension, 1.0 / dimension,  dimension^2, dimension^2 * valid_cube_sides
 		int2 BentNormalWritePx;
 		float _pad[2];
@@ -179,6 +177,9 @@ public:
 	int cubemapSide = 0;
 	int cellCount = 0;  //tmp
 
+	bool override = false;
+	float3 coords = float3();
+
 	void ResetSkylighting();
 
 	std::chrono::time_point<std::chrono::system_clock> lastUpdateTimer = std::chrono::system_clock::now();
@@ -193,6 +194,12 @@ public:
 	};
 
 	void RenderOcclusion();
+
+	struct NiCamera_SetMatrix  // not needed?
+	{
+		static void thunk(RE::NiCamera* camera, void* unk);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
 
 	struct SetViewport
 	{

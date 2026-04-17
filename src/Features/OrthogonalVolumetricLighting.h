@@ -30,6 +30,8 @@ struct OrthogonalVolumetricLighting : Feature
 	virtual void EarlyPrepass();
 	virtual void Prepass();
 
+	bool enableUI = false;
+
 	bool manualOverride = false;
 	float2 manualStartWS = float2(0, 0);  // set these before enabling
 	void disablePasses();
@@ -48,20 +50,24 @@ struct OrthogonalVolumetricLighting : Feature
 	float GetRayIntersectionHeight(float3 pos);
 
 	static constexpr uint CUBE_SIZE = 128;
-	static constexpr int2 BENT_NORMAL_SIZE = int2(1104, 768);
+	//static constexpr int2 BENT_NORMAL_SIZE = int2(1104, 768);
+	static constexpr int2 BENT_NORMAL_SIZE = int2(119, 94);
 
 	//static constexpr float4 MapBounds = float4(-230000, 160000, 230000, -160000); // completed with float4(-200000, 130000, 230000, -180000);
 
-	static constexpr int2 GRID_BOUND_TL = int2(-230000, 160000);
-	static constexpr int2 GRID_BOUND_BR = int2(230000, -160000);
+	//static constexpr int2 GRID_BOUND_TL = int2(-230000, 160000);
+	//static constexpr int2 GRID_BOUND_BR = int2(230000, -160000);
+
+	static inline int2 GRID_BOUND_TL = int2(-230000, 160000);
+	static inline int2 GRID_BOUND_BR = int2(230000, -160000);
 
 	struct IterationData
 	{
 		// Start xy - top left tex, near solitude
 		// Finish xy - bottom right, near riften
-		const int2 START = GRID_BOUND_TL;
-		const int2 END = GRID_BOUND_BR;
-		const int2 STEP = (END - START) / BENT_NORMAL_SIZE;
+		int2 START = GRID_BOUND_TL;
+		int2 END = GRID_BOUND_BR;
+		int2 STEP = (END - START) / BENT_NORMAL_SIZE;
 
 		const int TILE_SIZE = 10;
 		const int2 TILE_TOTAL = BENT_NORMAL_SIZE + int2(TILE_SIZE, TILE_SIZE) - int2(1, 1) / int2(TILE_SIZE, TILE_SIZE);
@@ -200,7 +206,8 @@ struct OrthogonalVolumetricLighting : Feature
 			{
 				auto& ovl = globals::features::orthogonalVolumetricLighting;
 
-				ovl.disablePipeline = false;
+				if (ovl.enableUI)
+					ovl.disablePipeline = false;
 				ovl.renderingMainDepth = true;
 				func(a1, a2);
 			};
@@ -218,7 +225,8 @@ struct OrthogonalVolumetricLighting : Feature
 				auto& ovl = globals::features::orthogonalVolumetricLighting;
 				if (ovl.renderingMainDepth) {
 					ovl.renderingMainDepth = false;
-					ovl.RenderMainDepth();
+					if (ovl.enableUI)
+						ovl.RenderMainDepth();
 					ovl.disablePipeline = true;
 				}
 			}
@@ -232,7 +240,7 @@ struct OrthogonalVolumetricLighting : Feature
 			{
 				auto& ovl = globals::features::orthogonalVolumetricLighting;
 
-				if (ovl.renderingMainDepth) {
+				if (ovl.renderingMainDepth && ovl.enableUI) {
 					ovl.depthPasses.push_back({ a_pass, a_technique, a_alphaTest, a_renderFlags });
 				}
 
@@ -275,16 +283,17 @@ struct OrthogonalVolumetricLighting : Feature
 		{
 			logger::info("[Lens Effects] Installed hooks");
 
-			stl::write_vfunc<0x2A, Hooks::GetRenderPassArray>(RE::VTABLE_BSLightingShaderProperty[0]);
+			//stl::write_vfunc<0x2A, Hooks::GetRenderPassArray>(RE::VTABLE_BSLightingShaderProperty[0]);
+
 			//stl::write_vfunc<0x2A, Hooks::GetRenderPassArray>(RE::VTABLE_BSEffectShaderProperty[0]);
 			//stl::detour_thunk<BSShaderAccumulator_RenderPersistentPassList>(REL::RelocationID(100840, 107630));
 
-			stl::write_vfunc<0x35, BSCubeMapCamera_RenderCubemap>(RE::VTABLE_BSCubeMapCamera[0]);  // Set disable pipeline at start of frame
-			stl::detour_thunk<Main_RenderFirstPersonView>(REL::RelocationID(100411, 107129));      // Re-enable pipeline towards end
+			//stl::write_vfunc<0x35, BSCubeMapCamera_RenderCubemap>(RE::VTABLE_BSCubeMapCamera[0]);  // Set disable pipeline at start of frame
+			//stl::detour_thunk<Main_RenderFirstPersonView>(REL::RelocationID(100411, 107129));      // Re-enable pipeline towards end
 
-			stl::detour_thunk<Main_RenderDepth>(REL::RelocationID(100421, 107139));
-			stl::write_vfunc<0x2A, BSShaderAccumulator_FinishAccumulatingDispatch>(RE::VTABLE_BSShaderAccumulator[0]);
-			stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately>(REL::RelocationID(100852, 107642).address() + REL::Relocate(0x29E, 0x28F));
+			//stl::detour_thunk<Main_RenderDepth>(REL::RelocationID(100421, 107139));
+			//stl::write_vfunc<0x2A, BSShaderAccumulator_FinishAccumulatingDispatch>(RE::VTABLE_BSShaderAccumulator[0]);
+			//stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately>(REL::RelocationID(100852, 107642).address() + REL::Relocate(0x29E, 0x28F));
 		}
 	};
 };

@@ -43,6 +43,10 @@ void Skylighting::DrawSettings()
 	ImGui::Checkbox("Enable Deferred", (bool*)&settings.toggleDeferred);
 	ImGui::Checkbox("Enable Effect", (bool*)&settings.toggleEffect);
 
+	ImGui::Checkbox("Override", (bool*)&override);
+	ImGui::SliderFloat("Coords X", &coords.x, -250000.0f, 250000.0f);
+	ImGui::SliderFloat("Coords Y", &coords.y, -250000.0f, 250000.0f);
+
 	std::string curr_worldspace = "N/A";
 	auto tes = RE::TES::GetSingleton();
 	if (tes) {
@@ -282,19 +286,6 @@ void Skylighting::UpdateDenseProbeGrid()
 		context->Dispatch((probeArrayDims[0] + 7u) >> 3, (probeArrayDims[1] + 7u) >> 3, probeArrayDims[2]);
 	}
 
-	// Reset
-	/*
-	{
-		srvs.fill(nullptr);
-		uavs.fill(nullptr);
-		samplers.fill(nullptr);
-
-		context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
-		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-		context->CSSetShader(nullptr, nullptr, 0);
-	}
-	*/
 	if (globals::state->frameAnnotations)
 		globals::state->EndPerfEvent();
 }
@@ -566,10 +557,25 @@ void Skylighting::SetViewFrustum::thunk(RE::NiCamera* a_camera, RE::NiFrustum* a
 			a_frustum->fRight = (corner == 1 || corner == 3) ? frustumSize : 0.0f;
 			a_frustum->fTop = (corner == 2 || corner == 3) ? frustumSize : 0.0f;
 		} else {
+			auto& cd = a_camera->GetRuntimeData2();
+			logger::info("Params: {}, {}, {}, {}, {}", cd.lodAdjust, cd.maxFarNearRatio, cd.minNearPlaneDist, cd.port.GetHeight(), cd.port.GetWidth());
+
 			auto& rootCameraData = RE::Main::WorldRootCamera()->GetRuntimeData2();
+			logger::info("Root Params: {}, {}, {}, {}, {}", rootCameraData.lodAdjust, rootCameraData.maxFarNearRatio, rootCameraData.minNearPlaneDist, rootCameraData.port.GetHeight(), rootCameraData.port.GetWidth());
+			logger::info("Root unitHalfWidth, height: {}, {}", rootCameraData.viewFrustum.fLeft, rootCameraData.viewFrustum.fTop);
+
+			float hFOVRad = 90 * (3.14159265359f / 180.0f);
+			float unitHalfWidth = tan(hFOVRad / 2);
+			logger::info("unitHalfWidth: {}", unitHalfWidth);
+
+			float unitHalfHeight = unitHalfWidth / (globals::state->screenSize.x / globals::state->screenSize.y);  // frustum TB
+			float vFOVRad = 2.0f * atan(unitHalfHeight);
+
 			*a_frustum = rootCameraData.viewFrustum;
-			a_frustum->fLeft = -a_frustum->fTop;
-			a_frustum->fRight = a_frustum->fTop;
+			a_frustum->fLeft = -unitHalfWidth;  //-a_frustum->fTop;
+			a_frustum->fRight = unitHalfWidth;  //a_frustum->fTop;
+			a_frustum->fTop = unitHalfWidth;
+			a_frustum->fBottom = -unitHalfWidth;
 		}
 	}
 
@@ -1011,6 +1017,10 @@ void Skylighting::GenerateWorldspaceCache()
 		float2 targetCellOffset = float2(((float)targetCellID.x + 0.5f) * CELL_DIV, ((float)targetCellID.y + 0.5f) * CELL_DIV);
 		float2 samplePosition = WorldCorner + targetCellOffset;
 
+		if (override) {
+			samplePosition = float2(coords.x, coords.y);
+		}
+
 		float heightMapHeight = SampleHeightMap(float2(samplePosition.x, samplePosition.y));
 		heightMapHeight += CELL;
 
@@ -1098,7 +1108,7 @@ void Skylighting::GenerateVisibilityCubemap()
 	context->OMSetRenderTargets(0, nullptr, nullptr);
 }
 
-void Skylighting::GenerateBentNormal(int2 currentCellXY, int2 totalCells)
+void Skylighting::GenerateBentNormal(int2 currentCellXY)
 {
 	auto context = globals::d3d::context;
 
@@ -1113,9 +1123,6 @@ void Skylighting::GenerateBentNormal(int2 currentCellXY, int2 totalCells)
 	CacheGenCBStruct data;
 	data.CubemapParams = float4(depthCubeSize, 1.0f / (float)depthCubeSize, depthCubeSize * depthCubeSize, depthCubeSize * depthCubeSize * 5);
 	data.BentNormalWritePx = currentCellXY;
-	data.BentNormalTexSize = totalCells;
-	data.CubemapParams = float4(depthCubeSize, 1.0f / (float)depthCubeSize, depthCubeSize * depthCubeSize, depthCubeSize * depthCubeSize * 5);
-	data.CubeMapWriteFace = cubemapSide;
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();

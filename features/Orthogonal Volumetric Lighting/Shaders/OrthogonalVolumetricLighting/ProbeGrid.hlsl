@@ -4,11 +4,9 @@
 
 cbuffer buffer : register(b0)
 {
-	row_major float4x4 InverseViewProj;
 	int2 GridTexSize;
 	float2 InvGridTexSize;
 	float2 GridMinCornerWS;
-	float2 GridMaxCornerWS;
 	float2 InvGridSpan;
 	uint toggleLighting;
 	uint toggleTrees;
@@ -36,10 +34,11 @@ RWTexture2D<float4> PlacementMap : register(u1);
 
 	SphericalHarmonics::PackSH3(OcclusionSH, ThreadID.xy, ProbeArray);
 
+	//debug
+	/*
 	float2 placementMapSize = float2(1104, 768);
 	float2 center = (float2(ThreadID.xy) + 0.5) / float2(GridTexSize.x, GridTexSize.y) * placementMapSize;
 	int radius = 2;
-
 	for (int y = -radius; y <= radius; y++) {
 		for (int x = -radius; x <= radius; x++) {
 			if (x * x + y * y <= radius * radius) {
@@ -49,5 +48,6 @@ RWTexture2D<float4> PlacementMap : register(u1);
 			}
 		}
 	}
+	*/
 }
 #endif

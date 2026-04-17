@@ -348,6 +348,10 @@ void OrthogonalVolumetricLighting::IterateWorldFullDepth()
 	if (!runIterateWorld || !tes || !cell || !cell->IsAttached() || !cell->IsExteriorCell() || !cell->IsInitialized() || !player->Is3DLoaded())
 		return;
 
+	auto worldSpace = tes->GetRuntimeData2().worldSpace;  //tmp
+	GRID_BOUND_TL = int2((int)worldSpace->minimumCoords.x, (int)worldSpace->minimumCoords.y);
+	GRID_BOUND_BR = int2((int)worldSpace->maximumCoords.x, (int)worldSpace->maximumCoords.y);
+
 	static bool updateLocation = true;
 	auto& [START, END, STEP, TILE_SIZE, TILE_TOTAL, local, tile, wave] = cData;
 
@@ -709,6 +713,8 @@ void OrthogonalVolumetricLighting::DrawSettings()
 		CompileShaders();
 	}
 	ImGui::Spacing();
+
+	ImGui::Checkbox("Render Cubemap Depth", &enableUI);
 
 	ImGui::Checkbox("Toggle All", (bool*)&settings.toggleAll);
 	ImGui::Checkbox("Enable Lighting", (bool*)&settings.toggleLighting);
