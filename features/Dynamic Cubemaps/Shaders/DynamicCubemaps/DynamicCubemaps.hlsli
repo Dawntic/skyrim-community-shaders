@@ -19,7 +19,7 @@ namespace DynamicCubemaps
 #if !defined(WATER)
 
 #	if defined(SKYLIGHTING)
-	float3 GetDynamicCubemapSpecularIrradiance(float3 N, float3 V, float roughness, sh2 skylighting)
+	float3 GetDynamicCubemapSpecularIrradiance(float3 N, float3 V, float roughness, sh2 skylighting, sh3 skylightingSparse)
 #	else
 	float3 GetDynamicCubemapSpecularIrradiance(float3 N, float3 V, float roughness)
 #	endif
@@ -51,8 +51,24 @@ namespace DynamicCubemaps
 #		if defined(SKYLIGHTING)
 		float skylightingSpecular = 1.0;
 		if (!SharedData::InInterior) {
+			if (skylighting.x < skylightingSparse.coeff[0]) {
+				sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(N, V, roughness);
+				skylightingSpecular = SphericalHarmonics::FuncProductIntegral(skylighting, specularLobe);
+			} else {
+				sh3 specularLobe = SphericalHarmonics::FauxSpecularLobeSH3(N, V, roughness);
+				skylightingSpecular = SphericalHarmonics::ProductIntegralSH3(skylightingSparse, specularLobe);
+			}
+
+			/*
 			sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(N, V, roughness);
 			skylightingSpecular = SphericalHarmonics::FuncProductIntegral(skylighting, specularLobe);
+
+			sh3 specularLobe3 = SphericalHarmonics::FauxSpecularLobeSH3(N, V, roughness);
+			float skylightingSpecular3 = SphericalHarmonics::ProductIntegralSH3(skylightingSparse, specularLobe3);
+
+			skylightingSpecular = min(skylightingSpecular, skylightingSpecular3);
+			*/
+
 			skylightingSpecular = saturate(skylightingSpecular);
 			skylightingSpecular = Skylighting::mixSpecular(SharedData::skylightingSettings, skylightingSpecular);
 		} else {
@@ -126,7 +142,7 @@ namespace DynamicCubemaps
 	}
 
 #	if defined(SKYLIGHTING)
-	float3 GetDynamicCubemap(float3 N, float3 V, float roughness, float3 F0, sh2 skylighting)
+	float3 GetDynamicCubemap(float3 N, float3 V, float roughness, float3 F0, sh2 skylighting, sh3 skylightingSparse)
 #	else
 	float3 GetDynamicCubemap(float3 N, float3 V, float roughness, float3 F0)
 #	endif
@@ -157,8 +173,24 @@ namespace DynamicCubemaps
 #		if defined(SKYLIGHTING)
 		float skylightingSpecular = 1.0;
 		if (!SharedData::InInterior) {
+			if (skylighting.x < skylightingSparse.coeff[0]) {
+				sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(N, V, roughness);
+				skylightingSpecular = SphericalHarmonics::FuncProductIntegral(skylighting, specularLobe);
+			} else {
+				sh3 specularLobe = SphericalHarmonics::FauxSpecularLobeSH3(N, V, roughness);
+				skylightingSpecular = SphericalHarmonics::ProductIntegralSH3(skylightingSparse, specularLobe);
+			}
+
+			/*
 			sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(N, V, roughness);
 			skylightingSpecular = SphericalHarmonics::FuncProductIntegral(skylighting, specularLobe);
+
+			sh3 specularLobe3 = SphericalHarmonics::FauxSpecularLobeSH3(N, V, roughness);
+			float skylightingSpecular3 = SphericalHarmonics::ProductIntegralSH3(skylightingSparse, specularLobe3);
+
+			skylightingSpecular = min(skylightingSpecular, skylightingSpecular3);
+			*/
+
 			skylightingSpecular = saturate(skylightingSpecular);
 			skylightingSpecular = Skylighting::mixSpecular(SharedData::skylightingSettings, skylightingSpecular);
 		} else {

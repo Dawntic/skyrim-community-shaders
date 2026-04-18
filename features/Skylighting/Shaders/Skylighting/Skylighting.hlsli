@@ -61,27 +61,23 @@ namespace Skylighting
 
 	sh3 SampleSparseProbeGrid(SharedData::SkylightingSettings settings, Texture2DArray ProbeArrayIn, float3 CoordsWS)
 	{
-		sh3 output = SphericalHarmonics::UnitSH3();
+		sh3 outputSH = SphericalHarmonics::UnitSH3();
 
 		if (!settings.WorldHasCache)
-			return output;
+			return outputSH;
 
 		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
 		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
 			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
-			output = SphericalHarmonics::UnpackSH3(Probe, ProbeArrayIn);
+			outputSH = SphericalHarmonics::UnpackSH3(Probe, ProbeArrayIn);
 		}
 
-		return output;
+		return outputSH;
 	}
 
 	sh2 sample(SharedData::SkylightingSettings params, Texture3D<sh2> probeArray, Texture2DArray<float3> blueNoise, float2 screenPosition, float3 positionMS, float3 normalWS)
 	{
 		const static sh2 unitSH = float4(sqrt(4 * Math::PI), 0, 0, 0);
-		sh2 scaledUnitSH = unitSH / 1e-10;
-
-		if (SharedData::InInterior)
-			return scaledUnitSH;
 
 		positionMS.xyz += normalWS * CELL_SIZE;  // Receiver normal bias
 
@@ -94,7 +90,7 @@ namespace Skylighting
 		float3 uvw = positionMSAdjusted / ARRAY_SIZE + .5;
 
 		if (any(uvw < 0) || any(uvw > 1))
-			return scaledUnitSH;
+			return unitSH;
 
 		float3 cellVxCoord = uvw * ARRAY_DIM;
 		int3 cell000 = floor(cellVxCoord - 0.5);
@@ -134,16 +130,12 @@ namespace Skylighting
 	sh2 sampleNoBias(SharedData::SkylightingSettings params, Texture3D<sh2> probeArray, float3 positionMS)
 	{
 		const static sh2 unitSH = float4(sqrt(4 * Math::PI), 0, 0, 0);
-		sh2 scaledUnitSH = unitSH / 1e-10;
-
-		if (SharedData::InInterior)
-			return scaledUnitSH;
 
 		float3 positionMSAdjusted = positionMS - params.PosOffset.xyz;
 		float3 uvw = positionMSAdjusted / ARRAY_SIZE + .5;
 
 		if (any(uvw < 0) || any(uvw > 1))
-			return scaledUnitSH;
+			return unitSH;
 
 		float3 cellVxCoord = uvw * ARRAY_DIM;
 		int3 cell000 = floor(cellVxCoord - 0.5);
