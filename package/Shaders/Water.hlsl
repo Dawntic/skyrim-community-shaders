@@ -1110,13 +1110,23 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 positionMSSkylight = input.WPosition.xyz;
 #				endif
 
-	sh2 skylightingSH = Skylighting::sampleNoBias(SharedData::skylightingSettings, Skylighting::SkylightingProbeArray, positionMSSkylight);
-	float skylighting = SphericalHarmonics::Unproject(skylightingSH, float3(0, 0, 1));
-
-	float skylightingDiffuse = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(float3(0, 0, 1))) / Math::PI;
-	skylightingDiffuse = saturate(skylightingDiffuse);
-	skylightingDiffuse = lerp(1.0, skylightingDiffuse, Skylighting::getFadeOutFactor(input.WPosition.xyz));
-	skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);
+	float skylighting = 1.0;
+	float skylightingDiffuse = 1.0;
+	sh2 skylightingSH = float4(sqrt(4.0 * Math::PI), 0, 0, 0);
+	sh3 skylightingSparseSH = SphericalHarmonics::UnitSH3();
+	if (!SharedData::InInterior) {
+		skylightingSH = Skylighting::sampleNoBias(SharedData::skylightingSettings, Skylighting::SkylightingProbeArray, positionMSSkylight);
+		skylighting = SphericalHarmonics::Unproject(skylightingSH, float3(0, 0, 1));
+		skylightingDiffuse = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(float3(0, 0, 1))) / Math::PI;
+		skylightingDiffuse = lerp(saturate(skylightingDiffuse), 1.0, 1.0 - Skylighting::getFadeOutFactor(positionMSSkylight));
+		if (SharedData::skylightingSettings.toggleLighting) {
+			skylightingSparseSH = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, Skylighting::SparseProbeArray, positionMSSkylight);
+			skylighting = saturate(min(SphericalHarmonics::Unproject(skylightingSH, float3(0, 0, 1)), SphericalHarmonics::UnprojectSH3(skylightingSparseSH, float3(0, 0, 1))));  // simplify when removing toggle
+			float sparseAO = SphericalHarmonics::ProductIntegralSH3(skylightingSparseSH, SphericalHarmonics::EvaluateCosineLobeSH3(float3(0, 0, 1))) / Math::PI;
+			skylightingDiffuse = min(skylightingDiffuse, saturate(sparseAO));
+		}
+		skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);
+	}
 
 	wetnessOcclusion = inWorld ? pow(saturate(skylighting), 2) : 0;
 #			endif
@@ -1130,10 +1140,22 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 normal = waterData.normal;
 
 #			if defined(SKYLIGHTING)
-	sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(normal, -viewDirection, 0.0);
-	float skylightingSpecular = SphericalHarmonics::FuncProductIntegral(skylightingSH, specularLobe);
-	skylightingSpecular = saturate(skylightingSpecular);
-	skylightingSpecular = Skylighting::mixSpecular(SharedData::skylightingSettings, skylightingSpecular);
+	float skylightingSpecular = 1.0;
+	if (!SharedData::InInterior) {
+		sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(normal, -viewDirection, 0.0);
+		skylightingSpecular = SphericalHarmonics::FuncProductIntegral(skylightingSH, specularLobe);
+
+		if (SharedData::skylightingSettings.toggleLighting) {
+			if (skylightingSH.x < skylightingSparseSH.coeff[0]) {
+				sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(normal, -viewDirection, 0.0);
+				skylightingSpecular = SphericalHarmonics::FuncProductIntegral(skylightingSH, specularLobe);
+			} else {
+				sh3 specularLobe = SphericalHarmonics::FauxSpecularLobeSH3(normal, -viewDirection, 0.0);
+				skylightingSpecular = SphericalHarmonics::ProductIntegralSH3(skylightingSparseSH, specularLobe);
+			}
+		}
+		skylightingSpecular = Skylighting::mixSpecular(SharedData::skylightingSettings, saturate(skylightingSpecular));
+	}
 #			endif
 
 	float fresnel = GetFresnelValue(normal, viewDirection);
