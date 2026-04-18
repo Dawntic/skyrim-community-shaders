@@ -177,60 +177,52 @@ void AdvancedSettingsRenderer::RenderShaderDebugSection()
 		ImGui::Text("Clear all compiled shaders from memory. Forces recompilation of all shaders on next use.");
 	}
 
-	ImGui::Spacing();
-	ImGui::Separator();
-	ImGui::Spacing();
-
 	// Shader Replacement section
-	Util::DrawSectionHeader("Replace Original Shaders");
+	if (ImGui::CollapsingHeader("Replace Original Shaders")) {
+		if (ImGui::BeginTable("##ReplaceToggles", 3, ImGuiTableFlags_SizingStretchSame)) {
+			globals::state->ForEachShaderTypeWithIndex([&](auto type, int classIndex) {
+				ImGui::TableNextColumn();
 
-	if (ImGui::BeginTable("##ReplaceToggles", 3, ImGuiTableFlags_SizingStretchSame)) {
-		globals::state->ForEachShaderTypeWithIndex([&](auto type, int classIndex) {
-			ImGui::TableNextColumn();
+				if (!(SIE::ShaderCache::IsSupportedShader(type) || state->IsDeveloperMode())) {
+					ImGui::BeginDisabled();
+					ImGui::Checkbox(std::format("{}", magic_enum::enum_name(type)).c_str(), &state->enabledClasses[classIndex]);
+					ImGui::EndDisabled();
+				} else
+					ImGui::Checkbox(std::format("{}", magic_enum::enum_name(type)).c_str(), &state->enabledClasses[classIndex]);
+			});
+			if (state->IsDeveloperMode()) {
+				ImGui::Checkbox("Vertex", &state->enableVShaders);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text(
+						"Replace Vertex Shaders. "
+						"When false, will disable the custom Vertex Shaders for the types above. "
+						"For developers to test whether CS shaders match vanilla behavior. ");
+				}
 
-			if (!(SIE::ShaderCache::IsSupportedShader(type) || state->IsDeveloperMode())) {
-				ImGui::BeginDisabled();
-				ImGui::Checkbox(std::format("{}", magic_enum::enum_name(type)).c_str(), &state->enabledClasses[classIndex]);
-				ImGui::EndDisabled();
-			} else
-				ImGui::Checkbox(std::format("{}", magic_enum::enum_name(type)).c_str(), &state->enabledClasses[classIndex]);
-		});
-		if (state->IsDeveloperMode()) {
-			ImGui::Checkbox("Vertex", &state->enableVShaders);
-			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text(
-					"Replace Vertex Shaders. "
-					"When false, will disable the custom Vertex Shaders for the types above. "
-					"For developers to test whether CS shaders match vanilla behavior. ");
+				ImGui::Checkbox("Pixel", &state->enablePShaders);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text(
+						"Replace Pixel Shaders. "
+						"When false, will disable the custom Pixel Shaders for the types above. "
+						"For developers to test whether CS shaders match vanilla behavior. ");
+				}
+
+				ImGui::Checkbox("Compute", &state->enableCShaders);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text(
+						"Replace Compute Shaders. "
+						"When false, will disable the custom Compute Shaders for the types above. "
+						"For developers to test whether CS shaders match vanilla behavior. ");
+				}
 			}
-
-			ImGui::Checkbox("Pixel", &state->enablePShaders);
-			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text(
-					"Replace Pixel Shaders. "
-					"When false, will disable the custom Pixel Shaders for the types above. "
-					"For developers to test whether CS shaders match vanilla behavior. ");
-			}
-
-			ImGui::Checkbox("Compute", &state->enableCShaders);
-			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text(
-					"Replace Compute Shaders. "
-					"When false, will disable the custom Compute Shaders for the types above. "
-					"For developers to test whether CS shaders match vanilla behavior. ");
-			}
+			ImGui::EndTable();
 		}
-		ImGui::EndTable();
 	}
 
 	// Only show shader blocking section in developer mode
 	if (!globals::state->IsDeveloperMode()) {
 		return;
 	}
-
-	ImGui::Spacing();
-	ImGui::Separator();
-	ImGui::Spacing();
 
 	// Show blocked shader status as a regular section
 	if (!shaderCache->blockedKey.empty()) {
