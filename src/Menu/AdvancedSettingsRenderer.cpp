@@ -504,7 +504,10 @@ void AdvancedSettingsRenderer::RenderShaderDebugSection()
 			sorters,
 			filterState,
 			inputEvents,
-			getRowTooltip);
+			getRowTooltip,
+			nullptr,
+			nullptr,
+			0.0f);
 
 		// Update static variables with modified filter state
 		strncpy_s(filterText, filterState.filterText.c_str(), sizeof(filterText) - 1);
