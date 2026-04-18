@@ -213,7 +213,9 @@ PS_OUTPUT main(PS_INPUT input)
 
 	psout.Diffuse.xyz = input.Depth.xxx / input.Depth.yyy;
 	psout.Diffuse.w = 0;
+
 #	else
+
 	float4 baseColor = TexDiffuse.SampleBias(SampDiffuse, input.TexCoord.xy, SharedData::MipBias);
 	baseColor.xyz = Color::Diffuse(baseColor.xyz);
 
@@ -226,7 +228,7 @@ PS_OUTPUT main(PS_INPUT input)
 	float2 screenUV = FrameBuffer::ViewToUV(viewPosition, true, eyeIndex);
 	float screenNoise = Random::InterleavedGradientNoise(input.Position.xy, SharedData::FrameCount);
 
-	float dirShadow = 1;
+	float dirShadow = 1.0;
 
 #			if defined(SCREEN_SPACE_SHADOWS)
 	dirShadow = lerp(1.0, ScreenSpaceShadows::GetScreenSpaceShadow(input.Position.xyz, screenUV, screenNoise, eyeIndex), 0.8);
@@ -239,9 +241,8 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 diffuseColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * dirShadow * 0.5 * llDirLightMult * Color::VanillaNormalization();
 
 #			if defined(EXP_HEIGHT_FOG)
-	if (SharedData::exponentialHeightFogSettings.enabled) {
+	if (SharedData::exponentialHeightFogSettings.enabled)
 		diffuseColor *= ExponentialHeightFog::GetSunlightFogAttenuation(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust[eyeIndex].xyz);
-	}
 #			endif
 
 	float3 ddx = ddx_coarse(input.WorldPosition.xyz);
@@ -249,6 +250,7 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 normal = -normalize(cross(ddx, ddy));
 
 	float3 directionalAmbientColor = max(0, Color::Ambient(SharedData::GetAmbient(normal)));
+
 #			if defined(IBL)
 	if (SharedData::iblSettings.EnableIBL) {
 		if (SharedData::iblSettings.DALCMode == 2) {
@@ -269,8 +271,13 @@ PS_OUTPUT main(PS_INPUT input)
 	if (!SharedData::InInterior) {
 		if (SharedData::skylightingSettings.toggleTrees) {
 			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, Skylighting::SparseProbeArray, input.WorldPosition.xyz);
-			skylightingDiffuse = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;  // Maybe it would be better to use up dir here
+			skylightingDiffuse = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;
 			skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);
+
+			// limit AO contribution when scene is dark to prevent over-darkening due to approx normals
+			float aoLimit = saturate(max(diffuseColor.x, max(diffuseColor.y, diffuseColor.z)) * 0.5);
+			skylightingDiffuse = lerp(1.0, skylightingDiffuse, aoLimit);
+
 			Skylighting::applySkylighting(diffuseColor, directionalAmbientColor, baseColor.xyz, skylightingDiffuse);
 		}
 	}
@@ -316,7 +323,7 @@ PS_OUTPUT main(PS_INPUT input)
 			directionalAmbientColor = envIBLColor + skyIBLColor;
 		}
 	}
-#			endif
+#			endif  // IBL
 
 	diffuseColor += directionalAmbientColor;
 
