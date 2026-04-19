@@ -143,7 +143,7 @@ namespace SharedData
 		uint toggleGrass;
 		uint toggleDeferred;
 		uint toggleEffect;
-		float pad[2];
+		float2 pad;
 
 		float MinDiffuseVisibility;
 		float MinSpecularVisibility;
