@@ -272,11 +272,11 @@ PS_OUTPUT main(PS_INPUT input)
 		if (SharedData::skylightingSettings.toggleTrees) {
 			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, Skylighting::SparseProbeArray, input.WorldPosition.xyz);
 			skylightingDiffuse = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;
-			skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);
+			skylightingDiffuse = saturate(Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse));
 
 			// limit AO contribution when scene is dark to prevent over-darkening due to approx normals
-			float aoLimit = saturate(max(diffuseColor.x, max(diffuseColor.y, diffuseColor.z)) * 0.5);
-			skylightingDiffuse = lerp(1.0, skylightingDiffuse, aoLimit);
+			float aoScale = dot(saturate(diffuseColor * baseColor.xyz), (float3)0.33) / 0.3;
+			skylightingDiffuse = lerp(1.0, skylightingDiffuse, saturate(aoScale));
 
 			Skylighting::applySkylighting(diffuseColor, directionalAmbientColor, baseColor.xyz, skylightingDiffuse);
 		}
@@ -333,7 +333,12 @@ PS_OUTPUT main(PS_INPUT input)
 		if (SharedData::skylightingSettings.toggleTrees) {
 			sh3 sparseProbeCoeffs = Skylighting::SampleSparseProbeGrid(SharedData::skylightingSettings, Skylighting::SparseProbeArray, input.WorldPosition.xyz);
 			skylightingDiffuse = SphericalHarmonics::ProductIntegralSH3(sparseProbeCoeffs, SphericalHarmonics::EvaluateCosineLobeSH3(normal)) / Math::PI;
-			skylightingDiffuse = Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse);
+			skylightingDiffuse = saturate(Skylighting::mixDiffuse(SharedData::skylightingSettings, skylightingDiffuse));
+
+			// limit AO contribution when scene is dark to prevent over-darkening due to approx normals
+			float aoScale = dot(saturate(diffuseColor * baseColor.xyz), (float3)0.33) / 0.3;
+			skylightingDiffuse = lerp(1.0, skylightingDiffuse, saturate(aoScale));
+
 			Skylighting::applySkylighting(diffuseColor, directionalAmbientColor, baseColor.xyz, skylightingDiffuse);
 		}
 	}
