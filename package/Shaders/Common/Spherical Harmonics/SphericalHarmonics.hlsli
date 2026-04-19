@@ -336,6 +336,14 @@ namespace SphericalHarmonics
 		return result;
 	}
 
+	sh3 LerpSH3(sh3 a, sh3 b, float t)
+	{
+		sh3 result;
+		[unroll] for (int i = 0; i < 9; i++)
+			result.coeff[i] = lerp(a.coeff[i], b.coeff[i], t);
+		return result;
+	}
+
 	sh3 UnpackSH3(uint2 ProbePos, Texture2DArray Array)
 	{
 		sh3 OutputSH;

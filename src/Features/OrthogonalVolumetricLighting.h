@@ -294,9 +294,9 @@ struct OrthogonalVolumetricLighting : Feature
 			//stl::write_vfunc<0x35, BSCubeMapCamera_RenderCubemap>(RE::VTABLE_BSCubeMapCamera[0]);  // Set disable pipeline at start of frame
 			//stl::detour_thunk<Main_RenderFirstPersonView>(REL::RelocationID(100411, 107129));      // Re-enable pipeline towards end
 
-			stl::detour_thunk<Main_RenderDepth>(REL::RelocationID(100421, 107139));
-			stl::write_vfunc<0x2A, BSShaderAccumulator_FinishAccumulatingDispatch>(RE::VTABLE_BSShaderAccumulator[0]);
-			stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately>(REL::RelocationID(100852, 107642).address() + REL::Relocate(0x29E, 0x28F));
+			//stl::detour_thunk<Main_RenderDepth>(REL::RelocationID(100421, 107139));
+			//stl::write_vfunc<0x2A, BSShaderAccumulator_FinishAccumulatingDispatch>(RE::VTABLE_BSShaderAccumulator[0]);
+			//stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately>(REL::RelocationID(100852, 107642).address() + REL::Relocate(0x29E, 0x28F));
 		}
 	};
 };
