@@ -250,7 +250,7 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 
 		.GridTexSize = sparseGridSize,
 		.InvGridTexSize = 1.0f / float2((float)sparseGridSize.x, (float)sparseGridSize.y),
-		.GridMinWorldCorner = worldspace->minimumCoords,
+		.GridMinWorldCorner = worldspace->minimumCoords - float2(eyePos.x, eyePos.y),
 		.InvGridSpan = 1.0 / gridSpan,
 		.HasCache = worldHasCache,
 		.toggleLighting = settings.toggleLighting,
@@ -352,9 +352,9 @@ void Skylighting::PostPostLoad()
 	else
 		stl::write_thunk_call<SetViewFrustum>(REL::RelocationID(25643, 26185).address() + REL::Relocate(0x5D9, 0x59D, 0x5DC));
 
-	// Remove call to update local camera translation - need to add logic for when not building cache!!
-	REL::safe_fill(REL::RelocationID(25643, 26185).address() + REL::Relocate(0x511, 0x511), REL::NOP, 15);  // TEMP
-	stl::detour_thunk<SetViewport>(REL::RelocationID(77240, 77240));
+	// Remove call to update local camera translation - we'll do it manually
+	REL::safe_fill(REL::RelocationID(25643, 26185).address() + REL::Relocate(0x558, 0x511), REL::NOP, 15);
+	stl::detour_thunk<SetViewport>(REL::RelocationID(75455, 77240));
 
 	MenuOpenCloseEventHandler::Register();
 }
@@ -557,14 +557,11 @@ void Skylighting::SetViewFrustum::thunk(RE::NiCamera* a_camera, RE::NiFrustum* a
 			a_frustum->fTop = (corner == 2 || corner == 3) ? frustumSize : 0.0f;
 		} else {
 			auto& rootCameraData = RE::Main::WorldRootCamera()->GetRuntimeData2();
-
-			//float hFOVRad = 90 * (3.14159265359f / 180.0f);
-			//float unitHalfWidth = tan(hFOVRad / 2);
-			float unitHalfWidth = 1.0f;
-
 			*a_frustum = rootCameraData.viewFrustum;
-			a_frustum->fLeft = -unitHalfWidth;  //-a_frustum->fTop;
-			a_frustum->fRight = unitHalfWidth;  //a_frustum->fTop;
+
+			float unitHalfWidth = 1.0f;
+			a_frustum->fLeft = -unitHalfWidth;
+			a_frustum->fRight = unitHalfWidth;
 			a_frustum->fTop = unitHalfWidth;
 			a_frustum->fBottom = -unitHalfWidth;
 		}
@@ -587,10 +584,14 @@ void Skylighting::SetViewFrustumVR::thunk(RE::NiCamera* a_camera, RE::NiFrustum*
 			a_frustum->fRight = (corner == 1 || corner == 3) ? frustumSize : 0.0f;
 			a_frustum->fTop = (corner == 2 || corner == 3) ? frustumSize : 0.0f;
 		} else {
-			auto& rootCameraData = RE::Main::WorldRootCamera()->GetRuntimeData2();
-			*a_frustum = rootCameraData.viewFrustum;
-			a_frustum->fLeft = -a_frustum->fTop;
-			a_frustum->fRight = a_frustum->fTop;
+			auto& rootCameraData = RE::Main::WorldRootCamera()->GetVRRuntimeData();
+			*a_frustum = *rootCameraData.viewFrustumArray;
+
+			float unitHalfWidth = 1.0f;
+			a_frustum->fLeft = -unitHalfWidth;
+			a_frustum->fRight = unitHalfWidth;
+			a_frustum->fTop = unitHalfWidth;
+			a_frustum->fBottom = -unitHalfWidth;
 		}
 	}
 
@@ -606,16 +607,17 @@ void Skylighting::RenderOcclusion()
 
 	auto& skylighting = globals::features::skylighting;
 
-	if (!shaderCache->IsEnabled()) {
-		state->BeginPerfEvent("Precipitation Mask");
-		Main_Precipitation_RenderOcclusion::func();
-		state->EndPerfEvent();
-		return;
-	}
-
 	if (sky) {
+		auto precip = sky->precip;
+		if (!shaderCache->IsEnabled()) {
+			state->BeginPerfEvent("Precipitation Mask");
+			precip->occlusionData.camera->local.translate = RE::PlayerCamera::GetSingleton()->cameraRoot->world.translate;
+			Main_Precipitation_RenderOcclusion::func();
+			state->EndPerfEvent();
+			return;
+		}
+
 		if (!Util::IsInterior()) {
-			auto precip = sky->precip;
 			if (!buildingCache) {
 				state->BeginPerfEvent("Precipitation Mask");
 
@@ -708,10 +710,10 @@ void Skylighting::RenderOcclusion()
 						{ { 0, 0, -1 }, { 0, 1, 0 } },
 					} };
 
-					static RE::NiPoint3& PrecipitationShaderUp = (*(RE::NiPoint3*)REL::RelocationID(388555, 388555).address());
+					static RE::NiPoint3& PrecipitationShaderUp = (*(RE::NiPoint3*)REL::RelocationID(511964, 388555).address());
 
-					PrecipitationShaderUp = cubemapDirs[skylighting.cubemapSide].second;
 					PrecipitationShaderForward = cubemapDirs[skylighting.cubemapSide].first;
+					PrecipitationShaderUp = cubemapDirs[skylighting.cubemapSide].second;
 					PrecipitationShaderDirectionF = *reinterpret_cast<float3*>(&cubemapDirs[skylighting.cubemapSide].first);
 
 					precip->occlusionData.camera->local.translate = float3(sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z);  // disable the mem fill if removing
@@ -723,12 +725,12 @@ void Skylighting::RenderOcclusion()
 					precipitation.views[0] = depthCubemapDSVs[cubemapSide];
 
 					if (skylighting.buildingCache && skylighting.cubemapSide == 5) {  // change back to cubemapSide == 0 when we get rid of height prepass /////////////////////////////////
-						static auto* precipObjectArrayList = *(RE::BSTArray<RE::NiPointer<RE::NiAVObject>>**)REL::RelocationID(415017, 415017).address();
-						static uint& precipObjectArrayListSize = *(uint*)REL::RelocationID(415019, 415019).address();
+						static auto* precipObjectArrayList = *(RE::BSTArray<RE::NiPointer<RE::NiAVObject>>**)REL::RelocationID(528072, 415017).address();
+						static uint& precipObjectArrayListSize = *(uint*)REL::RelocationID(528074, 415019).address();
 
-						static auto* rootNodeLandLOD = *(RE::NiNode**)REL::RelocationID(402324, 402324).address();
-						static auto* rootNodeObjectLOD = *(RE::NiNode**)REL::RelocationID(402325, 402325).address();
-						static auto* rootNodeTreeLOD = *(RE::NiNode**)REL::RelocationID(402321, 402321).address();  // It makes sense for trees to contribute to the extent that they do not cause probe self shadowing
+						static auto* rootNodeLandLOD = *(RE::NiNode**)REL::RelocationID(516173, 402324).address();
+						static auto* rootNodeObjectLOD = *(RE::NiNode**)REL::RelocationID(516174, 402325).address();
+						static auto* rootNodeTreeLOD = *(RE::NiNode**)REL::RelocationID(516170, 402321).address();  // It makes sense for trees to contribute to the extent that they do not cause probe self shadowing
 
 						std::array<RE::NiNode*, 3> nodeLODList = { rootNodeLandLOD, rootNodeObjectLOD, rootNodeTreeLOD };
 
@@ -931,7 +933,7 @@ void Skylighting::SetInitalState(RE::NiPoint3& initalPos)
 	player->data.angle.z = 0.0f;
 
 	if (player->HasCollision()) {
-		static REL::Relocation<void(uint64_t, uint64_t, uint64_t)> _toggleCollision{ REL::RelocationID(22825, 22825) };
+		static REL::Relocation<void(uint64_t, uint64_t, uint64_t)> _toggleCollision{ REL::RelocationID(22350, 22825) };
 		_toggleCollision(0, 0, 0);
 	}
 
@@ -1147,7 +1149,7 @@ void Skylighting::FinishCaching(std::string worldName)
 	camData.worldFOV = cachedActorFOV;
 	camData.firstPersonFOV = cachedActorFOV;
 
-	static REL::Relocation<void(uint64_t, uint64_t, uint64_t)> _toggleCollision{ REL::RelocationID(22825, 22825) };
+	static REL::Relocation<void(uint64_t, uint64_t, uint64_t)> _toggleCollision{ REL::RelocationID(22350, 22825) };
 	_toggleCollision(0, 0, 0);
 
 	buildingCache = false;
