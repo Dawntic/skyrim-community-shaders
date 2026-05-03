@@ -60,6 +60,77 @@ struct PhysicalSky final : public Feature
 	void AccumShadow();
 	inline void PostPostLoad() override { Hooks::Install(); }
 
+	void CreateCloudResources();
+	void RenderClouds();
+	void CloudCompose();
+
+	// Clouds
+
+	bool par = false;
+
+	float2 CLOUD_TEX_SIZE = float2(2560, 1440) * 0.5;
+	ID3D11RasterizerState* rasterState = nullptr;
+	ID3D11BlendState* additiveBlend = nullptr;
+
+	static inline uint32_t bayerIndices4x4[16] = {
+		0, 8, 2, 10,
+		12, 4, 14, 6,
+		3, 11, 1, 9,
+		15, 7, 13, 5
+	};
+
+	// CB struct matching the shader
+	struct alignas(16) CloudCB
+	{
+		float3 cameraPos;
+		float groundRadius;
+		float2 bayerPos;
+		float atmTopRadius;
+		float bottomRadius;
+		float topRadius;
+		float minDistance;
+		float maxDistance;
+		float currentTime;
+		float cumulusCoverage;
+		float cirrusCoverage;
+		float temperatureDiff;
+		float pad;
+	};
+
+	struct CloudSettings
+	{
+		bool isEnabled = true;         /**< Is physically based volumetric clouds rendering enabled. */
+		bool renderShadows = true;     /**< Render cloud shadows to the shadow buffer. */
+		float bottomRadius = 1.5f;     /**< Stratus and cumulus clouds start height. (km) */
+		float topRadius = 4.0f;        /**< Stratus and cumulus clouds end height. (km) */
+		float minDistance = 0.2f;      /**< Clouds volume tracing offset in front of camera. (km) */
+		float maxDistance = 600.0f;    /**< Maximum clouds volume tracing distance. (km) */
+		float cumulusCoverage = 0.4f;  /**< Amount of cumulus clouds. (Clear or cloudy weather) */
+		float cirrusCoverage = 0.2f;   /**< Amount of cirrus clouds. (Clear or cloudy weather) */
+		float temperatureDiff = 0.75f; /**< Temperature difference between layers. (Storm clouds) */
+		float currentTime = 0.0f;      /**< Custom current time value. (For a multiplayer sync) */
+		bool noDelay = false;          /**< Make all computation in one frame. (Expensive!) */
+	};
+	CloudSettings cloudSettings;
+
+	eastl::unique_ptr<Texture2D> cloudColorTex[2] = { nullptr, nullptr };
+	eastl::unique_ptr<Texture2D> cloudDepthTex[2] = { nullptr, nullptr };
+
+	eastl::unique_ptr<Texture2D> disoccTex = nullptr;
+
+	ID3D11PixelShader* cloudShader = nullptr;
+	ID3D11VertexShader* cloudVShader = nullptr;
+	ID3D11PixelShader* cloudBlendShader = nullptr;
+
+	ConstantBuffer* cloudBuffer = nullptr;
+
+	winrt::com_ptr<ID3D11ShaderResourceView> dataFieldsSRV;
+	winrt::com_ptr<ID3D11ShaderResourceView> vertProfileSRV;
+	winrt::com_ptr<ID3D11ShaderResourceView> noiseShapeSRV;
+	winrt::com_ptr<ID3D11ShaderResourceView> cirrusShapeSRV;
+
+	bool overrideShader = false;
+
 	////////////////////////////////////////////////// Feature Specific Data
 	constexpr static uint16_t kTrLutW = 256;
 	constexpr static uint16_t kTrLutH = 64;
@@ -228,8 +299,15 @@ struct PhysicalSky final : public Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		struct RenderSky
+		{
+			static void thunk();
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		static void Install()
 		{
+			stl::detour_thunk<RenderSky>(REL::RelocationID(107129, 107129));
 			stl::write_vfunc<0x6, BSSkyShader_SetupGeometry>(RE::VTABLE_BSSkyShader[0]);
 			stl::write_vfunc<0x7, BSSkyShader_RestoreGeometry>(RE::VTABLE_BSSkyShader[0]);
 		}

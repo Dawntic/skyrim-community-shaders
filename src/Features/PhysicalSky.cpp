@@ -5,6 +5,9 @@
 #include <cfloat>
 #include <imgui_stdlib.h>
 
+#include <DDSTextureLoader.h>
+#include <WICTextureLoader.h>
+
 #include "CloudShadows.h"
 #include "Deferred.h"
 #include "I18n/I18n.h"
@@ -443,10 +446,20 @@ void PhysicalSky::SettingsClouds()
 {
 	InfoBox(T(TKEY("clouds_2"), "Clouds."));
 
-	ImGui::SliderFloat(T(TKEY("vanilla_mix"), "Vanilla Mix"), &settings.cloudOriginalMix, 0.f, 2.f, "%.2f");
-	ImGui::SliderFloat(T(TKEY("relight_mix"), "Relight Mix"), &settings.cloudRelightMix, 0.f, 2.f, "%.2f");
-	ImGui::SliderFloat(T(TKEY("silver_lining_accent"), "Silver Lining Accent"), &settings.silverLiningMix, 0.f, 1.f, "%.2f");
-	ImGui::SliderFloat(T(TKEY("silver_lining_spread"), "Silver Lining Spread"), &settings.silverLiningSpread, -0.99f, 0.99f, "%.2f");
+	ImGui::SliderFloat("bottomRadius", &cloudSettings.bottomRadius, 0.0, 150.0);
+	ImGui::SliderFloat("topRadius", &cloudSettings.topRadius, 0.0, 150.0);
+	ImGui::SliderFloat("cumulusCoverage", &cloudSettings.cumulusCoverage, 0.0, 1.0);
+	ImGui::SliderFloat("cirrusCoverage", &cloudSettings.cirrusCoverage, 0.0, 1.0);
+	ImGui::SliderFloat("temperatureDiff", &cloudSettings.temperatureDiff, 0.0, 1.0);
+	ImGui::SliderFloat("currentTime", &cloudSettings.currentTime, 0.0, 1.0);
+	ImGui::SliderFloat("minDistance", &cloudSettings.minDistance, 0.0, 400.0);
+	ImGui::SliderFloat("maxDistance", &cloudSettings.maxDistance, 0.0, 400.0);
+	ImGui::Checkbox("noDelay", &cloudSettings.noDelay);
+
+	//ImGui::SliderFloat("Vanilla Mix", &settings.cloudOriginalMix, 0.f, 2.f, "%.2f");
+	//ImGui::SliderFloat("Relight Mix", &settings.cloudRelightMix, 0.f, 2.f, "%.2f");
+	//ImGui::SliderFloat("Silver Lining Accent", &settings.silverLiningMix, 0.f, 1.f, "%.2f");
+	//ImGui::SliderFloat("Silver Lining Spread", &settings.silverLiningSpread, -0.99f, 0.99f, "%.2f");
 }
 
 void PhysicalSky::SettingsDebug()
@@ -463,16 +476,20 @@ void PhysicalSky::SettingsDebug()
 		ImGui::InputFloat3(T(TKEY("secunda_direction"), "Secunda Direction"), &cbData.secundaDir.x, "%.3f", ImGuiInputTextFlags_ReadOnly);
 	}
 
-	ImGui::SeparatorText(T(TKEY("textures"), "Textures"));
-	{
-		static float debugScale = 0.2f;
-		ImGui::SliderFloat(T(TKEY("view_scale"), "View Scale"), &debugScale, 0.1f, 1.f);
+	ImGui::SeparatorText("Textures");
 
-		BUFFER_VIEWER_NODE_BULLET(texTrLut, 1.f);
-		BUFFER_VIEWER_NODE_BULLET(texMsLut, 1.f);
-		BUFFER_VIEWER_NODE_BULLET(texSvLut, 1.f);
-		BUFFER_VIEWER_NODE_BULLET(texApShadow, debugScale);
-	}
+	static float debugScale = 1.0f;
+	ImGui::SliderFloat("View Scale", &debugScale, 0.5f, 4.f);
+
+	BUFFER_VIEWER_NODE_BULLET(cloudColorTex[0], debugScale);
+	BUFFER_VIEWER_NODE_BULLET(cloudDepthTex[0], debugScale);
+	BUFFER_VIEWER_NODE_BULLET(texTrLut, debugScale);
+	BUFFER_VIEWER_NODE_BULLET(texMsLut, debugScale);
+	BUFFER_VIEWER_NODE_BULLET(texSvLut, debugScale);
+
+	static float debugScale2 = 0.2f;
+	ImGui::SliderFloat("View Scale ##2", &debugScale2, 0.1f, 1.f);
+	BUFFER_VIEWER_NODE_BULLET(texApShadow, debugScale2);
 }
 
 #undef I18N_KEY_PREFIX
@@ -595,7 +612,33 @@ void PhysicalSky::SetupResources()
 		texApShadow->CreateUAV(uavDesc);
 	}
 
+	D3D11_RASTERIZER_DESC rasterDesc{};
+	rasterDesc.FillMode = D3D11_FILL_SOLID;
+	rasterDesc.CullMode = D3D11_CULL_NONE;
+	rasterDesc.FrontCounterClockwise = FALSE;
+	rasterDesc.DepthBias = 0;
+	rasterDesc.DepthBiasClamp = 0.0f;
+	rasterDesc.SlopeScaledDepthBias = 0.0f;
+	rasterDesc.DepthClipEnable = FALSE;
+	rasterDesc.ScissorEnable = FALSE;
+	rasterDesc.MultisampleEnable = FALSE;
+	rasterDesc.AntialiasedLineEnable = FALSE;
+	device->CreateRasterizerState(&rasterDesc, &rasterState);
+
+	D3D11_BLEND_DESC blendDesc{};
+	blendDesc.RenderTarget[0].BlendEnable = TRUE;
+	blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+	blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+	blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+	blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+	blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+	blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+	blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+	device->CreateBlendState(&blendDesc, &additiveBlend);
+
 	CompileShaders();
+
+	CreateCloudResources();
 }
 
 void PhysicalSky::ClearShaderCache()
@@ -627,6 +670,10 @@ void PhysicalSky::CompileShaders()
 		if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), info.defines, "cs_5_0", info.entry.data())))
 			info.csPtr->attach(rawPtr);
 	}
+
+	cloudVShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\PhysicalSky\\Clouds.hlsl", { { "CLOUD_VS", "" } }, "vs_5_0");
+	cloudShader = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\PhysicalSky\\Clouds.hlsl", { { "CLOUD_PS", "" } }, "ps_5_0");
+	cloudBlendShader = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\PhysicalSky\\Clouds.hlsl", { { "CLOUD_BLEND_PS", "" } }, "ps_5_0");
 }
 
 bool PhysicalSky::ShadersOK()
@@ -889,6 +936,7 @@ void PhysicalSky::AccumShadow()
 void PhysicalSky::ModifySky()
 {
 	auto context = globals::d3d::context;
+
 	context->PSGetSamplers(3, 2, originalPSSamplers);
 
 	auto samplers = std::array{ sampTr.get(), sampSv.get() };
@@ -901,6 +949,19 @@ void PhysicalSky::RestoreSamplers()
 	context->PSSetSamplers(3, 2, originalPSSamplers);
 }
 
+void PhysicalSky::Hooks::RenderSky::thunk()
+{
+	func();
+
+	globals::state->BeginPerfEvent("Render Clouds");
+	globals::features::physicalSky.RenderClouds();
+	globals::state->EndPerfEvent();
+
+	globals::state->BeginPerfEvent("Clouds Compose");
+	globals::features::physicalSky.CloudCompose();
+	globals::state->EndPerfEvent();
+}
+
 void PhysicalSky::Hooks::BSSkyShader_SetupGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 {
 	globals::features::physicalSky.ModifySky();
@@ -911,4 +972,173 @@ void PhysicalSky::Hooks::BSSkyShader_RestoreGeometry::thunk(RE::BSShader* This, 
 {
 	globals::features::physicalSky.RestoreSamplers();
 	func(This, Pass, RenderFlags);
+}
+
+#pragma warning(push)
+#pragma warning(disable: 4244)
+void PhysicalSky::CreateCloudResources()
+{
+	auto device = globals::d3d::device;
+
+	DirectX::CreateWICTextureFromFile(device, L"Data\\Shaders\\PhysicalSky\\textures\\dataFields.png", nullptr, dataFieldsSRV.put());
+	DirectX::CreateWICTextureFromFile(device, L"Data\\Shaders\\PhysicalSky\\textures\\vertProfile.png", nullptr, vertProfileSRV.put());
+	DirectX::CreateWICTextureFromFile(device, L"Data\\Shaders\\PhysicalSky\\textures\\noiseShape.png", nullptr, noiseShapeSRV.put());
+	DirectX::CreateWICTextureFromFile(device, L"Data\\Shaders\\PhysicalSky\\textures\\cirrusShape.png", nullptr, cirrusShapeSRV.put());
+
+	{
+		CD3D11_TEXTURE2D_DESC texDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, CLOUD_TEX_SIZE.x, CLOUD_TEX_SIZE.y, 1, 1, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);  // change format later. rgba8 unorm?
+		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, texDesc.Format, 0, 1, 0, 1);
+		CD3D11_RENDER_TARGET_VIEW_DESC rtvDesc(D3D11_RTV_DIMENSION_TEXTURE2D, texDesc.Format, 0, 1);
+
+		cloudColorTex[0] = eastl::make_unique<Texture2D>(texDesc);
+		cloudColorTex[0]->CreateSRV(srvDesc);
+		cloudColorTex[0]->CreateRTV(rtvDesc);
+
+		cloudColorTex[1] = eastl::make_unique<Texture2D>(texDesc);
+		cloudColorTex[1]->CreateSRV(srvDesc);
+		cloudColorTex[1]->CreateRTV(rtvDesc);
+	}
+
+	{
+		CD3D11_TEXTURE2D_DESC texDesc(DXGI_FORMAT_R32_FLOAT, CLOUD_TEX_SIZE.x, CLOUD_TEX_SIZE.y, 1, 1, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);  // change format later. rgba8 unorm?
+		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, texDesc.Format, 0, 1, 0, 1);
+		CD3D11_RENDER_TARGET_VIEW_DESC rtvDesc(D3D11_RTV_DIMENSION_TEXTURE2D, texDesc.Format, 0, 1);
+
+		cloudDepthTex[0] = eastl::make_unique<Texture2D>(texDesc);
+		cloudDepthTex[0]->CreateSRV(srvDesc);
+		cloudDepthTex[0]->CreateRTV(rtvDesc);
+
+		cloudDepthTex[1] = eastl::make_unique<Texture2D>(texDesc);
+		cloudDepthTex[1]->CreateSRV(srvDesc);
+		cloudDepthTex[1]->CreateRTV(rtvDesc);
+
+		disoccTex = eastl::make_unique<Texture2D>(texDesc);
+		disoccTex->CreateSRV(srvDesc);
+		disoccTex->CreateRTV(rtvDesc);
+	}
+
+	cloudBuffer = new ConstantBuffer(ConstantBufferDesc<CloudCB>());
+}
+#pragma warning(pop)
+
+void PhysicalSky::RenderClouds()
+{
+	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
+
+	static int frameCount = 0;
+
+	par = !par;
+
+	D3D11_VIEWPORT port;
+	port.MinDepth = port.TopLeftX = port.TopLeftY = 0.0;
+	port.Width = CLOUD_TEX_SIZE.x;
+	port.Height = CLOUD_TEX_SIZE.y;
+	port.MaxDepth = 1.0;
+
+	context->RSSetViewports(1, &port);
+
+	context->RSSetState(rasterState);
+
+	context->VSSetShader(cloudVShader, nullptr, NULL);
+	context->PSSetShader(cloudShader, nullptr, NULL);
+
+	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+
+	ID3D11RenderTargetView* rtvs[] = { cloudColorTex[par]->rtv.get(), cloudDepthTex[par]->rtv.get() };
+
+	float clear[4] = { 0, 0, 0, 0 };
+	context->ClearRenderTargetView(rtvs[0], clear);
+	context->ClearRenderTargetView(rtvs[1], clear);
+	context->OMSetRenderTargets(2, rtvs, nullptr);
+
+	auto& depthTexture = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	ID3D11ShaderResourceView* srvs[] = {
+		depthTexture.depthSRV,
+		disoccTex->srv.get(),
+		cloudColorTex[!par]->srv.get(),
+		cloudDepthTex[!par]->srv.get(),
+		dataFieldsSRV.get(),
+		cirrusShapeSRV.get(),
+		vertProfileSRV.get(),
+		noiseShapeSRV.get(),
+	};
+	context->PSSetShaderResources(0, 8, srvs);
+
+	auto bayerIndex = bayerIndices4x4[frameCount % 16];
+	auto playerPos = RE::PlayerCharacter::GetSingleton()->GetPosition();
+
+	CloudCB cb{};
+	cb.cameraPos = float3(playerPos.x, playerPos.y, playerPos.z);
+	cb.bayerPos = { cloudSettings.noDelay ? -1.0f : float(bayerIndex % 4), (float)bayerIndex / 4 };
+	cb.groundRadius = settings.planetRadius;
+	cb.atmTopRadius = settings.atmosphereRadius;
+	cb.bottomRadius = settings.planetRadius + cloudSettings.bottomRadius;
+	cb.topRadius = settings.planetRadius + cloudSettings.topRadius;
+	cb.minDistance = cloudSettings.minDistance;
+	cb.maxDistance = cloudSettings.maxDistance;
+	cb.currentTime = cloudSettings.currentTime;
+	cb.cumulusCoverage = cloudSettings.cumulusCoverage;
+	cb.cirrusCoverage = 1.0f - std::clamp(cloudSettings.cirrusCoverage, 0.0f, 1.0f);
+	cb.temperatureDiff = cloudSettings.temperatureDiff;
+	cloudBuffer->Update(cb);
+
+	auto buffer = cloudBuffer->CB();
+	context->PSSetConstantBuffers(0, 1, &buffer);
+
+	ID3D11SamplerState* samplers[2] = { sampTr.get(), sampNoise.get() };
+	context->PSSetSamplers(0, 2, samplers);
+
+	context->Draw(3, 0);
+
+	ID3D11ShaderResourceView* nullSrvs[] = {
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+	};
+	context->PSSetShaderResources(0, 8, nullSrvs);
+
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET, RE::BSGraphics::DIRTY_VIEWPORT);
+
+	++frameCount;
+}
+
+void PhysicalSky::CloudCompose()
+{
+	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
+
+	D3D11_VIEWPORT port;
+	port.MinDepth = port.TopLeftX = port.TopLeftY = 0.0;
+	port.Width = globals::state->screenSize.x;
+	port.Height = globals::state->screenSize.y;
+	port.MaxDepth = 1.0;
+
+	context->RSSetViewports(1, &port);
+
+	context->VSSetShader(cloudVShader, nullptr, NULL);
+	context->PSSetShader(cloudBlendShader, nullptr, NULL);
+
+	float f[4] = { 1, 1, 1, 1 };
+	context->OMSetBlendState(additiveBlend, f, 0xFFFFFFFF);
+
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+	context->OMSetRenderTargets(1, &main.RTV, nullptr);
+
+	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+
+	ID3D11ShaderResourceView* srv[] = { cloudColorTex[par]->srv.get(), cloudDepthTex[par]->srv.get(), depth.depthSRV };
+	context->PSSetShaderResources(0, 3, srv);
+
+	context->Draw(3, 0);
+
+	ID3D11ShaderResourceView* nullSrvs[] = { nullptr, nullptr, nullptr };
+	context->PSSetShaderResources(0, 3, nullSrvs);
+
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET, RE::BSGraphics::DIRTY_VIEWPORT);
 }
