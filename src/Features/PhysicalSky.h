@@ -129,6 +129,11 @@ struct PhysicalSky final : public Feature
 	winrt::com_ptr<ID3D11ShaderResourceView> noiseShapeSRV;
 	winrt::com_ptr<ID3D11ShaderResourceView> cirrusShapeSRV;
 
+	winrt::com_ptr<ID3D11ShaderResourceView> cloudBaseSRV;
+	winrt::com_ptr<ID3D11ShaderResourceView> cloudDetailSRV;
+	winrt::com_ptr<ID3D11ShaderResourceView> weatherMapSRV;
+	winrt::com_ptr<ID3D11ShaderResourceView> curlNoiseSRV;
+
 	bool overrideShader = false;
 
 	////////////////////////////////////////////////// Feature Specific Data

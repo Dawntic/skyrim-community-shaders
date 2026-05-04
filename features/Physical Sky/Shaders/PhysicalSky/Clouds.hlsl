@@ -580,6 +580,12 @@ PixelOut main(VertexOut input)
 				}
 				lightStepSize *= 1.5;
 			}
+			//StepLightDensity *= densityFactor * (float)SAMPLES;  // 10 samples
+
+			//StepBaseDensity *= clouds.temperatureDiff * (densityFactor * clouds.stepSizeFactor);
+
+			float cloudTransmittance = (1.0 - OpacityAccum);
+			float StepContrib = StepBaseDensity * cloudTransmittance;
 
 			CloudRaymarchStepState state;
 			state.height = EnvelopeZ;

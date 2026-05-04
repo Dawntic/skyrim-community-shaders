@@ -453,7 +453,7 @@ void PhysicalSky::SettingsClouds()
 	ImGui::SliderFloat("temperatureDiff", &cloudSettings.temperatureDiff, 0.0, 1.0);
 	ImGui::SliderFloat("currentTime", &cloudSettings.currentTime, 0.0, 1.0);
 	ImGui::SliderFloat("minDistance", &cloudSettings.minDistance, 0.0, 400.0);
-	ImGui::SliderFloat("maxDistance", &cloudSettings.maxDistance, 0.0, 400.0);
+	ImGui::SliderFloat("maxDistance", &cloudSettings.maxDistance, 0.0, 600.0);
 	ImGui::Checkbox("noDelay", &cloudSettings.noDelay);
 
 	//ImGui::SliderFloat("Vanilla Mix", &settings.cloudOriginalMix, 0.f, 2.f, "%.2f");
@@ -985,6 +985,11 @@ void PhysicalSky::CreateCloudResources()
 	DirectX::CreateWICTextureFromFile(device, L"Data\\Shaders\\PhysicalSky\\textures\\noiseShape.png", nullptr, noiseShapeSRV.put());
 	DirectX::CreateWICTextureFromFile(device, L"Data\\Shaders\\PhysicalSky\\textures\\cirrusShape.png", nullptr, cirrusShapeSRV.put());
 
+	DirectX::CreateWICTextureFromFile(device, L"Data\\Shaders\\PhysicalSky\\textures\\CurlNoise.png", nullptr, curlNoiseSRV.put());
+	DirectX::CreateWICTextureFromFile(device, L"Data\\Shaders\\PhysicalSky\\textures\\WeatherMap.png", nullptr, weatherMapSRV.put());
+	DirectX::CreateDDSTextureFromFile(device, globals::d3d::context, L"Data\\Shaders\\PhysicalSky\\textures\\CloudBase.dds", nullptr, cloudBaseSRV.put());
+	DirectX::CreateDDSTextureFromFile(device, globals::d3d::context, L"Data\\Shaders\\PhysicalSky\\textures\\CloudDetail.dds", nullptr, cloudDetailSRV.put());
+
 	{
 		CD3D11_TEXTURE2D_DESC texDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, CLOUD_TEX_SIZE.x, CLOUD_TEX_SIZE.y, 1, 1, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);  // change format later. rgba8 unorm?
 		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, texDesc.Format, 0, 1, 0, 1);
@@ -1062,8 +1067,12 @@ void PhysicalSky::RenderClouds()
 		cirrusShapeSRV.get(),
 		vertProfileSRV.get(),
 		noiseShapeSRV.get(),
+		cloudBaseSRV.get(),
+		cloudDetailSRV.get(),
+		curlNoiseSRV.get(),
+		weatherMapSRV.get()
 	};
-	context->PSSetShaderResources(0, 8, srvs);
+	context->PSSetShaderResources(0, 12, srvs);
 
 	auto bayerIndex = bayerIndices4x4[frameCount % 16];
 	auto playerPos = RE::PlayerCharacter::GetSingleton()->GetPosition();
@@ -1100,8 +1109,12 @@ void PhysicalSky::RenderClouds()
 		nullptr,
 		nullptr,
 		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
 	};
-	context->PSSetShaderResources(0, 8, nullSrvs);
+	context->PSSetShaderResources(0, 12, nullSrvs);
 
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET, RE::BSGraphics::DIRTY_VIEWPORT);
 
