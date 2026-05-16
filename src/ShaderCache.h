@@ -772,6 +772,7 @@ namespace SIE
 			ShaderClass shaderClass;
 			uint32_t descriptor;
 			std::wstring diskPath;
+			const RE::BSShader* bsShader = nullptr;  // game singleton, safe to hold
 			uint32_t drawCalls = 0;
 			bool isActive = false;  // Used in current/recent frames
 			std::chrono::steady_clock::time_point lastUsed;

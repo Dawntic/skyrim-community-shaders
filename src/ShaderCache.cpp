@@ -2881,6 +2881,7 @@ namespace SIE
 			info.shaderType = shader.shaderType.get();
 			info.shaderClass = shaderClass;
 			info.descriptor = descriptor;
+			info.bsShader = &shader;
 
 			// Construct disk path
 			info.diskPath = SIE::SShaderCache::GetDiskPath(
