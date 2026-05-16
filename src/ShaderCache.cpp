@@ -1362,11 +1362,11 @@ namespace SIE
 
 			const auto type = shader.shaderType.get();
 
-			// check diskcache
+			// check diskcache — skip when compiling from an override to force a fresh compile
 			auto diskPath = GetDiskPath(shader.fxpFilename, descriptor, shaderClass);
 			ID3DBlob* shaderBlob = nullptr;
 
-			if (useDiskCache && std::filesystem::exists(diskPath)) {
+			if (!hlslOverride && useDiskCache && std::filesystem::exists(diskPath)) {
 				// Determine whether the disk-cached shader is still valid.
 				bool diskCacheOutdated = false;
 				if (cache.UseFileWatcher()) {
@@ -1511,8 +1511,9 @@ namespace SIE
 				strippedShaderBlob->Release();
 			}
 
-			// save shader to disk
-			if (useDiskCache) {
+			// save shader to disk — always overwrite when an override was used so the
+			// compiled .pso reflects the override HLSL on next load
+			if (useDiskCache || hlslOverride) {
 				auto directoryPath = std::format("Data/ShaderCache/{}", shader.fxpFilename);
 				if (!std::filesystem::is_directory(directoryPath)) {
 					try {
