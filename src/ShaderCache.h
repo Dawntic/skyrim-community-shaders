@@ -477,6 +477,9 @@ namespace SIE
 
 		bool AddCompletedShader(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor, ID3DBlob* a_blob, bool fromDisk = false);
 
+		bool RecompileShaderWithOverride(ShaderClass shaderClass, uint32_t descriptor,
+			const std::wstring& overrideHlslPath);
+
 		enum class ClaimResult
 		{
 			CacheHit,  // Already compiled; use the returned blob
@@ -499,11 +502,11 @@ namespace SIE
 			uint32_t descriptor);
 
 		RE::BSGraphics::VertexShader* MakeAndAddVertexShader(const RE::BSShader& shader,
-			uint32_t descriptor);
+			uint32_t descriptor, std::optional<std::wstring> hlslOverride = std::nullopt);
 		RE::BSGraphics::PixelShader* MakeAndAddPixelShader(const RE::BSShader& shader,
-			uint32_t descriptor);
+			uint32_t descriptor, std::optional<std::wstring> hlslOverride = std::nullopt);
 		RE::BSGraphics::ComputeShader* MakeAndAddComputeShader(const RE::BSShader& shader,
-			uint32_t descriptor);
+			uint32_t descriptor, std::optional<std::wstring> hlslOverride = std::nullopt);
 
 		static std::string GetDefinesString(const RE::BSShader& shader, uint32_t descriptor);
 

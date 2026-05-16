@@ -1341,7 +1341,7 @@ namespace SIE
 			return type;
 		}
 
-		static ID3DBlob* CompileShader(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor, bool useDiskCache, ShaderFileDependencyTracker* dependencyTracker)
+		static ID3DBlob* CompileShader(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor, bool useDiskCache, ShaderFileDependencyTracker* dependencyTracker, std::optional<std::wstring> hlslOverride = std::nullopt)
 		{
 			if (!SShaderCache::ResolveImageSpaceDescriptor(shader, descriptor)) {
 				return nullptr;
@@ -1437,10 +1437,11 @@ namespace SIE
 			defines[lastIndex] = { nullptr, nullptr };  // do final entry
 			GetShaderDefines(shader, descriptor, std::span{ defines }.subspan(lastIndex));
 
-			const std::wstring path = GetShaderPath(
+			const std::wstring originalPath = GetShaderPath(
 				shader.shaderType == RE::BSShader::Type::ImageSpace ?
 					static_cast<const RE::BSImagespaceShader&>(shader).originalShaderName :
 					shader.fxpFilename);
+			const std::wstring path = hlslOverride.value_or(originalPath);
 			auto pathString = Util::WStringToString(path);
 			if (!std::filesystem::exists(path)) {
 				logger::error("Failed to compile {} shader {}::{:X}: {} does not exist", magic_enum::enum_name(shaderClass), magic_enum::enum_name(type), descriptor, pathString);
@@ -1462,8 +1463,10 @@ namespace SIE
 				flags |= D3DCOMPILE_SKIP_VALIDATION;
 			}
 
-			// Track includes
-			TrackingIncludeHandler includeHandler(std::filesystem::path(path).parent_path());
+			// Track includes — always use the original shader's directory as the include root
+			// so Common/*.hlsli and feature includes resolve correctly even when compiling
+			// from an override path outside Data/Shaders/.
+			TrackingIncludeHandler includeHandler(std::filesystem::path(originalPath).parent_path());
 			const HRESULT compileResult = D3DCompileFromFile(path.c_str(), defines.data(), &includeHandler, "main",
 				GetShaderProfile(shaderClass), flags, 0, &shaderBlob, &errorBlob);
 			// If the include handler captured any includes, register them so the watcher
@@ -2550,10 +2553,10 @@ namespace SIE
 	}
 
 	RE::BSGraphics::VertexShader* ShaderCache::MakeAndAddVertexShader(const RE::BSShader& shader,
-		uint32_t descriptor)
+		uint32_t descriptor, std::optional<std::wstring> hlslOverride)
 	{
 		if (const auto shaderBlob =
-				SShaderCache::CompileShader(ShaderClass::Vertex, shader, descriptor, isDiskCache, dependencyTracker.get())) {
+				SShaderCache::CompileShader(ShaderClass::Vertex, shader, descriptor, isDiskCache, dependencyTracker.get(), hlslOverride)) {
 			auto device = globals::d3d::device;
 
 			auto newShader = SShaderCache::CreateVertexShader(*shaderBlob, shader,
@@ -2579,10 +2582,10 @@ namespace SIE
 	}
 
 	RE::BSGraphics::PixelShader* ShaderCache::MakeAndAddPixelShader(const RE::BSShader& shader,
-		uint32_t descriptor)
+		uint32_t descriptor, std::optional<std::wstring> hlslOverride)
 	{
 		if (const auto shaderBlob =
-				SShaderCache::CompileShader(ShaderClass::Pixel, shader, descriptor, isDiskCache, dependencyTracker.get())) {
+				SShaderCache::CompileShader(ShaderClass::Pixel, shader, descriptor, isDiskCache, dependencyTracker.get(), hlslOverride)) {
 			auto device = globals::d3d::device;
 
 			auto newShader = SShaderCache::CreatePixelShader(*shaderBlob, shader,
@@ -2608,10 +2611,10 @@ namespace SIE
 	}
 
 	RE::BSGraphics::ComputeShader* ShaderCache::MakeAndAddComputeShader(const RE::BSShader& shader,
-		uint32_t descriptor)
+		uint32_t descriptor, std::optional<std::wstring> hlslOverride)
 	{
 		if (const auto shaderBlob =
-				SShaderCache::CompileShader(ShaderClass::Compute, shader, descriptor, isDiskCache, dependencyTracker.get())) {
+				SShaderCache::CompileShader(ShaderClass::Compute, shader, descriptor, isDiskCache, dependencyTracker.get(), hlslOverride)) {
 			auto device = globals::d3d::device;
 
 			auto newShader = SShaderCache::CreateComputeShader(*shaderBlob, shader,
@@ -2920,6 +2923,63 @@ namespace SIE
 				++it;
 			}
 		}
+	}
+
+	bool ShaderCache::RecompileShaderWithOverride(ShaderClass shaderClass, uint32_t descriptor,
+		const std::wstring& overrideHlslPath)
+	{
+		if (!std::filesystem::exists(overrideHlslPath)) {
+			logger::error("Override HLSL does not exist: {}", Util::WStringToString(overrideHlslPath));
+			return false;
+		}
+
+		ActiveShaderInfo target;
+		{
+			std::scoped_lock lock(activeShadersMutex);
+			for (const auto& [_, info] : activeShaders) {
+				if (info.shaderClass == shaderClass && info.descriptor == descriptor && info.bsShader) {
+					target = info;
+					break;
+				}
+			}
+		}
+
+		if (!target.bsShader) {
+			logger::error("No active {} shader found for descriptor {:X}",
+				magic_enum::enum_name(shaderClass), descriptor);
+			return false;
+		}
+
+		// Drop the cached blob so ClaimCompilation doesn't return a cache hit
+		{
+			std::unique_lock lock(mapMutex);
+			shaderMap.erase(target.key);
+		}
+
+		// MakeAndAdd* compiles the blob AND replaces the live D3D11 shader object
+		// in pixelShaders/vertexShaders/computeShaders — the step CompileShader alone skips.
+		bool succeeded = false;
+		switch (shaderClass) {
+		case ShaderClass::Pixel:
+			succeeded = MakeAndAddPixelShader(*target.bsShader, descriptor, overrideHlslPath) != nullptr;
+			break;
+		case ShaderClass::Vertex:
+			succeeded = MakeAndAddVertexShader(*target.bsShader, descriptor, overrideHlslPath) != nullptr;
+			break;
+		case ShaderClass::Compute:
+			succeeded = MakeAndAddComputeShader(*target.bsShader, descriptor, overrideHlslPath) != nullptr;
+			break;
+		default:
+			logger::error("Unknown shader class for descriptor {:X}", descriptor);
+			return false;
+		}
+
+		if (succeeded)
+			logger::debug("Override recompile succeeded for {} {:X}", target.key, descriptor);
+		else
+			logger::error("Override recompile failed for {} {:X}", target.key, descriptor);
+
+		return succeeded;
 	}
 
 	std::vector<ShaderCache::ActiveShaderInfo> ShaderCache::GetActiveShaders() const
