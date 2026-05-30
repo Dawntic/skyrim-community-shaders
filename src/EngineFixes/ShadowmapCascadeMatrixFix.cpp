@@ -649,6 +649,9 @@ void ShadowmapMatrixFix::BuildShadowCascadeCameraInput(const RE::BSShadowDirecti
 	// Build bounding objects
 	BuildCascadeBoundingSphere(cascadeBoundData.boundingSphere, lightFrustum);
 
+	// Cache cascade world extent (AABB is built from sphere, so extent = 2 * radius)
+	cascadeData[cascadeIndex].cascadeExtent = 2.0f * cascadeBoundData.boundingSphere.radius;
+
 	XMVECTOR lightCameraPos = XMVector3Transform(rootCameraPos, lightView);
 	//LogVector("light camera", lightCameraPos);
 
@@ -933,4 +936,55 @@ bool ShadowmapMatrixFix::GeometryInsideShadowBound(RE::BSGeometry* geometry)
 	auto pos = geometry->worldBound.center - RE::Main::WorldRootCamera()->world.translate;
 	float dist = pos.Length() - (geometry->worldBound.radius);
 	return dist < maxCascadeCoverageVS;
+}
+
+// Radius-based cascade culling for small objects.
+//
+// Distant cascades cover huge world areas; a single shadowmap texel maps to
+// many world units, so small geometry contributes nothing but cost. This
+// transforms the object's world bound into the cascade's lightspace, derives
+// its worldspace radius and its projected radius in shadowmap texels (the
+// cascade is orthographic, so texels-per-world-unit = cascadePxSize / cascadeExtent),
+// and returns true when both fall below their thresholds — i.e. the object is
+// both physically small AND covers fewer than N shadow texels for this cascade.
+bool ShadowmapMatrixFix::CullSmallObjectForCascade(const RE::NiAVObject* object, const int cascadeIndex, float worldRadiusThreshold, float screenRadiusTexelThreshold)
+{
+	using namespace DirectX;
+
+	if (!object || cascadeIndex < 0 || cascadeIndex >= nCascades)
+		return false;
+
+	const auto& worldBound = object->worldBound;
+	const float worldRadius = worldBound.radius;
+
+	// Degenerate bound contributes nothing
+	if (worldRadius <= 0.0f)
+		return true;
+
+	const float cascadeExtent = cascadeData[cascadeIndex].cascadeExtent;
+	if (cascadeExtent <= 0.0f)
+		return false;
+
+	// Transform world-space center into the cascade's lightspace.
+	// The cascade view matrix is rotation-only — translation is stored
+	// separately to avoid fp precision loss on large world coordinates —
+	// so subtract the cascade origin before applying the rotation.
+	const XMMATRIX lightView = XMMatrixTranspose(XMLoadFloat4x4(&cascadeData[cascadeIndex].viewMatrix));
+	const XMVECTOR worldCenter = XMVectorSet(worldBound.center.x, worldBound.center.y, worldBound.center.z, 1.0f);
+	const XMVECTOR cascadeOrigin = XMLoadFloat3(&cascadeData[cascadeIndex].translation);
+	const XMVECTOR lightSpaceCenter = XMVector3Transform(XMVectorSubtract(worldCenter, cascadeOrigin), lightView);
+
+	// Reject objects whose lightspace XY puts the bound entirely outside the
+	// cascade footprint — they cannot cast into this cascade's shadowmap.
+	const float halfExtent = cascadeExtent * 0.5f;
+	const float lsX = XMVectorGetX(lightSpaceCenter);
+	const float lsY = XMVectorGetY(lightSpaceCenter);
+	if (fabsf(lsX) - worldRadius > halfExtent || fabsf(lsY) - worldRadius > halfExtent)
+		return true;
+
+	// Orthographic projection: world radius maps linearly to shadowmap texels.
+	const float texelsPerWorldUnit = float(cascadePxSize) / cascadeExtent;
+	const float screenRadiusTexels = worldRadius * texelsPerWorldUnit;
+
+	return (worldRadius < worldRadiusThreshold) && (screenRadiusTexels < screenRadiusTexelThreshold);
 }

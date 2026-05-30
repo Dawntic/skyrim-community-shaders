@@ -177,6 +177,7 @@ struct ShadowmapMatrixFix : EngineFix
 	static void GetCullPlanesFromVPMatrix(RE::NiFrustumPlanes& outPlanes, const DirectX::XMMATRIX& viewProj);
 	static DirectX::XMVECTOR GetQuantizedLightDirection(DirectX::XMVECTOR lightDir, float stepDegrees);
 	static bool GeometryInsideShadowBound(RE::BSGeometry* geometry);
+	static bool CullSmallObjectForCascade(const RE::NiAVObject* object, const int cascadeIndex, float worldRadiusThreshold, float screenRadiusTexelThreshold);
 
 	static void BuildRootFrustum(Frustum& outputFrustum, const RE::NiFrustum& viewFrustum, const DirectX::XMMATRIX& rootWorld);
 	static void SetCascadeSplit(CascadeBounds::Split& outputSplits, const RE::NiFrustum& viewFrustum);
@@ -204,7 +205,8 @@ struct ShadowmapMatrixFix : EngineFix
 		RE::NiFrustumPlanes cullingPlanes;
 		float endDepthNDC;
 		float startDepthNDC;
-		float _pad[2];
+		float cascadeExtent;  // Worldspace width/height of the orthographic cascade frustum
+		float _pad;
 	};
 	static inline CascadeData cascadeData[maxCascades] = {};
 
