@@ -447,65 +447,40 @@ float GetWaterFogFade(uint eyeIndex)
 	return PosAdjust[eyeIndex].w;
 }
 
+// Blends fog over a color, optionally layering exponential height fog on top.
+float3 ApplyWaterFog(float3 color, float3 fogColor, float fogDistanceFactor, float3 worldPosition, uint eyeIndex)
+{
+#			if defined(EXP_HEIGHT_FOG)
+	if (SharedData::exponentialHeightFogSettings.enabled) {
+		float4 expFog = ExponentialHeightFog::GetExponentialHeightFog(worldPosition, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, fogColor);
+		if (ExponentialHeightFog::ShouldDisableVanillaFog()) {
+			return lerp(color, expFog.xyz * GetWaterFogFade(eyeIndex), expFog.w);
+		}
+		color = lerp(color, fogColor * GetWaterFogFade(eyeIndex), fogDistanceFactor);
+		return lerp(color, expFog.xyz * GetWaterFogFade(eyeIndex), expFog.w);
+	}
+#			endif
+	return lerp(color, fogColor * GetWaterFogFade(eyeIndex), fogDistanceFactor);
+}
+
 #			if defined(FLOWMAP)
 
-/**
- * Structure containing complete flowmap information
- */
 struct FlowmapData
 {
-	float4 color;       // Raw flowmap color (R=flow_x, G=flow_y, B=flow_strength, A=flow_mask)
-	float2 flowVector;  // Flow vector (coordinate space depends on source function)
+	float4 color;       // R=flow_x, G=flow_y, B=flow_strength, A=flow_mask
+	float2 flowVector;  // coordinate space depends on the producing function
 };
 
-/**
- * Gets raw flowmap data before UV-space coordinate transformation
- *
- * @param input Pixel shader input containing texture coordinates
- * @param uvShift UV offset for sampling the flowmap texture
- * @return FlowmapData with raw components:
- *         - color: Raw flowmap texture sample (RG=rotation, B=strength, A=mask)
- *         - flowVector: Base flow vector before any coordinate transformation
- *                      Ready for direct application of rotation matrix for world positioning
- *
- * @details This function provides flowmap data in its original coordinate space, suitable
- *          for world-space positioning effects (like ripple movement). The flowVector has
- *          NOT been transformed for UV-space normal sampling - that transformation is only
- *          applied in GetFlowmapDataUV() which uses transpose for UV coordinate perturbation.
- *
- *          Use this function when you need to apply the rotation matrix directly for
- *          world-space effects without needing to reverse any existing transformations.
- *
- * @see GetFlowmapDataUV() for UV-space normal sampling (applies transpose transformation)
- */
+// Raw flowmap sample; flow vector is untransformed (texture space).
 FlowmapData GetFlowmapDataTextureSpace(PS_INPUT input, float2 uvShift)
 {
 	FlowmapData data;
 	data.color = FlowMapTex.SampleLevel(FlowMapSampler, input.TexCoord2.zw + uvShift, 0);
 	data.flowVector = (64 * input.TexCoord3.xy) * sqrt(1.01 - data.color.z);
-	// NOTE: flowVector is NOT transformed yet - this is the raw vector before rotation matrix
 	return data;
 }
-/**
- * Samples flowmap texture and calculates UV-space flow data for texture sampling
- *
- * @param input Pixel shader input containing texture coordinates and world position data
- * @param uvShift UV offset for sampling the flowmap texture (used for animation/variation)
- * @return FlowmapData Complete flowmap information with UV-space flow vector
- *
- * @details This function:
- *          - Samples the flowmap texture at the specified UV coordinates
- *          - Decodes flow direction from RG channels (remapped from [0,1] to [-1,1])
- *          - Calculates flow strength using the blue channel with sqrt falloff
- *          - Applies transpose rotation matrix to transform flow direction to UV space
- *          - Scales flow vector by world position and strength factors
- *
- * @note Flowmap format:
- *       - Red channel: Flow direction X component (0.5 = no flow, 0/1 = negative/positive flow)
- *       - Green channel: Flow direction Y component (0.5 = no flow, 0/1 = negative/positive flow)
- *       - Blue channel: Flow strength (0 = no flow, 1 = maximum flow)
- *       - Alpha channel: Flow mask/intensity multiplier
- */
+
+// Flow vector rotated into UV space, for normal map sampling.
 FlowmapData GetFlowmapDataUV(PS_INPUT input, float2 uvShift)
 {
 	FlowmapData data = GetFlowmapDataTextureSpace(input, uvShift);
@@ -514,90 +489,8 @@ FlowmapData GetFlowmapDataUV(PS_INPUT input, float2 uvShift)
 	data.flowVector = mul(transpose(flowRotationMatrix), data.flowVector);
 	return data;
 }
-// ----------------------------------------------------------------
-// Flowmap Parallax Functions
-// ----------------------------------------------------------------
 
-/**
- * Samples height from flowmap texture using the same 4-sample blend as flowmap normals
- * This ensures height transitions match the normal transitions exactly
- *
- * @param input PS_INPUT for flowmap coordinate access
- * @param normalMul The blend weights from the flowmap system (same as used for normals)
- * @param uvShift The UV shift value (1 / (128 * flowmapDimensions))
- * @param mipLevel Mip level for texture sampling
- */
-float GetFlowmapHeightBlended(PS_INPUT input, float2 normalMul, float2 uvShift, float mipLevel)
-{
-	// Sample height using the EXACT same UV computation as GetFlowmapNormal
-	// This ensures the height blending matches the normal blending perfectly
-
-	// Sample 0: uvShift, multiplier=9.92, offset=0
-	FlowmapData flowData0 = GetFlowmapDataUV(input, uvShift);
-	float2 uv0 = 0 + (flowData0.flowVector - float2(9.92 * ((0.001 * ReflectionColor.w) * flowData0.color.w), 0));
-	float height0 = FlowMapNormalsTex.SampleLevel(FlowMapNormalsSampler, uv0, mipLevel).w;
-
-	// Sample 1: float2(0, uvShift.y), multiplier=10.64, offset=0.27
-	FlowmapData flowData1 = GetFlowmapDataUV(input, float2(0, uvShift.y));
-	float2 uv1 = 0.27 + (flowData1.flowVector - float2(10.64 * ((0.001 * ReflectionColor.w) * flowData1.color.w), 0));
-	float height1 = FlowMapNormalsTex.SampleLevel(FlowMapNormalsSampler, uv1, mipLevel).w;
-
-	// Sample 2: 0.0.xx, multiplier=8, offset=0
-	FlowmapData flowData2 = GetFlowmapDataUV(input, 0.0.xx);
-	float2 uv2 = 0 + (flowData2.flowVector - float2(8 * ((0.001 * ReflectionColor.w) * flowData2.color.w), 0));
-	float height2 = FlowMapNormalsTex.SampleLevel(FlowMapNormalsSampler, uv2, mipLevel).w;
-
-	// Sample 3: float2(uvShift.x, 0), multiplier=8.48, offset=0.62
-	FlowmapData flowData3 = GetFlowmapDataUV(input, float2(uvShift.x, 0));
-	float2 uv3 = 0.62 + (flowData3.flowVector - float2(8.48 * ((0.001 * ReflectionColor.w) * flowData3.color.w), 0));
-	float height3 = FlowMapNormalsTex.SampleLevel(FlowMapNormalsSampler, uv3, mipLevel).w;
-
-	// Use the EXACT same blending formula as flowmap normals
-	float blendedHeight =
-		normalMul.y * (normalMul.x * height2 + (1 - normalMul.x) * height3) +
-		(1 - normalMul.y) * (normalMul.x * height1 + (1 - normalMul.x) * height0);
-
-	return blendedHeight;
-}
-
-// Keep this for compatibility - just forwards to the proper function
-float GetFlowmapHeightBarycentric(PS_INPUT input, float2 flowmapDimensions, float2 baseUV, float mipLevel)
-{
-	// This is now unused - we use GetFlowmapHeightBlended directly
-	return FlowMapNormalsTex.SampleLevel(FlowMapNormalsSampler, baseUV, mipLevel).w;
-}
-
-/**
- * Computes mip level for flowmap texture sampling
- */
-float GetFlowmapMipLevel(float2 flowmapUV)
-{
-	float2 textureDims;
-	FlowMapNormalsTex.GetDimensions(textureDims.x, textureDims.y);
-
-#				if defined(VR)
-	textureDims /= 16.0;
-#				else
-	textureDims /= 8.0;
-#				endif
-
-	float2 texCoordsPerSize = flowmapUV * textureDims;
-	float2 dxSize = ddx(texCoordsPerSize);
-	float2 dySize = ddy(texCoordsPerSize);
-	float2 dTexCoords = dxSize * dxSize + dySize * dySize;
-	float minTexCoordDelta = max(dTexCoords.x, dTexCoords.y);
-	return max(0.5 * log2(minTexCoordDelta), 0);
-}
-
-/**
- * Samples height from flowmap texture (riverflow.dds alpha channel)
- * Uses the same UV calculation as GetFlowmapNormal for consistency
- */
-
-/**
- * Generates flowmap-based normal (no parallax - flowmap normals are not parallax-shifted)
- * Uses mip clamping to preserve detail at distance and prevent over-blurring
- */
+// Flowmap-based normal with mip clamping to preserve detail at distance.
 float3 GetFlowmapNormal(PS_INPUT input, float2 uvShift, float multiplier, float offset)
 {
 	FlowmapData flowData = GetFlowmapDataUV(input, uvShift);
@@ -615,43 +508,12 @@ float3 GetFlowmapNormal(PS_INPUT input, float2 uvShift, float multiplier, float 
 	return float3(FlowMapNormalsTex.SampleLevel(FlowMapNormalsSampler, scaledUv, mipLevel).xy, flowData.color.z);
 }
 
-/**
- * Gets flowmap data with world-space flow vector for positioning effects
- *
- * @param input Pixel shader input containing texture coordinates
- * @param uvShift UV offset for flowmap sampling (used for animation phases)
- * @return FlowmapData Complete flowmap information with world-space flow vector
- *
- * @details This function:
- *          - Samples raw flowmap data (before UV-space transformations)
- *          - Decodes flow direction from flowmap RG channels
- *          - Applies component-wise directional transformation
- *          - Returns complete flowmap data with world-space flow vector
- *
- * @note Use this for effects that need to move with water current (ripples, debris, foam, etc.)
- *       For UV-space normal sampling, use GetFlowmapDataUV() instead
- */
+// Flow vector in world space, for effects that follow the current (ripples, foam).
 FlowmapData GetFlowmapDataWorldSpace(PS_INPUT input, float2 uvShift)
 {
 	FlowmapData data = GetFlowmapDataTextureSpace(input, uvShift);
-	float2 flowDirection = -(data.color.xy * 2 - 1);    // Decode direction with 180° correction
-	data.flowVector = data.flowVector * flowDirection;  // Transform to world space
-	return data;
-}
-
-/**
- * Converts existing texture-space flowmap data to world-space (avoids duplicate sampling)
- *
- * @param textureSpaceData FlowmapData from GetFlowmapDataTextureSpace()
- * @return FlowmapData Complete flowmap data with world-space flow vector
- *
- * @note Use this overload when you already have texture-space flowmap data to avoid duplicate texture sampling
- */
-FlowmapData GetFlowmapDataWorldSpace(FlowmapData textureSpaceData)
-{
-	FlowmapData data = textureSpaceData;
-	float2 flowDirection = -(data.color.xy * 2 - 1);    // Decode direction with 180° correction
-	data.flowVector = data.flowVector * flowDirection;  // Transform to world space
+	float2 flowDirection = -(data.color.xy * 2 - 1);  // 180 degree direction correction
+	data.flowVector = data.flowVector * flowDirection;
 	return data;
 }
 #			endif
@@ -1276,27 +1138,7 @@ PS_OUTPUT main(PS_INPUT input)
 		fogColor = ImageBasedLighting::GetFogIBLColor(fogColor);
 	}
 #						endif
-#						if defined(EXP_HEIGHT_FOG)
-	if (SharedData::exponentialHeightFogSettings.enabled) {
-		float4 exponentialHeightFog = ExponentialHeightFog::GetExponentialHeightFog(input.WPosition.xyz, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, fogColor);
-		if (ExponentialHeightFog::ShouldDisableVanillaFog()) {
-			fogColor = exponentialHeightFog.xyz;
-			fogColor *= GetWaterFogFade(eyeIndex);
-			finalColorPreFog = lerp(finalColorPreFog, fogColor, exponentialHeightFog.w);
-		} else {
-			fogColor *= GetWaterFogFade(eyeIndex);
-			finalColorPreFog = lerp(finalColorPreFog, fogColor, fogDistanceFactor);
-			float3 expFogColor = exponentialHeightFog.xyz * GetWaterFogFade(eyeIndex);
-			finalColorPreFog = lerp(finalColorPreFog, expFogColor, exponentialHeightFog.w);
-		}
-	} else {
-		fogColor *= GetWaterFogFade(eyeIndex);
-		finalColorPreFog = lerp(finalColorPreFog, fogColor, fogDistanceFactor);
-	}
-#						else
-	fogColor *= GetWaterFogFade(eyeIndex);
-	finalColorPreFog = lerp(finalColorPreFog, fogColor, fogDistanceFactor);
-#						endif
+	finalColorPreFog = ApplyWaterFog(finalColorPreFog, fogColor, fogDistanceFactor, input.WPosition.xyz, eyeIndex);
 
 	float3 finalColor = finalColorPreFog;
 
@@ -1327,28 +1169,7 @@ PS_OUTPUT main(PS_INPUT input)
 		preFogColor = ImageBasedLighting::GetFogIBLColor(preFogColor);
 	}
 #						endif
-#						if defined(EXP_HEIGHT_FOG)
-	if (SharedData::exponentialHeightFogSettings.enabled) {
-		float4 exponentialHeightFog = ExponentialHeightFog::GetExponentialHeightFog(input.WPosition.xyz, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, preFogColor);
-		if (ExponentialHeightFog::ShouldDisableVanillaFog()) {
-			preFogColor = exponentialHeightFog.xyz;
-			preFogColor *= GetWaterFogFade(eyeIndex);
-			finalColorPreFog = lerp(finalColorPreFog, preFogColor, exponentialHeightFog.w);
-		} else {
-			preFogColor *= GetWaterFogFade(eyeIndex);
-			finalColorPreFog = lerp(finalColorPreFog, preFogColor, fogDistanceFactor);
-			float3 expFogColor = exponentialHeightFog.xyz * GetWaterFogFade(eyeIndex);
-			finalColorPreFog = lerp(finalColorPreFog, expFogColor, exponentialHeightFog.w);
-		}
-	} else {
-		preFogColor *= GetWaterFogFade(eyeIndex);
-		finalColorPreFog = lerp(finalColorPreFog, preFogColor, fogDistanceFactor);
-	}
-#						else
-	preFogColor *= GetWaterFogFade(eyeIndex);
-
-	finalColorPreFog = lerp(finalColorPreFog, preFogColor, fogDistanceFactor);
-#						endif
+	finalColorPreFog = ApplyWaterFog(finalColorPreFog, preFogColor, fogDistanceFactor, input.WPosition.xyz, eyeIndex);
 
 	float3 refractionColor = diffuseOutput.refractionColor;
 
