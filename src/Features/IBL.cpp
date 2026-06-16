@@ -249,7 +249,7 @@ void IBL::Prepass()
 
 	// IBL with sky (use game's native reflections cubemap directly)
 	{
-		auto renderer = globals::game::renderer;
+		//auto renderer = globals::game::renderer;
 		auto reflections = globals::features::physicalSky.texSvLut->srv.get();  //renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
 		srvs.at(0) = reflections;
 		uavs.at(0) = skyIBLTexture->uav.get();
