@@ -209,7 +209,18 @@ struct float2 : DirectX::SimpleMath::Vector2
 
 	float2 operator-() const { return float2(-x, -y); }
 };
-using float3 = DirectX::SimpleMath::Vector3;
+
+struct float3 : DirectX::SimpleMath::Vector3
+{
+	using DirectX::SimpleMath::Vector3::Vector3;
+
+	float3(const RE::NiPoint3& v) : DirectX::SimpleMath::Vector3(v.x, v.y, v.z) {}
+	float3(const DirectX::SimpleMath::Vector3& v) : DirectX::SimpleMath::Vector3(v) {}
+
+	operator RE::NiPoint3() const { return { x, y, z }; }
+
+	float3 operator-() const { return float3(-x, -y, -z); }
+};
 using float4 = DirectX::SimpleMath::Vector4;
 using float4x4 = DirectX::SimpleMath::Matrix;
 using uint = uint32_t;

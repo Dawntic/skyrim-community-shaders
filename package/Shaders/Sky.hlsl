@@ -316,7 +316,7 @@ PS_OUTPUT main(PS_INPUT input)
 			float sunDiskSin = sqrt(1.0 - SharedData::physSkyData.sunDiskCos * SharedData::physSkyData.sunDiskCos);
 			float tanTheta = sqrt(1.0 - cosTheta * cosTheta) / cosTheta;
 			float normDist = tanTheta * SharedData::physSkyData.sunDiskCos * rcp(sunDiskSin);
-			float3 limbFactor = Color::GamutTransform(PhysSky::LimbDarkenHestroffer(normDist));
+			float3 limbFactor = 0;  //Color::GamutTransform(PhysSky::LimbDarkenHestroffer(normDist));
 
 			const float softEdge = saturate(8.0f * (cosTheta - SharedData::physSkyData.sunDiskCos) / (1.0f - SharedData::physSkyData.sunDiskCos));
 			const float sunSolidAngle = Math::TAU * (1.0f - SharedData::physSkyData.sunDiskCos);

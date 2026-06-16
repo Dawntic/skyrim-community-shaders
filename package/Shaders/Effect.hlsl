@@ -578,7 +578,7 @@ float3 GetLightingColor(float3 msPosition, float3 worldPosition, float2 screenPo
 		if (!SharedData::InInterior || SharedData::iblSettings.EnableInterior) {
 			ambientColor = Color::IrradianceToLinear(color);
 #			if defined(SKYLIGHTING)
-			ambientColor += Color::Saturation(ImageBasedLighting::GetIBLColor(float3(0, 0, -1), skylightingDiffuse), SharedData::iblSettings.IBLSaturation) * SharedData::iblSettings.DiffuseIBLScale;
+			ambientColor += Color::Saturation(ImageBasedLighting::GetIBLColor(float3(0, 0, -1)), SharedData::iblSettings.IBLSaturation) * SharedData::iblSettings.DiffuseIBLScale;
 #			else
 			ambientColor += Color::Saturation(ImageBasedLighting::GetIBLColor(float3(0, 0, -1)), SharedData::iblSettings.IBLSaturation) * SharedData::iblSettings.DiffuseIBLScale;
 #			endif

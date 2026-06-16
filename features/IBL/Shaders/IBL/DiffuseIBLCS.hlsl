@@ -7,14 +7,15 @@
 // Make sure the SkyView LUT SRV is bound for this dispatch.
 RWTexture2D<sh2> IBLTexture : register(u0);
 SamplerState LinearSampler : register(s0);
+Texture2D TexSvLut : register(t0);
 
 // cylinder map (unchanged — yours)
 float2 SkyViewLutUv(float3 rayDir)
 {
 	float azimuth = atan2(rayDir.y, rayDir.x);
-	float u = azimuth * .5 * RCP_PI;  // sampler wraps around so ok
+	float u = azimuth * .5 * (1 / Math::PI);  // sampler wraps around so ok
 	float zenith = asin(rayDir.z);
-	float v = 0.5 - 0.5 * sign(zenith) * sqrt(abs(zenith) * 2 * RCP_PI);
+	float v = 0.5 - 0.5 * sign(zenith) * sqrt(abs(zenith) * 2 * (1 / Math::PI));
 	v = max(v, 0.01);
 	return frac(float2(u, v));
 }

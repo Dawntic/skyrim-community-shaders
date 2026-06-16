@@ -140,6 +140,18 @@ namespace SharedData
 		uint4 ArrayOrigin;  // xyz: array origin
 		int4 ValidMargin;
 
+		int2 GridTexSize;
+		float2 InvGridTexSize;
+		float2 GridMinCornerWS;
+		float2 InvGridSpan;
+		uint WorldHasCache;
+		uint toggleLighting;  //tmp
+		uint toggleTrees;
+		uint toggleGrass;
+		uint toggleDeferred;
+		uint toggleEffect;
+		float2 pad;
+
 		float MinDiffuseVisibility;
 		float MinSpecularVisibility;
 		uint2 pad0;
@@ -205,6 +217,10 @@ namespace SharedData
 		float FogAmount;
 		uint DALCMode;  // 0: Luminance Ratio, 1: Color Ratio, 2: DALC + Sky, 3: DALC + Sky (Directional)
 		uint DisableInInteriors;
+		//uint EnableInterior;
+		//uint EnableDiffuseIBL;
+		//float IBLSaturation;
+		//float DiffuseIBLScale;
 		float pad0;
 	};
 

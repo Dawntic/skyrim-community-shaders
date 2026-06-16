@@ -292,7 +292,7 @@ Texture2D<unorm float> TexApShadow : register(t64);
 		skyColor *= 1 - shadow;
 
 		if (data.tonemapper == 1)
-			skyColor = Color::LinearToGamma(skyColor);
+			skyColor = Color::LLLinearToGamma(skyColor);
 		else if (data.tonemapper == 2)
 			skyColor = skyColor / (1 + skyColor);
 
@@ -429,7 +429,7 @@ Texture2D<unorm float> TexApShadow : register(t64);
 		apColor.rgb *= 1 - shadow;
 
 		if (data.tonemapper == 1)
-			apColor.rgb = Color::LinearToGamma(apColor.rgb);
+			apColor.rgb = Color::LLLinearToGamma(apColor.rgb);
 		else if (data.tonemapper == 2)
 			apColor.rgb = apColor.rgb / (1 + apColor.rgb);
 

@@ -305,6 +305,11 @@ public:
 		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, srv.put()));
 		detail::SetD3DName(srv.get(), name_, " SRV");
 	}
+	void CreateSRV(D3D11_SHADER_RESOURCE_VIEW_DESC const* a_desc)
+	{
+		auto device = globals::d3d::device;
+		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), a_desc, srv.put()));
+	}
 
 	void CreateUAV(D3D11_UNORDERED_ACCESS_VIEW_DESC const& a_desc)
 	{

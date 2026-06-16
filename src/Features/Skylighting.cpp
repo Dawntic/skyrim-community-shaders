@@ -136,9 +136,9 @@ void Skylighting::SetupResources()
 				.WSize = texDesc.Depth }
 		};
 
-		texDenseProbeArray = new Texture3D(texDesc);
-		texDenseProbeArray->CreateSRV(srvDesc);
-		texDenseProbeArray->CreateUAV(uavDesc);
+		texProbeArray = new Texture3D(texDesc);
+		texProbeArray->CreateSRV(srvDesc);
+		texProbeArray->CreateUAV(uavDesc);
 
 		texDesc.Format = srvDesc.Format = uavDesc.Format = DXGI_FORMAT_R8_UINT;
 
@@ -228,7 +228,7 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 
 	static float3 prevCellID = { 0, 0, 0 };
 
-	auto eyePosNI = Util::GetEyePosition(0);
+	auto eyePosNI = Util::GetEyePosition();
 	auto eyePos = float3{ eyePosNI.x, eyePosNI.y, eyePosNI.z };
 
 	float3 cellSize = {
@@ -281,7 +281,7 @@ void Skylighting::UpdateDenseProbeGrid()
 	TracyD3D11Zone(globals::state->tracyCtx, "Skylighting - Update Dense Probes");
 
 	std::array<ID3D11ShaderResourceView*, 1> srvs = { texOcclusion->srv.get() };
-	std::array<ID3D11UnorderedAccessView*, 2> uavs = { texDenseProbeArray->uav.get(), texAccumFramesArray->uav.get() };
+	std::array<ID3D11UnorderedAccessView*, 2> uavs = { texProbeArray->uav.get(), texAccumFramesArray->uav.get() };
 	std::array<ID3D11SamplerState*, 1> samplers = { comparisonSampler.get() };
 
 	// Update probe array
@@ -346,7 +346,7 @@ void Skylighting::Prepass()
 	UpdateSparseProbeGrid();
 
 	auto context = globals::d3d::context;
-	ID3D11ShaderResourceView* srvs[3] = { texDenseProbeArray->srv.get(), stbn_vec3_2Dx1D_128x128x64.get(), texSparseProbeArray->srv.get() };
+	ID3D11ShaderResourceView* srvs[3] = { texProbeArray->srv.get(), stbn_vec3_2Dx1D_128x128x64.get(), texSparseProbeArray->srv.get() };
 	context->PSSetShaderResources(50, 3, srvs);
 }
 
@@ -928,9 +928,12 @@ void Skylighting::SetInitalState(RE::NiPoint3& initalPos)
 	camData.worldFOV = viewFOV;
 	camData.firstPersonFOV = viewFOV;
 
+	float2 screenSize{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight };
+	float2 size = Util::ConvertToDynamic(screenSize);
+
 	auto worldArea = worldspace->maximumCoords - worldspace->minimumCoords;
 	float fovYRad = viewFOV * (DirectX::XM_PI / 180.0f);
-	float fovXRad = 2.0f * atan(tan(fovYRad * 0.5f) * (globals::state->screenSize.x / globals::state->screenSize.y));
+	float fovXRad = 2.0f * atan(tan(fovYRad * 0.5f) * (size.x / size.y));
 	float distZ = std::max((worldArea.x * 0.5f) / tan(fovXRad * 0.5f), (worldArea.y * 0.5f) / tan(fovYRad * 0.5f)) + 50000.0f;
 	distZ = std::min(distZ, rootFrustum.fFar);
 

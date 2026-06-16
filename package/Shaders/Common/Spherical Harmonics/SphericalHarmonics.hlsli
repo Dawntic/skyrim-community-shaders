@@ -60,7 +60,10 @@
 #include "Common/Math.hlsli"
 
 #define sh2 float4
-// TODO sh3
+struct sh3
+{
+	float coeff[9];
+};
 
 namespace SphericalHarmonics
 {
@@ -144,6 +147,12 @@ namespace SphericalHarmonics
 		return sh * v;
 	}
 
+	// Integrates the product of two SH functions over the unit sphere.
+	float FuncProductIntegral(sh2 shL, sh2 shR)
+	{
+		return dot(shL, shR);
+	}
+
 	// Operates a rotation of a SH function.
 	sh2 Rotate(sh2 sh, float3x3 rotation)
 	{
@@ -153,12 +162,6 @@ namespace SphericalHarmonics
 		float3 tmp = float3(sh.w, sh.y, sh.z);  // undo direction component shuffle to match source/function space
 		result.yzw = mul(tmp, rotation).yzx;    // apply rotation and re-shuffle
 		return result;
-	}
-
-	// Integrates the product of two SH functions over the unit sphere.
-	float FuncProductIntegral(sh2 shL, sh2 shR)
-	{
-		return dot(shL, shR);
 	}
 
 	// Computes the SH coefficients of a SH function representing the result of the multiplication of two SH functions. (from [4])
@@ -171,9 +174,9 @@ namespace SphericalHarmonics
 		const float factor = 1.0f / (2.0f * sqrt(Math::PI));
 		return factor * sh2(
 							dot(shL, shR),
-							shL.x * shR.y + shL.y * shR.x,
-							shL.x * shR.z + shL.z * shR.x,
-							shL.x * shR.w + shL.w * shR.x);
+							shL.y * shR.w + shL.w * shR.y,
+							shL.z * shR.w + shL.w * shR.z,
+							shL.w * shR.w + shL.w * shR.w);
 	}
 
 	// Convolves a SH function using a Hanning filtering. This helps reducing ringing and negative values. (from [2], Windowing p.16)
@@ -242,6 +245,158 @@ namespace SphericalHarmonics
 		result += 0.25f * zonalL2Coeff * zhDir;
 		return max(0, result);
 	}
+
+	// 3rd Order Functions //
+	sh3 AddSH3(sh3 shL, sh3 shR)
+	{
+		sh3 result;
+		[unroll] for (int i = 0; i < 9; i++)
+			result.coeff[i] = shL.coeff[i] + shR.coeff[i];
+		return result;
+	}
+
+	sh3 ScaleSH3(sh3 sh, float v)
+	{
+		sh3 result;
+		[unroll] for (int i = 0; i < 9; i++)
+			result.coeff[i] = sh.coeff[i] * v;
+		return result;
+	}
+
+	float ProductIntegralSH3(sh3 shL, sh3 shR)
+	{
+		float result = 0.0;
+		[unroll] for (int i = 0; i < 9; i++)
+			result += shL.coeff[i] * shR.coeff[i];
+		return result;
+	}
+
+	sh3 EvaluateSH3(float3 dir)
+	{
+		sh3 result;
+
+		// L=0, M=0
+		result.coeff[0] = 0.28209479177387814f;
+
+		// L=1, M=-1,0,1
+		result.coeff[1] = -0.48860251190291992f * dir.y;
+		result.coeff[2] = 0.48860251190291992f * dir.z;
+		result.coeff[3] = -0.48860251190291992f * dir.x;
+
+		// L=2, M=-2,-1,0,1,2
+		result.coeff[4] = 1.09254843059207908f * dir.x * dir.y;
+		result.coeff[5] = -1.09254843059207908f * dir.y * dir.z;
+		result.coeff[6] = 0.31539156525252001f * (3.0f * dir.z * dir.z - 1.0f);
+		result.coeff[7] = -1.09254843059207908f * dir.x * dir.z;
+		result.coeff[8] = 0.54627421529603954f * (dir.x * dir.x - dir.y * dir.y);
+
+		return result;
+	}
+
+	sh3 EvaluateCosineLobeSH3(float3 dir)
+	{
+		sh3 result;
+		// L=0, M= 0
+		result.coeff[0] = 0.8862269254527580137f;
+		// L=1, M=-1, 0, 1
+		result.coeff[1] = -1.0233267079464884885f * dir.y;
+		result.coeff[2] = 1.0233267079464884885f * dir.z;
+		result.coeff[3] = -1.0233267079464884885f * dir.x;
+		// L=2, M=-2, -1, 0, 1, 2
+		result.coeff[4] = 0.8580855308097834790f * dir.x * dir.y;
+		result.coeff[5] = -0.8580855308097834790f * dir.y * dir.z;
+		result.coeff[6] = 0.2477079561003757808f * (3.0f * dir.z * dir.z - 1.0f);
+		result.coeff[7] = -0.8580855308097834790f * dir.x * dir.z;
+		result.coeff[8] = 0.4290427654048917395f * (dir.x * dir.x - dir.y * dir.y);
+		return result;
+	}
+
+	float UnprojectSH3(sh3 functionSh, float3 dir)
+	{
+		sh3 sh = EvaluateSH3(dir);
+		float result = 0.0;
+		[unroll] for (int i = 0; i < 9; i++)
+			result += functionSh.coeff[i] * sh.coeff[i];
+		return result;
+	}
+
+	float3 UnprojectSH3(sh3 functionShR, sh3 functionShG, sh3 functionShB, float3 dir)
+	{
+		sh3 sh = EvaluateSH3(dir);
+		float3 result = 0.0;
+		[unroll] for (int i = 0; i < 9; i++)
+			result += float3(functionShR.coeff[i], functionShG.coeff[i], functionShB.coeff[i]) * sh.coeff[i];
+		return result;
+	}
+
+	sh3 UnitSH3()
+	{
+		sh3 result = (sh3)0;
+		result.coeff[0] = sqrt(4 * Math::PI);
+		return result;
+	}
+
+	sh3 LerpSH3(sh3 a, sh3 b, float t)
+	{
+		sh3 result;
+		[unroll] for (int i = 0; i < 9; i++)
+			result.coeff[i] = lerp(a.coeff[i], b.coeff[i], t);
+		return result;
+	}
+
+	sh3 UnpackSH3(uint2 ProbePos, Texture2DArray Array)
+	{
+		sh3 OutputSH;
+
+		float3 band0 = Array[uint3(ProbePos.xy, 0)].xyz;
+		float3 band1 = Array[uint3(ProbePos.xy, 1)].xyz;
+		float3 band2 = Array[uint3(ProbePos.xy, 2)].xyz;
+
+		OutputSH.coeff[0] = band0.x;
+		OutputSH.coeff[1] = band0.y;
+		OutputSH.coeff[2] = band0.z;
+
+		OutputSH.coeff[3] = band1.x;
+		OutputSH.coeff[4] = band1.y;
+		OutputSH.coeff[5] = band1.z;
+
+		OutputSH.coeff[6] = band2.x;
+		OutputSH.coeff[7] = band2.y;
+		OutputSH.coeff[8] = band2.z;
+
+		return OutputSH;
+	}
+
+	// ScalarPackSH3
+	void PackSH3(sh3 SHdata, uint2 ProbePos, RWTexture2DArray<float4> Array)
+	{
+		Array[uint3(ProbePos.xy, 0)] = float4(SHdata.coeff[0], SHdata.coeff[1], SHdata.coeff[2], 0);
+		Array[uint3(ProbePos.xy, 1)] = float4(SHdata.coeff[3], SHdata.coeff[4], SHdata.coeff[5], 0);
+		Array[uint3(ProbePos.xy, 2)] = float4(SHdata.coeff[6], SHdata.coeff[7], SHdata.coeff[8], 0);
+	}
+
+	sh3 FauxSpecularLobeSH3(float3 N, float3 V, float roughness)
+	{
+		// https://www.gdcvault.com/play/1026701/Fast-Denoising-With-Self-Stabilizing
+		// get dominant ggx reflection direction
+		float f = (1 - roughness) * (sqrt(1 - roughness) + roughness);
+		float3 R = reflect(-V, N);
+		float3 D = lerp(N, R, f);
+		float3 dominantDir = normalize(D);
+
+		// lobe half angle
+		// credit: Olivier Therrien
+		float roughness2 = roughness * roughness;
+		float halfAngle = clamp(4.1679 * roughness2 * roughness2 - 9.0127 * roughness2 * roughness + 4.6161 * roughness2 + 1.7048 * roughness + 0.1, 0, Math::HALF_PI);
+		float lerpFactor = halfAngle / Math::HALF_PI;
+
+		sh3 directional = SphericalHarmonics::EvaluateSH3(dominantDir);
+		sh3 cosineLobe = SphericalHarmonics::ScaleSH3(SphericalHarmonics::EvaluateCosineLobeSH3(dominantDir), rcp(Math::PI));
+		sh3 result = SphericalHarmonics::AddSH3(SphericalHarmonics::ScaleSH3(directional, lerpFactor), SphericalHarmonics::ScaleSH3(cosineLobe, 1 - lerpFactor));
+
+		return result;
+	}
+
 }
 
 #endif  // __SPHERICAL_HARMONICS_DEPENDENCY_HLSL__
