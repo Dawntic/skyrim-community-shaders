@@ -75,6 +75,22 @@ namespace Skylighting
 #endif
 
 #if defined(PSHADER) || defined(SKYLIGHTING_PROBE_REGISTER)
+	sh3 SampleSparseProbeGrid(SharedData::SkylightingSettings settings, Texture2DArray ProbeArrayIn, float3 CoordsWS)
+	{
+		sh3 outputSH = SphericalHarmonics::UnitSH3();
+
+		if (!settings.WorldHasCache)
+			return outputSH;
+
+		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
+		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
+			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
+			outputSH = SphericalHarmonics::UnpackSH3(Probe, ProbeArrayIn);
+		}
+
+		return outputSH;
+	}
+
 	sh2 Sample(float3 positionMS, float3 normalWS)
 	{
 		sh2 scaledUnitSH = UNIT_SH / 1e-10;

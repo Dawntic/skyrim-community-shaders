@@ -1,28 +1,36 @@
 #pragma once
 
+#include <DDSTextureLoader.h>
+#include <DirectXTex.h>
+
+#include "../Deferred.h"
+#include "ShaderCache.h"
+#include "State.h"
+
+#include "Features/TerrainShadows.h"
+
 struct Skylighting : Feature
 {
 private:
 	static constexpr std::string_view MOD_ID = "139352";
 
 public:
-
 	virtual inline std::string GetName() override { return "Skylighting"; }
-	virtual std::string GetDisplayName() override { return T("feature.skylighting.name", "Skylighting"); }
 	virtual inline std::string GetShortName() override { return "Skylighting"; }
 	virtual inline std::string GetFeatureModLink() override { return MakeNexusModURL(MOD_ID); }
 	virtual inline std::string_view GetShaderDefineName() override { return "SKYLIGHTING"; }
 	virtual std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
-		return { T("feature.skylighting.description", "Simulates realistic ambient lighting by calculating sky occlusion and directional lighting, providing more accurate and natural illumination in outdoor environments."),
-			{ T("feature.skylighting.key_feature_1", "Sky occlusion calculation for ambient lighting"),
-				T("feature.skylighting.key_feature_2", "Directional skylighting based on environment geometry"),
-				T("feature.skylighting.key_feature_3", "Enhanced ambient lighting for outdoor scenes"),
-				T("feature.skylighting.key_feature_4", "Support for varying sky illumination intensities"),
-				T("feature.skylighting.key_feature_5", "Integration with existing lighting systems") } };
-	};
-
+		return {
+			"Simulates realistic ambient lighting by calculating sky occlusion and directional lighting, providing more accurate and natural illumination in outdoor environments.",
+			{ "Sky occlusion calculation for ambient lighting",
+				"Directional skylighting based on environment geometry",
+				"Enhanced ambient lighting for outdoor scenes",
+				"Support for varying sky illumination intensities",
+				"Integration with existing lighting systems" }
+		};
+	}
 	virtual bool HasShaderDefine(RE::BSShader::Type) override { return true; };
 
 	virtual void RestoreDefaultSettings() override;
@@ -41,11 +49,20 @@ public:
 
 	//////////////////////////////////////////////////////////////////////////////////
 
+	void UpdateDenseProbeGrid();
+	void UpdateSparseProbeGrid();
+
 	struct Settings
 	{
 		float MaxZenith = 3.1415926f / 2.f;  // 90 deg
 		float MinDiffuseVisibility = 0.1f;
 		float MinSpecularVisibility = 0.1f;
+
+		uint toggleLighting = true;
+		uint toggleTrees = true;
+		uint toggleGrass = true;
+		uint toggleDeferred = true;
+		uint toggleEffect = true;
 	} settings;
 
 	struct SkylightingCB
@@ -59,6 +76,18 @@ public:
 		uint _pad1;
 		int ValidMargin[4];
 
+		int2 GridTexSize;
+		float2 InvGridTexSize;
+		float2 GridMinWorldCorner;
+		float2 InvGridSpan;
+		uint HasCache;
+		uint toggleLighting;
+		uint toggleTrees;
+		uint toggleGrass;
+		uint toggleDeferred;
+		uint toggleEffect;
+		float _pad[2];
+
 		float MinDiffuseVisibility;
 		float MinSpecularVisibility;
 		uint _pad2[2];
@@ -70,14 +99,22 @@ public:
 	winrt::com_ptr<ID3D11SamplerState> comparisonSampler = nullptr;
 
 	Texture2D* texOcclusion = nullptr;
-	Texture3D* texProbeArray = nullptr;
+	Texture3D* texDenseProbeArray = nullptr;
 	Texture3D* texAccumFramesArray = nullptr;
 
 	winrt::com_ptr<ID3D11ComputeShader> probeUpdateCompute = nullptr;
+	winrt::com_ptr<ID3D11ShaderResourceView> stbn_vec3_2Dx1D_128x128x64;
+
+	// sparse grid
+	static constexpr int2 sparseGridSize = int2(476, 376);
+
+	eastl::unique_ptr<Texture2D> texSparseProbeArray = nullptr;
+
+	winrt::com_ptr<ID3D11ComputeShader> updateSparseGridCS = nullptr;
 
 	// misc parameters
 	uint probeArrayDims[3] = { 256, 256, 128 };
-	float occlusionDistance = 10000.f;
+	float occlusionDistance = 4096.f * 2.5f;  // 5 ugrids
 
 	// cached variables
 	bool queuedResetSkylighting = true;
@@ -85,6 +122,61 @@ public:
 	REX::W32::XMFLOAT4X4 OcclusionTransform;
 	float4 OcclusionDir;
 	uint frameCount = 0;
+
+	RE::NiPoint3 cachedActorPosition;
+	float cachedActorFOV;
+	eastl::unique_ptr<Texture2D> bentNormalMap = nullptr;
+	std::unordered_set<std::string> bentNormalMaps;
+	std::string currentBentNormalMap = "";
+	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
+
+	void GetCachedWorldspaces();
+	bool LoadWorldspaceBentNormalMap();
+	bool worldHasCache = false;
+
+	// cache gen resources
+	static constexpr uint depthCubeSize = 128;
+
+	eastl::unique_ptr<Texture2D> depthCubemap = nullptr;
+	eastl::unique_ptr<Texture2D> bentNormalCacheTex = nullptr;
+	std::array<ID3D11DepthStencilView*, 6> depthCubemapDSVs{};
+
+	eastl::unique_ptr<Texture2D> stagingDepthTex = nullptr;
+	DirectX::ScratchImage stagingHeightMapTex;
+
+	ID3D11ComputeShader* bentNormalComputeShader = nullptr;
+
+	struct alignas(16) CacheGenCBStruct
+	{
+		float4 CubemapParams;  // dimension, 1.0 / dimension,  dimension^2, dimension^2 * valid_cube_sides
+		int2 BentNormalWritePx;
+		float _pad[2];
+	};
+	ConstantBuffer* cacheGenBuffer = nullptr;
+
+	struct alignas(16) AlphaRefCBStruct
+	{
+		float AlphaTestRefRS;
+		float _pad[3];
+	};
+	ConstantBuffer* clipRefOverrideBuffer = nullptr;
+
+	void SetInitalState(RE::NiPoint3& initalPos);
+	void CreateCachingResources();
+	bool CreateUniqueCachingResources(int2 totalCells);
+	void GenerateWorldspaceCache();
+	void GenerateVisibilityCubemap();
+	void GenerateBentNormal(int2 currentCellID);
+	float SampleHeightMap(float2 coords);
+	void FinishCaching(std::string worldName);
+
+	bool buildingCache = false;
+	float3 sampleCoordsWS = float3();
+	int cubemapSide = 0;
+	int cellCount = 0;  //tmp
+
+	bool override = false;  //tmp
+	float3 coords = float3();
 
 	void ResetSkylighting();
 
@@ -101,6 +193,18 @@ public:
 
 	void RenderOcclusion();
 
+	struct NiCamera_SetMatrix  // not needed?
+	{
+		static void thunk(RE::NiCamera* camera, void* unk);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct SetViewport
+	{
+		static void thunk(RE::BSGraphics::Renderer* renderer, uint32_t arg1, uint32_t arg2, uint32_t arg3);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	struct Main_Precipitation_RenderOcclusion
 	{
 		static void thunk();
@@ -110,6 +214,12 @@ public:
 	struct SetViewFrustum
 	{
 		static void thunk(RE::NiCamera* a_camera, RE::NiFrustum* a_frustum);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct SetViewFrustumVR
+	{
+		static void thunk(RE::NiCamera* a_camera, RE::NiFrustum* a_frustum, uint a_eyeIndex);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 

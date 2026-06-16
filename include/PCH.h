@@ -198,11 +198,31 @@ struct ankerl::unordered_dense::hash<std::string>
 
 #include "SimpleMath.h"
 
-using float2 = DirectX::SimpleMath::Vector2;
+struct float2 : DirectX::SimpleMath::Vector2
+{
+	using DirectX::SimpleMath::Vector2::Vector2;
+
+	float2(const DirectX::SimpleMath::Vector2& v) : DirectX::SimpleMath::Vector2(v) {}
+	float2(const RE::NiPoint2& v) : DirectX::SimpleMath::Vector2(v.x, v.y) {}
+
+	operator RE::NiPoint2() const { return { x, y }; }
+
+	float2 operator-() const { return float2(-x, -y); }
+};
 using float3 = DirectX::SimpleMath::Vector3;
 using float4 = DirectX::SimpleMath::Vector4;
 using float4x4 = DirectX::SimpleMath::Matrix;
 using uint = uint32_t;
+struct int2
+{
+	int x, y;
+	int2 operator-(const int2& o) const { return { x - o.x, y - o.y }; }
+	int2 operator+(const int2& o) const { return { x + o.x, y + o.y }; }
+	int2 operator*(const int2& o) const { return { x * o.x, y * o.y }; }
+	int2 operator/(const int2& o) const { return { x / o.x, y / o.y }; }
+	int2 operator*(int s) const { return { x * s, y * s }; }
+	int2 operator/(int s) const { return { x / s, y / s }; }
+};
 
 #include "Globals.h"
 #include "Profiler.h"

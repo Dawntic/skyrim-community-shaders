@@ -1,6 +1,8 @@
 #include "Common/Math.hlsli"
 #include "Skylighting/Skylighting.hlsli"
 
+#ifdef DENSE_PROBE_GRID
+
 Texture2D<unorm float> srcOcclusionDepth : register(t0);
 
 RWTexture3D<sh2> outProbeArray : register(u0);
@@ -10,7 +12,7 @@ SamplerComparisonState comparisonSampler : register(s0);
 
 [numthreads(8, 8, 1)] void main(uint3 dtid : SV_DispatchThreadID) {
 	const float fadeInThreshold = 15;
-	const static sh2 unitSH = Skylighting::UNIT_SH;
+	const static sh2 unitSH = float4(sqrt(4.0 * Math::PI), 0, 0, 0);
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
 	uint3 cellID = uint3(max(int3(dtid) - settings.ArrayOrigin.xyz, 0) % Skylighting::ARRAY_DIM);
 	uint3 validMin = (uint3)max(0, settings.ValidMargin.xyz);
@@ -25,6 +27,7 @@ SamplerComparisonState comparisonSampler : register(s0);
 
 	if (all(occlusionUV > 0) && all(occlusionUV < 1)) {
 		uint accumFrames = isValid ? (outAccumFramesArray[dtid] + 1) : 1;
+		float occlusionDepth = srcOcclusionDepth.SampleCmpLevelZero(comparisonSampler, occlusionUV, 0);
 		float visibility = srcOcclusionDepth.SampleCmpLevelZero(comparisonSampler, occlusionUV, cellCentreOS.z);
 
 		sh2 occlusionSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(settings.OcclusionDir.xyz), visibility * 4.0 * Math::PI);  // 4 pi from monte carlo
@@ -44,3 +47,28 @@ SamplerComparisonState comparisonSampler : register(s0);
 		outAccumFramesArray[dtid] = 0;
 	}
 }
+#endif
+
+#ifdef SPARSE_PROBE_GRID
+
+SamplerState LinearSampler : register(s0);
+Texture2D BentNormalTex : register(t0);
+RWTexture2DArray<float4> ProbeArray : register(u0);
+
+[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
+
+	if (ThreadID.x >= settings.GridTexSize.x || ThreadID.y >= settings.GridTexSize.y)
+		return;
+
+	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvGridTexSize.xy;
+
+	float4 BNSample = BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);
+	float3 BentNormalDir = BNSample.xyz * 2.0 - 1.0;
+	float BentNormalAO = BNSample.w;
+
+	sh3 OcclusionSH = SphericalHarmonics::ScaleSH3(SphericalHarmonics::EvaluateSH3(BentNormalDir), BentNormalAO * 4.0 * Math::PI);
+
+	SphericalHarmonics::PackSH3(OcclusionSH, ThreadID.xy, ProbeArray);
+}
+#endif
