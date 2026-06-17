@@ -103,10 +103,10 @@ public:
 	Texture3D* texAccumFramesArray = nullptr;
 
 	winrt::com_ptr<ID3D11ComputeShader> probeUpdateCompute = nullptr;
-	winrt::com_ptr<ID3D11ShaderResourceView> stbn_vec3_2Dx1D_128x128x64;
+	//winrt::com_ptr<ID3D11ShaderResourceView> stbn_vec3_2Dx1D_128x128x64;
 
 	// sparse grid
-	static constexpr int2 sparseGridSize = int2(476, 376);
+	static constexpr int2 sparseGridSize = int2(128, 128);
 
 	eastl::unique_ptr<Texture2D> texSparseProbeArray = nullptr;
 

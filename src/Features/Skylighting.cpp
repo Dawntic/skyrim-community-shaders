@@ -169,9 +169,9 @@ void Skylighting::SetupResources()
 		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, comparisonSampler.put()));
 	}
 
-	{
-		DirectX::CreateDDSTextureFromFile(device, globals::d3d::context, L"Data\\Shaders\\Skylighting\\SpatiotemporalBlueNoise\\stbn_vec3_2Dx1D_128x128x64.dds", nullptr, stbn_vec3_2Dx1D_128x128x64.put());
-	}
+	//{
+	//DirectX::CreateDDSTextureFromFile(device, globals::d3d::context, L"Data\\Shaders\\Skylighting\\SpatiotemporalBlueNoise\\stbn_vec3_2Dx1D_128x128x64.dds", nullptr, stbn_vec3_2Dx1D_128x128x64.put());
+	//}
 
 	GetCachedWorldspaces();
 
@@ -297,6 +297,7 @@ void Skylighting::UpdateDenseProbeGrid()
 		globals::state->EndPerfEvent();
 }
 
+#include "PhysicalSky.h"
 void Skylighting::UpdateSparseProbeGrid()
 {
 	auto context = globals::d3d::context;
@@ -311,8 +312,10 @@ void Skylighting::UpdateSparseProbeGrid()
 	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 
 	auto srv = bentNormalMap->srv.get();
+	auto srv2 = globals::features::physicalSky.texSvLut->srv.get();
+	ID3D11ShaderResourceView* array[2] = { srv, srv2 };
 	context->CSSetSamplers(0, 1, &globals::deferred->linearSampler);
-	context->CSSetShaderResources(0, 1, &srv);
+	context->CSSetShaderResources(0, 2, array);
 
 	context->Dispatch((sparseGridSize.x + 7) / 8, (sparseGridSize.y + 7) / 8, 1);
 
@@ -346,7 +349,7 @@ void Skylighting::Prepass()
 	UpdateSparseProbeGrid();
 
 	auto context = globals::d3d::context;
-	ID3D11ShaderResourceView* srvs[3] = { texProbeArray->srv.get(), stbn_vec3_2Dx1D_128x128x64.get(), texSparseProbeArray->srv.get() };
+	ID3D11ShaderResourceView* srvs[3] = { texProbeArray->srv.get(), texSparseProbeArray->srv.get() };
 	context->PSSetShaderResources(50, 3, srvs);
 }
 
