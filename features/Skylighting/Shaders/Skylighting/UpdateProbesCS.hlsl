@@ -52,6 +52,7 @@ SamplerComparisonState comparisonSampler : register(s0);
 #ifdef SPARSE_PROBE_GRID
 
 SamplerState LinearSampler : register(s0);
+SamplerState LinearWrapSampler : register(s1);
 Texture2D BentNormalTex : register(t0);
 Texture2D SkyViewLUTTex : register(t1);
 RWTexture2DArray<float4> ProbeArray : register(u0);
@@ -67,7 +68,7 @@ float3 SampleSkyRadiance(float3 rayDir)
 	float v = 0.5 - 0.5 * sign(zenith) * sqrt(abs(zenith) * 2 * (1 / Math::PI));
 	v = max(v, 0.01);
 
-	return SkyViewLUTTex.SampleLevel(LinearSampler, frac(float2(u, v)), 0).rgb;
+	return SkyViewLUTTex.SampleLevel(LinearWrapSampler, frac(float2(u, v)), 0).rgb;
 }
 
 // i-th Fibonacci direction over hemisphere

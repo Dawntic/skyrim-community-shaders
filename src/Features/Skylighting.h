@@ -8,6 +8,7 @@
 #include "State.h"
 
 #include "Features/TerrainShadows.h"
+#include "PhysicalSky.h"
 
 struct Skylighting : Feature
 {

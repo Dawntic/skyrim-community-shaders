@@ -12,6 +12,7 @@ Texture2D<unorm float3> AlbedoTexture : register(t1);
 Texture2D<unorm float3> NormalRoughnessTexture : register(t2);
 Texture2D<float3> MasksTexture : register(t3);
 Texture2D<unorm float> Masks2Texture : register(t9);
+Texture2DArray<float4> ProbeArrayGrid : register(t18);
 
 RWTexture2D<float4> MainRW : register(u0);
 RWTexture2D<float4> NormalTAAMaskSpecularMaskRW : register(u1);
@@ -245,7 +246,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 			//finalIrradiance = ImageBasedLighting::GetSkyIBL(R); //envSpecular + skySpecular;
 
 			sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, ProbeArrayGrid, positionWS.xyz);
-			finalIrradiance = SphericalHarmonicsRGB::Irradiance(probeSample, R);
+			finalIrradiance = SphericalHarmonics::Irradiance(probeSample, R);
 
 		} else
 #	endif
@@ -296,7 +297,10 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 		finalIrradiance += ssgiIlSpecular;
 #	endif
-		//finalIrradiance = ImageBasedLighting::GetSkyIBL(R);
+		finalIrradiance = ImageBasedLighting::GetSkyIBL(R);
+
+		sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, ProbeArrayGrid, positionWS.xyz);
+		finalIrradiance = SphericalHarmonics::DiffuseRadiance(probeSample, R);
 
 		color += reflectance * finalIrradiance;
 	}

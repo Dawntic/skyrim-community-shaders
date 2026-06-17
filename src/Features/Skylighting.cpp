@@ -297,7 +297,6 @@ void Skylighting::UpdateDenseProbeGrid()
 		globals::state->EndPerfEvent();
 }
 
-#include "PhysicalSky.h"
 void Skylighting::UpdateSparseProbeGrid()
 {
 	auto context = globals::d3d::context;

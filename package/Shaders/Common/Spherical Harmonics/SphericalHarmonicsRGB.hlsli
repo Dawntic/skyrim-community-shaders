@@ -142,7 +142,7 @@ namespace SphericalHarmonics
 	// Outgoing radiance of a white Lambertian surface (albedo 1) = E / PI.
 	float3 DiffuseRadiance(sh2RGB sh, float3 N)
 	{
-		return max(float3(0, 0, 0), Irradiance(sh, N) / Math::PI);
+		return max(0, Irradiance(sh, N) / Math::PI);
 	}
 
 	// ------------------------------------------------------------------ //
