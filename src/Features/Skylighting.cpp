@@ -314,7 +314,9 @@ void Skylighting::UpdateSparseProbeGrid()
 	auto srv = bentNormalMap->srv.get();
 	auto srv2 = globals::features::physicalSky.texSvLut->srv.get();
 	ID3D11ShaderResourceView* array[2] = { srv, srv2 };
-	context->CSSetSamplers(0, 1, &globals::deferred->linearSampler);
+
+	ID3D11SamplerState* sampArray[2] = { globals::deferred->linearSampler, globals::features::physicalSky.sampSv.get() };
+	context->CSSetSamplers(0, 1, sampArray);
 	context->CSSetShaderResources(0, 2, array);
 
 	context->Dispatch((sparseGridSize.x + 7) / 8, (sparseGridSize.y + 7) / 8, 1);
