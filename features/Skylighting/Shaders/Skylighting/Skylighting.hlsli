@@ -5,6 +5,7 @@
 #include "Common/Shading.hlsli"
 #include "Common/SharedData.hlsli"
 #include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
+#include "Common/Spherical Harmonics/SphericalHarmonicsRGB.hlsli"
 
 namespace Skylighting
 {
@@ -86,6 +87,22 @@ namespace Skylighting
 		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
 			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
 			outputSH = SphericalHarmonics::UnpackSH3(Probe, ProbeArrayIn);
+		}
+
+		return outputSH;
+	}
+
+	sh2RGB SampleIrradiance(SharedData::SkylightingSettings settings, Texture2DArray ProbeArrayIn, float3 CoordsWS)
+	{
+		sh2RGB outputSH = SphericalHarmonics::Zero2RGB();
+
+		if (!settings.WorldHasCache)
+			return outputSH;
+
+		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
+		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
+			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
+			outputSH = SphericalHarmonics::UnpackSH2RGB(Probe, ProbeArrayIn);
 		}
 
 		return outputSH;

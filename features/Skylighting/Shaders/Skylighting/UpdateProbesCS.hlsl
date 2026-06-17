@@ -53,7 +53,32 @@ SamplerComparisonState comparisonSampler : register(s0);
 
 SamplerState LinearSampler : register(s0);
 Texture2D BentNormalTex : register(t0);
+Texture2D SkyViewLUTTex : register(t1);
 RWTexture2DArray<float4> ProbeArray : register(u0);
+
+static const float GOLDEN_ANGLE = 2.39996322972865332;  // PI * (3 - sqrt(5))
+#	define SAMPLES 256
+
+float3 SampleSkyRadiance(float3 rayDir)
+{
+	float azimuth = atan2(rayDir.y, rayDir.x);
+	float u = azimuth * .5 * (1 / Math::PI);  // sampler wraps around so ok
+	float zenith = asin(rayDir.z);
+	float v = 0.5 - 0.5 * sign(zenith) * sqrt(abs(zenith) * 2 * (1 / Math::PI));
+	v = max(v, 0.01);
+
+	return SkyViewLUTTex.SampleLevel(LinearSampler, frac(float2(u, v)), 0).rgb;
+}
+
+// i-th Fibonacci direction over hemisphere
+// Uniform in z + golden angle azimuth => every sample subtends solid angle (2*PI / N)
+float3 FibonacciHemisphere(uint i, uint samples)
+{
+	float z = 1.0 - (float(i) + 0.5) / float(samples);
+	float r = sqrt(saturate(1.0 - z * z));
+	float theta = GOLDEN_ANGLE * float(i);
+	return float3(r * cos(theta), r * sin(theta), z);
+}
 
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
@@ -67,8 +92,22 @@ RWTexture2DArray<float4> ProbeArray : register(u0);
 	float3 BentNormalDir = BNSample.xyz * 2.0 - 1.0;
 	float BentNormalAO = BNSample.w;
 
-	sh3 OcclusionSH = SphericalHarmonics::ScaleSH3(SphericalHarmonics::EvaluateSH3(BentNormalDir), BentNormalAO * 4.0 * Math::PI);
+	//sh3 OcclusionSH = SphericalHarmonics::ScaleSH3(SphericalHarmonics::EvaluateSH3(BentNormalDir), BentNormalAO * 4.0 * Math::PI);
+	//SphericalHarmonics::PackSH3(OcclusionSH, ThreadID.xy, ProbeArray);
 
-	SphericalHarmonics::PackSH3(OcclusionSH, ThreadID.xy, ProbeArray);
+	sh2RGB output = SphericalHarmonics::Zero2RGB();
+
+	const float dOmega = (2.0 * Math::PI) / float(SAMPLES);  // constant: equal-area samples
+
+	for (uint i = 0; i < SAMPLES; ++i) {
+		float3 dir = FibonacciHemisphere(i, SAMPLES);
+		float3 skyRadiance = SampleSkyRadiance(dir);
+		sh2 basis = SphericalHarmonics::Evaluate(dir);
+
+		sh2RGB value = SphericalHarmonics::Scale(basis, skyRadiance * dOmega);
+		output = SphericalHarmonics::Add(output, value);
+	}
+
+	SphericalHarmonics::PackSH2RGB(output, ThreadID.xy, ProbeArray);
 }
 #endif
