@@ -12,6 +12,8 @@ namespace ImageBasedLighting
 #if defined(IBL_DEFERRED)
 	Texture2D<sh2> EnvIBLTexture : register(t14);
 	Texture2D<sh2> SkyIBLTexture : register(t15);
+	TextureCube<float4> StaticDiffuseIBLTexture : register(t78);
+	TextureCube<float4> StaticSpecularIBLTexture : register(t79);
 #else
 	Texture2D<sh2> EnvIBLTexture : register(t76);
 	Texture2D<sh2> SkyIBLTexture : register(t77);
@@ -41,9 +43,9 @@ namespace ImageBasedLighting
 		sh2 shR = SkyIBLTexture.Load(int3(0, 0, 0));
 		sh2 shG = SkyIBLTexture.Load(int3(1, 0, 0));
 		sh2 shB = SkyIBLTexture.Load(int3(2, 0, 0));
-		float colorR = SphericalHarmonics::SHHallucinateZH3Irradiance(shR, rayDir);
-		float colorG = SphericalHarmonics::SHHallucinateZH3Irradiance(shG, rayDir);
-		float colorB = SphericalHarmonics::SHHallucinateZH3Irradiance(shB, rayDir);
+		float colorR = SphericalHarmonics::FuncProductIntegral(shR, SphericalHarmonics::EvaluateCosineLobe(rayDir));
+		float colorG = SphericalHarmonics::FuncProductIntegral(shG, SphericalHarmonics::EvaluateCosineLobe(rayDir));
+		float colorB = SphericalHarmonics::FuncProductIntegral(shB, SphericalHarmonics::EvaluateCosineLobe(rayDir));
 		return max(0, float3(colorR, colorG, colorB) / Math::PI);
 	}
 
