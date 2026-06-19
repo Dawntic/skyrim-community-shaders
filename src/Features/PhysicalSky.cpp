@@ -1113,10 +1113,13 @@ void PhysicalSky::CloudCompose()
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
 
+	float2 screenSize{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight };
+	float2 size = Util::ConvertToDynamic(screenSize);
+
 	D3D11_VIEWPORT port;
 	port.MinDepth = port.TopLeftX = port.TopLeftY = 0.0;
-	port.Width = globals::state->screenSize.x;
-	port.Height = globals::state->screenSize.y;
+	port.Width = size.x;
+	port.Height = size.y;
 	port.MaxDepth = 1.0;
 
 	context->RSSetViewports(1, &port);
