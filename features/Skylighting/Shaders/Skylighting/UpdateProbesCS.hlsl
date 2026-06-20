@@ -1,4 +1,6 @@
 #include "Common/Math.hlsli"
+#include "PhysicalSky/CloudCommon.hlsli"
+#include "PhysicalSky/Common.hlsli"
 #include "Skylighting/Skylighting.hlsli"
 
 #ifdef DENSE_PROBE_GRID
@@ -51,15 +53,17 @@ SamplerComparisonState comparisonSampler : register(s0);
 
 #ifdef SPARSE_PROBE_GRID
 
-SamplerState LinearSampler : register(s0);
-SamplerState LinearWrapSampler : register(s1);
-Texture2D BentNormalTex : register(t0);
-Texture2D SkyViewLUTTex : register(t1);
+//SamplerState LinearSampler : register(s0);
+SamplerState LinearWrapSampler : register(s2);
+Texture2D BentNormalTex : register(t12);
+Texture2D SkyViewLUTTex : register(t13);
+Texture2D HeightTex : register(t14);
 RWTexture2DArray<float4> ProbeArray : register(u0);
 
 static const float GOLDEN_ANGLE = 2.39996322972865332;  // PI * (3 - sqrt(5))
-#	define SAMPLES 256
 
+#	define SAMPLES 256
+#	define RAY_SAMPLES 128
 float3 SampleSkyRadiance(float3 rayDir)
 {
 	float azimuth = atan2(rayDir.y, rayDir.x);
@@ -71,16 +75,177 @@ float3 SampleSkyRadiance(float3 rayDir)
 	return SkyViewLUTTex.SampleLevel(LinearWrapSampler, frac(float2(u, v)), 0).rgb;
 }
 
-// i-th Fibonacci direction over hemisphere
-// Uniform in z + golden angle azimuth => every sample subtends solid angle (2*PI / N)
-float3 FibonacciHemisphere(uint i, uint samples)
+void ComputeLighting(float sampleDensity, float StepLightDensity, float CosTheta, CloudRaymarchStepState stepState, CloudParticpatingMedium medium, inout CloudRaymarchAccumState accumState)
 {
-	float z = 1.0 - (float(i) + 0.5) / float(samples);
-	float r = sqrt(saturate(1.0 - z * z));
-	float theta = GOLDEN_ANGLE * float(i);
-	return float3(r * cos(theta), r * sin(theta), z);
+	float lightOpticalDepth = medium.extinction * StepLightDensity;
+
+	float cosLightZenith = dot(stepState.upVector, SharedData::DirLightDirection.xyz);
+
+	float Scattering = medium.scattering * sampleDensity;
+	float Extinction = medium.extinction * sampleDensity;
+
+	float3 Irradiance = SharedData::DirLightColor.xyz * medium.phase;
+
+	// Trasmittance
+	float SkyTr = 1;  //TrSample; //atmospherics_air_lut_sampleTransmittance(atmosphere, cosLightZenith, stepState.height);
+	float CloudTransmittance = exp(-(Extinction * stepState.rayStep.w));
+	float LightTransmittance = exp(-lightOpticalDepth);
+	float Transmittance = SkyTr * LightTransmittance;
+
+	// Ambient lighting
+	float3 ambientColor = float3(1, 1, 1);  // fake for now
+											//float3 AmbientIrradiance = ambientColor * LightTransmittance;
+
+	float ambLightDesnity = sampleDensity;  //lerp(sampleDensityLod, sampleDensity, 0.4);
+	float3 ambLightOpticalDepth = medium.extinction * ambLightDesnity;
+	float horizonFactor = saturate(pow3(CosTheta));
+	ambLightOpticalDepth = lerp(ambLightOpticalDepth, lightOpticalDepth, horizonFactor);
+	float3 ambientTransmittance = max(exp(-ambLightOpticalDepth), exp(-ambLightOpticalDepth * 0.25) * 0.7);
+	float3 AmbientIrradiance = ambientColor * ambientTransmittance;
+
+	// Multi Scattering Approximation
+	float SETTING_CLOUDS_MS_RADIUS = -2.5;  /////////
+	float D = exp2(SETTING_CLOUDS_MS_RADIUS);
+
+	float UNIFORM_PHASE = 0.1;  ///////////
+	float3 fMS = (Scattering / Extinction) * (1.0 - exp(-D * Extinction));
+	fMS = lerp(fMS, fMS * 0.99, float3(LinearStep(0.9, 1.0, fMS.x), LinearStep(0.9, 1.0, fMS.y), LinearStep(0.9, 1.0, fMS.z)));
+	float3 MultiScatIrradiance = SharedData::DirLightColor.xyz * Transmittance;
+	MultiScatIrradiance *= UNIFORM_PHASE;
+	MultiScatIrradiance += AmbientIrradiance;
+	MultiScatIrradiance *= fMS / (1.0 - fMS);
+
+	Irradiance = Irradiance * Transmittance + AmbientIrradiance + MultiScatIrradiance;
+
+	// Inscattering interal
+	float3 sampleInSctr = Irradiance * Scattering;
+	float3 sampleInSctrInt = (sampleInSctr - sampleInSctr * CloudTransmittance) / max(Extinction, 1e-6);
+	accumState.totalInscattering += sampleInSctrInt * accumState.totalTransmittance;
+	accumState.totalTransmittance *= CloudTransmittance;
 }
 
+// ---- tunables ----
+static const float3 CLOUD_AMBIENT = float3(0.4, 0.45, 0.5);  // flat skylight fill into the cloud
+static const float CLOUD_MS_GAIN = 1.8;                      // flat multiple-scatter boost
+
+// Stripped cone-trace lighting: no light march, no MS series, nothing unused.
+// sunVisibility = 0..1 sun reaching this sample (height proxy, shadowmap tap, or just 1.0).
+void ComputeLightingB(float density, float stepLength, float sunVisibility, CloudParticpatingMedium medium, inout CloudRaymarchAccumState accum)
+{
+	float albedo = medium.scattering / medium.extinction;  // loop-invariant; hoist if you want
+	float Extinction = medium.extinction * density;
+	float Tr = exp(-Extinction * stepLength);
+
+	float3 Radiance = SharedData::DirLightColor.xyz * medium.phase * sunVisibility;
+	Radiance = (Radiance + CLOUD_AMBIENT) * CLOUD_MS_GAIN;
+
+	float3 inscatter = Radiance * albedo * (1.0 - Tr);
+
+	accum.totalInscattering += inscatter * accum.totalTransmittance;
+	accum.totalTransmittance *= Tr;
+}
+
+float GetCloudProfile(float3 SamplePos, float Height, bool UseCover)
+{
+	float3 cloudData = DataFieldTex.SampleLevel(LinearRepeatSampler, SamplePos.xy * cirrusCoverage, 0).xyz;
+	float2 TopBottomType = cloudData.zx;
+	float Cover = cloudData.y;
+
+	float topProfile = VertProfileTex.SampleLevel(LinearSampler, float2(min(TopBottomType.x, temperatureDiff), Height), 0).x;
+	float bottomProfile = VertProfileTex.SampleLevel(LinearSampler, float2(TopBottomType.y, Height), 0).y;
+
+	float VertProfile = topProfile * bottomProfile;
+
+	float Coverage = saturate(LerpLinearStep(Cover, cumulusCoverage, 1.0f, 0.0f, 1.0f));
+
+	if (!UseCover)
+		return VertProfile;
+
+	return VertProfile * Coverage;
+}
+
+void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 InscattAccum, inout float TransAccum)
+{
+	float GAME_UNIT_TO_KM = 1.428e-5;
+	float3 cameraPos = cameraPosA.xyz * GAME_UNIT_TO_KM;
+	cameraPos.z += groundRadius;
+
+	CloudRaymarchAccumState accum;
+	accum.totalInscattering = float3(0, 0, 0);
+	accum.totalTransmittance = 1.0;
+
+	Ray ray;
+	ray.origin = cameraPos;
+	ray.direction = worldDir;
+
+	float2 RayT = raycast2(float4((float3)0, topRadius), ray);
+	if (!isIntersected(RayT))
+		return;
+
+	RayT.x = max(RayT.x, minDistance);
+
+	float2 RayB = raycast2(float4(0.0.xxx, bottomRadius), ray);
+	if (isIntersected(RayB))
+		RayT = RayB.x < 0.0 ? float2(max(RayT.x, RayB.y), RayT.y) : float2(RayT.x, min(RayT.y, RayB.x));
+
+	if (RayT.y <= RayT.x || RayT.x > maxDistance)
+		return;
+
+	float cosTheta = dot(ray.direction, SharedData::DirLightDirection.xyz);
+	float StepLength = (RayT.y - RayT.x) / RAY_SAMPLES;
+
+	CloudParticpatingMedium medium;
+	medium.scattering = 10;
+	medium.extinction = 25;
+	medium.phase = CloudPhase(cosTheta, 0);
+
+	for (int i = 0; i < RAY_SAMPLES; i++) {
+		float3 SamplePos = ray.direction * (RayT.x + i * StepLength) + cameraPos;
+		float EnvelopeZ = GetEnvelopeRelativeZ(SamplePos, float2(bottomRadius, topRadius));
+
+		float CloudDensity = GetCloudProfile(SamplePos, EnvelopeZ, true) + 1;  // Tmp to make Optical depth low
+		if (CloudDensity <= 0.0)
+			continue;
+
+		CloudRaymarchStepState state;
+		state.height = EnvelopeZ;
+		state.rayStep = float4(0, 0, 0, StepLength);
+		state.upVector = normalize(SamplePos);
+
+		//float SubStepDensity = 1; // value doesnt make a difference.
+		//ComputeLighting(CloudDensity, SubStepDensity, cosTheta, state, medium, accum);
+
+		float sunVis = EnvelopeZ;
+		ComputeLightingB(CloudDensity, StepLength, sunVis, medium, accum);
+	}
+
+	InscattAccum = accum.totalInscattering;
+	TransAccum = accum.totalTransmittance;
+}
+
+// Fibonacci sample direction over hemisphere with half angle Ap
+// gives solid angle 4PI at Ap == -1
+float3 FibonacciHemisphere(float i, float n, float ap)
+{
+	float cosT = lerp(1.0, ap, (i + 0.5) / n);  // uniform in solid angle within the cone
+	float3 Out = float3(0, 0, cosT);
+	sincos(i * GOLDEN_ANGLE, Out.y, Out.x);
+	Out.xy *= sqrt(saturate(1.0 - cosT * cosT));
+	return Out;
+}
+
+//  orthonormal basis (Frisvad, branchless)
+float3x3 BuildTBN(float3 dir)
+{
+	float sign = dir.z >= 0.0 ? 1.0 : -1.0;
+	float a = -1.0 / (sign + dir.z);
+	float bb = dir.x * dir.y * a;
+	float3 T = float3(1.0 + sign * dir.x * dir.x * a, sign * bb, -sign * dir.x);
+	float3 B = float3(bb, sign + dir.y * dir.y * a, -dir.y);
+	return float3x3(T, B, dir);
+}
+
+// Height map and bent normal map must share the same map orientation
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
 
@@ -89,6 +254,9 @@ float3 FibonacciHemisphere(uint i, uint samples)
 
 	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvGridTexSize.xy;
 
+	float worldHeight = 30000;  //(HeightTex.SampleLevel(LinearSampler, CoordsUV, 0) - 32767) * 8.0;
+	float3 WorldPos = float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, CoordsUV), worldHeight);
+
 	float4 BNSample = BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);
 	float3 BentNormalDir = BNSample.xyz * 2.0 - 1.0;
 	float BentNormalAO = BNSample.w;
@@ -96,18 +264,30 @@ float3 FibonacciHemisphere(uint i, uint samples)
 	//sh3 OcclusionSH = SphericalHarmonics::ScaleSH3(SphericalHarmonics::EvaluateSH3(BentNormalDir), BentNormalAO * 4.0 * Math::PI);
 	//SphericalHarmonics::PackSH3(OcclusionSH, ThreadID.xy, ProbeArray);
 
+	float Aperture = saturate(1.0 - BentNormalAO);
+	float solidAngle = 2.0 * Math::PI * BentNormalAO;
+	const float dOmega = solidAngle / SAMPLES;
+
+	float3x3 BentTBN = BuildTBN(BentNormalDir);
+
 	sh2RGB output = SphericalHarmonics::Zero2RGB();
+	for (int i = 0; i < SAMPLES; ++i) {
+		float3 SampleDir = FibonacciHemisphere(i, SAMPLES, Aperture);  //FibonacciHemisphere(i, SAMPLES, Aperture);
+		SampleDir = mul(SampleDir, BentTBN);
 
-	const float dOmega = (2.0 * Math::PI) / float(SAMPLES);  // constant: equal-area samples
+		float3 skyRadiance = SampleSkyRadiance(SampleDir);
 
-	for (uint i = 0; i < SAMPLES; ++i) {
-		float3 dir = FibonacciHemisphere(i, SAMPLES);
-		float3 skyRadiance = SampleSkyRadiance(dir);
-		sh2 basis = SphericalHarmonics::Evaluate(dir);
+		float cloudTr = 1;
+		float3 cloudInscattering = 0;
+		RaymarchCloud(SampleDir, WorldPos, cloudInscattering, cloudTr);
 
-		sh2RGB value = SphericalHarmonics::Scale(basis, skyRadiance * dOmega);
+		float3 radiance = skyRadiance * cloudTr + cloudInscattering;
+
+		sh2RGB value = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(SampleDir), radiance * dOmega);
 		output = SphericalHarmonics::Add(output, value);
 	}
+
+	//output = SphericalHarmonics::Scale(output, BentNormalAO);
 
 	SphericalHarmonics::PackSH2RGB(output, ThreadID.xy, ProbeArray);
 }
