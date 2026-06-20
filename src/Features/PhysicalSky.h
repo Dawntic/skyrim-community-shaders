@@ -87,10 +87,12 @@ struct PhysicalSky final : public Feature
 		float2 bayerPos;
 		float atmTopRadius;
 		float bottomRadius;
+
 		float topRadius;
 		float minDistance;
 		float maxDistance;
 		float currentTime;
+
 		float cumulusCoverage;
 		float cirrusCoverage;
 		float temperatureDiff;

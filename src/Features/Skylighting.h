@@ -78,16 +78,23 @@ public:
 		int ValidMargin[4];
 
 		int2 GridTexSize;
+		int2 _pad3;
+
+		float4 GridBounds;
 		float2 InvGridTexSize;
 		float2 GridMinWorldCorner;
+
 		float2 InvGridSpan;
+		float _pad4[2];
+
 		uint HasCache;
 		uint toggleLighting;
 		uint toggleTrees;
 		uint toggleGrass;
+
 		uint toggleDeferred;
 		uint toggleEffect;
-		float _pad[2];
+		uint _pad[2];
 
 		float MinDiffuseVisibility;
 		float MinSpecularVisibility;

@@ -38,6 +38,9 @@ void Skylighting::ResetSkylighting()
 
 void Skylighting::DrawSettings()
 {
+	if (ImGui::Button("Reload Shaders"))
+		ClearShaderCache();
+
 	ImGui::Text("Minimum visibility values. Diffuse darkens objects. Specular removes the sky from reflections.");
 	ImGui::SliderFloat("Diffuse Min Visibility", &settings.MinDiffuseVisibility, 0.01f, 1.f, "%.2f");
 	ImGui::SliderFloat("Specular Min Visibility", &settings.MinSpecularVisibility, 0.01f, 1.f, "%.2f");
@@ -181,7 +184,8 @@ void Skylighting::SetupResources()
 void Skylighting::ClearShaderCache()
 {
 	static const std::vector<winrt::com_ptr<ID3D11ComputeShader>*> shaderPtrs = {
-		&probeUpdateCompute
+		&probeUpdateCompute,
+		&updateSparseGridCS,
 	};
 
 	for (auto shader : shaderPtrs)
@@ -256,8 +260,10 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 		.ValidMargin = { (int)cellIDDiff.x, (int)cellIDDiff.y, (int)cellIDDiff.z },
 
 		.GridTexSize = sparseGridSize,
+		.GridBounds = float4(worldspace->minimumCoords.x, worldspace->minimumCoords.y, worldspace->maximumCoords.x, worldspace->maximumCoords.y),
 		.InvGridTexSize = 1.0f / float2((float)sparseGridSize.x, (float)sparseGridSize.y),
 		.GridMinWorldCorner = worldspace->minimumCoords - float2(eyePos.x, eyePos.y),
+
 		.InvGridSpan = 1.0 / gridSpan,
 		.HasCache = worldHasCache,
 		.toggleLighting = settings.toggleLighting,
@@ -312,11 +318,38 @@ void Skylighting::UpdateSparseProbeGrid()
 
 	auto srv = bentNormalMap->srv.get();
 	auto srv2 = globals::features::physicalSky.texSvLut->srv.get();
-	ID3D11ShaderResourceView* array[2] = { srv, srv2 };
+	auto srv3 = globals::features::terrainShadows.texHeightMap->srv.get();
+	//ID3D11ShaderResourceView* array[3] = { srv, srv2, srv3 };
 
-	ID3D11SamplerState* sampArray[2] = { globals::deferred->linearSampler, globals::features::physicalSky.sampSv.get() };
+	ID3D11SamplerState* sampArray[3] = { globals::deferred->linearSampler, globals::features::physicalSky.sampNoise.get(), globals::features::physicalSky.sampSv.get() };
 	context->CSSetSamplers(0, 1, sampArray);
-	context->CSSetShaderResources(0, 2, array);
+	//context->CSSetShaderResources(0, 3, array);
+
+	auto buffer = globals::features::physicalSky.cloudBuffer->CB();
+	context->CSSetConstantBuffers(0, 1, &buffer);
+
+	auto& physSky = globals::features::physicalSky;
+	auto& depthTexture = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+
+	ID3D11ShaderResourceView* srvs[] = {
+		depthTexture.depthSRV,
+		physSky.disoccTex->srv.get(),
+		nullptr,
+		nullptr,
+		physSky.dataFieldsSRV.get(),
+		physSky.cirrusShapeSRV.get(),
+		physSky.vertProfileSRV.get(),
+		physSky.noiseShapeSRV.get(),
+		physSky.cloudBaseSRV.get(),
+		physSky.cloudDetailSRV.get(),
+		physSky.curlNoiseSRV.get(),
+		physSky.weatherMapSRV.get(),
+		srv,
+		srv2,
+		srv3,
+	};
+
+	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
 	context->Dispatch((sparseGridSize.x + 7) / 8, (sparseGridSize.y + 7) / 8, 1);
 
