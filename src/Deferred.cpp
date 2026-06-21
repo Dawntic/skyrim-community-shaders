@@ -368,7 +368,6 @@ void Deferred::DeferredPasses()
 			ibl.loaded ? ibl.skyIBLTexture->srv.get() : nullptr,                                            // t15 SkyIBLTexture
 			physSky.loaded ? physSky.texApLut->srv.get() : nullptr,
 			physSky.loaded ? physSky.texApShadow->srv.get() : nullptr,
-			skylighting.loaded ? skylighting.texSparseProbeArray->srv.get() : nullptr,
 		};
 
 		ID3D11SamplerState* samplers[]{
