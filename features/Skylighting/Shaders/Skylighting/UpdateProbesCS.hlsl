@@ -55,15 +55,23 @@ SamplerComparisonState comparisonSampler : register(s0);
 
 //SamplerState LinearSampler : register(s0);
 SamplerState LinearWrapSampler : register(s2);
-Texture2D BentNormalTex : register(t12);
-Texture2D SkyViewLUTTex : register(t13);
-Texture2D HeightTex : register(t14);
+
+// 0-11 is cloud stuff
+Texture2D SkyViewLUTTex : register(t12);
+Texture2D HeightTex : register(t13);
+Texture2D BentNormalTex : register(t14);
+Texture2D CardinalOcclusionTex : register(t15);
+Texture2D CardinalOcclusion2Tex : register(t16);
+Texture2D AlbedoTex : register(t17);
+Texture2D NormalTex : register(t18);
+
 RWTexture2DArray<float4> ProbeArray : register(u0);
 
 static const float GOLDEN_ANGLE = 2.39996322972865332;  // PI * (3 - sqrt(5))
 
 #	define SAMPLES 256
 #	define RAY_SAMPLES 128
+
 float3 SampleSkyRadiance(float3 rayDir)
 {
 	float azimuth = atan2(rayDir.y, rayDir.x);
@@ -73,6 +81,49 @@ float3 SampleSkyRadiance(float3 rayDir)
 	v = max(v, 0.01);
 
 	return SkyViewLUTTex.SampleLevel(LinearWrapSampler, frac(float2(u, v)), 0).rgb;
+}
+
+// Fibonacci sample direction over hemisphere with half angle Ap
+// gives solid angle 4PI at Ap == -1
+float3 FibonacciHemisphere(float i, float n, float ap)
+{
+	float cosT = lerp(1.0, ap, (i + 0.5) / n);  // uniform in solid angle within the cone
+	float3 Out = float3(0, 0, cosT);
+	sincos(i * GOLDEN_ANGLE, Out.y, Out.x);
+	Out.xy *= sqrt(saturate(1.0 - cosT * cosT));
+	return Out;
+}
+
+//  orthonormal basis (Frisvad, branchless)
+float3x3 BuildTBN(float3 dir)
+{
+	float sign = dir.z >= 0.0 ? 1.0 : -1.0;
+	float a = -1.0 / (sign + dir.z);
+	float bb = dir.x * dir.y * a;
+	float3 T = float3(1.0 + sign * dir.x * dir.x * a, sign * bb, -sign * dir.x);
+	float3 B = float3(bb, sign + dir.y * dir.y * a, -dir.y);
+	return float3x3(T, B, dir);
+}
+
+float GetDirOcclusion(float2 PxCoords)
+{
+	float Visibility;
+
+	float4 Card = CardinalOcclusionTex[PxCoords];
+	float4 Diag = CardinalOcclusion2Tex[PxCoords];
+
+	// occlusion horizon height in sun direction
+	float4 basis0 = SharedData::skylightingSettings.Basis0;
+	float4 basis1 = SharedData::skylightingSettings.Basis1;
+	float Horizon = max(dot(Card, basis0), dot(Diag, basis1));
+
+	float Scale = 15.0;
+	float Bias = 0.12;
+	bool belowHorizon = (Horizon > SharedData::DirLightDirection.z);
+	Visibility = saturate(abs(SharedData::DirLightDirection.z - Horizon) * Scale + Bias);
+	Visibility = belowHorizon ? 0.5 * smoothstep(0.0, 1.0, 1.0 - Visibility) : 0.5 + smoothstep(0.0, 1.0, Visibility);
+
+	return saturate(Visibility);
 }
 
 void ComputeLighting(float sampleDensity, float StepLightDensity, float CosTheta, CloudRaymarchStepState stepState, CloudParticpatingMedium medium, inout CloudRaymarchAccumState accumState)
@@ -199,13 +250,19 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 InscattAccum
 	medium.extinction = 25;
 	medium.phase = CloudPhase(cosTheta, 0);
 
+	float depthWeightedSum = 0.0;  // numerator   of Eq. 21
+	float weightSum = 0.0;         // denominator of Eq. 21
+
 	for (int i = 0; i < RAY_SAMPLES; i++) {
 		float3 SamplePos = ray.direction * (RayT.x + i * StepLength) + cameraPos;
 		float EnvelopeZ = GetEnvelopeRelativeZ(SamplePos, float2(bottomRadius, topRadius));
 
-		float CloudDensity = GetCloudProfile(SamplePos, EnvelopeZ, true) + 1;  // Tmp to make Optical depth low
+		float CloudDensity = GetCloudProfile(SamplePos, EnvelopeZ, true);  // + 1; // Tmp to make Optical depth low
 		if (CloudDensity <= 0.0)
 			continue;
+
+		depthWeightedSum += accum.totalTransmittance * RayT.x;
+		weightSum += accum.totalTransmittance;
 
 		CloudRaymarchStepState state;
 		state.height = EnvelopeZ;
@@ -219,30 +276,15 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 InscattAccum
 		ComputeLightingB(CloudDensity, StepLength, sunVis, medium, accum);
 	}
 
+	float cloudDistance = (weightSum > 0.0) ? depthWeightedSum / weightSum : RayT.y;
+	float3 cloudCamPos = ray.direction * cloudDistance;  // camera-relative; drop distanceSum entirely
+
+	// ONLY works inside view frustum
+	float4 AP = PhysSky::SampleAp(normalize(cloudCamPos), length(cloudCamPos), 0.0, LinearSampler);
+	accum.totalInscattering = lerp(accum.totalInscattering, AP.xyz, AP.w);
+
 	InscattAccum = accum.totalInscattering;
 	TransAccum = accum.totalTransmittance;
-}
-
-// Fibonacci sample direction over hemisphere with half angle Ap
-// gives solid angle 4PI at Ap == -1
-float3 FibonacciHemisphere(float i, float n, float ap)
-{
-	float cosT = lerp(1.0, ap, (i + 0.5) / n);  // uniform in solid angle within the cone
-	float3 Out = float3(0, 0, cosT);
-	sincos(i * GOLDEN_ANGLE, Out.y, Out.x);
-	Out.xy *= sqrt(saturate(1.0 - cosT * cosT));
-	return Out;
-}
-
-//  orthonormal basis (Frisvad, branchless)
-float3x3 BuildTBN(float3 dir)
-{
-	float sign = dir.z >= 0.0 ? 1.0 : -1.0;
-	float a = -1.0 / (sign + dir.z);
-	float bb = dir.x * dir.y * a;
-	float3 T = float3(1.0 + sign * dir.x * dir.x * a, sign * bb, -sign * dir.x);
-	float3 B = float3(bb, sign + dir.y * dir.y * a, -dir.y);
-	return float3x3(T, B, dir);
 }
 
 // Height map and bent normal map must share the same map orientation
@@ -254,15 +296,18 @@ float3x3 BuildTBN(float3 dir)
 
 	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvGridTexSize.xy;
 
-	float worldHeight = 30000;  //(HeightTex.SampleLevel(LinearSampler, CoordsUV, 0) - 32767) * 8.0;
+	float worldHeight = (HeightTex.SampleLevel(LinearSampler, CoordsUV, 0) - 32767) * 8.0;
 	float3 WorldPos = float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, CoordsUV), worldHeight);
 
-	float4 BNSample = BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);
+	float4 BNSample = BentNormalTex[ThreadID.xy];  //BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);
 	float3 BentNormalDir = BNSample.xyz * 2.0 - 1.0;
 	float BentNormalAO = BNSample.w;
 
-	//sh3 OcclusionSH = SphericalHarmonics::ScaleSH3(SphericalHarmonics::EvaluateSH3(BentNormalDir), BentNormalAO * 4.0 * Math::PI);
+	//sh3 OcclusionSH = SphericalHarmonics::ScaleSH3(SphericalHarmonics::EvaluateSH3(BentNormalDir), BentNormalAO * 2 * Math::PI);
 	//SphericalHarmonics::PackSH3(OcclusionSH, ThreadID.xy, ProbeArray);
+	//ProbeArray[ThreadID.xyz] = BNSample + InputTwo[ThreadID.xy];
+
+	ProbeArray[ThreadID.xyz] = GetDirOcclusion(ThreadID.xy).xxxx;
 
 	float Aperture = saturate(1.0 - BentNormalAO);
 	float solidAngle = 2.0 * Math::PI * BentNormalAO;
@@ -272,7 +317,7 @@ float3x3 BuildTBN(float3 dir)
 
 	sh2RGB output = SphericalHarmonics::Zero2RGB();
 	for (int i = 0; i < SAMPLES; ++i) {
-		float3 SampleDir = FibonacciHemisphere(i, SAMPLES, Aperture);  //FibonacciHemisphere(i, SAMPLES, Aperture);
+		float3 SampleDir = FibonacciHemisphere(i, SAMPLES, Aperture);
 		SampleDir = mul(SampleDir, BentTBN);
 
 		float3 skyRadiance = SampleSkyRadiance(SampleDir);
@@ -289,6 +334,12 @@ float3x3 BuildTBN(float3 dir)
 
 	//output = SphericalHarmonics::Scale(output, BentNormalAO);
 
-	SphericalHarmonics::PackSH2RGB(output, ThreadID.xy, ProbeArray);
+	//SphericalHarmonics::PackSH2RGB(output, ThreadID.xy, ProbeArray);
+
+	// Albedo relighting
+	//sh3RGB albedo = SphericalHarmonics::UnpackSH3(ThreadID.xy, BentNormalTex);
+	// sh3RGB color = ProductSH3(EvaluateCosineLobeSH3(-SharedData::DirLightDirection.xyz), albedo);
+	// color = SphericalHarmonics::ScaleSH3(color, SharedData::DirLightColor.xyz * (1.0 / Math::PI));    // env bounce + light color
+	// SphericalHarmonics::PackSH3(color, ThreadID.xy, ProbeArray);
 }
 #endif

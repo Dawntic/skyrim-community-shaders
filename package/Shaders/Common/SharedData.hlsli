@@ -141,26 +141,24 @@ namespace SharedData
 		int4 ValidMargin;
 
 		int4 GridTexSize;
-
 		float4 GridBounds;
-
 		float2 InvGridTexSize;
 		float2 GridMinCornerWS;
-
 		float2 InvGridSpan;
 		float2 padA;
-
 		uint WorldHasCache;
 		uint toggleLighting;  //tmp
 		uint toggleTrees;
 		uint toggleGrass;
-
 		uint toggleDeferred;
 		uint toggleEffect;
+		uint2 pad;
 
 		float MinDiffuseVisibility;
 		float MinSpecularVisibility;
 		uint2 pad0;
+		float4 Basis0;
+		float4 Basis1;
 	};
 
 	struct CloudShadowsSettings
