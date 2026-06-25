@@ -114,14 +114,6 @@ public:
 	Texture3D* texAccumFramesArray = nullptr;
 
 	winrt::com_ptr<ID3D11ComputeShader> probeUpdateCompute = nullptr;
-	//winrt::com_ptr<ID3D11ShaderResourceView> stbn_vec3_2Dx1D_128x128x64;
-
-	// sparse grid
-	static constexpr int2 sparseGridSize = int2(1024, 1024);  //int2(119 * 4, 94 * 4);
-
-	eastl::unique_ptr<Texture2D> texSparseProbeArray = nullptr;
-
-	winrt::com_ptr<ID3D11ComputeShader> updateSparseGridCS = nullptr;
 
 	// misc parameters
 	uint probeArrayDims[3] = { 256, 256, 128 };
@@ -134,90 +126,46 @@ public:
 	uint frameCount = 0;
 
 	// Sparse grid
+	static constexpr int2 sparseGridSize = int2(1024, 1024);  //int2(119 * 4, 94 * 4);
+	eastl::unique_ptr<Texture2D> texSparseProbeArray = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> updateSparseGridCS = nullptr;
 
 	void GetCachedWorldspaces();
 	bool LoadWorldspaceCache();
 
 	bool worldHasCache = false;
 	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
-
-	//eastl::unique_ptr<Texture2D> bentNormalMap = nullptr;
-	ID3D11ShaderResourceView* BNMapSRV = nullptr;
 	std::unordered_set<std::string> worldSpaceCachedMapList;
-	std::string currentLoadedWorldspaceID = "";
+	std::string cacheWorldspaceID = "";
 
+	ID3D11ShaderResourceView* BNMapSRV = nullptr;
 	ID3D11ShaderResourceView* COMapSRV = nullptr;
 	ID3D11ShaderResourceView* CO2MapSRV = nullptr;
 	ID3D11ShaderResourceView* AMapSRV = nullptr;
 	ID3D11ShaderResourceView* NMapSRV = nullptr;
 
-	std::filesystem::path lodPath = L"C:\\Skyrim Modding Utilities\\DynDOLOD\\xLODGen\\Output\\textures\\terrain\\tamriel";
-	void BuildAtlas(const std::filesystem::path& outputDir, std::string mapTag);
-
 	//// Cache gen resources ////
-	static constexpr uint depthCubeSize = 128;
-	static constexpr float CACHE_SAMPLES_PER_CELL = 2;
-
 	static constexpr uint COMapSize = 1024;
+	static constexpr uint BNMapSize = 1024;
 	float HeightMapOffset = 32767;  // from xlodgen
 	float HeightMapScale = 8.0;     // from xlodgen
 
-	eastl::unique_ptr<Texture2D> depthCubemap = nullptr;
-	std::array<ID3D11DepthStencilView*, 6> depthCubemapDSVs{};
-
-	eastl::unique_ptr<Texture2D> stagingDepthTex = nullptr;
-	DirectX::ScratchImage stagingHeightMapTex;
-
-	eastl::unique_ptr<Texture2D> cacheOutputTexBN = nullptr;
-	ID3D11ComputeShader* BNComputeShader = nullptr;
+	std::filesystem::path lodPath = L"C:\\Skyrim Modding Utilities\\DynDOLOD\\xLODGen\\Output\\textures\\terrain\\tamriel";
+	void BuildAtlas(const std::filesystem::path& outputDir, std::string mapTag);
+	void GenerateBentNormalMap();
+	void GenerateCardinalOcclusionMap();
 
 	struct alignas(16) CacheGenCBStruct
 	{
-		float4 CubemapParams;  // dimension, 1.0 / dimension,  dimension^2, dimension^2 * valid_cube_sides
-		int2 BentNormalWritePx;
+		float4 TexParams;  // dimension, 1.0 / dimension,  dimension^2, dimension^2 * valid_cube_sides
 		float _pad[2];
 	};
 	ConstantBuffer* cacheGenBuffer = nullptr;
 
-	struct alignas(16) AlphaRefCBStruct
-	{
-		float AlphaTestRefRS;
-		float _pad[3];
-	};
-	ConstantBuffer* clipRefOverrideBuffer = nullptr;
-
-	void SetInitalState(RE::NiPoint3& initalPos);
-	void CreateCachingResources();
-	bool CreateUniqueCachingResources(int2 totalCells);
-	void GenerateWorldspaceCache();
-	void GenerateVisibilityCubemap();
-	void GenerateBentNormal(int2 currentCellID);
-	void GenerateCardinalOcclusion();
-	float SampleHeightMap(float2 coords);
-	void FinishCaching(std::string worldName);
-
-	RE::NiPoint3 cachedActorPosition;
-	float cachedActorFOV;
-
-	bool buildingCache = false;
-	float3 sampleCoordsWS = float3();
-	int cubemapSide = 0;
-	int cellCount = 0;  //tmp
-
-	bool override = false;  //tmp
-	float3 coords = float3();
-
 	void ResetSkylighting();
-
 	std::chrono::time_point<std::chrono::system_clock> lastUpdateTimer = std::chrono::system_clock::now();
 
 	//////////////////////////////////////////////////////////////////////////////////
-
-	// Build occBasis0/1 (uploaded to OcclusionParams[1768]/[1784]).
-	//   occVal = max(dot(occ0, basis0), dot(occ1, basis1))
-	// occ0 = cardinal horizons (+X,+Y,-X,-Y), occ1 = diagonal (+X+Y,-X+Y,-X-Y,+X-Y).
-	// Channel order MUST match the bake's CARD/DIAG arrays.
-	// lightDir = world direction TO the light (e.g. -sunForward), +Z up.
 
 	const float CARD[4][2] = { { 1, 0 }, { 0, 1 }, { -1, 0 }, { 0, -1 } };
 	const float DIAG[4][2] = { { 0.70710678f, 0.70710678f }, { -0.70710678f, 0.70710678f }, { -0.70710678f, -0.70710678f }, { 0.70710678f, -0.70710678f } };
@@ -243,6 +191,79 @@ public:
 		basis0 = BuildHorizonBasis(CARD, ax, ay, sharpness);
 		basis1 = BuildHorizonBasis(DIAG, ax, ay, sharpness);
 	}
+
+	struct BSParticleShaderRainEmitter
+	{
+		void* vftable_BSParticleShaderRainEmitter_0;
+		char _pad_8[4056];
+	};
+
+	enum class ShaderTechnique
+	{
+		// Sky
+		SkySunOcclude = 0x2,
+
+		// Grass
+		GrassNoAlphaDirOnlyFlatLit = 0x3,
+		GrassNoAlphaDirOnlyFlatLitSlope = 0x5,
+		GrassNoAlphaDirOnlyVertLitSlope = 0x6,
+		GrassNoAlphaDirOnlyFlatLitBillboard = 0x13,
+		GrassNoAlphaDirOnlyFlatLitSlopeBillboard = 0x14,
+
+		// Utility
+		UtilityGeneralStart = 0x2B,
+
+		// Effect
+		EffectGeneralStart = 0x4000002C,
+
+		// Lighting
+		LightingGeneralStart = 0x4800002D,
+
+		// DistantTree
+		DistantTreeDistantTreeBlock = 0x5C00002E,
+		DistantTreeDepth = 0x5C00002F,
+
+		// Grass
+		GrassDirOnlyFlatLit = 0x5C000030,
+		GrassDirOnlyFlatLitSlope = 0x5C000032,
+		GrassDirOnlyVertLitSlope = 0x5C000033,
+		GrassDirOnlyFlatLitBillboard = 0x5C000040,
+		GrassDirOnlyFlatLitSlopeBillboard = 0x5C000041,
+		GrassRenderDepth = 0x5C00005C,
+
+		// Sky
+		SkySky = 0x5C00005E,
+		SkyMoonAndStarsMask = 0x5C00005F,
+		SkyStars = 0x5C000060,
+		SkyTexture = 0x5C000061,
+		SkyClouds = 0x5C000062,
+		SkyCloudsLerp = 0x5C000063,
+		SkyCloudsFade = 0x5C000064,
+
+		// Particle
+		ParticleParticles = 0x5C000065,
+		ParticleParticlesGryColorAlpha = 0x5C000066,
+		ParticleParticlesGryColor = 0x5C000067,
+		ParticleParticlesGryAlpha = 0x5C000068,
+		ParticleEnvCubeSnow = 0x5C000069,
+		ParticleEnvCubeRain = 0x5C00006A,
+
+		// Water
+		WaterSimple = 0x5C00006B,
+		WaterSimpleVc = 0x5C00006C,
+		WaterStencil = 0x5C00006D,
+		WaterStencilVc = 0x5C00006E,
+		WaterDisplacementStencil = 0x5C00006F,
+		WaterDisplacementStencilVc = 0x5C000070,
+		WaterGeneralStart = 0x5C000071,
+
+		// Sky
+		SkySunGlare = 0x5C006072,
+
+		// BloodSplater
+		BloodSplaterFlare = 0x5C006073,
+		BloodSplaterSplatter = 0x5C006074,
+	};
 
 	// Hooks
 	struct BSLightingShaderProperty_GetPrecipitationOcclusionMapRenderPassesImpl
