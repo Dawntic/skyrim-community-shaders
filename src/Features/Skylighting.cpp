@@ -167,6 +167,16 @@ void Skylighting::SetupResources()
 	}
 
 	{
+		CD3D11_TEXTURE2D_DESC texDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, terrainMapSize.x, terrainMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, texDesc.Format, 0, 1, 0, 1);
+		CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, texDesc.Format, 0, 0, 1);
+
+		terrainLightingTex = eastl::make_unique<Texture2D>(texDesc);
+		terrainLightingTex->CreateSRV(srvDesc);
+		terrainLightingTex->CreateUAV(uavDesc);
+	}
+
+	{
 		D3D11_SAMPLER_DESC samplerDesc = {};
 		samplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;  // Use comparison filtering
 		samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;               // Address mode (Clamp for shadow maps)
@@ -388,6 +398,7 @@ void Skylighting::ClearShaderCache()
 	static const std::vector<winrt::com_ptr<ID3D11ComputeShader>*> shaderPtrs = {
 		&probeUpdateCompute,
 		&updateSparseGridCS,
+		&terrainRelightCS,
 	};
 
 	for (auto shader : shaderPtrs)
@@ -409,6 +420,7 @@ void Skylighting::CompileComputeShaders()
 		shaderInfos = {
 			{ &probeUpdateCompute, "UpdateProbesCS.hlsl", { { "DENSE_PROBE_GRID", "" } } },
 			{ &updateSparseGridCS, "UpdateProbesCS.hlsl", { { "SPARSE_PROBE_GRID", "" } } },
+			{ &terrainRelightCS, "UpdateProbesCS.hlsl", { { "TERRAIN_RELIGHT", "" } } },
 		};
 
 	for (auto& info : shaderInfos) {
@@ -444,11 +456,46 @@ void Skylighting::UpdateDenseProbeGrid()
 		globals::state->EndPerfEvent();
 }
 
-void Skylighting::UpdateSparseProbeGrid()
+void Skylighting::UpdateTerrainLighting()
 {
 	auto context = globals::d3d::context;
 
-	//GenerateCardinalOcclusionMap();
+	if (globals::state->frameAnnotations)
+		globals::state->BeginPerfEvent("Skylighting - Terrain Lighting");
+
+	TracyD3D11Zone(state->tracyCtx, "Skylighting - Terrain Lighting");
+
+	auto uav = terrainLightingTex->uav.get();
+	context->CSSetShader(terrainRelightCS.get(), nullptr, 0);
+	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+
+	ID3D11SamplerState* sampArray[3] = { globals::deferred->linearSampler, globals::features::physicalSky.sampNoise.get(), globals::features::physicalSky.sampSv.get() };
+	context->CSSetSamplers(0, 1, sampArray);
+
+	ID3D11ShaderResourceView* srvs[] = {
+		globals::features::physicalSky.texSvLut->srv.get(),
+		globals::features::terrainShadows.texHeightMap->srv.get(),
+		BNMapSRV,
+		COMapSRV,
+		CO2MapSRV,
+		AMapSRV,
+		NMapSRV,
+	};
+
+	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
+
+	context->Dispatch((terrainMapSize.x + 7) / 8, (terrainMapSize.y + 7) / 8, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[2] = { nullptr, nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	if (globals::state->frameAnnotations)
+		globals::state->EndPerfEvent();
+}
+
+void Skylighting::UpdateSparseProbeGrid()
+{
+	auto context = globals::d3d::context;
 
 	if (globals::state->frameAnnotations)
 		globals::state->BeginPerfEvent("Skylighting - Update Sparse Probes");
@@ -469,26 +516,27 @@ void Skylighting::UpdateSparseProbeGrid()
 	auto& depthTexture = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 
 	ID3D11ShaderResourceView* srvs[] = {
-		depthTexture.depthSRV,
-		physSky.disoccTex->srv.get(),
-		nullptr,
-		nullptr,
-		physSky.dataFieldsSRV.get(),
-		physSky.cirrusShapeSRV.get(),
-		physSky.vertProfileSRV.get(),
-		physSky.noiseShapeSRV.get(),
+		depthTexture.depthSRV,         //0
+		physSky.disoccTex->srv.get(),  //1
+		nullptr,                       //2
+		nullptr,                       //3
+		physSky.dataFieldsSRV.get(),   //4
+		physSky.cirrusShapeSRV.get(),  //5
+		physSky.vertProfileSRV.get(),  //6
+		physSky.noiseShapeSRV.get(),   //7
 		physSky.cloudBaseSRV.get(),
 		physSky.cloudDetailSRV.get(),
 		physSky.curlNoiseSRV.get(),
-		physSky.weatherMapSRV.get(),
+		physSky.weatherMapSRV.get(),  //11
 
-		physSky.texSvLut->srv.get(),
+		physSky.texSvLut->srv.get(),  //12
 		globals::features::terrainShadows.texHeightMap->srv.get(),
 		BNMapSRV,
 		COMapSRV,
 		CO2MapSRV,
 		AMapSRV,
 		NMapSRV,
+		terrainLightingTex->srv.get(),
 	};
 
 	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
@@ -592,11 +640,14 @@ void Skylighting::Prepass()
 
 	UpdateDenseProbeGrid();
 
+	UpdateTerrainLighting();
+
 	UpdateSparseProbeGrid();
 
 	auto context = globals::d3d::context;
 	ID3D11ShaderResourceView* srvs[2] = { texProbeArray->srv.get(), texSparseProbeArray->srv.get() };
 	context->PSSetShaderResources(50, 2, srvs);
+	context->CSSetShaderResources(50, 2, srvs);
 }
 
 void Skylighting::PostPostLoad()
@@ -932,6 +983,8 @@ static bool ParseTile(const std::filesystem::path& path, int& cellX, int& cellY)
 	return true;
 }
 
+// needs to support all input texture sizes
+// Need to cleanup
 void Skylighting::BuildAtlas(const std::filesystem::path& outputPath, std::string mapTag)
 {
 	std::vector<TileInfo> tiles;

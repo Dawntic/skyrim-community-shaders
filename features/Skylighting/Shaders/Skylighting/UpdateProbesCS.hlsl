@@ -1,3 +1,4 @@
+#include "Common/BRDF.hlsli"
 #include "Common/Math.hlsli"
 #include "PhysicalSky/CloudCommon.hlsli"
 #include "PhysicalSky/Common.hlsli"
@@ -61,9 +62,10 @@ Texture2D SkyViewLUTTex : register(t12);
 Texture2D HeightTex : register(t13);
 Texture2D BentNormalTex : register(t14);
 Texture2D CardinalOcclusionTex : register(t15);
-Texture2D CardinalOcclusion2Tex : register(t16);
+Texture2D CardinalOcclusionDiagTex : register(t16);
 Texture2D AlbedoTex : register(t17);
 Texture2D NormalTex : register(t18);
+Texture2D TerrainIrradianceTex : register(t19);
 
 RWTexture2DArray<float4> ProbeArray : register(u0);
 
@@ -103,27 +105,6 @@ float3x3 BuildTBN(float3 dir)
 	float3 T = float3(1.0 + sign * dir.x * dir.x * a, sign * bb, -sign * dir.x);
 	float3 B = float3(bb, sign + dir.y * dir.y * a, -dir.y);
 	return float3x3(T, B, dir);
-}
-
-float GetDirOcclusion(float2 PxCoords)
-{
-	float Visibility;
-
-	float4 Card = CardinalOcclusionTex[PxCoords];
-	float4 Diag = CardinalOcclusion2Tex[PxCoords];
-
-	// occlusion horizon height in sun direction
-	float4 basis0 = SharedData::skylightingSettings.Basis0;
-	float4 basis1 = SharedData::skylightingSettings.Basis1;
-	float Horizon = max(dot(Card, basis0), dot(Diag, basis1));
-
-	float Scale = 15.0;
-	float Bias = 0.12;
-	bool belowHorizon = (Horizon > SharedData::DirLightDirection.z);
-	Visibility = saturate(abs(SharedData::DirLightDirection.z - Horizon) * Scale + Bias);
-	Visibility = belowHorizon ? 0.5 * smoothstep(0.0, 1.0, 1.0 - Visibility) : 0.5 + smoothstep(0.0, 1.0, Visibility);
-
-	return saturate(Visibility);
 }
 
 void ComputeLighting(float sampleDensity, float StepLightDensity, float CosTheta, CloudRaymarchStepState stepState, CloudParticpatingMedium medium, inout CloudRaymarchAccumState accumState)
@@ -175,7 +156,6 @@ void ComputeLighting(float sampleDensity, float StepLightDensity, float CosTheta
 	accumState.totalTransmittance *= CloudTransmittance;
 }
 
-// ---- tunables ----
 static const float3 CLOUD_AMBIENT = float3(0.4, 0.45, 0.5);  // flat skylight fill into the cloud
 static const float CLOUD_MS_GAIN = 1.8;                      // flat multiple-scatter boost
 
@@ -296,22 +276,22 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 InscattAccum
 
 	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvGridTexSize.xy;
 
-	float worldHeight = (HeightTex.SampleLevel(LinearSampler, CoordsUV, 0) - 32767) * 8.0;
-	float3 WorldPos = float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, CoordsUV), worldHeight);
+	float WorldHeight = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0) * 65535;
+	WorldHeight = (WorldHeight - 32767) * 8.0;
 
-	float4 BNSample = BentNormalTex[ThreadID.xy];  //BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);
+	float3 WorldPos = float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, CoordsUV), WorldHeight);
+
+	float4 BNSample = BentNormalTex[ThreadID.xy];
 	float3 BentNormalDir = BNSample.xyz * 2.0 - 1.0;
 	float BentNormalAO = BNSample.w;
 
-	//sh3 OcclusionSH = SphericalHarmonics::ScaleSH3(SphericalHarmonics::EvaluateSH3(BentNormalDir), BentNormalAO * 2 * Math::PI);
-	//SphericalHarmonics::PackSH3(OcclusionSH, ThreadID.xy, ProbeArray);
-	//ProbeArray[ThreadID.xyz] = BNSample + InputTwo[ThreadID.xy];
-
-	ProbeArray[ThreadID.xyz] = GetDirOcclusion(ThreadID.xy).xxxx;
-
+	// Cone Tracing
 	float Aperture = saturate(1.0 - BentNormalAO);
 	float solidAngle = 2.0 * Math::PI * BentNormalAO;
 	const float dOmega = solidAngle / SAMPLES;
+
+	//float solidAngleAmb = 2.0 * Math::PI; // * (1.0 - BentNormalAO);
+	//const float dOmegaAmb = solidAngleAmb / SAMPLES;
 
 	float3x3 BentTBN = BuildTBN(BentNormalDir);
 
@@ -324,22 +304,107 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 InscattAccum
 
 		float cloudTr = 1;
 		float3 cloudInscattering = 0;
-		RaymarchCloud(SampleDir, WorldPos, cloudInscattering, cloudTr);
+		//RaymarchCloud(SampleDir, WorldPos, cloudInscattering, cloudTr);
 
 		float3 radiance = skyRadiance * cloudTr + cloudInscattering;
 
 		sh2RGB value = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(SampleDir), radiance * dOmega);
-		output = SphericalHarmonics::Add(output, value);
+		//output = SphericalHarmonics::Add(output, value);
+
+		// ground bounce comes from all dirs that aren't sky
+		// sky radiance effects bounce radiance
+		// bent normal doesn't effect bounce light since downwards hemi can never be sky
+		// but at most bounce light comes from the most occluded direction? - importance sampling?? -- NO
+		// should sample uniform directions
+		// what magnitude to use??  can we sample the nearest position thats
+		// in a given direction sample the closest point which has a normal that is -sampleDir
+
+		// does 1 - bentConeAO effect the amount of bounce light reaching the bottom half of a sphere?
+
+		//Concretely: the top's AO measures occlusion of the sky, but the bottom is occluded from the sky anyway (it faces down)
+		// POINT: if the bottom hemisphere was sky then the bounce radiance is 0 so if
+		// at a given point, 20% of sky is occluded then 80% is ground BUT does that mean the irradiance(ground) increases?
+
+		// Number of pixels we must walk to reach a pos with reflected normals(-sampleDir)
+
+		// (1.0 - BentConeAO) is amount of upper hemi that is terrain
+		// bottom hemi is always terrain, some of top hemi can also be terrain so its 2PI(bottom hemi) + (1.0 - BentConeAO)
+
+		//float3 AmbSampleDir = -SampleDir; // using same Aperture might be wrong. flipping the dir means sampling -bentDir & down not up which is correct for sampling ground bounce i think
+		//float3 ambientRadiance = AmibentMap.SampleLevel(LinearSampler, AmbSampleDir.xy, 0);
+		//sh2RGB ambientSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(AmbSampleDir), ambientRadiance * dOmegaAmb);
+		//output = SphericalHarmonics::Add(output, ambientSH);
 	}
 
-	//output = SphericalHarmonics::Scale(output, BentNormalAO);
-
-	//SphericalHarmonics::PackSH2RGB(output, ThreadID.xy, ProbeArray);
-
 	// Albedo relighting
-	//sh3RGB albedo = SphericalHarmonics::UnpackSH3(ThreadID.xy, BentNormalTex);
+	// sh3RGB albedo = SphericalHarmonics::UnpackSH3(ThreadID.xy, BentNormalTex);
 	// sh3RGB color = ProductSH3(EvaluateCosineLobeSH3(-SharedData::DirLightDirection.xyz), albedo);
 	// color = SphericalHarmonics::ScaleSH3(color, SharedData::DirLightColor.xyz * (1.0 / Math::PI));    // env bounce + light color
 	// SphericalHarmonics::PackSH3(color, ThreadID.xy, ProbeArray);
+
+	float3 BounceIrradiance = TerrainIrradianceTex.SampleLevel(LinearSampler, CoordsUV, 0) * 2;
+	sh2RGB ambientSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(float3(0, 0, -1)), BounceIrradiance * 2.0 * Math::PI);
+	output = SphericalHarmonics::Add(output, ambientSH);
+	SphericalHarmonics::PackSH2RGB(output, ThreadID.xy, ProbeArray);
+}
+#endif
+
+#ifdef TERRAIN_RELIGHT
+
+//SamplerState LinearSampler : register(s0);
+SamplerState LinearWrapSampler : register(s2);
+
+Texture2D SkyViewLUTTex : register(t0);
+Texture2D HeightTex : register(t1);
+Texture2D BentNormalTex : register(t2);
+Texture2D CardinalOcclusionTex : register(t3);
+Texture2D CardinalOcclusionDiagTex : register(t4);
+Texture2D AlbedoTex : register(t5);
+Texture2D NormalTex : register(t6);
+
+RWTexture2D<float4> TerrainRelight : register(u0);
+
+float GetDirOcclusion(float2 PxCoords)
+{
+	float Visibility;
+
+	float4 Card = CardinalOcclusionTex[PxCoords];
+	float4 Diag = CardinalOcclusionDiagTex[PxCoords];
+
+	// Horizon height in sun direction
+	float4 basis0 = SharedData::skylightingSettings.Basis0;
+	float4 basis1 = SharedData::skylightingSettings.Basis1;
+	float Horizon = max(dot(Card, basis0), dot(Diag, basis1));
+
+	float Scale = 15.0;
+	float Bias = 0.12;
+	bool belowHorizon = (Horizon > SharedData::DirLightDirection.z);
+	Visibility = saturate(abs(SharedData::DirLightDirection.z - Horizon) * Scale + Bias);
+	Visibility = belowHorizon ? 0.5 * smoothstep(0.0, 1.0, 1.0 - Visibility) : 0.5 + smoothstep(0.0, 1.0, Visibility);
+
+	return saturate(Visibility);
+}
+
+// Can we sample cardinal occlusion to figure out where most of the bounce light comes from? eg reflection from side of hill vs flat ground
+// Wrong bc Albedo map is scaled incorrectly
+[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
+
+	if (ThreadID.x >= settings.GridTexSize.x || ThreadID.y >= settings.GridTexSize.y)
+		return;
+
+	float3 AmbientLighting = 0.0;
+	float3 Lighting = 0.0;
+
+	float SunShadow = GetDirOcclusion(ThreadID.xy);
+	float3 NormalWS = NormalTex[ThreadID.xy].xzy * 2.0 - 1.0;  // swizzle since N is +Y up
+
+	float NdotL = saturate(dot(NormalWS, SharedData::DirLightDirection));
+	float3 DirLighting = SharedData::DirLightColor.xyz * SunShadow * NdotL * BRDF::Diffuse_Lambert();
+
+	Lighting = DirLighting + AmbientLighting;
+	Lighting *= AlbedoTex[ThreadID.xy];
+
+	TerrainRelight[ThreadID.xy] = float4(Lighting, 1);
 }
 #endif

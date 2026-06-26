@@ -130,8 +130,14 @@ public:
 	eastl::unique_ptr<Texture2D> texSparseProbeArray = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> updateSparseGridCS = nullptr;
 
+	static constexpr int2 terrainMapSize = int2(1024, 1024);
+	eastl::unique_ptr<Texture2D> terrainLightingTex = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> terrainRelightCS = nullptr;
+
 	void GetCachedWorldspaces();
 	bool LoadWorldspaceCache();
+
+	void UpdateTerrainLighting();
 
 	bool worldHasCache = false;
 	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
@@ -157,8 +163,7 @@ public:
 
 	struct alignas(16) CacheGenCBStruct
 	{
-		float4 TexParams;  // dimension, 1.0 / dimension,  dimension^2, dimension^2 * valid_cube_sides
-		float _pad[2];
+		float4 TexParams;
 	};
 	ConstantBuffer* cacheGenBuffer = nullptr;
 
