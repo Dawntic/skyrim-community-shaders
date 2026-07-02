@@ -243,10 +243,9 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 				skySpecular = 0;
 			}
 
-			//finalIrradiance = ImageBasedLighting::GetSkyIBL(R); //envSpecular + skySpecular;
-
-			sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, ProbeArrayGrid, positionWS.xyz);
-			finalIrradiance = SphericalHarmonics::Irradiance(probeSample, R);
+			finalIrradiance = envSpecular + skySpecular;
+			//sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, ProbeArrayGrid, positionWS.xyz);
+			//finalIrradiance = SphericalHarmonics::Irradiance(probeSample, R);
 
 		} else
 #	endif
@@ -297,10 +296,10 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 		finalIrradiance += ssgiIlSpecular;
 #	endif
-		finalIrradiance = ImageBasedLighting::GetSkyIBL(R);
+		//finalIrradiance = ImageBasedLighting::GetSkyIBL(R);
 
-		sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, ProbeArrayGrid, positionWS.xyz);
-		finalIrradiance = SphericalHarmonics::DiffuseRadiance(probeSample, R);
+		//sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, ProbeArrayGrid, positionWS.xyz);
+		//finalIrradiance = SphericalHarmonics::DiffuseRadiance(probeSample, R);
 
 		color += reflectance * finalIrradiance;
 	}

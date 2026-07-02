@@ -139,6 +139,8 @@ public:
 
 	void UpdateTerrainLighting();
 
+	bool runSparse = true;  /////////////
+
 	bool worldHasCache = false;
 	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
 	std::unordered_set<std::string> worldSpaceCachedMapList;
@@ -149,10 +151,12 @@ public:
 	ID3D11ShaderResourceView* CO2MapSRV = nullptr;
 	ID3D11ShaderResourceView* AMapSRV = nullptr;
 	ID3D11ShaderResourceView* NMapSRV = nullptr;
+	ID3D11ShaderResourceView* NSMapSRV = nullptr;
+	ID3D11ShaderResourceView* HMapSRV = nullptr;
 
 	//// Cache gen resources ////
 	static constexpr uint COMapSize = 1024;
-	static constexpr uint BNMapSize = 1024;
+	static constexpr int2 BNMapSize = int2(3808, 3008);
 	float HeightMapOffset = 32767;  // from xlodgen
 	float HeightMapScale = 8.0;     // from xlodgen
 
@@ -160,6 +164,7 @@ public:
 	void BuildAtlas(const std::filesystem::path& outputDir, std::string mapTag);
 	void GenerateBentNormalMap();
 	void GenerateCardinalOcclusionMap();
+	void GenerateNormalStepMap();
 
 	struct alignas(16) CacheGenCBStruct
 	{

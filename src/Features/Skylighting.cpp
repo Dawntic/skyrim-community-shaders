@@ -41,6 +41,8 @@ void Skylighting::DrawSettings()
 	if (ImGui::Button("Reload Shaders"))
 		ClearShaderCache();
 
+	ImGui::Checkbox("Run Sparse", &runSparse);
+
 	if (ImGui::Button("Generate albedo and norm")) {
 		auto outputPath = cachePath / "Tamriel_A.dds";
 		auto outputPath2 = cachePath / "Tamriel_N.dds";
@@ -53,6 +55,27 @@ void Skylighting::DrawSettings()
 
 	if (ImGui::Button("Generate bent normal")) {
 		GenerateBentNormalMap();
+	}
+
+	static bool out = false;
+	ImGui::Checkbox("Generate normal step", &out);
+	if (out) {
+		GenerateNormalStepMap();
+	}
+
+	if (ImGui::Button("Generate step")) {
+		GenerateNormalStepMap();
+	}
+
+	// stores direction player looking in
+	// wedge shape view from player origin
+	//
+
+	static float debugRescale = 1.0f;
+	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
+	if (texSparseProbeArray) {
+		ImGui::BulletText("View");
+		BUFFER_VIEWER_NODE_BULLET(texSparseProbeArray, debugRescale)
 	}
 
 	ImGui::Text("Minimum visibility values. Diffuse darkens objects. Specular removes the sky from reflections.");
@@ -87,13 +110,6 @@ void Skylighting::DrawSettings()
 	ImGui::SliderAngle("Max Zenith Angle", &settings.MaxZenith, 0, 90);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("Smaller angles creates more focused top-down shadow.");
-
-	//static float debugRescale = 5.0f;
-	//ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
-	//if (cacheOutputTexBN) {
-	//	ImGui::BulletText("Bent Normal View");
-	//	BUFFER_VIEWER_NODE_BULLET(cacheOutputTexBN, debugRescale)
-	//}
 }
 
 void Skylighting::SetupResources()
@@ -223,6 +239,8 @@ bool Skylighting::LoadWorldspaceCache()
 	if (cacheWorldspaceID == newWorldspaceID)
 		return true;
 
+	cacheWorldspaceID = newWorldspaceID;
+
 	// need to test again texture suffix ig
 	//if (!worldSpaceCachedMapList.contains(newWorldspaceID)) {
 	//	logger::info("[Skylighting] No cache found for current worldspace");  //tmp otherwise flooding log
@@ -273,9 +291,87 @@ bool Skylighting::LoadWorldspaceCache()
 		}
 	}
 
-	cacheWorldspaceID = newWorldspaceID;
+	{
+		auto path = cachePath / (newWorldspaceID + "_NS.dds");
+		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &NSMapSRV);
+		if (FAILED(result)) {
+			GenerateNormalStepMap();
+		}
+	}
+
+	{
+		auto path = cachePath / (newWorldspaceID + "_H.dds");
+		DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &HMapSRV);
+	}
 
 	return true;
+}
+
+// change BNMapSize, BNComputeShader
+void Skylighting::GenerateNormalStepMap()
+{
+	// Setup resources
+	eastl::unique_ptr<Texture2D> cacheOutputTex = nullptr;
+	eastl::unique_ptr<Texture2D> cacheOutputTex2 = nullptr;
+	eastl::unique_ptr<ID3D11ComputeShader> BNComputeShader = nullptr;
+
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
+
+	cacheOutputTex = eastl::make_unique<Texture2D>(desc);
+	cacheOutputTex->CreateSRV(nullptr);
+	cacheOutputTex->CreateUAV(uavDesc);
+
+	cacheOutputTex2 = eastl::make_unique<Texture2D>(desc);
+	cacheOutputTex2->CreateSRV(nullptr);
+	cacheOutputTex2->CreateUAV(uavDesc);
+
+	BNComputeShader.reset(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Skylighting\\GenerateCacheMaps.hlsl", { { "NORMAL_STEP", "" } }, "cs_5_0")));
+
+	if (!cacheGenBuffer)
+		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
+
+	// Generate map
+	auto context = globals::d3d::context;
+
+	ID3D11UnorderedAccessView* uav[2] = { cacheOutputTex->uav.get(), cacheOutputTex2->uav.get() };
+	context->CSSetShader(BNComputeShader.get(), nullptr, 0);
+	context->CSSetUnorderedAccessViews(0, 2, uav, nullptr);
+
+	//context->CSSetShaderResources(0, 1, &NMapSRV);
+	ID3D11ShaderResourceView* srvs[2] = { COMapSRV, HMapSRV };  //globals::features::terrainShadows.texHeightMap->srv.get() };
+	context->CSSetShaderResources(0, 2, srvs);                  // need to make sure this exists before func call
+
+	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
+	context->CSSetSamplers(0, 1, &linSampler);
+
+	CacheGenCBStruct data;
+	data.TexParams = float4((float)BNMapSize.x, (float)BNMapSize.y, HeightMapOffset, HeightMapScale);
+	cacheGenBuffer->Update(data);
+
+	auto buffer = cacheGenBuffer->CB();
+	context->CSSetConstantBuffers(0, 1, &buffer);
+
+	auto groups = (BNMapSize.x + 7) / 8;
+	context->Dispatch(groups, (BNMapSize.y + 7) / 8, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	// Save output
+	auto outputPath = cachePath / (cacheWorldspaceID + "_NS.dds");
+	DirectX::ScratchImage ouputImage;
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTex->resource.get(), ouputImage));
+	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+
+	{
+		auto path = cachePath / (cacheWorldspaceID + "_NS.dds");
+		NSMapSRV->Release();
+		NSMapSRV = nullptr;
+		DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &NSMapSRV));
+	}
+
+	BNComputeShader.release();
 }
 
 void Skylighting::GenerateBentNormalMap()
@@ -284,7 +380,7 @@ void Skylighting::GenerateBentNormalMap()
 	eastl::unique_ptr<Texture2D> cacheOutputTexBN = nullptr;
 	eastl::unique_ptr<ID3D11ComputeShader> BNComputeShader = nullptr;
 
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, BNMapSize, BNMapSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
 	cacheOutputTexBN = eastl::make_unique<Texture2D>(desc);
@@ -303,21 +399,21 @@ void Skylighting::GenerateBentNormalMap()
 	context->CSSetShader(BNComputeShader.get(), nullptr, 0);
 	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 
-	auto heightSRV = globals::features::terrainShadows.texHeightMap->srv.get();
+	auto heightSRV = HMapSRV;  //globals::features::terrainShadows.texHeightMap->srv.get();
 	context->CSSetShaderResources(0, 1, &heightSRV);
 
 	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
 	context->CSSetSamplers(0, 1, &linSampler);
 
 	CacheGenCBStruct data;
-	data.TexParams = float4(BNMapSize, BNMapSize, HeightMapOffset, HeightMapScale);
+	data.TexParams = float4((float)BNMapSize.x, (float)BNMapSize.y, HeightMapOffset, HeightMapScale);
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
 	context->CSSetConstantBuffers(0, 1, &buffer);
 
-	auto groups = (BNMapSize + 7) / 8;
-	context->Dispatch(groups, groups, 1);
+	auto groups = (BNMapSize.x + 7) / 8;
+	context->Dispatch(groups, (BNMapSize.y + 7) / 8, 1);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
@@ -327,6 +423,13 @@ void Skylighting::GenerateBentNormalMap()
 	DirectX::ScratchImage ouputImage;
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexBN->resource.get(), ouputImage));
 	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+
+	{
+		auto path = cachePath / (cacheWorldspaceID + "_BN.dds");
+		BNMapSRV->Release();
+		BNMapSRV = nullptr;
+		DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV));
+	}
 
 	BNComputeShader.release();
 }
@@ -361,7 +464,7 @@ void Skylighting::GenerateCardinalOcclusionMap()
 	context->CSSetShader(COComputeShader.get(), nullptr, 0);
 	context->CSSetUnorderedAccessViews(0, 2, uav, nullptr);
 
-	auto heightSRV = globals::features::terrainShadows.texHeightMap->srv.get();
+	auto heightSRV = HMapSRV;  //globals::features::terrainShadows.texHeightMap->srv.get();
 	context->CSSetShaderResources(0, 1, &heightSRV);
 
 	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
@@ -460,6 +563,8 @@ void Skylighting::UpdateTerrainLighting()
 {
 	auto context = globals::d3d::context;
 
+	//GenerateNormalStepMap();
+
 	if (globals::state->frameAnnotations)
 		globals::state->BeginPerfEvent("Skylighting - Terrain Lighting");
 
@@ -474,7 +579,7 @@ void Skylighting::UpdateTerrainLighting()
 
 	ID3D11ShaderResourceView* srvs[] = {
 		globals::features::physicalSky.texSvLut->srv.get(),
-		globals::features::terrainShadows.texHeightMap->srv.get(),
+		HMapSRV,  //globals::features::terrainShadows.texHeightMap->srv.get(),
 		BNMapSRV,
 		COMapSRV,
 		CO2MapSRV,
@@ -530,13 +635,14 @@ void Skylighting::UpdateSparseProbeGrid()
 		physSky.weatherMapSRV.get(),  //11
 
 		physSky.texSvLut->srv.get(),  //12
-		globals::features::terrainShadows.texHeightMap->srv.get(),
+		HMapSRV,                      //globals::features::terrainShadows.texHeightMap->srv.get(),
 		BNMapSRV,
 		COMapSRV,
 		CO2MapSRV,
 		AMapSRV,
 		NMapSRV,
 		terrainLightingTex->srv.get(),
+		NSMapSRV,
 	};
 
 	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
@@ -642,7 +748,8 @@ void Skylighting::Prepass()
 
 	UpdateTerrainLighting();
 
-	UpdateSparseProbeGrid();
+	if (runSparse)
+		UpdateSparseProbeGrid();
 
 	auto context = globals::d3d::context;
 	ID3D11ShaderResourceView* srvs[2] = { texProbeArray->srv.get(), texSparseProbeArray->srv.get() };

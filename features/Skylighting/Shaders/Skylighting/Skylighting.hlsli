@@ -11,8 +11,10 @@ namespace Skylighting
 {
 #if defined(SKYLIGHTING_PROBE_REGISTER)
 	Texture3D<sh2> SkylightingProbeArray : register(SKYLIGHTING_PROBE_REGISTER);
+	Texture2DArray<float4> SparseProbeArray : register(SKYLIGHTING_PROBE_REGISTER);
 #elif defined(PSHADER)
 	Texture3D<sh2> SkylightingProbeArray : register(t50);
+	Texture2DArray<float4> SparseProbeArray : register(t51);
 #endif
 
 	const static sh2 UNIT_SH = float4(sqrt(4.0 * Math::PI), 0, 0, 0);
@@ -53,7 +55,7 @@ namespace Skylighting
 		return MixSpecular(visibility);
 	}
 
-#if defined(PSHADER)
+#if defined(PSHADER) || defined(SKYLIGHTING_PROBE_REGISTER)
 	void ApplySkylighting(inout float3 diffuseColor, inout float3 directionalAmbientColor, float3 albedo, float skylightingDiffuse)
 	{
 		float maxScale = 1.0;
@@ -73,10 +75,10 @@ namespace Skylighting
 
 		diffuseColor += directionalAmbientColor;
 	}
-#endif
+	//#endif
 
-#if defined(PSHADER) || defined(SKYLIGHTING_PROBE_REGISTER)
-	sh3 SampleSparseProbeGrid(SharedData::SkylightingSettings settings, Texture2DArray ProbeArrayIn, float3 CoordsWS)
+	//#if defined(PSHADER) || defined(SKYLIGHTING_PROBE_REGISTER)
+	sh3 SampleSparseProbeGrid(SharedData::SkylightingSettings settings, float3 CoordsWS)
 	{
 		sh3 outputSH = SphericalHarmonics::UnitSH3();
 
@@ -84,25 +86,42 @@ namespace Skylighting
 			return outputSH;
 
 		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
+		//CoordsUV = float2(0.75, 0.25);
 		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
 			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
-			outputSH = SphericalHarmonics::UnpackSH3(Probe, ProbeArrayIn);
+			outputSH = SphericalHarmonics::UnpackSH3(Probe, SparseProbeArray);
 		}
 
 		return outputSH;
 	}
 
-	sh2RGB SampleIrradiance(SharedData::SkylightingSettings settings, Texture2DArray ProbeArrayIn, float3 CoordsWS)
+	sh2RGB SampleIrradiance(SharedData::SkylightingSettings settings, float3 CoordsWS)
 	{
 		sh2RGB outputSH = SphericalHarmonics::Zero2RGB();
 
-		if (!settings.WorldHasCache)
-			return outputSH;
+		//if (!settings.WorldHasCache)
+		//	return outputSH;
 
 		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
 		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
 			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
-			outputSH = SphericalHarmonics::UnpackSH2RGB(Probe, ProbeArrayIn);
+			outputSH = SphericalHarmonics::UnpackSH2RGB(Probe, SparseProbeArray);
+		}
+
+		return outputSH;
+	}
+
+	sh2RGB SampleIrradiance(SharedData::SkylightingSettings settings, float3 CoordsWS, Texture2DArray ProbeArrayT)
+	{
+		sh2RGB outputSH = SphericalHarmonics::Zero2RGB();
+
+		//if (!settings.WorldHasCache)
+		//	return outputSH;
+
+		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
+		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
+			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
+			outputSH = SphericalHarmonics::UnpackSH2RGB(Probe, ProbeArrayT);
 		}
 
 		return outputSH;
@@ -223,6 +242,6 @@ namespace Skylighting
 		return SphericalHarmonics::Scale(sum, rcp(wsum + EPSILON_WEIGHT_SUM));
 	}
 #endif
-}
 
+}
 #endif

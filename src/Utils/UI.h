@@ -42,6 +42,10 @@ class Feature;
 	ImGui::BulletText(#a_value);                    \
 	ImGui::Image(a_value->srv.get(), { a_value->desc.Width * a_scale, a_value->desc.Height * a_scale });
 
+#define BUFFER_VIEWER_NODE_BULLETA(a_value, a_scale) \
+	ImGui::BulletText(#a_value);                     \
+	ImGui::Image(a_value, { 1024 * a_scale, 1024 * a_scale });
+
 #define ADDRESS_NODE(a_value)                                                                        \
 	if (ImGui::Button(#a_value)) {                                                                   \
 		ImGui::SetClipboardText(std::format("{0:x}", reinterpret_cast<uintptr_t>(a_value)).c_str()); \
