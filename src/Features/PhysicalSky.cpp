@@ -446,15 +446,18 @@ void PhysicalSky::SettingsClouds()
 {
 	InfoBox(T(TKEY("clouds_2"), "Clouds."));
 
-	ImGui::SliderFloat("bottomRadius", &cloudSettings.bottomRadius, 0.0, 150.0);
-	ImGui::SliderFloat("topRadius", &cloudSettings.topRadius, 0.0, 150.0);
-	ImGui::SliderFloat("cumulusCoverage", &cloudSettings.cumulusCoverage, 0.0, 1.0);
-	ImGui::SliderFloat("cirrusCoverage", &cloudSettings.cirrusCoverage, 0.0, 1.0);
-	ImGui::SliderFloat("temperatureDiff", &cloudSettings.temperatureDiff, 0.0, 1.0);
-	ImGui::SliderFloat("currentTime", &cloudSettings.currentTime, 0.0, 1.0);
-	ImGui::SliderFloat("minDistance", &cloudSettings.minDistance, 0.0, 400.0);
-	ImGui::SliderFloat("maxDistance", &cloudSettings.maxDistance, 0.0, 600.0);
-	ImGui::Checkbox("noDelay", &cloudSettings.noDelay);
+	ImGui::SliderFloat("Bottom Height", &cloudSettings.bottomRadius, 0.0, 19.9);
+	ImGui::SliderFloat("Top Height", &cloudSettings.topRadius, 0.01, 20.0);
+	ImGui::SliderFloat("Coverage", &cloudSettings.coverage, 0.0, 1.0);
+
+	ImGui::SliderFloat("Height Scale", &cloudSettings.heightScale, 0.0, 1.0);
+	ImGui::SliderFloat("Cloud Type", &cloudSettings.cloudType, 0.0, 1.0);
+
+	ImGui::SliderFloat("Coverage 2", &cloudSettings.coverage2, 0.0, 1.0);
+
+	ImGui::SliderFloat("Min Distance", &cloudSettings.minDistance, 0.0, 400.0);
+	ImGui::SliderFloat("Max Distance", &cloudSettings.maxDistance, 0.0, 600.0);
+	//ImGui::Checkbox("noDelay", &cloudSettings.noDelay);
 
 	//ImGui::SliderFloat("Vanilla Mix", &settings.cloudOriginalMix, 0.f, 2.f, "%.2f");
 	//ImGui::SliderFloat("Relight Mix", &settings.cloudRelightMix, 0.f, 2.f, "%.2f");
@@ -1079,17 +1082,17 @@ void PhysicalSky::RenderClouds()
 
 	CloudCB cb{};
 	cb.cameraPos = float3(playerPos.x, playerPos.y, playerPos.z);
-	cb.bayerPos = { cloudSettings.noDelay ? -1.0f : float(bayerIndex % 4), (float)bayerIndex / 4 };
+	cb.bayerPos = { float(bayerIndex % 4), (float)bayerIndex / 4 };
 	cb.groundRadius = settings.planetRadius;
 	cb.atmTopRadius = settings.atmosphereRadius;
 	cb.bottomRadius = settings.planetRadius + cloudSettings.bottomRadius;
 	cb.topRadius = settings.planetRadius + cloudSettings.topRadius;
 	cb.minDistance = cloudSettings.minDistance;
 	cb.maxDistance = cloudSettings.maxDistance;
-	cb.currentTime = cloudSettings.currentTime;
-	cb.cumulusCoverage = cloudSettings.cumulusCoverage;
-	cb.cirrusCoverage = 1.0f - std::clamp(cloudSettings.cirrusCoverage, 0.0f, 1.0f);
-	cb.temperatureDiff = cloudSettings.temperatureDiff;
+	cb.coverage2 = cloudSettings.coverage2;
+	cb.coverage = cloudSettings.coverage;
+	cb.heightScale = 1.0f - std::clamp(cloudSettings.heightScale, 0.0f, 1.0f);
+	cb.cloudType = cloudSettings.cloudType;
 	cloudBuffer->Update(cb);
 
 	auto buffer = cloudBuffer->CB();

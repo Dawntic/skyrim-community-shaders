@@ -91,27 +91,27 @@ struct PhysicalSky final : public Feature
 		float topRadius;
 		float minDistance;
 		float maxDistance;
-		float currentTime;
+		float coverage2;
 
-		float cumulusCoverage;
-		float cirrusCoverage;
-		float temperatureDiff;
+		float coverage;
+		float heightScale;
+		float cloudType;
 		float pad;
 	};
 
 	struct CloudSettings
 	{
-		bool isEnabled = true;         /**< Is physically based volumetric clouds rendering enabled. */
-		bool renderShadows = true;     /**< Render cloud shadows to the shadow buffer. */
-		float bottomRadius = 1.5f;     /**< Stratus and cumulus clouds start height. (km) */
-		float topRadius = 4.0f;        /**< Stratus and cumulus clouds end height. (km) */
-		float minDistance = 0.2f;      /**< Clouds volume tracing offset in front of camera. (km) */
-		float maxDistance = 600.0f;    /**< Maximum clouds volume tracing distance. (km) */
-		float cumulusCoverage = 0.4f;  /**< Amount of cumulus clouds. (Clear or cloudy weather) */
-		float cirrusCoverage = 0.2f;   /**< Amount of cirrus clouds. (Clear or cloudy weather) */
-		float temperatureDiff = 0.75f; /**< Temperature difference between layers. (Storm clouds) */
-		float currentTime = 0.0f;      /**< Custom current time value. (For a multiplayer sync) */
-		bool noDelay = false;          /**< Make all computation in one frame. (Expensive!) */
+		//bool isEnabled = true;         /**< Is physically based volumetric clouds rendering enabled. */
+		//bool renderShadows = true;     /**< Render cloud shadows to the shadow buffer. */
+		float bottomRadius = 0.0f;  /**< Stratus and cumulus clouds start height. (km) */
+		float topRadius = 1.6f;     /**< Stratus and cumulus clouds end height. (km) */
+		float minDistance = 0.0f;   /**< Clouds volume tracing offset in front of camera. (km) */
+		float maxDistance = 600.0f; /**< Maximum clouds volume tracing distance. (km) */
+		float coverage = 0.6f;      /**< Amount of cumulus clouds. (Clear or cloudy weather) */
+		float heightScale = 0.95f;  /**< Amount of cirrus clouds. (Clear or cloudy weather) */
+		float cloudType = 0.8f;     /**< Temperature difference between layers. (Storm clouds) */
+		float coverage2 = 0.0f;     /**< Custom current time value. (For a multiplayer sync) */
+									//bool noDelay = false;          /**< Make all computation in one frame. (Expensive!) */
 	};
 	CloudSettings cloudSettings;
 
