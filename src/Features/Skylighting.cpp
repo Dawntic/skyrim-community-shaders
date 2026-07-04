@@ -67,6 +67,10 @@ void Skylighting::DrawSettings()
 		GenerateNormalStepMap();
 	}
 
+	if (ImGui::Button("Generate Normal")) {
+		GenerateNormalMap();
+	}
+
 	// stores direction player looking in
 	// wedge shape view from player origin
 	//
@@ -263,7 +267,8 @@ bool Skylighting::LoadWorldspaceCache()
 		auto path = cachePath / (newWorldspaceID + "_N.dds");
 		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &NMapSRV);
 		if (FAILED(result)) {
-			BuildAtlas(path.stem(), "_n");
+			//BuildAtlas(path.stem(), "_n");
+			GenerateNormalMap();
 		}
 	}
 
@@ -305,6 +310,67 @@ bool Skylighting::LoadWorldspaceCache()
 	}
 
 	return true;
+}
+
+// stop using BN tex size var
+void Skylighting::GenerateNormalMap()
+{
+	// Setup resources
+	eastl::unique_ptr<Texture2D> cacheOutputTexN = nullptr;
+	eastl::unique_ptr<ID3D11ComputeShader> NComputeShader = nullptr;
+
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
+
+	cacheOutputTexN = eastl::make_unique<Texture2D>(desc);
+	cacheOutputTexN->CreateSRV(nullptr);
+	cacheOutputTexN->CreateUAV(uavDesc);
+
+	NComputeShader.reset(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Skylighting\\GenerateCacheMaps.hlsl", { { "NORMALS", "" } }, "cs_5_0")));
+
+	if (!cacheGenBuffer)
+		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
+
+	// Generate map
+	auto context = globals::d3d::context;
+
+	ID3D11UnorderedAccessView* uav = cacheOutputTexN->uav.get();
+	context->CSSetShader(NComputeShader.get(), nullptr, 0);
+	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+
+	auto heightSRV = HMapSRV;
+	context->CSSetShaderResources(0, 1, &heightSRV);
+
+	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
+	context->CSSetSamplers(0, 1, &linSampler);
+
+	CacheGenCBStruct data;
+	data.TexParams = float4((float)BNMapSize.x, (float)BNMapSize.y, HeightMapOffset, HeightMapScale);
+	cacheGenBuffer->Update(data);
+
+	auto buffer = cacheGenBuffer->CB();
+	context->CSSetConstantBuffers(0, 1, &buffer);
+
+	auto groups = (BNMapSize.x + 7) / 8;
+	context->Dispatch(groups, (BNMapSize.y + 7) / 8, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	// Save output
+	auto outputPath = cachePath / (cacheWorldspaceID + "_N.dds");
+	DirectX::ScratchImage ouputImage;
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexN->resource.get(), ouputImage));
+	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+
+	{
+		auto path = cachePath / (cacheWorldspaceID + "_N.dds");
+		NMapSRV->Release();
+		NMapSRV = nullptr;
+		DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &NMapSRV));
+	}
+
+	NComputeShader.release();
 }
 
 // change BNMapSize, BNComputeShader

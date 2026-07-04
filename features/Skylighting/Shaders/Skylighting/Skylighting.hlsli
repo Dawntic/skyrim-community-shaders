@@ -86,6 +86,7 @@ namespace Skylighting
 			return outputSH;
 
 		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
+		CoordsUV = float2(CoordsUV.x, 1.0 - CoordsUV.y);
 		//CoordsUV = float2(0.75, 0.25);
 		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
 			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
@@ -103,6 +104,7 @@ namespace Skylighting
 		//	return outputSH;
 
 		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
+		CoordsUV = float2(CoordsUV.x, CoordsUV.y);
 		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
 			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
 			outputSH = SphericalHarmonics::UnpackSH2RGB(Probe, SparseProbeArray);

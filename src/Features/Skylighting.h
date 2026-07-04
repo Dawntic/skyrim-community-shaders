@@ -165,6 +165,7 @@ public:
 	void GenerateBentNormalMap();
 	void GenerateCardinalOcclusionMap();
 	void GenerateNormalStepMap();
+	void GenerateNormalMap();
 
 	struct alignas(16) CacheGenCBStruct
 	{

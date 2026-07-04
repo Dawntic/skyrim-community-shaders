@@ -7,6 +7,7 @@ cbuffer CacheGenBuffer : register(b0)
 	float2 HeightMapOffsetScale;
 };
 
+//// Bent Normal and Cardinal AO Map ////////////////////////////////////////////////////
 #ifdef CSHADER
 
 Texture2D<float> HeightTex : register(t0);
@@ -18,11 +19,6 @@ RWTexture2D<float4> OutputHorizon1 : register(u1);
 #	else
 RWTexture2D<float4> OutputBentNormal : register(u0);
 #	endif
-
-//static const float2 SampleDirs[4] = {
-//	float2( 1,  0),  float2(-1,  0),  // +X - East   :  -X - West
-//	float2( 0,  1), float2( 0, -1)    // +Y - South  :  -Y - North
-//};
 
 static const float2 CARD[4] = {
 	float2(1, 0), float2(0, 1),   // +X - East, +Y - South
@@ -116,10 +112,10 @@ float MarchHorizon(float2 CoordsUV, uint3 ThreadID, float SampleHeight, uint2 He
 		{
 			[unroll] for (int kx = -2; kx <= 2; ++kx)
 			{
-				float2 nUV = CoordsUV + float2(kx, ky) / OutputTexSize;
+				float2 nUV = CoordsUV + float2(kx, ky) / HeightMapPxSize;
 				float nH = HeightTex.SampleLevel(LinearSampler, nUV, 0) * 65535;
 				nH = (nH - HeightMapOffsetScale.x) * HeightMapOffsetScale.y;
-				float w = (kx == 0 && ky == 0) ? 4.0 : ((kx == 0 || ky == 0) ? 2.0 : 1.0);  // gaussian-ish
+				float w = exp(-(kx * kx + ky * ky) * 0.5);
 				SinH += MarchHorizon(nUV, ThreadID, nH, HeightMapPxSize, Dir.yx) * w;
 				wSum += w;
 			}
@@ -145,8 +141,461 @@ float MarchHorizon(float2 CoordsUV, uint3 ThreadID, float SampleHeight, uint2 He
 #	endif
 }
 #endif
+/////////////////////////////////////////////////////////////////////////////////////////
 
+//// Normal Map /////////////////////////////////////////////////////////////////////////
+
+#ifdef NORMALS
+Texture2D<float> HeightTex : register(t0);
+RWTexture2D<float4> OutputNormal : register(u0);
+
+// same decode/scale you use elsewhere
+// HeightMapOffsetScale.x = offset (e.g. 32767), .y = height scale (game units per raw unit)
+// TexelWorldSize = per-axis world units per texel (GridExtent / HeightMapPxSize)
+
+float LoadHeight(int2 c, int2 dims)
+{
+	c = clamp(c, 0, dims - 1);  // clamp at edges
+	float h = HeightTex[c] * 65535;
+	return (h - HeightMapOffsetScale.x) * HeightMapOffsetScale.y;
+}
+
+[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	if (any(ThreadID.xy >= OutputTexSize))
+		return;
+
+	int2 dims = (int2)OutputTexSize;
+	int2 p = int2(ThreadID.xy);
+
+	// Sobel gradient (8-tap) for a smoother result; central diff would also work
+	float hL = LoadHeight(p + int2(-1, 0), dims);
+	float hR = LoadHeight(p + int2(1, 0), dims);
+	float hD = LoadHeight(p + int2(0, -1), dims);
+	float hU = LoadHeight(p + int2(0, 1), dims);
+	float hDL = LoadHeight(p + int2(-1, -1), dims);
+	float hDR = LoadHeight(p + int2(1, -1), dims);
+	float hUL = LoadHeight(p + int2(-1, 1), dims);
+	float hUR = LoadHeight(p + int2(1, 1), dims);
+
+	float dHdx = (hR + hUR + hDR) - (hL + hUL + hDL);  // ∂h/∂x (world units)
+	float dHdy = (hU + hUL + hUR) - (hD + hDL + hDR);  // ∂h/∂y
+
+	uint2 HeightMapPxSize;
+	HeightTex.GetDimensions(HeightMapPxSize.x, HeightMapPxSize.y);
+
+	float4 GridBounds = float4(-233472.00, -176128.00, 253952.00, 208896.00);
+	float2 TexelWorldSize = (GridBounds.zw - GridBounds.xy) / (float2)HeightMapPxSize;  // 128
+
+	dHdx /= (6.0 * TexelWorldSize.x);  // normalize by world spacing
+	dHdy /= (6.0 * TexelWorldSize.y);
+
+	float3 N = normalize(float3(-dHdx, dHdy, 1.0));  // surface z = h(x,y), +Z up
+
+	OutputNormal[ThreadID.xy] = float4(N * 0.5 + 0.5, 1.0);  // encode to 0..1
+}
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
+
+//// Normal Step ////////////////////////////////////////////////////////////////////////
 #ifdef NORMAL_STEP
+
+// texels from `origin` to the texture edge along cardinal `dir` (before going OOB)
+int TexelsToEdge(int2 origin, float2 dir)
+{
+	if (dir.x > 0)
+		return OutputTexSize.x - 1 - origin.x;  // toward +X
+	if (dir.x < 0)
+		return origin.x;  // toward -X
+	if (dir.y > 0)
+		return OutputTexSize.y - 1 - origin.y;  // toward +Y
+	return origin.y;                            // toward -Y
+}
+
+static const float2 CARD[4] = {
+	float2(1, 0), float2(0, 1),   // +X - East, +Y - South
+	float2(-1, 0), float2(0, -1)  // -X - West, -Y - North
+};
+
+//from view to horizon
+
+// what is the closest point that subtends an approx solid angle(of occlusion) > x
+// not closest just biggest solid angle,
+
+// What solid angle does this geographical feature subtend
+// feature is defined by
+
+Texture2D CardinalAO : register(t0);
+Texture2D HeightTex : register(t1);
+RWTexture2D<float4> OutputTex : register(u0);  // raw texel counts (see note at bottom)
+
+float GetReflectingSlope(int2 ThreadID, int DirIDX)
+{
+	float2 Dir = CARD[DirIDX];
+	uint StepsToEdge = TexelsToEdge(ThreadID, Dir);
+	float OriginH = HeightTex[ThreadID].x * 65535;
+	OriginH = (OriginH - 32767) * 8.0;
+
+	float SlopeMax = 0.0;  // origin sightline, eye-level start
+	float MaxArea = 0.0;
+	float OutputA = 0;
+
+	[loop] for (int step = 5; step <= StepsToEdge; ++step)
+	{
+		int halfWedge = max(3, (int)(step * tan(radians(45))));
+		int2 perp = int2(Dir.y, -Dir.x);
+		int2 center = ThreadID + Dir * step;
+
+		// advance the origin's horizon using the CENTER px of this band //
+		int2 cClamp = clamp(center, 0, OutputTexSize - 1);
+		float centerH = HeightTex[cClamp].x * 65535;
+		centerH = (centerH - 32767) * 8.0;
+		float centerSlope = (centerH - OriginH) / (float)step;  // tan(elev) of center from origin
+		SlopeMax = max(SlopeMax, centerSlope);                  // running horizon along the ray
+
+		// sum visible vertical extent across the perpendicular row //
+		float rowArea = 0.0;
+		for (int i = -halfWedge; i <= halfWedge; ++i) {
+			int2 SamplePosR = center + perp * i;
+			if (any(SamplePosR < 0) || any(SamplePosR >= OutputTexSize))
+				continue;
+
+			float bestVisible = 0.0;
+			for (int j = -1; j <= 1; j++) {  // sample a pixel either side incase incline is curved, take the strongest
+				int2 SamplePosRS = clamp(SamplePosR + Dir * j, 0, OutputTexSize - 1);
+				float ph = HeightTex[SamplePosRS].x * 65535;
+				ph = (ph - 32767) * 8.0;
+				float dist = max((float)(step + j), 1.0);     // radial distance of THIS sample
+				float pSlope = (ph - OriginH) / dist;         // its elevation angle from origin
+				float visible = max(0.0, pSlope - SlopeMax);  // height above the running sightline
+				bestVisible = max(bestVisible, visible);      // strongest in the j window
+			}
+			rowArea += bestVisible;  // one contribution per lateral slot
+		}
+
+		if (rowArea > MaxArea) {
+			MaxArea = rowArea;
+			OutputA = step;
+		}
+	}
+
+	return OutputA;
+}
+
+/*
+    float3 Normal = LoadNormal(ThreadID.xy);
+    float4 dist;
+    dist.x = MarchToSlope(ThreadID.xy, float2( 1,  0), Normal);   // +X - East
+    dist.y = MarchToSlope(ThreadID.xy, float2(-1,  0), Normal);   // -X - West
+    dist.z = MarchToSlope(ThreadID.xy, float2( 0,  1), Normal);   // +Y - South
+    dist.w = MarchToSlope(ThreadID.xy, float2( 0, -1), Normal);   // -Y - North
+	OutputTex[ThreadID.xy] = dist;                        // raw texel counts
+
+	float4 Output;
+	Output[0] = GetReflectingSlope(ThreadID.xy, 0); // East
+	Output[1] = GetReflectingSlope(ThreadID.xy, 1);
+	Output[2] = GetReflectingSlope(ThreadID.xy, 2);
+	Output[3] = GetReflectingSlope(ThreadID.xy, 3);
+
+	OutputTex[ThreadID.xy] = Output;
+*/
+
+#	define FOV 90
+
+[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	float2 TexSize = OutputTexSize;
+	if (ThreadID.x >= TexSize.x || ThreadID.y >= TexSize.y)
+		return;
+
+	float4 Output;
+
+	for (int k = 0; k < 4; k++) {
+		int2 Origin = int2(ThreadID.xy);
+		float2 Dir = CARD[k];
+		uint StepsToEdge = TexelsToEdge(Origin, Dir);
+
+		float OriginH = HeightTex[Origin].x * 65535;
+		OriginH = (OriginH - 32767) * 8.0;
+
+		float SlopeMax = 0.0;
+		float MaxArea = 0.0;
+		float OutputA = 0;
+
+		int2 perp = int2(Dir.y, -Dir.x);
+
+		[loop] for (int step = 5; step <= StepsToEdge; ++step)
+		{
+			int halfWedge = max(3, (step * tan(radians(45))));
+			int2 center = Origin + Dir * step;
+
+			// advance origin horizon on the band center
+			int2 cClamp = clamp(center, 0, OutputTexSize - 1);
+			float centerH = HeightTex[cClamp].x * 65535;
+			centerH = (centerH - 32767) * 8.0;
+			SlopeMax = max(SlopeMax, (centerH - OriginH) / (float)step);
+
+			// sum visible vertical extent across the perpendicular row
+			float rowArea = 0.0;
+			for (int i = -halfWedge; i <= halfWedge; ++i) {
+				int2 SamplePosR = center + perp * i;
+				if (any(SamplePosR < 0) || any(SamplePosR >= OutputTexSize))
+					continue;
+
+				float bestVisible = 0.0;
+				for (int j = -1; j <= 1; ++j) {  // radial tolerance for curves
+					int2 p = clamp(SamplePosR + Dir * j, 0, OutputTexSize - 1);
+					float ph = HeightTex[p].x * 65535;
+					ph = (ph - 32767) * 8.0;
+					float dist = max((float)(step + j), 1.0);
+					float visible = max(0.0, (ph - OriginH) / dist - SlopeMax);
+					bestVisible = max(bestVisible, visible);
+				}
+				rowArea += bestVisible;
+			}
+
+			if (rowArea > MaxArea) {
+				MaxArea = rowArea;
+				OutputA = step;
+			}
+		}
+		Output[k] = OutputA;
+	}
+
+	OutputTex[ThreadID.xy] = Output;
+}
+#endif
+
+// for a given pixel calc wedge in cardinal dir
+// walk each radial band
+// for each pixel in band walk from band to origin and test vis
+// band with the most wins
+
+// Figure out best way to sample ground lighting
+// Fix albedo and normal texture shape/size
+
+// each pixel stores the
+// PlayerVisibilityCS.hlsl
+// Top-down visibility mask. White = player can see this texel, black = can't.
+// Gates: (1) inside the FOV cone, (2) surface faces the player, (3) terrain
+// doesn't occlude the eye->target line. World is Z-up: UV.xy -> world X/Y, height -> Z.
+
+/*
+#define SIN_LIM 0.1
+// need to handle when we start on ridge cap
+float GetReflectingSlope(float2 ThreadID, int DirIDX)
+{
+	float2 Dir = CARD[DirIDX];
+	uint StepsToEdge = TexelsToEdge(ThreadID, Dir);
+	float OriginH = HeightTex[ThreadID].x * 65535;
+		  OriginH = (OriginH - 32767) * 8.0;
+
+	//float SlopeMax = -1e9;
+	float SlopeMax = 0.0;   // eye-level horizon; only terrain above you counts
+	float MaxBandSinH = 0.0;                                     // first band measures from flat
+	float MaxOmega = 0.0;                                        // accumulated occlusion
+
+	float OutputA = 0;
+
+    [loop] for (int step = 5; step <= StepsToEdge; ++step) {
+        int2 SamplePos = clamp(ThreadID + Dir * step, 0, OutputTexSize-1);
+
+		float SampleH = HeightTex[SamplePos].x * 65535;        // this texel's height
+			  SampleH = (SampleH - 32767) * 8.0;
+		float SlopeLOS = (SampleH - OriginH) / step;    // tan(elev) from origin
+		bool Visible = SlopeLOS >= SlopeMax;      // not hidden by a nearer rise
+		SlopeMax = max(SlopeMax, SlopeLOS);                    // advance origin horizon
+
+		float SinH = CardinalAO[SamplePos][DirIDX];
+
+		if(SinH >= SIN_LIM && Visible){
+			int slope = 0;
+			int valid = 0;
+			float sinSum = 0;
+			int occWidth = 0;                                  // contiguous slope width through center
+			bool runOpen = true;                               // still connected to center
+			int halfWedge = max(3, (int)(step * tan(radians(45))));
+			for (int i = -halfWedge; i <= halfWedge; ++i){
+				int2 SamplePosR = SamplePos + int2(Dir.y, -Dir.x) * i;
+				if (any(SamplePosR < 0) || any(SamplePosR >= OutputTexSize))
+					continue;
+
+				++valid;
+
+				bool hit = false;
+				float bestS = 0;
+				for(int j = -3; j<=3; j++){ // sample a pixel either side incase incline is curved, don't include extra in RNeeded
+				 	int2 SamplePosRS = clamp(SamplePosR + Dir * j, 0, OutputTexSize-1);
+				 	float SinHRS = CardinalAO[SamplePosRS][DirIDX];
+				 	if(SinHRS >= SIN_LIM){
+						hit = true;
+						bestS = max(bestS, SinHRS);
+					}
+				}
+				if (hit){
+					++slope;
+					sinSum += bestS;
+				}
+			}
+
+			// contiguous occluder width through the band center (option A) //
+			for (int k = 0; k <= halfWedge; ++k){              // walk +side from center
+				int2 p = clamp(SamplePos + int2(Dir.y, -Dir.x) * k, 0, OutputTexSize-1);
+				if (CardinalAO[p][DirIDX] < SIN_LIM) break;
+				++occWidth;
+			}
+			for (int k = 1; k <= halfWedge; ++k){              // walk -side from center
+				int2 p = clamp(SamplePos - int2(Dir.y, -Dir.x) * k, 0, OutputTexSize-1);
+				if (CardinalAO[p][DirIDX] < SIN_LIM) break;
+				++occWidth;
+			}
+
+			float dPhi = 2.0 * atan((occWidth * 0.5) / max(step, 1.0));  // true subtended azimuth
+			float sinAvg = slope > 0 ? sinSum / slope : 0.0;      // mean sin(elev) of blockers
+			float dTheta =  asin(sinAvg);                         // band thickness (absolute)
+			float dOmega = sinAvg * dTheta * dPhi;                // solid angle this band subtends
+			if(dOmega > MaxOmega){
+				MaxOmega = dOmega;
+				OutputA = step;
+			}
+		}
+	}
+
+	return OutputA;
+}
+*/
+
+// South(Down) should = 0,-1,0 //correct
+// East should = 1,0,0 //correct
+// North should = 0,1,0 //correct
+// West should = -1,0,0 //correct
+
+/*
+[numthreads(8, 8, 1)]
+void main(uint3 ThreadID : SV_DispatchThreadID)
+{
+	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
+
+	if (ThreadID.x >= settings.GridTexSize.x || ThreadID.y >= settings.GridTexSize.y)
+		return;
+
+	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvGridTexSize.xy;
+
+	float2 PlayerUV = LinearStep(settings.GridBounds.xy, settings.GridBounds.zw, FrameBuffer::CameraPosAdjust.xy);
+	       PlayerUV.y = 1.0 - PlayerUV.y;
+
+	float3 PlayerWorldDir = normalize(FrameBuffer::CameraViewInverse._m02_m12_m22); //normalize(mul(FrameBuffer::CameraViewInverse, float4(0, 0, 1, 0)).xyz);  // Correct!
+
+	float2 PlayerUVDir = normalize(PlayerWorldDir.xy / (settings.GridBounds.zw - settings.GridBounds.xy));
+	       PlayerUVDir.y = -PlayerUVDir.y;
+
+	float WorldHeight = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0) * 65535;
+		  WorldHeight = (WorldHeight - 32767) * 8.0;
+
+	float PlayerWorldHeight = FrameBuffer::CameraPosAdjust.z;//HeightTex.SampleLevel(LinearSampler, PlayerUV, 0) * 65535; // Close enough
+		  //PlayerWorldHeight = (PlayerWorldHeight - 32767) * 8.0;
+
+    float2 toT = CoordsUV - PlayerUV;
+    float dist = length(toT);
+
+    if (dist < 1e-6) {
+        ProbeArray[ThreadID] = 1.0.xxxx;
+    	return;
+    }
+
+    float2 dir = toT / dist;
+
+	float2 nCoord = CoordsUV * float2(1024, 801);
+	float4 NormalWS = float4(NormalTex[nCoord].xzy * 2.0 - 1.0, 1);
+
+	// Outside view frustum
+	float CosHalfFov = cos(radians(FOV * 0.5));
+    if (dot(dir, PlayerUVDir) < CosHalfFov) {
+		ProbeArray[ThreadID] = float4(0,0,0,1); //NormalWS;
+        return;
+    }
+
+	// Inside view frustum
+    uint2 HeightMapSize;
+    HeightTex.GetDimensions(HeightMapSize.x, HeightMapSize.y);
+    float texel = 1.0 / max(HeightMapSize.x, HeightMapSize.y);
+    int steps = dist / texel;
+
+	ProbeArray[ThreadID] = NormalWS;
+
+    bool visible = true;
+    [loop] for(int i = 1; i < steps; ++i) {
+        float t = float(i) / steps;
+        float2 sUV = PlayerUV + toT * t;
+        float lineH = lerp(PlayerWorldHeight, WorldHeight, t);
+		float terrH = HeightTex.SampleLevel(LinearSampler, sUV, 0) * 65535;
+		  	  terrH = (terrH - 32767) * 8.0;
+        if (terrH > lineH) {
+            visible = false;
+            break;
+        }   // add +bias here if you get acne
+    }
+
+	if(visible) // Terrain is visible
+		ProbeArray[ThreadID] = 1.0.xxxx;
+}
+#endif
+*/
+//if on slope
+// walk normal find first normal thats
+
+// if on slope walk across heightmap and find where we start going down again
+
+// return first texel with N with theta3 > x
+// if current(input) N is on a slope return number of texel to top of the slope(needs to handle plataus).
+// if current(input) N is on downwards slope then find the next up slope
+// x given in degrees
+
+/*
+			int halfWedge = step * tan(45);
+			int slope = 0;
+			for (int i = -halfWedge; i <= halfWedge; ++i){
+				int2 SamplePos = clamp(ThreadID + int2(Dir.y, -Dir.x) * step, 0, OutputTexSize-1);
+				if (CardinalAO[SamplePos][DirIDX] >= SIN_LIM)
+					slope++;
+			}
+
+			// check point is unoccluded //
+			float WorldHeight = HeightTex[SamplePos].x * 65535;
+		 		  WorldHeight = (WorldHeight - 32767) * 8.0;
+			float Slope = (WorldHeight - OriginH) / step;
+
+			if(Slope < SlopeMax)
+				continue;
+
+			SlopeMax = Slope;
+
+			// check angle distribution //
+			int RadialTexc = 5;//step * tan(radians(45)); // should be tan 45 * 0.5 if we do 8 card dirs instead of 4
+			int RNeeded = 7;//min(10 + (RadialTexc * 2) * 0.1, 100); // if at least x of radial texels are also incline
+			int RPassed = 0;
+			for(int i = -RadialTexc; i < RadialTexc; i++){
+				int2 SamplePosR = clamp(SamplePos + Dir.yx * float2(i, -i), 0, OutputTexSize-1);
+				for(int j = -3; j<=3; j++){ // sample a pixel either side incase incline is curved, don't include extra in RNeeded
+				 	int2 SamplePosRS = clamp(SamplePosR + Dir * j, 0, OutputTexSize-1);
+				 	if(CardinalAO[SamplePosRS][DirIDX] >= SIN_LIM){
+						++RPassed;
+						break;
+					}
+				}
+			}
+
+			//if(RPassed < RNeeded) // slope not wide enough
+			//	continue;
+
+
+			// find highest point //
+			int c = step + 1;
+			int2 SamplePosN = ThreadID + Dir * c;
+			while(CardinalAO[SamplePosN][DirIDX] > SinH && c < StepsToEdge){ // continue until we hit the highest point
+				SamplePosN = clamp(ThreadID + Dir * ++c, 0, OutputTexSize-1);
+			}
+			return c;
+			*/
+
 //Texture2D<float4>   NormalMap : register(t0);   // geometric normals, comparable space
 //RWTexture2D<float4> OutDist   : register(u0);   // raw texel counts (see note at bottom)
 
@@ -343,400 +792,3 @@ int2 SamplePosN = ThreadID + Dir * (step + 1);
 				++c;
 			}
 */
-
-// texels from `origin` to the texture edge along cardinal `dir` (before going OOB)
-int TexelsToEdge(int2 origin, float2 dir)
-{
-	if (dir.x > 0)
-		return OutputTexSize.x - 1 - origin.x;  // toward +X
-	if (dir.x < 0)
-		return origin.x;  // toward -X
-	if (dir.y > 0)
-		return OutputTexSize.y - 1 - origin.y;  // toward +Y
-	return origin.y;                            // toward -Y
-}
-
-static const float2 CARD[4] = {
-	float2(1, 0), float2(0, 1),   // +X - East, +Y - South
-	float2(-1, 0), float2(0, -1)  // -X - West, -Y - North
-};
-
-//from view to horizon
-
-// what is the closest point that subtends an approx solid angle(of occlusion) > x
-// not closest just biggest solid angle,
-
-// What solid angle does this geographical feature subtend
-// feature is defined by
-
-Texture2D CardinalAO : register(t0);
-Texture2D HeightTex : register(t1);
-RWTexture2D<float4> OutputTex : register(u0);  // raw texel counts (see note at bottom)
-
-/*
-#define SIN_LIM 0.1
-// need to handle when we start on ridge cap
-float GetReflectingSlope(float2 ThreadID, int DirIDX)
-{
-	float2 Dir = CARD[DirIDX];
-	uint StepsToEdge = TexelsToEdge(ThreadID, Dir);
-	float OriginH = HeightTex[ThreadID].x * 65535;
-		  OriginH = (OriginH - 32767) * 8.0;
-
-	//float SlopeMax = -1e9;
-	float SlopeMax = 0.0;   // eye-level horizon; only terrain above you counts
-	float MaxBandSinH = 0.0;                                     // first band measures from flat
-	float MaxOmega = 0.0;                                        // accumulated occlusion
-
-	float OutputA = 0;
-
-    [loop] for (int step = 5; step <= StepsToEdge; ++step) {
-        int2 SamplePos = clamp(ThreadID + Dir * step, 0, OutputTexSize-1);
-
-		float SampleH = HeightTex[SamplePos].x * 65535;        // this texel's height
-			  SampleH = (SampleH - 32767) * 8.0;
-		float SlopeLOS = (SampleH - OriginH) / step;    // tan(elev) from origin
-		bool Visible = SlopeLOS >= SlopeMax;      // not hidden by a nearer rise
-		SlopeMax = max(SlopeMax, SlopeLOS);                    // advance origin horizon
-
-		float SinH = CardinalAO[SamplePos][DirIDX];
-
-		if(SinH >= SIN_LIM && Visible){
-			int slope = 0;
-			int valid = 0;
-			float sinSum = 0;
-			int occWidth = 0;                                  // contiguous slope width through center
-			bool runOpen = true;                               // still connected to center
-			int halfWedge = max(3, (int)(step * tan(radians(45))));
-			for (int i = -halfWedge; i <= halfWedge; ++i){
-				int2 SamplePosR = SamplePos + int2(Dir.y, -Dir.x) * i;
-				if (any(SamplePosR < 0) || any(SamplePosR >= OutputTexSize))
-					continue;
-
-				++valid;
-
-				bool hit = false;
-				float bestS = 0;
-				for(int j = -3; j<=3; j++){ // sample a pixel either side incase incline is curved, don't include extra in RNeeded
-				 	int2 SamplePosRS = clamp(SamplePosR + Dir * j, 0, OutputTexSize-1);
-				 	float SinHRS = CardinalAO[SamplePosRS][DirIDX];
-				 	if(SinHRS >= SIN_LIM){
-						hit = true;
-						bestS = max(bestS, SinHRS);
-					}
-				}
-				if (hit){
-					++slope;
-					sinSum += bestS;
-				}
-			}
-
-			// contiguous occluder width through the band center (option A) //
-			for (int k = 0; k <= halfWedge; ++k){              // walk +side from center
-				int2 p = clamp(SamplePos + int2(Dir.y, -Dir.x) * k, 0, OutputTexSize-1);
-				if (CardinalAO[p][DirIDX] < SIN_LIM) break;
-				++occWidth;
-			}
-			for (int k = 1; k <= halfWedge; ++k){              // walk -side from center
-				int2 p = clamp(SamplePos - int2(Dir.y, -Dir.x) * k, 0, OutputTexSize-1);
-				if (CardinalAO[p][DirIDX] < SIN_LIM) break;
-				++occWidth;
-			}
-
-			float dPhi = 2.0 * atan((occWidth * 0.5) / max(step, 1.0));  // true subtended azimuth
-			float sinAvg = slope > 0 ? sinSum / slope : 0.0;      // mean sin(elev) of blockers
-			float dTheta =  asin(sinAvg);                         // band thickness (absolute)
-			float dOmega = sinAvg * dTheta * dPhi;                // solid angle this band subtends
-			if(dOmega > MaxOmega){
-				MaxOmega = dOmega;
-				OutputA = step;
-			}
-		}
-	}
-
-	return OutputA;
-}
-*/
-
-float GetReflectingSlope(int2 ThreadID, int DirIDX)
-{
-	float2 Dir = CARD[DirIDX];
-	uint StepsToEdge = TexelsToEdge(ThreadID, Dir);
-	float OriginH = HeightTex[ThreadID].x * 65535;
-	OriginH = (OriginH - 32767) * 8.0;
-
-	float SlopeMax = 0.0;  // origin sightline, eye-level start
-	float MaxArea = 0.0;
-	float OutputA = 0;
-
-	[loop] for (int step = 5; step <= StepsToEdge; ++step)
-	{
-		int halfWedge = max(3, (int)(step * tan(radians(45))));
-		int2 perp = int2(Dir.y, -Dir.x);
-		int2 center = ThreadID + Dir * step;
-
-		// advance the origin's horizon using the CENTER px of this band //
-		int2 cClamp = clamp(center, 0, OutputTexSize - 1);
-		float centerH = HeightTex[cClamp].x * 65535;
-		centerH = (centerH - 32767) * 8.0;
-		float centerSlope = (centerH - OriginH) / (float)step;  // tan(elev) of center from origin
-		SlopeMax = max(SlopeMax, centerSlope);                  // running horizon along the ray
-
-		// sum visible vertical extent across the perpendicular row //
-		float rowArea = 0.0;
-		for (int i = -halfWedge; i <= halfWedge; ++i) {
-			int2 SamplePosR = center + perp * i;
-			if (any(SamplePosR < 0) || any(SamplePosR >= OutputTexSize))
-				continue;
-
-			float bestVisible = 0.0;
-			for (int j = -1; j <= 1; j++) {  // sample a pixel either side incase incline is curved, take the strongest
-				int2 SamplePosRS = clamp(SamplePosR + Dir * j, 0, OutputTexSize - 1);
-				float ph = HeightTex[SamplePosRS].x * 65535;
-				ph = (ph - 32767) * 8.0;
-				float dist = max((float)(step + j), 1.0);     // radial distance of THIS sample
-				float pSlope = (ph - OriginH) / dist;         // its elevation angle from origin
-				float visible = max(0.0, pSlope - SlopeMax);  // height above the running sightline
-				bestVisible = max(bestVisible, visible);      // strongest in the j window
-			}
-			rowArea += bestVisible;  // one contribution per lateral slot
-		}
-
-		if (rowArea > MaxArea) {
-			MaxArea = rowArea;
-			OutputA = step;
-		}
-	}
-
-	return OutputA;
-}
-
-/*
-    float3 Normal = LoadNormal(ThreadID.xy);
-    float4 dist;
-    dist.x = MarchToSlope(ThreadID.xy, float2( 1,  0), Normal);   // +X - East
-    dist.y = MarchToSlope(ThreadID.xy, float2(-1,  0), Normal);   // -X - West
-    dist.z = MarchToSlope(ThreadID.xy, float2( 0,  1), Normal);   // +Y - South
-    dist.w = MarchToSlope(ThreadID.xy, float2( 0, -1), Normal);   // -Y - North
-	OutputTex[ThreadID.xy] = dist;                        // raw texel counts
-
-	float4 Output;
-	Output[0] = GetReflectingSlope(ThreadID.xy, 0); // East
-	Output[1] = GetReflectingSlope(ThreadID.xy, 1);
-	Output[2] = GetReflectingSlope(ThreadID.xy, 2);
-	Output[3] = GetReflectingSlope(ThreadID.xy, 3);
-
-	OutputTex[ThreadID.xy] = Output;
-*/
-
-#	define FOV 90
-
-[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
-	float2 TexSize = OutputTexSize;
-	if (ThreadID.x >= TexSize.x || ThreadID.y >= TexSize.y)
-		return;
-
-	float4 Output;
-
-	for (int k = 0; k < 4; k++) {
-		int2 Origin = int2(ThreadID.xy);
-		float2 Dir = CARD[k];
-		uint StepsToEdge = TexelsToEdge(Origin, Dir);
-
-		float OriginH = HeightTex[Origin].x * 65535;
-		OriginH = (OriginH - 32767) * 8.0;
-
-		float SlopeMax = 0.0;
-		float MaxArea = 0.0;
-		float OutputA = 0;
-
-		int2 perp = int2(Dir.y, -Dir.x);
-
-		[loop] for (int step = 5; step <= StepsToEdge; ++step)
-		{
-			int halfWedge = max(3, (step * tan(radians(45))));
-			int2 center = Origin + Dir * step;
-
-			// advance origin horizon on the band center
-			int2 cClamp = clamp(center, 0, OutputTexSize - 1);
-			float centerH = HeightTex[cClamp].x * 65535;
-			centerH = (centerH - 32767) * 8.0;
-			SlopeMax = max(SlopeMax, (centerH - OriginH) / (float)step);
-
-			// sum visible vertical extent across the perpendicular row
-			float rowArea = 0.0;
-			for (int i = -halfWedge; i <= halfWedge; ++i) {
-				int2 SamplePosR = center + perp * i;
-				if (any(SamplePosR < 0) || any(SamplePosR >= OutputTexSize))
-					continue;
-
-				float bestVisible = 0.0;
-				for (int j = -1; j <= 1; ++j) {  // radial tolerance for curves
-					int2 p = clamp(SamplePosR + Dir * j, 0, OutputTexSize - 1);
-					float ph = HeightTex[p].x * 65535;
-					ph = (ph - 32767) * 8.0;
-					float dist = max((float)(step + j), 1.0);
-					float visible = max(0.0, (ph - OriginH) / dist - SlopeMax);
-					bestVisible = max(bestVisible, visible);
-				}
-				rowArea += bestVisible;
-			}
-
-			if (rowArea > MaxArea) {
-				MaxArea = rowArea;
-				OutputA = step;
-			}
-		}
-		Output[k] = OutputA;
-	}
-
-	OutputTex[ThreadID.xy] = Output;
-}
-#endif
-
-// for a given pixel calc wedge in cardinal dir
-// walk each radial band
-// for each pixel in band walk from band to origin and test vis
-// band with the most wins
-
-// Figure out best way to sample ground lighting
-// Fix albedo and normal texture shape/size
-
-// each pixel stores the
-// PlayerVisibilityCS.hlsl
-// Top-down visibility mask. White = player can see this texel, black = can't.
-// Gates: (1) inside the FOV cone, (2) surface faces the player, (3) terrain
-// doesn't occlude the eye->target line. World is Z-up: UV.xy -> world X/Y, height -> Z.
-
-// South(Down) should = 0,-1,0 //correct
-// East should = 1,0,0 //correct
-// North should = 0,1,0 //correct
-// West should = -1,0,0 //correct
-
-/*
-[numthreads(8, 8, 1)]
-void main(uint3 ThreadID : SV_DispatchThreadID)
-{
-	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
-
-	if (ThreadID.x >= settings.GridTexSize.x || ThreadID.y >= settings.GridTexSize.y)
-		return;
-
-	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvGridTexSize.xy;
-
-	float2 PlayerUV = LinearStep(settings.GridBounds.xy, settings.GridBounds.zw, FrameBuffer::CameraPosAdjust.xy);
-	       PlayerUV.y = 1.0 - PlayerUV.y;
-
-	float3 PlayerWorldDir = normalize(FrameBuffer::CameraViewInverse._m02_m12_m22); //normalize(mul(FrameBuffer::CameraViewInverse, float4(0, 0, 1, 0)).xyz);  // Correct!
-
-	float2 PlayerUVDir = normalize(PlayerWorldDir.xy / (settings.GridBounds.zw - settings.GridBounds.xy));
-	       PlayerUVDir.y = -PlayerUVDir.y;
-
-	float WorldHeight = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0) * 65535;
-		  WorldHeight = (WorldHeight - 32767) * 8.0;
-
-	float PlayerWorldHeight = FrameBuffer::CameraPosAdjust.z;//HeightTex.SampleLevel(LinearSampler, PlayerUV, 0) * 65535; // Close enough
-		  //PlayerWorldHeight = (PlayerWorldHeight - 32767) * 8.0;
-
-    float2 toT = CoordsUV - PlayerUV;
-    float dist = length(toT);
-
-    if (dist < 1e-6) {
-        ProbeArray[ThreadID] = 1.0.xxxx;
-    	return;
-    }
-
-    float2 dir = toT / dist;
-
-	float2 nCoord = CoordsUV * float2(1024, 801);
-	float4 NormalWS = float4(NormalTex[nCoord].xzy * 2.0 - 1.0, 1);
-
-	// Outside view frustum
-	float CosHalfFov = cos(radians(FOV * 0.5));
-    if (dot(dir, PlayerUVDir) < CosHalfFov) {
-		ProbeArray[ThreadID] = float4(0,0,0,1); //NormalWS;
-        return;
-    }
-
-	// Inside view frustum
-    uint2 HeightMapSize;
-    HeightTex.GetDimensions(HeightMapSize.x, HeightMapSize.y);
-    float texel = 1.0 / max(HeightMapSize.x, HeightMapSize.y);
-    int steps = dist / texel;
-
-	ProbeArray[ThreadID] = NormalWS;
-
-    bool visible = true;
-    [loop] for(int i = 1; i < steps; ++i) {
-        float t = float(i) / steps;
-        float2 sUV = PlayerUV + toT * t;
-        float lineH = lerp(PlayerWorldHeight, WorldHeight, t);
-		float terrH = HeightTex.SampleLevel(LinearSampler, sUV, 0) * 65535;
-		  	  terrH = (terrH - 32767) * 8.0;
-        if (terrH > lineH) {
-            visible = false;
-            break;
-        }   // add +bias here if you get acne
-    }
-
-	if(visible) // Terrain is visible
-		ProbeArray[ThreadID] = 1.0.xxxx;
-}
-#endif
-*/
-//if on slope
-// walk normal find first normal thats
-
-// if on slope walk across heightmap and find where we start going down again
-
-// return first texel with N with theta3 > x
-// if current(input) N is on a slope return number of texel to top of the slope(needs to handle plataus).
-// if current(input) N is on downwards slope then find the next up slope
-// x given in degrees
-
-/*
-			int halfWedge = step * tan(45);
-			int slope = 0;
-			for (int i = -halfWedge; i <= halfWedge; ++i){
-				int2 SamplePos = clamp(ThreadID + int2(Dir.y, -Dir.x) * step, 0, OutputTexSize-1);
-				if (CardinalAO[SamplePos][DirIDX] >= SIN_LIM)
-					slope++;
-			}
-
-			// check point is unoccluded //
-			float WorldHeight = HeightTex[SamplePos].x * 65535;
-		 		  WorldHeight = (WorldHeight - 32767) * 8.0;
-			float Slope = (WorldHeight - OriginH) / step;
-
-			if(Slope < SlopeMax)
-				continue;
-
-			SlopeMax = Slope;
-
-			// check angle distribution //
-			int RadialTexc = 5;//step * tan(radians(45)); // should be tan 45 * 0.5 if we do 8 card dirs instead of 4
-			int RNeeded = 7;//min(10 + (RadialTexc * 2) * 0.1, 100); // if at least x of radial texels are also incline
-			int RPassed = 0;
-			for(int i = -RadialTexc; i < RadialTexc; i++){
-				int2 SamplePosR = clamp(SamplePos + Dir.yx * float2(i, -i), 0, OutputTexSize-1);
-				for(int j = -3; j<=3; j++){ // sample a pixel either side incase incline is curved, don't include extra in RNeeded
-				 	int2 SamplePosRS = clamp(SamplePosR + Dir * j, 0, OutputTexSize-1);
-				 	if(CardinalAO[SamplePosRS][DirIDX] >= SIN_LIM){
-						++RPassed;
-						break;
-					}
-				}
-			}
-
-			//if(RPassed < RNeeded) // slope not wide enough
-			//	continue;
-
-
-			// find highest point //
-			int c = step + 1;
-			int2 SamplePosN = ThreadID + Dir * c;
-			while(CardinalAO[SamplePosN][DirIDX] > SinH && c < StepsToEdge){ // continue until we hit the highest point
-				SamplePosN = clamp(ThreadID + Dir * ++c, 0, OutputTexSize-1);
-			}
-			return c;
-			*/
