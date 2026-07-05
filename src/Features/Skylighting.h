@@ -64,6 +64,9 @@ public:
 		uint toggleGrass = true;
 		uint toggleDeferred = true;
 		uint toggleEffect = true;
+
+		int cacheProgressX = -57;
+		int cacheProgressY = -43;
 	} settings;
 
 	struct SkylightingCB
@@ -166,6 +169,18 @@ public:
 	void GenerateCardinalOcclusionMap();
 	void GenerateNormalStepMap();
 	void GenerateNormalMap();
+	bool MapGen = false;
+	int cellsDone = 0;
+	bool test = false;
+	bool test2 = false;
+	bool test3 = false;
+	static inline eastl::unique_ptr<Texture2D> cacheOutputTexH = nullptr;
+
+	float GetRayIntersectionHeight(float3 position, float f);
+	void SetWorldPosition(const int2& currentCellXY, RE::NiPoint3& worldPos);
+	void GenerateHeightMap();
+	bool IsPositionValid(RE::NiPoint3 inputPosition);
+	ID3D11ShaderResourceView* tmpTex = nullptr;
 
 	struct alignas(16) CacheGenCBStruct
 	{

@@ -11,7 +11,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Skylighting::Settings,
 	MaxZenith,
 	MinDiffuseVisibility,
-	MinSpecularVisibility)
+	MinSpecularVisibility,
+	cacheProgressX,
+	cacheProgressY)
 
 void Skylighting::LoadSettings(json& o_json)
 {
@@ -71,11 +73,24 @@ void Skylighting::DrawSettings()
 		GenerateNormalMap();
 	}
 
-	// stores direction player looking in
-	// wedge shape view from player origin
-	//
+	ImGui::Checkbox("Generate height map", &MapGen);
+	ImGui::Checkbox("disable raycast", &test);
+	ImGui::Checkbox("disable loop", &test2);
+	ImGui::Checkbox("disable save", &test3);
+
+	ImGui::Text("Cells Done: %d", cellsDone);
 
 	static float debugRescale = 1.0f;
+	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
+
+	//if(!HMapSRV){
+	//auto path = cachePath / "Tamriel_H.dds";
+	//DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &tmpTex));
+	//}
+	if (HMapSRV) {
+		BUFFER_VIEWER_NODE_BULLETA(HMapSRV, debugRescale)
+	}
+
 	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
 	if (texSparseProbeArray) {
 		ImGui::BulletText("View");
@@ -211,6 +226,21 @@ void Skylighting::SetupResources()
 	GetCachedWorldspaces();
 
 	CompileComputeShaders();
+
+	auto TexSize = int2(9666, 7618);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32_FLOAT, (uint)TexSize.x, (uint)TexSize.y, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
+	cacheOutputTexH = eastl::make_unique<Texture2D>(desc);
+
+	auto path = cachePath / "Tamriel_H.dds";
+	ID3D11Resource* rsrc = nullptr;
+	auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), &rsrc, nullptr);
+	if (!FAILED(result)) {
+		globals::d3d::context->CopyResource(cacheOutputTexH->resource.get(), rsrc);
+		rsrc->Release();
+		logger::error("[Skylighting] LOADED TRUE");
+	} else {
+		logger::error("[Skylighting] FAILED TO LOAD");
+	}
 }
 
 void Skylighting::GetCachedWorldspaces()
@@ -1112,6 +1142,9 @@ void Skylighting::Main_Precipitation_RenderOcclusion::thunk()
 	auto& skylighting = globals::features::skylighting;
 
 	skylighting.RenderOcclusion();
+
+	if (skylighting.MapGen)
+		skylighting.GenerateHeightMap();
 }
 
 RE::BSEventNotifyControl Skylighting::MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
@@ -1266,6 +1299,222 @@ void Skylighting::BuildAtlas(const std::filesystem::path& outputPath, std::strin
 
 	//auto savePath =
 	DirectX::SaveToDDSFile(*atlasImg, DDS_FLAGS_NONE, outputPath.c_str());
+}
+
+// move one cell at a time
+// each cell we cast rays every x dist
+
+void Skylighting::GenerateHeightMap()
+{
+	static constexpr float CELL = 4096.0f;
+	static constexpr int worldRes = 50;  // world units per texel in output tex
+	auto path = cachePath / (cacheWorldspaceID + "_H.dds");
+
+	auto context = globals::d3d::context;
+	auto tes = RE::TES::GetSingleton();
+	auto player = RE::PlayerCharacter::GetSingleton();
+	auto worldSpace = player ? player->GetWorldspace() : nullptr;
+
+	if (tes && worldSpace) {
+		static constexpr int2 startCell = int2(-57, -43);  // same as dyndolod
+		static constexpr int2 endCell = int2(61, 50);      // same as dyndolod
+
+		static auto currentCellXY = startCell;
+		static auto worldPositionSet = RE::NiPoint3((float)currentCellXY.x * CELL, (float)currentCellXY.y * CELL, 0);
+
+		int2 cellTotal = int2(std::abs(startCell.x), std::abs(startCell.y)) + endCell;
+		int2 worldSizeTotal = cellTotal * (int)CELL;
+
+		int2 TexSize = worldSizeTotal / worldRes;
+
+		static bool init = true;
+		if (init) {
+			RE::GetINISetting("iFPSClamp:General")->data.i = 0;
+			RE::GetINISetting("bLockFramerate:Display")->data.b = false;
+			RE::GetINISetting("iVSyncPresentInterval:Display")->data.b = false;
+			RE::GetINISetting("bBorderRegionsEnabled:General")->data.b = false;
+			RE::GetINISetting("fMaxTime:HAVOK")->data.f = 0.001f;
+
+			currentCellXY = int2(settings.cacheProgressX, settings.cacheProgressY);
+
+			SetWorldPosition(currentCellXY, worldPositionSet);
+			init = false;
+			return;
+		}
+
+		bool valid = IsPositionValid(worldPositionSet);
+		static int failedCount = 0;
+		failedCount = valid ? 0 : ++failedCount;
+		if (!valid) {
+			if (failedCount >= 10) {  // This should never happen but since its possible for the game to refuse an update we should handle it anyway.
+				logger::error("[Skylighting] Sample position was unable to be updated");
+				failedCount = 0;
+			} else {
+				//player->SetPosition(worldPositionSet, false);
+				SetWorldPosition(currentCellXY, worldPositionSet);
+			}
+			return;
+		}
+
+		if (!test2) {
+			// write heightmap
+			D3D11_MAPPED_SUBRESOURCE mapped;
+			context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped);
+
+			int stepsPerCell = (int)CELL / worldRes;
+			for (int x = 0; x < stepsPerCell; ++x) {
+				for (int y = 0; y < stepsPerCell; ++y) {
+					float2 worldXY = float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
+					worldXY = worldXY + float2((float)x, (float)y) * (float)worldRes;
+
+					float landHeight;
+					tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
+					float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
+
+					float groundHeight = 1000;
+					if (!test)
+						groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight), 5000);
+
+					groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
+
+					int2 texCoord = (currentCellXY - startCell) * stepsPerCell + int2(x, y);
+					float* tex = (float*)((uint8_t*)mapped.pData + texCoord.y * mapped.RowPitch);
+					tex[texCoord.x] = groundHeight;  // write to tex
+				}
+			}
+			context->Unmap(cacheOutputTexH->resource.get(), 0);
+		}
+
+		ID3D11Resource* re;
+		HMapSRV->GetResource(&re);
+		globals::d3d::context->CopyResource(re, cacheOutputTexH->resource.get());
+
+		if (!test3) {
+			static int c = 0;
+			if (++c == 10) {
+				c = 0;
+				// Save output
+				DirectX::ScratchImage ouputImage;
+				DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, re, ouputImage));
+				DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, path.c_str()));
+				settings.cacheProgressX = currentCellXY.x;
+				settings.cacheProgressY = currentCellXY.y;
+				globals::state->Save();
+			}
+		}
+		re->Release();
+
+		if (++currentCellXY.x >= endCell.x) {
+			currentCellXY.x = startCell.x;
+			if (++currentCellXY.y >= endCell.y) {
+				currentCellXY.y = startCell.y;
+				MapGen = false;
+				return;
+			}
+		}
+
+		cellsDone += 1;
+		SetWorldPosition(currentCellXY, worldPositionSet);
+	}
+}
+
+bool Skylighting::IsPositionValid(RE::NiPoint3 inputPosition)
+{
+	static constexpr float HALF_CELL = 2048.0f;
+	static constexpr float CELL = 4096.0f;
+
+	bool valid = false;
+	if (auto player = RE::PlayerCharacter::GetSingleton()) {
+		auto diff = player->GetPosition() - inputPosition;
+		valid = std::max(diff.x, diff.y) < CELL;
+		logger::trace("diff: {}, {}", diff.x, diff.y);
+		logger::trace("Pos: {}  :  InPos: {}", player->GetPosition(), inputPosition);
+	}
+
+	return valid;
+}
+
+void Skylighting::SetWorldPosition(const int2& currentCellXY, RE::NiPoint3& worldPos)
+{
+	static constexpr float CELL = 4096.0f;
+
+	auto tes = RE::TES::GetSingleton();
+	auto player = RE::PlayerCharacter::GetSingleton();
+
+	//float2 worldXY = float2(minWorldCoords.x, minWorldCoords.y) + float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
+	float2 worldXY = float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
+
+	float landHeight;
+	tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
+	logger::trace("land: {}", landHeight);
+
+	float groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight), 15000);
+	logger::trace("ground: {}", groundHeight);
+	float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
+	groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
+
+	float3 sampleCoordsWS = float3(worldXY.x, worldXY.y, groundHeight);
+	logger::trace("sampleCoordsWS: {}, {}, {}", sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z);
+
+	worldPos = RE::NiPoint3(sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z + 1500.0f);  // place character in air to avoid crap happening
+	player->SetPosition(worldPos, false);
+}
+
+float Skylighting::GetRayIntersectionHeight(float3 position, float RAY_OFFSET)
+{
+	//static constexpr float RAY_OFFSET = 20000.0f;
+	static constexpr int MAX_ATTEMPTS = 10;
+
+	static float prevZ = 0.0f;
+	auto player = RE::PlayerCharacter::GetSingleton();
+	auto cell = player->GetParentCell();
+	auto bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
+
+	if (auto hkpWorld = bhkWorld ? cell->GetbhkWorld()->GetWorld1() : nullptr; hkpWorld) {
+		float scale = RE::bhkWorld::GetWorldScale();
+		float2 posScaledXY = float2(position.x * scale, position.y * scale);
+		float currentZ = position.z + RAY_OFFSET;
+		float endZ = position.z - RAY_OFFSET;
+
+		for (int i = 0; i < MAX_ATTEMPTS; i++) {
+			RE::hkpWorldRayCastInput input;
+			input.from.quad.m128_f32[0] = posScaledXY.x;
+			input.from.quad.m128_f32[1] = posScaledXY.y;
+			input.from.quad.m128_f32[2] = currentZ * scale;
+			input.from.quad.m128_f32[3] = 0;
+			input.to.quad.m128_f32[0] = posScaledXY.x;
+			input.to.quad.m128_f32[1] = posScaledXY.y;
+			input.to.quad.m128_f32[2] = endZ * scale;
+			input.to.quad.m128_f32[3] = 0;
+
+			RE::hkpWorldRayCastOutput output;
+			hkpWorld->CastRay(input, output);
+
+			if (!output.HasHit()) {
+				logger::error("[Skylighting] Ray cast failed to find surface... continuing");
+				return prevZ;
+			}
+			auto collisionObj = output.rootCollidable->GetCollisionLayer();
+
+			if (!(collisionObj == RE::COL_LAYER::kTerrain || collisionObj == RE::COL_LAYER::kGround || collisionObj == RE::COL_LAYER::kStatic)) {
+				float rayLength = currentZ - endZ;
+				currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
+				continue;
+			}
+
+			if (i + 1 == MAX_ATTEMPTS) {
+				logger::error("[Skylighting] Ray cast had no valid hit; last recorded collision was: {} ... continuing", collisionObj);
+				return prevZ;
+			}
+
+			float rayLength = currentZ - endZ;
+			float hitZ = currentZ - output.hitFraction * rayLength;
+			prevZ = hitZ;
+			return hitZ;
+		}
+	}
+
+	return prevZ;
 }
 
 #undef I18N_KEY_PREFIX
