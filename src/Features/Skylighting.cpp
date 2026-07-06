@@ -73,29 +73,31 @@ void Skylighting::DrawSettings()
 		GenerateNormalMap();
 	}
 
-	auto pos = RE::PlayerCharacter::GetSingleton()->GetPosition();
-	float h = SampleHeightMap(float2(pos.x, pos.y));
-	ImGui::Text("Height: %f", h);
+	//auto pos = RE::PlayerCharacter::GetSingleton()->GetPosition();
+	//float h = SampleHeightMap(float2(pos.x, pos.y));
+	//ImGui::Text("Height: %f", h);
 
-	ImGui::Checkbox("Generate height map", &MapGen);
-	ImGui::Checkbox("disable raycast", &test);
-	ImGui::Checkbox("disable loop", &test2);
-	ImGui::Checkbox("disable save", &test3);
+	//ImGui::Checkbox("Generate height map", &MapGen);
+	//ImGui::Checkbox("disable raycast", &test);
+	//ImGui::Checkbox("disable loop", &test2);
+	//ImGui::Checkbox("disable save", &test3);
 
 	//ImGui::Text("Cells Done: %d", cellsDone);
 
 	static float debugRescale = 1.0f;
 	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
 
+	BUFFER_VIEWER_NODE_BULLETA(terrainLightingTex->srv.get(), debugRescale)
+
 	//if(!HMapSRV){
 	//auto path = cachePath / "Tamriel_H.dds";
 	//DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &tmpTex));
 	//}
-	if (HMapSRV) {
-		BUFFER_VIEWER_NODE_BULLETA(HMapSRV, debugRescale)
-	}
+	//if (HMapSRV) {
+	//	BUFFER_VIEWER_NODE_BULLETA(HMapSRV, debugRescale)
+	//}
 
-	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
+	//ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
 	if (texSparseProbeArray) {
 		ImGui::BulletText("View");
 		BUFFER_VIEWER_NODE_BULLET(texSparseProbeArray, debugRescale)
@@ -331,6 +333,38 @@ bool Skylighting::LoadWorldspaceCache()
 	}
 
 	{
+		auto path = cachePath / (newWorldspaceID + "_DO.dds");
+		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &DOMapSRV);
+		if (FAILED(result)) {
+			GenerateCardinalOcclusionMap();
+		}
+	}
+
+	{
+		auto path = cachePath / (newWorldspaceID + "_DO2.dds");
+		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &DO2MapSRV);
+		if (FAILED(result)) {
+			GenerateCardinalOcclusionMap();
+		}
+	}
+
+	{
+		auto path = cachePath / (newWorldspaceID + "_DOB.dds");
+		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &DOMapSRVB);
+		if (FAILED(result)) {
+			GenerateCardinalOcclusionMap();
+		}
+	}
+
+	{
+		auto path = cachePath / (newWorldspaceID + "_DO2B.dds");
+		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &DO2MapSRVB);
+		if (FAILED(result)) {
+			GenerateCardinalOcclusionMap();
+		}
+	}
+
+	{
 		auto path = cachePath / (newWorldspaceID + "_NS.dds");
 		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &NSMapSRV);
 		if (FAILED(result)) {
@@ -539,6 +573,10 @@ void Skylighting::GenerateCardinalOcclusionMap()
 	// Setup resources
 	eastl::unique_ptr<Texture2D> cacheOutputTexCO = nullptr;
 	eastl::unique_ptr<Texture2D> cacheOutputTexCO2 = nullptr;
+	eastl::unique_ptr<Texture2D> cacheOutputTexDO = nullptr;
+	eastl::unique_ptr<Texture2D> cacheOutputTexDO2 = nullptr;
+	eastl::unique_ptr<Texture2D> cacheOutputTexDOB = nullptr;
+	eastl::unique_ptr<Texture2D> cacheOutputTexDO2B = nullptr;
 	eastl::unique_ptr<ID3D11ComputeShader> COComputeShader = nullptr;
 
 	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, COMapSize, COMapSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
@@ -552,6 +590,22 @@ void Skylighting::GenerateCardinalOcclusionMap()
 	cacheOutputTexCO2->CreateSRV(nullptr);
 	cacheOutputTexCO2->CreateUAV(uavDesc);
 
+	cacheOutputTexDO = eastl::make_unique<Texture2D>(desc);
+	cacheOutputTexDO->CreateSRV(nullptr);
+	cacheOutputTexDO->CreateUAV(uavDesc);
+
+	cacheOutputTexDO2 = eastl::make_unique<Texture2D>(desc);
+	cacheOutputTexDO2->CreateSRV(nullptr);
+	cacheOutputTexDO2->CreateUAV(uavDesc);
+
+	cacheOutputTexDOB = eastl::make_unique<Texture2D>(desc);
+	cacheOutputTexDOB->CreateSRV(nullptr);
+	cacheOutputTexDOB->CreateUAV(uavDesc);
+
+	cacheOutputTexDO2B = eastl::make_unique<Texture2D>(desc);
+	cacheOutputTexDO2B->CreateSRV(nullptr);
+	cacheOutputTexDO2B->CreateUAV(uavDesc);
+
 	COComputeShader.reset(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Skylighting\\GenerateCacheMaps.hlsl", { { "CSHADER", "" }, { "CARDINALS", "" } }, "cs_5_0")));
 
 	if (!cacheGenBuffer)
@@ -560,9 +614,9 @@ void Skylighting::GenerateCardinalOcclusionMap()
 	// Generate map
 	auto context = globals::d3d::context;
 
-	ID3D11UnorderedAccessView* uav[2] = { cacheOutputTexCO->uav.get(), cacheOutputTexCO2->uav.get() };
+	ID3D11UnorderedAccessView* uav[] = { cacheOutputTexCO->uav.get(), cacheOutputTexCO2->uav.get(), cacheOutputTexDO->uav.get(), cacheOutputTexDO2->uav.get(), cacheOutputTexDOB->uav.get(), cacheOutputTexDO2B->uav.get() };
 	context->CSSetShader(COComputeShader.get(), nullptr, 0);
-	context->CSSetUnorderedAccessViews(0, 2, uav, nullptr);
+	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uav), uav, nullptr);
 
 	auto heightSRV = HMapSRV;  //globals::features::terrainShadows.texHeightMap->srv.get();
 	context->CSSetShaderResources(0, 1, &heightSRV);
@@ -580,8 +634,8 @@ void Skylighting::GenerateCardinalOcclusionMap()
 	auto groups = (COMapSize + 7) / 8;
 	context->Dispatch(groups, groups, 1);
 
-	ID3D11UnorderedAccessView* nullUAVs[2] = { nullptr, nullptr };
-	context->CSSetUnorderedAccessViews(0, 2, nullUAVs, nullptr);
+	ID3D11UnorderedAccessView* nullUAVs[6] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+	context->CSSetUnorderedAccessViews(0, 6, nullUAVs, nullptr);
 
 	// Save output
 	auto outputPath = cachePath / (cacheWorldspaceID + "_CO.dds");
@@ -591,6 +645,22 @@ void Skylighting::GenerateCardinalOcclusionMap()
 
 	outputPath = cachePath / (cacheWorldspaceID + "_CO2.dds");
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexCO2->resource.get(), ouputImage));
+	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+
+	outputPath = cachePath / (cacheWorldspaceID + "_DO.dds");
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexDO->resource.get(), ouputImage));
+	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+
+	outputPath = cachePath / (cacheWorldspaceID + "_DO2.dds");
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexDO2->resource.get(), ouputImage));
+	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+
+	outputPath = cachePath / (cacheWorldspaceID + "_DOB.dds");
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexDOB->resource.get(), ouputImage));
+	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+
+	outputPath = cachePath / (cacheWorldspaceID + "_DO2B.dds");
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexDO2B->resource.get(), ouputImage));
 	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
 
 	COComputeShader.release();
@@ -743,6 +813,10 @@ void Skylighting::UpdateSparseProbeGrid()
 		NMapSRV,
 		terrainLightingTex->srv.get(),
 		NSMapSRV,
+		DOMapSRV,
+		DO2MapSRV,
+		DOMapSRVB,
+		DO2MapSRVB,
 	};
 
 	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
@@ -1565,10 +1639,11 @@ float Skylighting::SampleHeightMap(float2 coords)
 	auto& cachedHeightmap = globals::features::terrainShadows.cachedHeightmap;
 	float u = (coords.x - cachedHeightmap->pos0.x) / (cachedHeightmap->pos1.x - cachedHeightmap->pos0.x);
 	float v = (coords.y - cachedHeightmap->pos0.y) / (cachedHeightmap->pos1.y - cachedHeightmap->pos0.y);
+	//v = 1.0f - v;
 	auto& img = *image.GetImages();
 	int ix = std::clamp((int)(u * img.width), 0, (int)img.width - 1);
 	int iy = std::clamp((int)(v * img.height), 0, (int)img.height - 1);
-	auto row = reinterpret_cast<const uint16_t*>(img.pixels + iy * img.rowPitch);
+	auto row = reinterpret_cast<const float*>(img.pixels + iy * img.rowPitch);
 	float normalizedHeight = row[ix];
 	logger::trace("height: {}", normalizedHeight);
 

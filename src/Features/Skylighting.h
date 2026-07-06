@@ -152,16 +152,20 @@ public:
 	ID3D11ShaderResourceView* BNMapSRV = nullptr;
 	ID3D11ShaderResourceView* COMapSRV = nullptr;
 	ID3D11ShaderResourceView* CO2MapSRV = nullptr;
+	ID3D11ShaderResourceView* DOMapSRV = nullptr;
+	ID3D11ShaderResourceView* DO2MapSRV = nullptr;
 	ID3D11ShaderResourceView* AMapSRV = nullptr;
 	ID3D11ShaderResourceView* NMapSRV = nullptr;
 	ID3D11ShaderResourceView* NSMapSRV = nullptr;
 	ID3D11ShaderResourceView* HMapSRV = nullptr;
+	ID3D11ShaderResourceView* DOMapSRVB = nullptr;
+	ID3D11ShaderResourceView* DO2MapSRVB = nullptr;
 
 	//// Cache gen resources ////
 	static constexpr uint COMapSize = 1024;
 	static constexpr int2 BNMapSize = int2(3808, 3008);
-	float HeightMapOffset = 32767;  // from xlodgen
-	float HeightMapScale = 8.0;     // from xlodgen
+	float HeightMapOffset = 0;  //32767;  // from xlodgen
+	float HeightMapScale = 1;   //8.0;     // from xlodgen
 
 	std::filesystem::path lodPath = L"C:\\Skyrim Modding Utilities\\DynDOLOD\\xLODGen\\Output\\textures\\terrain\\tamriel";
 	void BuildAtlas(const std::filesystem::path& outputDir, std::string mapTag);
