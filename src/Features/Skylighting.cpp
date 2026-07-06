@@ -73,12 +73,16 @@ void Skylighting::DrawSettings()
 		GenerateNormalMap();
 	}
 
+	auto pos = RE::PlayerCharacter::GetSingleton()->GetPosition();
+	float h = SampleHeightMap(float2(pos.x, pos.y));
+	ImGui::Text("Height: %f", h);
+
 	ImGui::Checkbox("Generate height map", &MapGen);
 	ImGui::Checkbox("disable raycast", &test);
 	ImGui::Checkbox("disable loop", &test2);
 	ImGui::Checkbox("disable save", &test3);
 
-	ImGui::Text("Cells Done: %d", cellsDone);
+	//ImGui::Text("Cells Done: %d", cellsDone);
 
 	static float debugRescale = 1.0f;
 	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
@@ -1304,6 +1308,7 @@ void Skylighting::BuildAtlas(const std::filesystem::path& outputPath, std::strin
 // move one cell at a time
 // each cell we cast rays every x dist
 
+// texture and cell progress needs to not update unless position and updated correctly
 void Skylighting::GenerateHeightMap()
 {
 	static constexpr float CELL = 4096.0f;
@@ -1356,11 +1361,28 @@ void Skylighting::GenerateHeightMap()
 			return;
 		}
 
+		if (!cacheOutputTexH) {
+			logger::error("[Skylighting] cacheOutputTexH INVALID");
+			return;
+		}
+
+		static int settleFrames = 0;
+		if (settleFrames > 0) {
+			settleFrames--;
+			return;
+		}
+
 		if (!test2) {
 			// write heightmap
-			D3D11_MAPPED_SUBRESOURCE mapped;
-			context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped);
 
+			D3D11_MAPPED_SUBRESOURCE mapped;
+			HRESULT hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped);
+			if (FAILED(hr) || !mapped.pData) {
+				logger::error("[Skylighting] Map failed: {:x}", (uint32_t)hr);
+				return;  // skip this frame, don't deref null
+			}
+
+			logger::trace("[Skylighting] Test");
 			int stepsPerCell = (int)CELL / worldRes;
 			for (int x = 0; x < stepsPerCell; ++x) {
 				for (int y = 0; y < stepsPerCell; ++y) {
@@ -1378,6 +1400,7 @@ void Skylighting::GenerateHeightMap()
 					groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
 
 					int2 texCoord = (currentCellXY - startCell) * stepsPerCell + int2(x, y);
+					//texCoord.y = (TexSize.y - 1) - texCoord.y;
 					float* tex = (float*)((uint8_t*)mapped.pData + texCoord.y * mapped.RowPitch);
 					tex[texCoord.x] = groundHeight;  // write to tex
 				}
@@ -1385,24 +1408,26 @@ void Skylighting::GenerateHeightMap()
 			context->Unmap(cacheOutputTexH->resource.get(), 0);
 		}
 
-		ID3D11Resource* re;
-		HMapSRV->GetResource(&re);
-		globals::d3d::context->CopyResource(re, cacheOutputTexH->resource.get());
-
 		if (!test3) {
 			static int c = 0;
 			if (++c == 10) {
 				c = 0;
 				// Save output
 				DirectX::ScratchImage ouputImage;
-				DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, re, ouputImage));
-				DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, path.c_str()));
-				settings.cacheProgressX = currentCellXY.x;
-				settings.cacheProgressY = currentCellXY.y;
-				globals::state->Save();
+				auto result = DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexH->resource.get(), ouputImage);
+				if (!FAILED(result)) {
+					logger::info("failed to capture");
+					auto resultA = DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, path.c_str());
+					if (FAILED(resultA)) {
+						logger::info("failed to save");
+					} else {
+						settings.cacheProgressX = currentCellXY.x;
+						settings.cacheProgressY = currentCellXY.y;
+						globals::state->Save();
+					}
+				}
 			}
 		}
-		re->Release();
 
 		if (++currentCellXY.x >= endCell.x) {
 			currentCellXY.x = startCell.x;
@@ -1415,6 +1440,8 @@ void Skylighting::GenerateHeightMap()
 
 		cellsDone += 1;
 		SetWorldPosition(currentCellXY, worldPositionSet);
+		// after SetWorldPosition:
+		settleFrames = 5;  // let terrain settle
 	}
 }
 
@@ -1494,7 +1521,14 @@ float Skylighting::GetRayIntersectionHeight(float3 position, float RAY_OFFSET)
 				logger::error("[Skylighting] Ray cast failed to find surface... continuing");
 				return prevZ;
 			}
-			auto collisionObj = output.rootCollidable->GetCollisionLayer();
+
+			auto rootCollidable = output.rootCollidable;
+			if (!rootCollidable) {
+				logger::error("[Skylighting] Null Root collidable... continuing");
+				return prevZ;
+			}
+
+			auto collisionObj = rootCollidable->GetCollisionLayer();
 
 			if (!(collisionObj == RE::COL_LAYER::kTerrain || collisionObj == RE::COL_LAYER::kGround || collisionObj == RE::COL_LAYER::kStatic)) {
 				float rayLength = currentZ - endZ;
@@ -1515,6 +1549,30 @@ float Skylighting::GetRayIntersectionHeight(float3 position, float RAY_OFFSET)
 	}
 
 	return prevZ;
+}
+
+float Skylighting::SampleHeightMap(float2 coords)
+{
+	auto outputPath = cachePath / "Tamriel_H.dds";
+
+	static DirectX::ScratchImage image;
+	static bool init = true;
+	if (init) {
+		DirectX::LoadFromDDSFile(outputPath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image);
+		init = false;
+	}
+
+	auto& cachedHeightmap = globals::features::terrainShadows.cachedHeightmap;
+	float u = (coords.x - cachedHeightmap->pos0.x) / (cachedHeightmap->pos1.x - cachedHeightmap->pos0.x);
+	float v = (coords.y - cachedHeightmap->pos0.y) / (cachedHeightmap->pos1.y - cachedHeightmap->pos0.y);
+	auto& img = *image.GetImages();
+	int ix = std::clamp((int)(u * img.width), 0, (int)img.width - 1);
+	int iy = std::clamp((int)(v * img.height), 0, (int)img.height - 1);
+	auto row = reinterpret_cast<const uint16_t*>(img.pixels + iy * img.rowPitch);
+	float normalizedHeight = row[ix];
+	logger::trace("height: {}", normalizedHeight);
+
+	return normalizedHeight;  //(normalizedHeight - 32767) * 8.0f;
 }
 
 #undef I18N_KEY_PREFIX

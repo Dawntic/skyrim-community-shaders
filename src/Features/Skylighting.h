@@ -181,6 +181,7 @@ public:
 	void GenerateHeightMap();
 	bool IsPositionValid(RE::NiPoint3 inputPosition);
 	ID3D11ShaderResourceView* tmpTex = nullptr;
+	float SampleHeightMap(float2 coords);
 
 	struct alignas(16) CacheGenCBStruct
 	{
