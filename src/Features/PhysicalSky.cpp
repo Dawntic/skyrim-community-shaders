@@ -1205,6 +1205,8 @@ void PhysicalSky::RenderClouds()
 	// remaps onto exactly the generated axes.
 	debugCb.cloudTrRBot = cbData.cloudTrRBot * Util::Units::GAME_UNIT_TO_KM;
 	debugCb.cloudTrRTop = cbData.cloudTrRTop * Util::Units::GAME_UNIT_TO_KM;
+	debugCb.octaveAttenA = cloudLighting.octaveAttenA;
+	debugCb.octaveAttenB = cloudLighting.octaveAttenB;
 	cloudDebugBuffer->Update(debugCb);
 
 	ID3D11Buffer* buffers[2] = { cloudBuffer->CB(), cloudDebugBuffer->CB() };

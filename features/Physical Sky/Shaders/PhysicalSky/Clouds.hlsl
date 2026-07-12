@@ -52,6 +52,13 @@ VertexOut main(uint vertexID : SV_VertexID)
 
 #	include "PhysicalSky/Common.hlsli"
 
+// Per-octave phase eccentricity attenuation for the sun light march
+// (g *= 0.5 per octave, so deeply-scattered light goes isotropic).
+// Default on per the cloud lighting upgrade plan.
+#	ifndef CLOUD_SUN_OCTAVE_PHASE
+#		define CLOUD_SUN_OCTAVE_PHASE 1
+#	endif
+
 float GetCloudProfile(float3 SamplePos, float Height)
 {
 	float Scroll = 0;
@@ -74,6 +81,85 @@ float GetCloudProfile(float3 SamplePos, float Height)
 
 	return Density;
 }
+
+// Coarse density for light marches: base Perlin-Worley remap + height
+// gradient + coverage only. The Worley FBM erosion chain is skipped -- its
+// detail is barely visible in a light march, and the noise textures have no
+// mip chains to LOD with. The FBM term is replaced by its mean (0.5) so the
+// coverage response survives; at typical coverage this degenerates to no
+// erosion, which only overestimates density (slightly darker cores, never
+// light leaks).
+float GetCloudProfileCoarse(float3 SamplePos, float Height)
+{
+	float Scroll = 0;
+	float PerlinWorley = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0).x;
+
+	float layerDensity = GetDensityHeightGradientForPoint(SamplePos, CloudType, Height);
+	float Density = layerDensity * LerpLinearStepClamped(PerlinWorley, 0.3, 1.0, 0.0, 1.0);
+	float Coverage = pow(CloudCoverage, LerpLinearStep(Height, 0.7, 0.8, 1.0, 0.8));
+
+	float Erosion = LerpLinearStepClamped(0.5, Coverage, 1.0, 0.0, 1.0);
+	Erosion = LerpLinearStepClamped(Erosion, Coverage2, 1.0, 0.0, 1.0);
+
+	return LerpLinearStepClamped(Density, Erosion, 1.0, 0.0, 1.0);
+}
+
+// Optical depth toward the sun: 5 exponential steps, ~1.5 km total, coarse
+// density only (erosion skipped). sunDir points TOWARD the sun, which at
+// sunset goes DOWNWARD through the layer -- exiting through the layer BASE is
+// the unoccluded case, exactly like exiting through the top. The atmosphere
+// beyond the exit is already accounted for by the windowed sun-transmittance
+// LUT; the two are independent path segments composed by multiplication.
+float SunOpticalDepth(float3 samplePos, float3 sunDir, float extinction)
+{
+	float od = 0.0;
+	float t = 0.0, dt = 0.05;  // km
+	[unroll] for (int s = 0; s < 5; ++s)
+	{
+		t += dt;
+		float3 p = samplePos + sunDir * t;
+		// Unsaturated height: the exit test must see out-of-layer values
+		// (GetEnvelopeRelativeZ saturates and would never trigger it).
+		float h = LinearStep(bottomRadius, topRadius, p.z);
+		if (h < 0.0 || h > 1.0)
+			break;  // exited layer (through base OR top) -> unoccluded beyond
+		od += GetCloudProfileCoarse(p, h) * dt * extinction;
+		dt *= 2.0;
+	}
+	return od;
+}
+
+// Wrenninge multi-scatter octaves: fakes deep multiple scattering of the
+// (gray, spectrally neutral) droplet medium.
+float SunVisibilityMS(float od)
+{
+	float vis = 0.0;
+	float a = 1.0, b = 1.0;
+	[unroll] for (int o = 0; o < 3; ++o)
+	{
+		vis += b * exp(-a * od);
+		a *= OctaveAttenA;
+		b *= OctaveAttenB;
+	}
+	return vis;
+}
+
+#	if CLOUD_SUN_OCTAVE_PHASE
+// Octave sum with per-octave phase folded in:
+// sum_o b^o * exp(-a^o * od) * phase(g * 0.5^o).
+float SunVisibilityMSPhased(float od, float3 phaseOctaves)
+{
+	float vis = 0.0;
+	float a = 1.0, b = 1.0;
+	[unroll] for (int o = 0; o < 3; ++o)
+	{
+		vis += b * exp(-a * od) * phaseOctaves[o];
+		a *= OctaveAttenA;
+		b *= OctaveAttenB;
+	}
+	return vis;
+}
+#	endif
 
 static const float3 CLOUD_AMBIENT = float3(0.4, 0.45, 0.5);  // flat skylight fill into the cloud
 static const float CLOUD_MS_GAIN = 1.8;                      // flat multiple-scatter boost
@@ -131,7 +217,10 @@ float3 EvalCloudAmbient(float heightFrac, float3 ambBottom, float3 ambTop)
 	return lerp(ambBottom, ambTop, heightFrac);
 }
 
-void ComputeLightingV3(float density, float stepLength, float sunVisibility, float heightFrac,
+// sunPhaseVis is the phase-weighted sun visibility from the in-cloud light
+// march (Wrenninge octave sum, with the phase folded in per octave when
+// CLOUD_SUN_OCTAVE_PHASE is on).
+void ComputeLightingV3(float density, float stepLength, float3 sunPhaseVis, float heightFrac,
 	float3 sunTr, float3 ambBottom, float3 ambTop,
 	CloudParticpatingMedium medium,
 	inout float3 Inscattering, inout float Transmittance)
@@ -144,7 +233,7 @@ void ComputeLightingV3(float density, float stepLength, float sunVisibility, flo
 	// time-of-day color enters through sunTr. SharedData::DirLightColor is
 	// artist-tinted at sunset and would double-tint. The sun is never clamped
 	// here -- the Tr LUT decides when light stops arriving.
-	float3 sunRad = SharedData::physSkyData.sunlightColor * sunTr * medium.phase * sunVisibility * SunGain * SunMsGain;
+	float3 sunRad = SharedData::physSkyData.sunlightColor * sunTr * sunPhaseVis * SunGain * SunMsGain;
 	float3 ambRad = EvalCloudAmbient(heightFrac, ambBottom, ambTop) * AmbientGain;  // no phase: pre-integrated
 
 	float3 inscatter = (sunRad + ambRad) * albedo * (1.0 - tr);
@@ -229,6 +318,14 @@ PixelOut main(VertexOut input)
 	medium.extinction = 25;
 	medium.phase = CloudPhase(cosTheta);
 
+#	if CLOUD_SUN_OCTAVE_PHASE
+	// View-constant per-octave phases, eccentricity halved each octave.
+	float3 phaseOctaves = float3(
+		CloudPhase(cosTheta, 1.0).x,
+		CloudPhase(cosTheta, 0.5).x,
+		CloudPhase(cosTheta, 0.25).x);
+#	endif
+
 	float3 ambBottom = TexCloudAmbient.Load(int3(0, 0, 0)).rgb;
 	float3 ambTop = TexCloudAmbient.Load(int3(1, 0, 0)).rgb;
 
@@ -252,8 +349,20 @@ PixelOut main(VertexOut input)
 		state.upVector = normalize(SamplePos);
 
 		float3 sunTr = SampleCloudSunTr(SamplePos);
-		float sunVis = EnvelopeZ;  // placeholder until the in-cloud light march
-		ComputeLightingV3(CloudDensity, StepLength, sunVis, EnvelopeZ, sunTr, ambBottom, ambTop, medium, Inscattering, Transmittance);
+
+		// In-cloud sun light march + multi-scatter octaves. Skipped once the
+		// view transmittance no longer matters (the ambient term still
+		// accumulates for the step).
+		float3 sunPhaseVis = 0;
+		if (Transmittance >= 0.01) {
+			float od = SunOpticalDepth(SamplePos, SharedData::physSkyData.sunDir, medium.extinction.x);
+#	if CLOUD_SUN_OCTAVE_PHASE
+			sunPhaseVis = SunVisibilityMSPhased(od, phaseOctaves);
+#	else
+			sunPhaseVis = SunVisibilityMS(od) * medium.phase;
+#	endif
+		}
+		ComputeLightingV3(CloudDensity, StepLength, sunPhaseVis, EnvelopeZ, sunTr, ambBottom, ambTop, medium, Inscattering, Transmittance);
 	}
 	/////////////////////////////////////////////
 

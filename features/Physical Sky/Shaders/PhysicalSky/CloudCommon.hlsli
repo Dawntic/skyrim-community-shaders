@@ -58,7 +58,8 @@ cbuffer CloudDebugCB : register(b1)
 
 	float cloudTrRBot;
 	float cloudTrRTop;
-	float2 debugPad1;
+	float OctaveAttenA;  // Wrenninge octave extinction attenuation (default 0.5)
+	float OctaveAttenB;  // Wrenninge octave energy attenuation (default 0.6)
 };
 
 Texture2D DepthTex : register(t0);
@@ -335,16 +336,26 @@ float Draine(float cos_theta, float g, float alpha)
 }
 
 // Phase Method from alpha piscium
-float3 CloudPhase(float cosTheta)
+// gScale attenuates both lobes' eccentricity (1 = physical fit); the
+// Wrenninge octave path passes 0.5^octave so deeply-scattered light goes
+// isotropic.
+float3 CloudPhase(float cosTheta, float gScale)
 {
 	float CLOUDS_CU_R_EFF = 5.77;  //////////
 	// d: droplet diameter in µm (micrometers)
 	float d = CLOUDS_CU_R_EFF * 2.0;
-	float gHG = exp(-0.0990567 / (d - 1.67154));
-	float gD = exp(-2.20679 / (d + 3.91029) - 0.428934);
+	float gHG = exp(-0.0990567 / (d - 1.67154)) * gScale;
+	float gD = exp(-2.20679 / (d + 3.91029) - 0.428934) * gScale;
 	float a = exp(3.62489 - 8.29288 / (d + 5.52825));
 	float wD = exp(-0.599085 / (d - 0.641583) - 0.665888);
-	float HGDraine = lerp(hgPhase(cosTheta, gHG), Draine(cosTheta, gD, a), wD);
+	// hgPhase's signature is (anisotropy, cosTheta) -- the previous call here
+	// passed them swapped.
+	float HGDraine = lerp(hgPhase(gHG, cosTheta), Draine(cosTheta, gD, a), wD);
 	return HGDraine;
+}
+
+float3 CloudPhase(float cosTheta)
+{
+	return CloudPhase(cosTheta, 1.0);
 }
 //#endif

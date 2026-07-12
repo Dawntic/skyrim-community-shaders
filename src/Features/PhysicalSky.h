@@ -116,7 +116,8 @@ struct PhysicalSky final : public Feature
 
 		float cloudTrRBot;
 		float cloudTrRTop;
-		float2 debugPad1;
+		float octaveAttenA;
+		float octaveAttenB;
 	};
 	STATIC_ASSERT_ALIGNAS_16(CloudDebugCB);
 
@@ -126,9 +127,11 @@ struct PhysicalSky final : public Feature
 		uint debugSunTrMode = 0;   /**< 0 live | 1 force white | 2 force orange | 3 A/B global Tr LUT. */
 		uint debugAmbientMode = 0; /**< 0 live | 1 DebugColor | 2 literal red | 3 red->blue height gradient. */
 		float3 debugColor = { 1.f, 0.f, 1.f };
-		float sunGain = 1.f;     /**< Debug gate for the direct sun term. 0 while validating ambient. */
-		float ambientGain = 1.f; /**< Debug gate for the ambient term. */
-		float sunMsGain = 1.f;   /**< Flat gain on the sun path only (replaces CLOUD_MS_GAIN). */
+		float sunGain = 1.f;       /**< Debug gate for the direct sun term. 0 while validating ambient. */
+		float ambientGain = 1.f;   /**< Debug gate for the ambient term. */
+		float sunMsGain = 1.f;     /**< Flat gain on the sun path only (replaces CLOUD_MS_GAIN). */
+		float octaveAttenA = .5f;  /**< Wrenninge octave extinction attenuation. */
+		float octaveAttenB = .6f;  /**< Wrenninge octave energy attenuation. */
 	};
 	CloudLightingSettings cloudLighting;
 
