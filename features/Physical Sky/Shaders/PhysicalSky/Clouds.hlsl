@@ -368,6 +368,10 @@ PixelOut main(VertexOut input)
 	}
 	/////////////////////////////////////////////
 
+	// TODO: gamma placement. Encoding here is only valid if the composite
+	// consumes gamma; if clouds ever blend with the linear-HDR sky
+	// pre-tonemap, this shifts hues exactly at twilight, where the
+	// channel ratios are extreme. Revisit when the compose path is settled.
 	output.color = float4(Color::LLLinearToGamma(Inscattering), max(1.0 - Transmittance, 1e-6));
 
 	//float cloudDistance = (TrSum > 0.0) ? TrDepthSum / TrSum : RayT.y;
