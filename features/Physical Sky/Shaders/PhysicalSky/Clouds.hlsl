@@ -342,7 +342,7 @@ PixelOut main(VertexOut input)
 		if (CloudDensity <= 0.0)
 			continue;
 
-		TrDepthSum += Transmittance * RayT.x;
+		TrDepthSum += Transmittance * (RayT.x + i * StepLength);
 		TrSum += Transmittance;
 
 		CloudRaymarchStepState state;
