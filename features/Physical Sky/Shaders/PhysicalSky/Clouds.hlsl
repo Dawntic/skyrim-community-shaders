@@ -176,6 +176,11 @@ float3 SampleCloudSunTr(float3 posPlanetRel)
 	}
 	float r = length(posPlanetRel);
 	float mu = dot(posPlanetRel / r, SharedData::physSkyData.sunDir);
+	// Atmospheric refraction lifts the apparent sun ~0.5 deg at the horizon,
+	// extending the underlighting window slightly. Deliberately not enabled
+	// (out of scope per the upgrade plan); if wanted later:
+	// static const float REFRACTION_MU_BIAS = 0.009;
+	// if (mu < 0.0) mu += REFRACTION_MU_BIAS;
 	float2 uv = float2((mu - cloudTrMuMin) / (cloudTrMuMax - cloudTrMuMin),
 		(r - cloudTrRBot) / (cloudTrRTop - cloudTrRBot));
 	return TexCloudSunTr.SampleLevel(LinearSampler, saturate(uv), 0).rgb;
