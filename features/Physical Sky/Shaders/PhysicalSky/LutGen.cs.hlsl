@@ -4,6 +4,12 @@
 #ifndef LUTGEN
 #	define LUTGEN 0
 #endif
+// Multiscatter LUT hemisphere integration: N*N rays per texel. 4 (16 rays)
+// visibly aliases at twilight, when the illumination is maximally
+// anisotropic; 8 (64 rays) is Hillaire's reference configuration.
+#ifndef MS_SQRT_SAMPLES
+#	define MS_SQRT_SAMPLES 8
+#endif
 
 #define PS_PREPASS_SAMPLERS
 #define PS_PREPASS_RSRCS
@@ -194,7 +200,7 @@ void rayMarch(
 	RWTexOutput[tid.xy] = float4(tr, 1.0);
 
 #elif LUTGEN == 1
-	const uint sqrtSamples = 4;
+	const uint sqrtSamples = MS_SQRT_SAMPLES;
 	const float rcpSqrtSamples = rcp(sqrtSamples);
 	const float rcpSamples = rcpSqrtSamples * rcpSqrtSamples;
 
