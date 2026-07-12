@@ -1,8 +1,10 @@
 #include "PhysicalSky.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <cfloat>
+#include <cmath>
 #include <imgui_stdlib.h>
 
 #include <DDSTextureLoader.h>
@@ -567,6 +569,13 @@ void PhysicalSky::SetupResources()
 		texSvLut->CreateSRV(srvDesc);
 		texSvLut->CreateUAV(uavDesc);
 
+		tex2dDesc.Width = kCloudTrLutW;
+		tex2dDesc.Height = kCloudTrLutH;
+
+		texCloudSunTr = eastl::make_unique<Texture2D>(tex2dDesc, "PhysicalSky::CloudSunTrLut");
+		texCloudSunTr->CreateSRV(srvDesc);
+		texCloudSunTr->CreateUAV(uavDesc);
+
 		D3D11_TEXTURE3D_DESC tex3dDesc{
 			.Width = kApLutW,
 			.Height = kApLutH,
@@ -664,6 +673,7 @@ void PhysicalSky::CompileShaders()
 		{ &csMsLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "1" } } },
 		{ &csSvLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "2" } } },
 		{ &csApLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "3" } } },
+		{ &csCloudTrLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "4" } } },
 		{ &csShadowAccum, "ShadowAccum.cs.hlsl", {} },
 		{ &csShadowAccumHalfRes, "ShadowAccum.cs.hlsl", { { "HALF_RES", "" } } }
 	};
@@ -681,8 +691,8 @@ void PhysicalSky::CompileShaders()
 
 bool PhysicalSky::ShadersOK()
 {
-	return csTrLutGen && csMsLutGen && csSvLutGen && csApLutGen && csShadowAccum && csShadowAccumHalfRes &&
-	       texTrLut && texSvLut && texApLut && texApShadow;
+	return csTrLutGen && csMsLutGen && csSvLutGen && csApLutGen && csCloudTrLutGen && csShadowAccum && csShadowAccumHalfRes &&
+	       texTrLut && texSvLut && texApLut && texApShadow && texCloudSunTr;
 }
 
 void PhysicalSky::Reset()
@@ -795,6 +805,35 @@ void PhysicalSky::Reset()
 		posCam = cam->cameraRoot->world.translate;
 		cbData.zCameraPlanet = posCam.z - cbData.zBottom + cbData.rPlanet;
 	}
+
+	// Windowed cloud sun-transmittance LUT (LUTGEN 4): center the mu axis on
+	// the current sun zenith cosine and cover the whole cloud field, with a
+	// margin for bilinear filtering. Radii go to the shader in game units to
+	// match rPlanet; the normalized LUT axes are what the km-scale cloud
+	// raymarcher samples.
+	{
+		// Planet-center-relative camera position in the cloud raymarcher's
+		// convention (planet center on the world-origin vertical), in km.
+		float3 posPlanetRelKm = { 0.f, 0.f, settings.planetRadius };
+		if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+			const auto playerPos = player->GetPosition();
+			posPlanetRelKm = float3(playerPos.x, playerPos.y, playerPos.z) * Util::Units::GAME_UNIT_TO_KM;
+			posPlanetRelKm.z += settings.planetRadius;
+		}
+		const float posLen = std::sqrt(posPlanetRelKm.x * posPlanetRelKm.x + posPlanetRelKm.y * posPlanetRelKm.y + posPlanetRelKm.z * posPlanetRelKm.z);
+		const float mu0 = (posPlanetRelKm.x * cbData.sunDir.x + posPlanetRelKm.y * cbData.sunDir.y + posPlanetRelKm.z * cbData.sunDir.z) / posLen;
+		const float halfWindow = cloudSettings.maxDistance / settings.planetRadius + 0.02f;
+
+		const float cloudBotKm = settings.planetRadius + cloudSettings.bottomRadius;
+		// Guard against a degenerate/inverted layer from the UI; the LUT y axis
+		// (and the cloud shader's uv remap) divide by the layer thickness.
+		const float cloudTopKm = std::max(settings.planetRadius + cloudSettings.topRadius, cloudBotKm + 1e-3f);
+
+		cbData.cloudTrMuMin = mu0 - halfWindow;
+		cbData.cloudTrMuMax = mu0 + halfWindow;
+		cbData.cloudTrRBot = cloudBotKm / Util::Units::GAME_UNIT_TO_KM;
+		cbData.cloudTrRTop = cloudTopKm / Util::Units::GAME_UNIT_TO_KM;
+	}
 }
 
 void PhysicalSky::EarlyPrepass()
@@ -844,6 +883,12 @@ void PhysicalSky::GenerateLuts()
 		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 		context->CSSetShader(csTrLutGen.get(), nullptr, 0);
 		context->Dispatch((kTrLutW + 7) >> 3, (kTrLutH + 7) >> 3, 1);
+
+		// -> windowed cloud sun transmittance (needs only the cbuffer)
+		uav = texCloudSunTr->uav.get();
+		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+		context->CSSetShader(csCloudTrLutGen.get(), nullptr, 0);
+		context->Dispatch((kCloudTrLutW + 7) >> 3, (kCloudTrLutH + 7) >> 3, 1);
 
 		// -> multiscatter
 		uav = texMsLut->uav.get();
@@ -1087,6 +1132,31 @@ void PhysicalSky::RenderClouds()
 	cb.atmTopRadius = settings.atmosphereRadius;
 	cb.bottomRadius = settings.planetRadius + cloudSettings.bottomRadius;
 	cb.topRadius = settings.planetRadius + cloudSettings.topRadius;
+
+	// The sky LUTs (physSkyData) work in game units; this cbuffer works in km.
+	// Both must describe the same planet and cloud layer -- a scale mismatch
+	// does not crash, it just silently produces slightly wrong cloud colors.
+	if (cbData.enabled) {
+		const auto sameScale = [](float gameUnits, float km) {
+			return std::abs(gameUnits * Util::Units::GAME_UNIT_TO_KM - km) <= 0.5f;
+		};
+		assert(sameScale(cbData.rPlanet, cb.groundRadius));
+		assert(sameScale(cbData.cloudTrRBot, cb.bottomRadius));
+		assert(sameScale(cbData.cloudTrRTop, std::max(cb.topRadius, cb.bottomRadius + 1e-3f)));
+		static bool loggedScaleMismatch = false;
+		if (!loggedScaleMismatch &&
+			(!sameScale(cbData.rPlanet, cb.groundRadius) ||
+				!sameScale(cbData.cloudTrRBot, cb.bottomRadius) ||
+				!sameScale(cbData.cloudTrRTop, std::max(cb.topRadius, cb.bottomRadius + 1e-3f)))) {
+			loggedScaleMismatch = true;
+			logger::error(
+				"PhysicalSky: sky-LUT radii (game units) and cloud radii (km) disagree "
+				"(rPlanet {} gu vs groundRadius {} km, layer [{}, {}] gu vs [{}, {}] km); "
+				"cloud sunset colors will be wrong",
+				cbData.rPlanet, cb.groundRadius,
+				cbData.cloudTrRBot, cbData.cloudTrRTop, cb.bottomRadius, cb.topRadius);
+		}
+	}
 	cb.minDistance = cloudSettings.minDistance;
 	cb.maxDistance = cloudSettings.maxDistance;
 	cb.coverage2 = cloudSettings.coverage2;

@@ -179,7 +179,7 @@ void rayMarch(
 	float horZenithCos = -0.414;
 	float zenithCos = lerp(horZenithCos, 1, uv.x);
 	float3 sunDir = float3(0, sqrt(1 - zenithCos * zenithCos), zenithCos);
-#else
+#elif LUTGEN == 2 || LUTGEN == 3
 	float3 rayDir = InvSkyViewLutUv(uv);
 	float3 sunDir = data.sunDir;
 	float3 pos = float3(0, 0, data.zCameraPlanet);
@@ -221,5 +221,38 @@ void rayMarch(
 #elif LUTGEN == 3
 	float3 lum = 0;
 	rayMarch(pos, rayDir, tid.xy, outDims.z, tr, lum);
+
+#elif LUTGEN == 4
+	// Windowed cloud sun-transmittance LUT: x = sun zenith cosine mu over
+	// [cloudTrMuMin, cloudTrMuMax] (window tracks the sun per frame, mu < 0 is
+	// the afterglow/underlighting range), y = radius over [cloudTrRBot,
+	// cloudTrRTop]. Self-contained integrand: deliberately does NOT reuse
+	// rayMarch, so the dense preprocessor lattice above stays untouched.
+	float r = lerp(data.cloudTrRBot, data.cloudTrRTop, uv.y);
+	// The window may overshoot the physical domain; clamp so dir stays unit.
+	float mu = clamp(lerp(data.cloudTrMuMin, data.cloudTrMuMax, uv.x), -1.0, 1.0);
+	float3 pos = float3(0, 0, r);
+	float3 dir = float3(0, sqrt(saturate(1.0 - mu * mu)), mu);
+
+	tr = 0;  // ground-occluded default -- this encodes the rising terminator
+	if (RayIntersectSphere(pos, dir, 0, data.rPlanet) < 0.0) {
+		float tMax = RayIntersectSphere(pos, dir, 0, data.rAtmosphere);
+		const uint nsteps = 64;
+		float dt = tMax / nsteps;
+		float3 odSum = 0;
+		float3 p = pos + 0.5 * dt * dir;  // midpoint rule
+		[loop] for (uint i = 0; i < nsteps; ++i, p += dt * dir)
+		{
+			float rouRayleigh, rouAerosol, rouOzone;
+			SampleAtmosphere(
+				max(0.f, length(p) - data.rPlanet),
+				rouRayleigh, rouAerosol, rouOzone);
+			odSum += rouRayleigh * data.rayleighScatter +
+			         rouAerosol * (data.aerosolScatter + data.aerosolAbsorption) +
+			         rouOzone * data.ozoneAbsorption;
+		}
+		tr = exp(-dt * odSum);
+	}
+	RWTexOutput[tid.xy] = float4(tr, 1.0);
 #endif
 }

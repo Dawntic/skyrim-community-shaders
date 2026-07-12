@@ -148,6 +148,8 @@ struct PhysicalSky final : public Feature
 	constexpr static uint16_t kApLutW = 32;
 	constexpr static uint16_t kApLutH = 32;
 	constexpr static uint16_t kApLutD = 32;
+	constexpr static uint16_t kCloudTrLutW = 64;
+	constexpr static uint16_t kCloudTrLutH = 32;
 
 	struct WorldspaceInfo
 	{
@@ -268,6 +270,15 @@ struct PhysicalSky final : public Feature
 		uint lightSkyStatics;
 		float skyStaticsBrightness;
 		uint pad0[2];
+
+		// CLOUD LUT WINDOW (LUTGEN 4/5)
+		// mu is dimensionless; radii are planet-center-relative game units to
+		// match rPlanet (the cloud raymarcher samples the same normalized axes
+		// with its km-scale values).
+		float cloudTrMuMin;
+		float cloudTrMuMax;
+		float cloudTrRBot;
+		float cloudTrRTop;
 	} cbData;
 	STATIC_ASSERT_ALIGNAS_16(CbData);
 
@@ -276,6 +287,7 @@ struct PhysicalSky final : public Feature
 	eastl::unique_ptr<Texture2D> texSvLut = nullptr;  // sky view
 	eastl::unique_ptr<Texture3D> texApLut = nullptr;  // aerial perspective
 	eastl::unique_ptr<Texture2D> texApShadow = nullptr;
+	eastl::unique_ptr<Texture2D> texCloudSunTr = nullptr;  // windowed cloud sun transmittance (LUTGEN 4)
 
 	winrt::com_ptr<ID3D11SamplerState> sampTr = nullptr;
 	winrt::com_ptr<ID3D11SamplerState> sampSv = nullptr;
@@ -285,6 +297,7 @@ struct PhysicalSky final : public Feature
 	winrt::com_ptr<ID3D11ComputeShader> csMsLutGen = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csSvLutGen = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csApLutGen = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> csCloudTrLutGen = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csShadowAccum = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csShadowAccumHalfRes = nullptr;
 
