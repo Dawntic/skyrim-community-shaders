@@ -145,12 +145,15 @@ void rayMarch(
 
 #if LUTGEN == 1  // multiscatter
 	if (tGround > 0) {
+		// Lambert ground bounce: albedo/pi BRDF times N.L. The old
+		// dot(pos, sunDir) > 0 guard keyed on the ray ORIGIN and is subsumed
+		// by the N.L term at the actual hit point.
 		float3 hit_pos = pos + tGround * rayDir;
-		if (dot(pos, sunDir) > 0) {
-			hit_pos = normalize(hit_pos) * data.rPlanet;
-			float2 lutUv = TrLutUvPlanet(hit_pos, sunDir);
-			lum += tr * data.groundAlbedo * TexTrLut.SampleLevel(SampTr, lutUv, 0).rgb;
-		}
+		float3 normal = normalize(hit_pos);
+		hit_pos = normal * data.rPlanet;
+		float ndl = saturate(dot(normal, sunDir));
+		float2 lutUv = TrLutUvPlanet(hit_pos, sunDir);
+		lum += tr * (data.groundAlbedo / Math::PI) * ndl * TexTrLut.SampleLevel(SampTr, lutUv, 0).rgb;
 	}
 #endif
 }
