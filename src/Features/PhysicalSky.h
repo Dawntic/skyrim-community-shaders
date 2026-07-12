@@ -99,6 +99,39 @@ struct PhysicalSky final : public Feature
 		float pad;
 	};
 
+	// CB struct matching CloudDebugCB in CloudCommon.hlsli
+	struct alignas(16) CloudDebugCB
+	{
+		uint debugSunTrMode;
+		uint debugAmbientMode;
+		float2 debugPad0;
+
+		float3 debugColor;
+		float sunGain;
+
+		float ambientGain;
+		float sunMsGain;
+		float cloudTrMuMin;
+		float cloudTrMuMax;
+
+		float cloudTrRBot;
+		float cloudTrRTop;
+		float2 debugPad1;
+	};
+	STATIC_ASSERT_ALIGNAS_16(CloudDebugCB);
+
+	// Runtime-only lighting verification knobs (deliberately not serialized).
+	struct CloudLightingSettings
+	{
+		uint debugSunTrMode = 0;   /**< 0 live | 1 force white | 2 force orange | 3 A/B global Tr LUT. */
+		uint debugAmbientMode = 0; /**< 0 live | 1 DebugColor | 2 literal red | 3 red->blue height gradient. */
+		float3 debugColor = { 1.f, 0.f, 1.f };
+		float sunGain = 1.f;     /**< Debug gate for the direct sun term. 0 while validating ambient. */
+		float ambientGain = 1.f; /**< Debug gate for the ambient term. */
+		float sunMsGain = 1.f;   /**< Flat gain on the sun path only (replaces CLOUD_MS_GAIN). */
+	};
+	CloudLightingSettings cloudLighting;
+
 	struct CloudSettings
 	{
 		//bool isEnabled = true;         /**< Is physically based volumetric clouds rendering enabled. */
@@ -125,6 +158,7 @@ struct PhysicalSky final : public Feature
 	ID3D11PixelShader* cloudBlendShader = nullptr;
 
 	ConstantBuffer* cloudBuffer = nullptr;
+	ConstantBuffer* cloudDebugBuffer = nullptr;
 
 	winrt::com_ptr<ID3D11ShaderResourceView> dataFieldsSRV;
 	winrt::com_ptr<ID3D11ShaderResourceView> vertProfileSRV;

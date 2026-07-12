@@ -20,6 +20,11 @@
 
 #define STEP_SIZE_FACTOR 1.0
 
+// This shader works in planet-center-relative KILOMETERS; the sky LUT code
+// (physSkyData) works in game units. Keep this in sync with
+// Util::Units::GAME_UNIT_TO_KM -- the C++ side asserts the scales agree.
+static const float GAME_UNIT_TO_KM = 1.428e-5;
+
 struct VertexOut
 {
 	noperspective float2 TexCoord: TEXCOORD0;
@@ -72,6 +77,7 @@ float GetCloudProfile(float3 SamplePos, float Height)
 
 static const float3 CLOUD_AMBIENT = float3(0.4, 0.45, 0.5);  // flat skylight fill into the cloud
 static const float CLOUD_MS_GAIN = 1.8;                      // flat multiple-scatter boost
+// Kept for reference; superseded by ComputeLightingV3.
 void ComputeLightingV1(float density, float stepLength, float sunVisibility, CloudParticpatingMedium medium, inout float3 Inscattering, inout float Transmittance)
 {
 	float albedo = medium.scattering / medium.extinction;
@@ -87,6 +93,66 @@ void ComputeLightingV1(float density, float stepLength, float sunVisibility, Clo
 	Transmittance *= Tr;
 }
 
+// Direct sun transmittance at a raymarch sample, from the per-frame windowed
+// LUT (LUTGEN 4), parameterized by the sample's actual altitude and sun zenith
+// cosine -- including mu < 0 (afterglow/underlighting). Debug overrides sit
+// AFTER the UV remap decision so remap bugs are excluded from
+// application-side tests.
+float3 SampleCloudSunTr(float3 posPlanetRel)
+{
+	if (DebugSunTrMode == 1)
+		return 1.0;
+	if (DebugSunTrMode == 2)
+		return float3(1.0, 0.35, 0.08);
+	if (DebugSunTrMode == 3) {
+		// A/B: sample the GLOBAL Tr LUT through its real remap instead. The
+		// global LUT works in game units, unlike this shader.
+		float2 uvGlobal = PhysSky::TrLutUvPlanet(posPlanetRel / GAME_UNIT_TO_KM, SharedData::physSkyData.sunDir);
+		return PhysSky::TexTrLut.SampleLevel(LinearSampler, uvGlobal, 0).rgb;
+	}
+	float r = length(posPlanetRel);
+	float mu = dot(posPlanetRel / r, SharedData::physSkyData.sunDir);
+	float2 uv = float2((mu - cloudTrMuMin) / (cloudTrMuMax - cloudTrMuMin),
+		(r - cloudTrRBot) / (cloudTrRTop - cloudTrRBot));
+	return TexCloudSunTr.SampleLevel(LinearSampler, saturate(uv), 0).rgb;
+}
+
+// Pre-integrated ambient (LUTGEN 5 endpoints), lerped by in-layer height.
+float3 EvalCloudAmbient(float heightFrac, float3 ambBottom, float3 ambTop)
+{
+	switch (DebugAmbientMode) {
+	case 1:
+		return DebugColor;
+	case 2:
+		return float3(1, 0, 0);
+	case 3:
+		return lerp(float3(1, 0, 0), float3(0, 0, 1), heightFrac);
+	}
+	return lerp(ambBottom, ambTop, heightFrac);
+}
+
+void ComputeLightingV3(float density, float stepLength, float sunVisibility, float heightFrac,
+	float3 sunTr, float3 ambBottom, float3 ambTop,
+	CloudParticpatingMedium medium,
+	inout float3 Inscattering, inout float Transmittance)
+{
+	float3 albedo = medium.scattering / medium.extinction;
+	float extinction = medium.extinction.x * density;
+	float tr = exp(-extinction * stepLength);
+
+	// physSkyData.sunlightColor is the constant TOA illuminance (white); ALL
+	// time-of-day color enters through sunTr. SharedData::DirLightColor is
+	// artist-tinted at sunset and would double-tint. The sun is never clamped
+	// here -- the Tr LUT decides when light stops arriving.
+	float3 sunRad = SharedData::physSkyData.sunlightColor * sunTr * medium.phase * sunVisibility * SunGain * SunMsGain;
+	float3 ambRad = EvalCloudAmbient(heightFrac, ambBottom, ambTop) * AmbientGain;  // no phase: pre-integrated
+
+	float3 inscatter = (sunRad + ambRad) * albedo * (1.0 - tr);
+
+	Inscattering += inscatter * Transmittance;
+	Transmittance *= tr;
+}
+
 PixelOut main(VertexOut input)
 {
 	PixelOut output;
@@ -94,7 +160,6 @@ PixelOut main(VertexOut input)
 	output.color = float4(0, 0, 0, 0);
 	output.depth = 1.0;
 
-	float GAME_UNIT_TO_KM = 1.428e-5;
 	float3 cameraPos = cameraPosIN.xyz * GAME_UNIT_TO_KM;
 	cameraPos.z += groundRadius;
 	//cameraPos = float3(0,0, groundRadius);
@@ -150,7 +215,10 @@ PixelOut main(VertexOut input)
 
 #	define RAY_SAMPLES 512  //128
 
-	float cosTheta = dot(ray.direction, SharedData::DirLightDirection.xyz);
+	// The sun path is coherent around the real sun (physSkyData.sunDir):
+	// phase, windowed transmittance and (later) the light march all use the
+	// same vector. DirLightDirection may be a moon at night.
+	float cosTheta = dot(ray.direction, SharedData::physSkyData.sunDir);
 	float StepLength = (RayT.y - RayT.x) / RAY_SAMPLES;
 
 	float3 Inscattering = float3(0, 0, 0);
@@ -160,6 +228,9 @@ PixelOut main(VertexOut input)
 	medium.scattering = 10;
 	medium.extinction = 25;
 	medium.phase = CloudPhase(cosTheta);
+
+	float3 ambBottom = TexCloudAmbient.Load(int3(0, 0, 0)).rgb;
+	float3 ambTop = TexCloudAmbient.Load(int3(1, 0, 0)).rgb;
 
 	float TrDepthSum = 0.0;
 	float TrSum = 0.0;
@@ -180,8 +251,9 @@ PixelOut main(VertexOut input)
 		state.rayStep = float4(0, 0, 0, StepLength);
 		state.upVector = normalize(SamplePos);
 
-		float sunVis = EnvelopeZ;
-		ComputeLightingV1(CloudDensity, StepLength, sunVis, medium, Inscattering, Transmittance);
+		float3 sunTr = SampleCloudSunTr(SamplePos);
+		float sunVis = EnvelopeZ;  // placeholder until the in-cloud light march
+		ComputeLightingV3(CloudDensity, StepLength, sunVis, EnvelopeZ, sunTr, ambBottom, ambTop, medium, Inscattering, Transmittance);
 	}
 	/////////////////////////////////////////////
 

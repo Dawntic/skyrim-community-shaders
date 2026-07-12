@@ -1085,11 +1085,17 @@ void PhysicalSky::CreateCloudResources()
 	}
 
 	cloudBuffer = new ConstantBuffer(ConstantBufferDesc<CloudCB>());
+	cloudDebugBuffer = new ConstantBuffer(ConstantBufferDesc<CloudDebugCB>(), "PhysicalSky::CloudDebugCB");
 }
 #pragma warning(pop)
 
 void PhysicalSky::RenderClouds()
 {
+	// The cloud lighting chain depends on physSkyData and the per-frame LUTs
+	// (LUTGEN 4/5), which are only valid while the feature is active.
+	if (!cbData.enabled)
+		return;
+
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
 
@@ -1136,6 +1142,13 @@ void PhysicalSky::RenderClouds()
 	};
 	context->PSSetShaderResources(0, 12, srvs);
 
+	// Lighting LUTs: windowed sun transmittance + ambient endpoints (t18/t19),
+	// and the global Tr LUT (t61) for the DebugSunTrMode == 3 A/B path.
+	ID3D11ShaderResourceView* lutSrvs[] = { texCloudSunTr->srv.get(), texCloudAmbient->srv.get() };
+	context->PSSetShaderResources(18, 2, lutSrvs);
+	ID3D11ShaderResourceView* trLutSrv = texTrLut->srv.get();
+	context->PSSetShaderResources(61, 1, &trLutSrv);
+
 	auto bayerIndex = bayerIndices4x4[frameCount % 16];
 	auto playerPos = RE::PlayerCharacter::GetSingleton()->GetPosition();
 
@@ -1179,8 +1192,23 @@ void PhysicalSky::RenderClouds()
 	cb.cloudType = cloudSettings.cloudType;
 	cloudBuffer->Update(cb);
 
-	auto buffer = cloudBuffer->CB();
-	context->PSSetConstantBuffers(0, 1, &buffer);
+	CloudDebugCB debugCb{};
+	debugCb.debugSunTrMode = cloudLighting.debugSunTrMode;
+	debugCb.debugAmbientMode = cloudLighting.debugAmbientMode;
+	debugCb.debugColor = cloudLighting.debugColor;
+	debugCb.sunGain = cloudLighting.sunGain;
+	debugCb.ambientGain = cloudLighting.ambientGain;
+	debugCb.sunMsGain = cloudLighting.sunMsGain;
+	debugCb.cloudTrMuMin = cbData.cloudTrMuMin;
+	debugCb.cloudTrMuMax = cbData.cloudTrMuMax;
+	// Converting from the game-unit values LUTGEN 4 used guarantees the shader
+	// remaps onto exactly the generated axes.
+	debugCb.cloudTrRBot = cbData.cloudTrRBot * Util::Units::GAME_UNIT_TO_KM;
+	debugCb.cloudTrRTop = cbData.cloudTrRTop * Util::Units::GAME_UNIT_TO_KM;
+	cloudDebugBuffer->Update(debugCb);
+
+	ID3D11Buffer* buffers[2] = { cloudBuffer->CB(), cloudDebugBuffer->CB() };
+	context->PSSetConstantBuffers(0, 2, buffers);
 
 	ID3D11SamplerState* samplers[2] = { sampTr.get(), sampNoise.get() };
 	context->PSSetSamplers(0, 2, samplers);
@@ -1202,6 +1230,8 @@ void PhysicalSky::RenderClouds()
 		nullptr,
 	};
 	context->PSSetShaderResources(0, 12, nullSrvs);
+	context->PSSetShaderResources(18, 2, nullSrvs);
+	context->PSSetShaderResources(61, 1, nullSrvs);
 
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET, RE::BSGraphics::DIRTY_VIEWPORT);
 
@@ -1210,6 +1240,9 @@ void PhysicalSky::RenderClouds()
 
 void PhysicalSky::CloudCompose()
 {
+	if (!cbData.enabled)
+		return;
+
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
 
