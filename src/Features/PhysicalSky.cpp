@@ -461,6 +461,17 @@ void PhysicalSky::SettingsClouds()
 	ImGui::SliderFloat("Max Distance", &cloudSettings.maxDistance, 0.0, 600.0);
 	//ImGui::Checkbox("noDelay", &cloudSettings.noDelay);
 
+	ImGui::SeparatorText("Medium");
+	{
+		ImGui::SliderFloat("Scattering", &cloudLighting.cloudScattering, 0.f, 100.f, "%.1f km^-1");
+		ImGui::SliderFloat("Extinction", &cloudLighting.cloudExtinction, 0.01f, 100.f, "%.1f km^-1");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"Water droplets are spectrally neutral: albedo (scattering / extinction)\n"
+				"should stay ~0.996. Lower albedo makes cloud interiors charcoal and\n"
+				"kills twilight glow penetration.");
+	}
+
 	ImGui::SeparatorText("Lighting Verification");
 	{
 		static const char* sunTrModes[] = { "Live", "Force White", "Force Orange", "A/B Global Tr LUT" };
@@ -1252,6 +1263,10 @@ void PhysicalSky::RenderClouds()
 	debugCb.cloudTrRTop = cbData.cloudTrRTop * Util::Units::GAME_UNIT_TO_KM;
 	debugCb.octaveAttenA = cloudLighting.octaveAttenA;
 	debugCb.octaveAttenB = cloudLighting.octaveAttenB;
+	// The shader divides by extinction (albedo) and single-scatter albedo
+	// cannot exceed 1; enforce both no matter what the UI fed us.
+	debugCb.cloudExtinction = std::max(cloudLighting.cloudExtinction, 1e-3f);
+	debugCb.cloudScattering = std::clamp(cloudLighting.cloudScattering, 0.f, debugCb.cloudExtinction);
 	cloudDebugBuffer->Update(debugCb);
 
 	ID3D11Buffer* buffers[2] = { cloudBuffer->CB(), cloudDebugBuffer->CB() };

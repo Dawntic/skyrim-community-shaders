@@ -313,9 +313,11 @@ PixelOut main(VertexOut input)
 	float3 Inscattering = float3(0, 0, 0);
 	float Transmittance = 1.0;
 
+	// Albedo ~0.996 (24.9 / 25): a 0.4 albedo makes cloud interiors charcoal
+	// and kills any twilight glow penetration.
 	CloudParticpatingMedium medium;
-	medium.scattering = 10;
-	medium.extinction = 25;
+	medium.scattering = CloudScattering;
+	medium.extinction = CloudExtinction;
 	medium.phase = CloudPhase(cosTheta);
 
 #	if CLOUD_SUN_OCTAVE_PHASE

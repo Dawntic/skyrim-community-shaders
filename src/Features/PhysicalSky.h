@@ -118,6 +118,10 @@ struct PhysicalSky final : public Feature
 		float cloudTrRTop;
 		float octaveAttenA;
 		float octaveAttenB;
+
+		float cloudScattering;
+		float cloudExtinction;
+		float2 debugPad1;
 	};
 	STATIC_ASSERT_ALIGNAS_16(CloudDebugCB);
 
@@ -133,6 +137,8 @@ struct PhysicalSky final : public Feature
 		float octaveAttenA = .5f;      /**< Wrenninge octave extinction attenuation. */
 		float octaveAttenB = .6f;      /**< Wrenninge octave energy attenuation. */
 		bool showDebugOverlay = false; /**< Blit the sun-Tr LUT + ambient swatches into a screen corner. */
+		float cloudScattering = 24.9f; /**< km^-1. Spectrally neutral droplets: albedo = scattering / extinction ~ 0.996. */
+		float cloudExtinction = 25.f;  /**< km^-1. */
 	};
 	CloudLightingSettings cloudLighting;
 

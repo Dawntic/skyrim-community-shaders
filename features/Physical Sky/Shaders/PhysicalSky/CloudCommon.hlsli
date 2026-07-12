@@ -60,6 +60,12 @@ cbuffer CloudDebugCB : register(b1)
 	float cloudTrRTop;
 	float OctaveAttenA;  // Wrenninge octave extinction attenuation (default 0.5)
 	float OctaveAttenB;  // Wrenninge octave energy attenuation (default 0.6)
+
+	// Cloud droplets are spectrally neutral with albedo ~0.996; no color may
+	// be injected in the medium itself.
+	float CloudScattering;  // km^-1 (default 24.9)
+	float CloudExtinction;  // km^-1 (default 25)
+	float2 debugPad1;
 };
 
 Texture2D DepthTex : register(t0);
