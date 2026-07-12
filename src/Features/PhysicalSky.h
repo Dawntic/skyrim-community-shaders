@@ -287,7 +287,8 @@ struct PhysicalSky final : public Feature
 	eastl::unique_ptr<Texture2D> texSvLut = nullptr;  // sky view
 	eastl::unique_ptr<Texture3D> texApLut = nullptr;  // aerial perspective
 	eastl::unique_ptr<Texture2D> texApShadow = nullptr;
-	eastl::unique_ptr<Texture2D> texCloudSunTr = nullptr;  // windowed cloud sun transmittance (LUTGEN 4)
+	eastl::unique_ptr<Texture2D> texCloudSunTr = nullptr;    // windowed cloud sun transmittance (LUTGEN 4)
+	eastl::unique_ptr<Texture2D> texCloudAmbient = nullptr;  // cloud ambient endpoints, 2x1 (LUTGEN 5)
 
 	winrt::com_ptr<ID3D11SamplerState> sampTr = nullptr;
 	winrt::com_ptr<ID3D11SamplerState> sampSv = nullptr;
@@ -298,6 +299,7 @@ struct PhysicalSky final : public Feature
 	winrt::com_ptr<ID3D11ComputeShader> csSvLutGen = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csApLutGen = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csCloudTrLutGen = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> csCloudAmbLutGen = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csShadowAccum = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csShadowAccumHalfRes = nullptr;
 

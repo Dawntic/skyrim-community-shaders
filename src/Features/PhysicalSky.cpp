@@ -576,6 +576,13 @@ void PhysicalSky::SetupResources()
 		texCloudSunTr->CreateSRV(srvDesc);
 		texCloudSunTr->CreateUAV(uavDesc);
 
+		tex2dDesc.Width = 2;
+		tex2dDesc.Height = 1;
+
+		texCloudAmbient = eastl::make_unique<Texture2D>(tex2dDesc, "PhysicalSky::CloudAmbientLut");
+		texCloudAmbient->CreateSRV(srvDesc);
+		texCloudAmbient->CreateUAV(uavDesc);
+
 		D3D11_TEXTURE3D_DESC tex3dDesc{
 			.Width = kApLutW,
 			.Height = kApLutH,
@@ -674,6 +681,7 @@ void PhysicalSky::CompileShaders()
 		{ &csSvLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "2" } } },
 		{ &csApLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "3" } } },
 		{ &csCloudTrLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "4" } } },
+		{ &csCloudAmbLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "5" } } },
 		{ &csShadowAccum, "ShadowAccum.cs.hlsl", {} },
 		{ &csShadowAccumHalfRes, "ShadowAccum.cs.hlsl", { { "HALF_RES", "" } } }
 	};
@@ -691,8 +699,8 @@ void PhysicalSky::CompileShaders()
 
 bool PhysicalSky::ShadersOK()
 {
-	return csTrLutGen && csMsLutGen && csSvLutGen && csApLutGen && csCloudTrLutGen && csShadowAccum && csShadowAccumHalfRes &&
-	       texTrLut && texSvLut && texApLut && texApShadow && texCloudSunTr;
+	return csTrLutGen && csMsLutGen && csSvLutGen && csApLutGen && csCloudTrLutGen && csCloudAmbLutGen && csShadowAccum && csShadowAccumHalfRes &&
+	       texTrLut && texSvLut && texApLut && texApShadow && texCloudSunTr && texCloudAmbient;
 }
 
 void PhysicalSky::Reset()
@@ -898,11 +906,17 @@ void PhysicalSky::GenerateLuts()
 		context->CSSetShader(csMsLutGen.get(), nullptr, 0);
 		context->Dispatch((kMsLutW + 7) >> 3, (kMsLutH + 7) >> 3, 1);
 
-		// -> sky-view
-		uav = texSvLut->uav.get();
+		// -> cloud ambient endpoints (samples the Tr and Ms LUTs)
+		uav = texCloudAmbient->uav.get();
 		srvs.at(1) = texMsLut->srv.get();
 		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 		context->CSSetShaderResources(0, (int)srvs.size(), srvs.data());
+		context->CSSetShader(csCloudAmbLutGen.get(), nullptr, 0);
+		context->Dispatch(1, 1, 1);
+
+		// -> sky-view
+		uav = texSvLut->uav.get();
+		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 		context->CSSetShader(csSvLutGen.get(), nullptr, 0);
 		context->Dispatch((kSvLutW + 7) >> 3, (kSvLutH + 7) >> 3, 1);
 

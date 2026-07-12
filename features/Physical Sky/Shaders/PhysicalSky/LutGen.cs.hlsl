@@ -25,7 +25,7 @@ void rayMarch(
 	float3 sunDir,
 	inout float3 tr,
 	inout float3 lum, inout float3 lumFactor
-#elif LUTGEN == 2
+#elif LUTGEN == 2 || LUTGEN == 5
 	inout float3 tr,
 	inout float3 lum
 #elif LUTGEN == 3
@@ -41,7 +41,7 @@ void rayMarch(
 	const uint nsteps = 40;
 #elif LUTGEN == 1
 	const uint nsteps = 20;
-#elif LUTGEN == 2
+#elif LUTGEN == 2 || LUTGEN == 5
 	const uint nsteps = 30;
 #else
 	const uint nsteps = depth - 1;
@@ -254,5 +254,47 @@ void rayMarch(
 		tr = exp(-dt * odSum);
 	}
 	RWTexOutput[tid.xy] = float4(tr, 1.0);
+
+#elif LUTGEN == 5
+	// Cloud ambient endpoint LUT. Texel 0 = cosine-weighted mean radiance
+	// (E/pi) over the LOWER hemisphere at the cloud layer bottom (upwelling:
+	// ground bounce + low-atmosphere in-scatter); texel 1 = same over the
+	// UPPER hemisphere at the layer top (downwelling sky). Reuses rayMarch in
+	// its LUTGEN 2 configuration (sun + both moons + psi_ms, march stops at
+	// the ground).
+	if (tid.x >= 2 || tid.y >= 1)
+		return;  // Dispatch(1, 1, 1)
+
+	const bool top = (tid.x == 1);
+	const float r = top ? data.cloudTrRTop : data.cloudTrRBot;
+	const float zSign = top ? 1.0 : -1.0;
+	const float3 pos = float3(0, 0, r);
+
+	const uint K = 64;
+	float3 sum = 0;
+	[loop] for (uint i = 0; i < K; ++i)
+	{
+		float z = (i + 0.5) / K;  // Fibonacci hemisphere
+		float rad = sqrt(saturate(1.0 - z * z));
+		float phi = i * 2.39996323;  // golden angle
+		float3 dir = float3(rad * cos(phi), rad * sin(phi), z * zSign);
+
+		float3 trRay = 1.0;
+		float3 lumRay = 0;
+		rayMarch(pos, dir, trRay, lumRay);
+
+		// ground bounce for rays that hit the planet (rayMarch clamps tMax to
+		// the ground but adds no bounce for this configuration)
+		float tGround = RayIntersectSphere(pos, dir, 0, data.rPlanet);
+		if (tGround > 0.0) {
+			float3 n = normalize(pos + tGround * dir);
+			float ndl = saturate(dot(n, data.sunDir));
+			float2 uvGround = TrLutUvPlanet(n * data.rPlanet, data.sunDir);
+			lumRay += trRay * data.groundAlbedo * (1.0 / Math::PI) * ndl *
+			          TexTrLut.SampleLevel(SampTr, uvGround, 0).rgb * data.sunlightColor;
+		}
+		sum += lumRay * z;  // cosine weight; |dir.z| == z
+	}
+	RWTexOutput[tid.xy] = float4(sum * (2.0 / K), 1.0);  // E/pi = (2/K) * sum(L*cos)
 #endif
 }
