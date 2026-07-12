@@ -379,6 +379,26 @@ PixelOut main(VertexOut input)
 /////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////
+#ifdef CLOUD_DEBUG_BLIT_PS
+
+Texture2D<float4> BlitTex : register(t0);
+
+// Debug overlay blit: nearest-fetches the bound LUT into a screen-corner
+// viewport rect (the windowed sun-Tr LUT scaled up, and the 2x1 ambient
+// endpoints as two swatches).
+float4 main(VertexOut input) : SV_TARGET0
+{
+	uint2 dims;
+	BlitTex.GetDimensions(dims.x, dims.y);
+	uint2 coord = min(uint2(input.TexCoord * dims), dims - 1);
+	float3 blitColor = BlitTex.Load(int3(coord, 0)).rgb;
+	// The main RT holds gamma-encoded values at this point in the frame.
+	return float4(Color::LLLinearToGamma(blitColor), 1.0);
+}
+#endif
+/////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////
 #ifdef CLOUD_BLEND_PS
 
 Texture2D CloudColorTex : register(t0);

@@ -461,6 +461,48 @@ void PhysicalSky::SettingsClouds()
 	ImGui::SliderFloat("Max Distance", &cloudSettings.maxDistance, 0.0, 600.0);
 	//ImGui::Checkbox("noDelay", &cloudSettings.noDelay);
 
+	ImGui::SeparatorText("Lighting Verification");
+	{
+		static const char* sunTrModes[] = { "Live", "Force White", "Force Orange", "A/B Global Tr LUT" };
+		int sunTrMode = static_cast<int>(cloudLighting.debugSunTrMode);
+		if (ImGui::Combo("Sun Transmittance Mode", &sunTrMode, sunTrModes, IM_ARRAYSIZE(sunTrModes)))
+			cloudLighting.debugSunTrMode = static_cast<uint>(sunTrMode);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"Overrides the windowed sun-transmittance sample per raymarch step.\n"
+				"Force White isolates the ambient chain; A/B samples the global Tr LUT\n"
+				"through its real remap to quantify the windowed LUT's benefit.");
+
+		static const char* ambientModes[] = { "Live", "Debug Color", "Red", "Red-Blue Height Gradient" };
+		int ambientMode = static_cast<int>(cloudLighting.debugAmbientMode);
+		if (ImGui::Combo("Ambient Mode", &ambientMode, ambientModes, IM_ARRAYSIZE(ambientModes)))
+			cloudLighting.debugAmbientMode = static_cast<uint>(ambientMode);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"Overrides the ambient endpoint lerp. With Sun Gain 0, thick cloud\n"
+				"interiors must converge to albedo x color regardless of view angle;\n"
+				"the height gradient must show red bases and blue tops.");
+
+		ImGui::ColorEdit3("Debug Color", &cloudLighting.debugColor.x, ImGuiColorEditFlags_Float);
+
+		ImGui::SliderFloat("Sun Gain", &cloudLighting.sunGain, 0.f, 2.f, "%.2f");
+		ImGui::SliderFloat("Ambient Gain", &cloudLighting.ambientGain, 0.f, 2.f, "%.2f");
+		ImGui::SliderFloat("Sun MS Gain", &cloudLighting.sunMsGain, 0.f, 4.f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", "Flat gain on the sun path only (replaces the old CLOUD_MS_GAIN).");
+
+		ImGui::SliderFloat("Octave Extinction Atten", &cloudLighting.octaveAttenA, 0.f, 1.f, "%.2f");
+		ImGui::SliderFloat("Octave Energy Atten", &cloudLighting.octaveAttenB, 0.f, 1.f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", "Wrenninge multi-scatter octave attenuation (a/b). Defaults 0.5 / 0.6.");
+
+		ImGui::Checkbox("Show LUT Overlay", &cloudLighting.showDebugOverlay);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"Blits the windowed sun-Tr LUT (4x) and the two ambient endpoint\n"
+				"swatches (bottom | top) into the top-left screen corner.");
+	}
+
 	//ImGui::SliderFloat("Vanilla Mix", &settings.cloudOriginalMix, 0.f, 2.f, "%.2f");
 	//ImGui::SliderFloat("Relight Mix", &settings.cloudRelightMix, 0.f, 2.f, "%.2f");
 	//ImGui::SliderFloat("Silver Lining Accent", &settings.silverLiningMix, 0.f, 1.f, "%.2f");
@@ -491,6 +533,8 @@ void PhysicalSky::SettingsDebug()
 	BUFFER_VIEWER_NODE_BULLET(texTrLut, debugScale);
 	BUFFER_VIEWER_NODE_BULLET(texMsLut, debugScale);
 	BUFFER_VIEWER_NODE_BULLET(texSvLut, debugScale);
+	BUFFER_VIEWER_NODE_BULLET(texCloudSunTr, debugScale * 4.f);
+	BUFFER_VIEWER_NODE_BULLET(texCloudAmbient, debugScale * 32.f);
 
 	static float debugScale2 = 0.2f;
 	ImGui::SliderFloat("View Scale ##2", &debugScale2, 0.1f, 1.f);
@@ -695,6 +739,7 @@ void PhysicalSky::CompileShaders()
 	cloudVShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\PhysicalSky\\Clouds.hlsl", { { "CLOUD_VS", "" } }, "vs_5_0");
 	cloudShader = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\PhysicalSky\\Clouds.hlsl", { { "CLOUD_PS", "" } }, "ps_5_0");
 	cloudBlendShader = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\PhysicalSky\\Clouds.hlsl", { { "CLOUD_BLEND_PS", "" } }, "ps_5_0");
+	cloudDebugBlitShader = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\PhysicalSky\\Clouds.hlsl", { { "CLOUD_DEBUG_BLIT_PS", "" } }, "ps_5_0");
 }
 
 bool PhysicalSky::ShadersOK()
@@ -1274,6 +1319,41 @@ void PhysicalSky::CloudCompose()
 	context->PSSetShaderResources(0, 3, srv);
 
 	context->Draw(3, 0);
+
+	// Verification overlay: the windowed sun-Tr LUT scaled up 4x, plus the two
+	// ambient endpoint texels as swatches, in the top-left screen corner.
+	if (cloudLighting.showDebugOverlay && cloudDebugBlitShader) {
+		context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+		context->PSSetShader(cloudDebugBlitShader, nullptr, NULL);
+
+		constexpr float overlayMargin = 16.f;
+		constexpr float overlayScale = 4.f;
+
+		D3D11_VIEWPORT lutPort;
+		lutPort.MinDepth = 0.f;
+		lutPort.MaxDepth = 1.f;
+		lutPort.TopLeftX = overlayMargin;
+		lutPort.TopLeftY = overlayMargin;
+		lutPort.Width = kCloudTrLutW * overlayScale;
+		lutPort.Height = kCloudTrLutH * overlayScale;
+		context->RSSetViewports(1, &lutPort);
+
+		ID3D11ShaderResourceView* blitSrv = texCloudSunTr->srv.get();
+		context->PSSetShaderResources(0, 1, &blitSrv);
+		context->Draw(3, 0);
+
+		D3D11_VIEWPORT swatchPort = lutPort;
+		swatchPort.TopLeftY = overlayMargin + lutPort.Height + 8.f;
+		swatchPort.Width = 96.f;  // two 48px swatches: bottom | top
+		swatchPort.Height = 48.f;
+		context->RSSetViewports(1, &swatchPort);
+
+		blitSrv = texCloudAmbient->srv.get();
+		context->PSSetShaderResources(0, 1, &blitSrv);
+		context->Draw(3, 0);
+
+		globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
+	}
 
 	ID3D11ShaderResourceView* nullSrvs[] = { nullptr, nullptr, nullptr };
 	context->PSSetShaderResources(0, 3, nullSrvs);
