@@ -20,6 +20,11 @@
 
 #define STEP_SIZE_FACTOR 1.0
 
+// This shader works in planet-center-relative KILOMETERS; the sky LUT code
+// (physSkyData) works in game units. Keep this in sync with
+// Util::Units::GAME_UNIT_TO_KM -- the C++ side asserts the scales agree.
+static const float GAME_UNIT_TO_KM = 1.428e-5;
+
 struct VertexOut
 {
 	noperspective float2 TexCoord: TEXCOORD0;
@@ -47,6 +52,13 @@ VertexOut main(uint vertexID : SV_VertexID)
 
 #	include "PhysicalSky/Common.hlsli"
 
+// Per-octave phase eccentricity attenuation for the sun light march
+// (g *= 0.5 per octave, so deeply-scattered light goes isotropic).
+// Default on per the cloud lighting upgrade plan.
+#	ifndef CLOUD_SUN_OCTAVE_PHASE
+#		define CLOUD_SUN_OCTAVE_PHASE 1
+#	endif
+
 float GetCloudProfile(float3 SamplePos, float Height)
 {
 	float Scroll = 0;
@@ -70,8 +82,88 @@ float GetCloudProfile(float3 SamplePos, float Height)
 	return Density;
 }
 
+// Coarse density for light marches: base Perlin-Worley remap + height
+// gradient + coverage only. The Worley FBM erosion chain is skipped -- its
+// detail is barely visible in a light march, and the noise textures have no
+// mip chains to LOD with. The FBM term is replaced by its mean (0.5) so the
+// coverage response survives; at typical coverage this degenerates to no
+// erosion, which only overestimates density (slightly darker cores, never
+// light leaks).
+float GetCloudProfileCoarse(float3 SamplePos, float Height)
+{
+	float Scroll = 0;
+	float PerlinWorley = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0).x;
+
+	float layerDensity = GetDensityHeightGradientForPoint(SamplePos, CloudType, Height);
+	float Density = layerDensity * LerpLinearStepClamped(PerlinWorley, 0.3, 1.0, 0.0, 1.0);
+	float Coverage = pow(CloudCoverage, LerpLinearStep(Height, 0.7, 0.8, 1.0, 0.8));
+
+	float Erosion = LerpLinearStepClamped(0.5, Coverage, 1.0, 0.0, 1.0);
+	Erosion = LerpLinearStepClamped(Erosion, Coverage2, 1.0, 0.0, 1.0);
+
+	return LerpLinearStepClamped(Density, Erosion, 1.0, 0.0, 1.0);
+}
+
+// Optical depth toward the sun: 5 exponential steps, ~1.5 km total, coarse
+// density only (erosion skipped). sunDir points TOWARD the sun, which at
+// sunset goes DOWNWARD through the layer -- exiting through the layer BASE is
+// the unoccluded case, exactly like exiting through the top. The atmosphere
+// beyond the exit is already accounted for by the windowed sun-transmittance
+// LUT; the two are independent path segments composed by multiplication.
+float SunOpticalDepth(float3 samplePos, float3 sunDir, float extinction)
+{
+	float od = 0.0;
+	float t = 0.0, dt = 0.05;  // km
+	[unroll] for (int s = 0; s < 5; ++s)
+	{
+		t += dt;
+		float3 p = samplePos + sunDir * t;
+		// Unsaturated height: the exit test must see out-of-layer values
+		// (GetEnvelopeRelativeZ saturates and would never trigger it).
+		float h = LinearStep(bottomRadius, topRadius, p.z);
+		if (h < 0.0 || h > 1.0)
+			break;  // exited layer (through base OR top) -> unoccluded beyond
+		od += GetCloudProfileCoarse(p, h) * dt * extinction;
+		dt *= 2.0;
+	}
+	return od;
+}
+
+// Wrenninge multi-scatter octaves: fakes deep multiple scattering of the
+// (gray, spectrally neutral) droplet medium.
+float SunVisibilityMS(float od)
+{
+	float vis = 0.0;
+	float a = 1.0, b = 1.0;
+	[unroll] for (int o = 0; o < 3; ++o)
+	{
+		vis += b * exp(-a * od);
+		a *= OctaveAttenA;
+		b *= OctaveAttenB;
+	}
+	return vis;
+}
+
+#	if CLOUD_SUN_OCTAVE_PHASE
+// Octave sum with per-octave phase folded in:
+// sum_o b^o * exp(-a^o * od) * phase(g * 0.5^o).
+float SunVisibilityMSPhased(float od, float3 phaseOctaves)
+{
+	float vis = 0.0;
+	float a = 1.0, b = 1.0;
+	[unroll] for (int o = 0; o < 3; ++o)
+	{
+		vis += b * exp(-a * od) * phaseOctaves[o];
+		a *= OctaveAttenA;
+		b *= OctaveAttenB;
+	}
+	return vis;
+}
+#	endif
+
 static const float3 CLOUD_AMBIENT = float3(0.4, 0.45, 0.5);  // flat skylight fill into the cloud
 static const float CLOUD_MS_GAIN = 1.8;                      // flat multiple-scatter boost
+// Kept for reference; superseded by ComputeLightingV3.
 void ComputeLightingV1(float density, float stepLength, float sunVisibility, CloudParticpatingMedium medium, inout float3 Inscattering, inout float Transmittance)
 {
 	float albedo = medium.scattering / medium.extinction;
@@ -87,6 +179,69 @@ void ComputeLightingV1(float density, float stepLength, float sunVisibility, Clo
 	Transmittance *= Tr;
 }
 
+// Direct sun transmittance at a raymarch sample, from the per-frame windowed
+// LUT (LUTGEN 4), parameterized by the sample's actual altitude and sun zenith
+// cosine -- including mu < 0 (afterglow/underlighting). Debug overrides sit
+// AFTER the UV remap decision so remap bugs are excluded from
+// application-side tests.
+float3 SampleCloudSunTr(float3 posPlanetRel)
+{
+	if (DebugSunTrMode == 1)
+		return 1.0;
+	if (DebugSunTrMode == 2)
+		return float3(1.0, 0.35, 0.08);
+	if (DebugSunTrMode == 3) {
+		// A/B: sample the GLOBAL Tr LUT through its real remap instead. The
+		// global LUT works in game units, unlike this shader.
+		float2 uvGlobal = PhysSky::TrLutUvPlanet(posPlanetRel / GAME_UNIT_TO_KM, SharedData::physSkyData.sunDir);
+		return PhysSky::TexTrLut.SampleLevel(LinearSampler, uvGlobal, 0).rgb;
+	}
+	float r = length(posPlanetRel);
+	float mu = dot(posPlanetRel / r, SharedData::physSkyData.sunDir);
+	float2 uv = float2((mu - cloudTrMuMin) / (cloudTrMuMax - cloudTrMuMin),
+		(r - cloudTrRBot) / (cloudTrRTop - cloudTrRBot));
+	return TexCloudSunTr.SampleLevel(LinearSampler, saturate(uv), 0).rgb;
+}
+
+// Pre-integrated ambient (LUTGEN 5 endpoints), lerped by in-layer height.
+float3 EvalCloudAmbient(float heightFrac, float3 ambBottom, float3 ambTop)
+{
+	switch (DebugAmbientMode) {
+	case 1:
+		return DebugColor;
+	case 2:
+		return float3(1, 0, 0);
+	case 3:
+		return lerp(float3(1, 0, 0), float3(0, 0, 1), heightFrac);
+	}
+	return lerp(ambBottom, ambTop, heightFrac);
+}
+
+// sunPhaseVis is the phase-weighted sun visibility from the in-cloud light
+// march (Wrenninge octave sum, with the phase folded in per octave when
+// CLOUD_SUN_OCTAVE_PHASE is on).
+void ComputeLightingV3(float density, float stepLength, float3 sunPhaseVis, float heightFrac,
+	float3 sunTr, float3 ambBottom, float3 ambTop,
+	CloudParticpatingMedium medium,
+	inout float3 Inscattering, inout float Transmittance)
+{
+	float3 albedo = medium.scattering / medium.extinction;
+	float extinction = medium.extinction.x * density;
+	float tr = exp(-extinction * stepLength);
+
+	// physSkyData.sunlightColor is the constant TOA illuminance (white); ALL
+	// time-of-day color enters through sunTr. SharedData::DirLightColor is
+	// artist-tinted at sunset and would double-tint. The sun is never clamped
+	// here -- the Tr LUT decides when light stops arriving.
+	float3 sunRad = SharedData::physSkyData.sunlightColor * sunTr * sunPhaseVis * SunGain * SunMsGain;
+	float3 ambRad = EvalCloudAmbient(heightFrac, ambBottom, ambTop) * AmbientGain;  // no phase: pre-integrated
+
+	float3 inscatter = (sunRad + ambRad) * albedo * (1.0 - tr);
+
+	Inscattering += inscatter * Transmittance;
+	Transmittance *= tr;
+}
+
 PixelOut main(VertexOut input)
 {
 	PixelOut output;
@@ -94,7 +249,6 @@ PixelOut main(VertexOut input)
 	output.color = float4(0, 0, 0, 0);
 	output.depth = 1.0;
 
-	float GAME_UNIT_TO_KM = 1.428e-5;
 	float3 cameraPos = cameraPosIN.xyz * GAME_UNIT_TO_KM;
 	cameraPos.z += groundRadius;
 	//cameraPos = float3(0,0, groundRadius);
@@ -150,16 +304,32 @@ PixelOut main(VertexOut input)
 
 #	define RAY_SAMPLES 512  //128
 
-	float cosTheta = dot(ray.direction, SharedData::DirLightDirection.xyz);
+	// The sun path is coherent around the real sun (physSkyData.sunDir):
+	// phase, windowed transmittance and (later) the light march all use the
+	// same vector. DirLightDirection may be a moon at night.
+	float cosTheta = dot(ray.direction, SharedData::physSkyData.sunDir);
 	float StepLength = (RayT.y - RayT.x) / RAY_SAMPLES;
 
 	float3 Inscattering = float3(0, 0, 0);
 	float Transmittance = 1.0;
 
+	// Albedo ~0.996 (24.9 / 25): a 0.4 albedo makes cloud interiors charcoal
+	// and kills any twilight glow penetration.
 	CloudParticpatingMedium medium;
-	medium.scattering = 10;
-	medium.extinction = 25;
+	medium.scattering = CloudScattering;
+	medium.extinction = CloudExtinction;
 	medium.phase = CloudPhase(cosTheta);
+
+#	if CLOUD_SUN_OCTAVE_PHASE
+	// View-constant per-octave phases, eccentricity halved each octave.
+	float3 phaseOctaves = float3(
+		CloudPhase(cosTheta, 1.0).x,
+		CloudPhase(cosTheta, 0.5).x,
+		CloudPhase(cosTheta, 0.25).x);
+#	endif
+
+	float3 ambBottom = TexCloudAmbient.Load(int3(0, 0, 0)).rgb;
+	float3 ambTop = TexCloudAmbient.Load(int3(1, 0, 0)).rgb;
 
 	float TrDepthSum = 0.0;
 	float TrSum = 0.0;
@@ -172,7 +342,7 @@ PixelOut main(VertexOut input)
 		if (CloudDensity <= 0.0)
 			continue;
 
-		TrDepthSum += Transmittance * RayT.x;
+		TrDepthSum += Transmittance * (RayT.x + i * StepLength);
 		TrSum += Transmittance;
 
 		CloudRaymarchStepState state;
@@ -180,11 +350,28 @@ PixelOut main(VertexOut input)
 		state.rayStep = float4(0, 0, 0, StepLength);
 		state.upVector = normalize(SamplePos);
 
-		float sunVis = EnvelopeZ;
-		ComputeLightingV1(CloudDensity, StepLength, sunVis, medium, Inscattering, Transmittance);
+		float3 sunTr = SampleCloudSunTr(SamplePos);
+
+		// In-cloud sun light march + multi-scatter octaves. Skipped once the
+		// view transmittance no longer matters (the ambient term still
+		// accumulates for the step).
+		float3 sunPhaseVis = 0;
+		if (Transmittance >= 0.01) {
+			float od = SunOpticalDepth(SamplePos, SharedData::physSkyData.sunDir, medium.extinction.x);
+#	if CLOUD_SUN_OCTAVE_PHASE
+			sunPhaseVis = SunVisibilityMSPhased(od, phaseOctaves);
+#	else
+			sunPhaseVis = SunVisibilityMS(od) * medium.phase;
+#	endif
+		}
+		ComputeLightingV3(CloudDensity, StepLength, sunPhaseVis, EnvelopeZ, sunTr, ambBottom, ambTop, medium, Inscattering, Transmittance);
 	}
 	/////////////////////////////////////////////
 
+	// TODO: gamma placement. Encoding here is only valid if the composite
+	// consumes gamma; if clouds ever blend with the linear-HDR sky
+	// pre-tonemap, this shifts hues exactly at twilight, where the
+	// channel ratios are extreme. Revisit when the compose path is settled.
 	output.color = float4(Color::LLLinearToGamma(Inscattering), max(1.0 - Transmittance, 1e-6));
 
 	//float cloudDistance = (TrSum > 0.0) ? TrDepthSum / TrSum : RayT.y;
@@ -193,6 +380,26 @@ PixelOut main(VertexOut input)
 	//output.depth = saturate(clipPos.z / clipPos.w);
 
 	return output;
+}
+#endif
+/////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////
+#ifdef CLOUD_DEBUG_BLIT_PS
+
+Texture2D<float4> BlitTex : register(t0);
+
+// Debug overlay blit: nearest-fetches the bound LUT into a screen-corner
+// viewport rect (the windowed sun-Tr LUT scaled up, and the 2x1 ambient
+// endpoints as two swatches).
+float4 main(VertexOut input) : SV_TARGET0
+{
+	uint2 dims;
+	BlitTex.GetDimensions(dims.x, dims.y);
+	uint2 coord = min(uint2(input.TexCoord * dims), dims - 1);
+	float3 blitColor = BlitTex.Load(int3(coord, 0)).rgb;
+	// The main RT holds gamma-encoded values at this point in the frame.
+	return float4(Color::LLLinearToGamma(blitColor), 1.0);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////

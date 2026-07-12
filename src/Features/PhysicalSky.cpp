@@ -1,8 +1,10 @@
 #include "PhysicalSky.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <cfloat>
+#include <cmath>
 #include <imgui_stdlib.h>
 
 #include <DDSTextureLoader.h>
@@ -459,6 +461,59 @@ void PhysicalSky::SettingsClouds()
 	ImGui::SliderFloat("Max Distance", &cloudSettings.maxDistance, 0.0, 600.0);
 	//ImGui::Checkbox("noDelay", &cloudSettings.noDelay);
 
+	ImGui::SeparatorText("Medium");
+	{
+		ImGui::SliderFloat("Scattering", &cloudLighting.cloudScattering, 0.f, 100.f, "%.1f km^-1");
+		ImGui::SliderFloat("Extinction", &cloudLighting.cloudExtinction, 0.01f, 100.f, "%.1f km^-1");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"Water droplets are spectrally neutral: albedo (scattering / extinction)\n"
+				"should stay ~0.996. Lower albedo makes cloud interiors charcoal and\n"
+				"kills twilight glow penetration.");
+	}
+
+	ImGui::SeparatorText("Lighting Verification");
+	{
+		static const char* sunTrModes[] = { "Live", "Force White", "Force Orange", "A/B Global Tr LUT" };
+		int sunTrMode = static_cast<int>(cloudLighting.debugSunTrMode);
+		if (ImGui::Combo("Sun Transmittance Mode", &sunTrMode, sunTrModes, IM_ARRAYSIZE(sunTrModes)))
+			cloudLighting.debugSunTrMode = static_cast<uint>(sunTrMode);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"Overrides the windowed sun-transmittance sample per raymarch step.\n"
+				"Force White isolates the ambient chain; A/B samples the global Tr LUT\n"
+				"through its real remap to quantify the windowed LUT's benefit.");
+
+		static const char* ambientModes[] = { "Live", "Debug Color", "Red", "Red-Blue Height Gradient" };
+		int ambientMode = static_cast<int>(cloudLighting.debugAmbientMode);
+		if (ImGui::Combo("Ambient Mode", &ambientMode, ambientModes, IM_ARRAYSIZE(ambientModes)))
+			cloudLighting.debugAmbientMode = static_cast<uint>(ambientMode);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"Overrides the ambient endpoint lerp. With Sun Gain 0, thick cloud\n"
+				"interiors must converge to albedo x color regardless of view angle;\n"
+				"the height gradient must show red bases and blue tops.");
+
+		ImGui::ColorEdit3("Debug Color", &cloudLighting.debugColor.x, ImGuiColorEditFlags_Float);
+
+		ImGui::SliderFloat("Sun Gain", &cloudLighting.sunGain, 0.f, 2.f, "%.2f");
+		ImGui::SliderFloat("Ambient Gain", &cloudLighting.ambientGain, 0.f, 2.f, "%.2f");
+		ImGui::SliderFloat("Sun MS Gain", &cloudLighting.sunMsGain, 0.f, 4.f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", "Flat gain on the sun path only (replaces the old CLOUD_MS_GAIN).");
+
+		ImGui::SliderFloat("Octave Extinction Atten", &cloudLighting.octaveAttenA, 0.f, 1.f, "%.2f");
+		ImGui::SliderFloat("Octave Energy Atten", &cloudLighting.octaveAttenB, 0.f, 1.f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", "Wrenninge multi-scatter octave attenuation (a/b). Defaults 0.5 / 0.6.");
+
+		ImGui::Checkbox("Show LUT Overlay", &cloudLighting.showDebugOverlay);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"Blits the windowed sun-Tr LUT (4x) and the two ambient endpoint\n"
+				"swatches (bottom | top) into the top-left screen corner.");
+	}
+
 	//ImGui::SliderFloat("Vanilla Mix", &settings.cloudOriginalMix, 0.f, 2.f, "%.2f");
 	//ImGui::SliderFloat("Relight Mix", &settings.cloudRelightMix, 0.f, 2.f, "%.2f");
 	//ImGui::SliderFloat("Silver Lining Accent", &settings.silverLiningMix, 0.f, 1.f, "%.2f");
@@ -489,6 +544,8 @@ void PhysicalSky::SettingsDebug()
 	BUFFER_VIEWER_NODE_BULLET(texTrLut, debugScale);
 	BUFFER_VIEWER_NODE_BULLET(texMsLut, debugScale);
 	BUFFER_VIEWER_NODE_BULLET(texSvLut, debugScale);
+	BUFFER_VIEWER_NODE_BULLET(texCloudSunTr, debugScale * 4.f);
+	BUFFER_VIEWER_NODE_BULLET(texCloudAmbient, debugScale * 32.f);
 
 	static float debugScale2 = 0.2f;
 	ImGui::SliderFloat("View Scale ##2", &debugScale2, 0.1f, 1.f);
@@ -566,6 +623,20 @@ void PhysicalSky::SetupResources()
 		texSvLut = eastl::make_unique<Texture2D>(tex2dDesc);
 		texSvLut->CreateSRV(srvDesc);
 		texSvLut->CreateUAV(uavDesc);
+
+		tex2dDesc.Width = kCloudTrLutW;
+		tex2dDesc.Height = kCloudTrLutH;
+
+		texCloudSunTr = eastl::make_unique<Texture2D>(tex2dDesc, "PhysicalSky::CloudSunTrLut");
+		texCloudSunTr->CreateSRV(srvDesc);
+		texCloudSunTr->CreateUAV(uavDesc);
+
+		tex2dDesc.Width = 2;
+		tex2dDesc.Height = 1;
+
+		texCloudAmbient = eastl::make_unique<Texture2D>(tex2dDesc, "PhysicalSky::CloudAmbientLut");
+		texCloudAmbient->CreateSRV(srvDesc);
+		texCloudAmbient->CreateUAV(uavDesc);
 
 		D3D11_TEXTURE3D_DESC tex3dDesc{
 			.Width = kApLutW,
@@ -664,6 +735,8 @@ void PhysicalSky::CompileShaders()
 		{ &csMsLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "1" } } },
 		{ &csSvLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "2" } } },
 		{ &csApLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "3" } } },
+		{ &csCloudTrLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "4" } } },
+		{ &csCloudAmbLutGen, "LutGen.cs.hlsl", { { "LUTGEN", "5" } } },
 		{ &csShadowAccum, "ShadowAccum.cs.hlsl", {} },
 		{ &csShadowAccumHalfRes, "ShadowAccum.cs.hlsl", { { "HALF_RES", "" } } }
 	};
@@ -677,12 +750,13 @@ void PhysicalSky::CompileShaders()
 	cloudVShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\PhysicalSky\\Clouds.hlsl", { { "CLOUD_VS", "" } }, "vs_5_0");
 	cloudShader = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\PhysicalSky\\Clouds.hlsl", { { "CLOUD_PS", "" } }, "ps_5_0");
 	cloudBlendShader = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\PhysicalSky\\Clouds.hlsl", { { "CLOUD_BLEND_PS", "" } }, "ps_5_0");
+	cloudDebugBlitShader = (ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\PhysicalSky\\Clouds.hlsl", { { "CLOUD_DEBUG_BLIT_PS", "" } }, "ps_5_0");
 }
 
 bool PhysicalSky::ShadersOK()
 {
-	return csTrLutGen && csMsLutGen && csSvLutGen && csApLutGen && csShadowAccum && csShadowAccumHalfRes &&
-	       texTrLut && texSvLut && texApLut && texApShadow;
+	return csTrLutGen && csMsLutGen && csSvLutGen && csApLutGen && csCloudTrLutGen && csCloudAmbLutGen && csShadowAccum && csShadowAccumHalfRes &&
+	       texTrLut && texSvLut && texApLut && texApShadow && texCloudSunTr && texCloudAmbient;
 }
 
 void PhysicalSky::Reset()
@@ -795,6 +869,35 @@ void PhysicalSky::Reset()
 		posCam = cam->cameraRoot->world.translate;
 		cbData.zCameraPlanet = posCam.z - cbData.zBottom + cbData.rPlanet;
 	}
+
+	// Windowed cloud sun-transmittance LUT (LUTGEN 4): center the mu axis on
+	// the current sun zenith cosine and cover the whole cloud field, with a
+	// margin for bilinear filtering. Radii go to the shader in game units to
+	// match rPlanet; the normalized LUT axes are what the km-scale cloud
+	// raymarcher samples.
+	{
+		// Planet-center-relative camera position in the cloud raymarcher's
+		// convention (planet center on the world-origin vertical), in km.
+		float3 posPlanetRelKm = { 0.f, 0.f, settings.planetRadius };
+		if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+			const auto playerPos = player->GetPosition();
+			posPlanetRelKm = float3(playerPos.x, playerPos.y, playerPos.z) * Util::Units::GAME_UNIT_TO_KM;
+			posPlanetRelKm.z += settings.planetRadius;
+		}
+		const float posLen = std::sqrt(posPlanetRelKm.x * posPlanetRelKm.x + posPlanetRelKm.y * posPlanetRelKm.y + posPlanetRelKm.z * posPlanetRelKm.z);
+		const float mu0 = (posPlanetRelKm.x * cbData.sunDir.x + posPlanetRelKm.y * cbData.sunDir.y + posPlanetRelKm.z * cbData.sunDir.z) / posLen;
+		const float halfWindow = cloudSettings.maxDistance / settings.planetRadius + 0.02f;
+
+		const float cloudBotKm = settings.planetRadius + cloudSettings.bottomRadius;
+		// Guard against a degenerate/inverted layer from the UI; the LUT y axis
+		// (and the cloud shader's uv remap) divide by the layer thickness.
+		const float cloudTopKm = std::max(settings.planetRadius + cloudSettings.topRadius, cloudBotKm + 1e-3f);
+
+		cbData.cloudTrMuMin = mu0 - halfWindow;
+		cbData.cloudTrMuMax = mu0 + halfWindow;
+		cbData.cloudTrRBot = cloudBotKm / Util::Units::GAME_UNIT_TO_KM;
+		cbData.cloudTrRTop = cloudTopKm / Util::Units::GAME_UNIT_TO_KM;
+	}
 }
 
 void PhysicalSky::EarlyPrepass()
@@ -845,6 +948,12 @@ void PhysicalSky::GenerateLuts()
 		context->CSSetShader(csTrLutGen.get(), nullptr, 0);
 		context->Dispatch((kTrLutW + 7) >> 3, (kTrLutH + 7) >> 3, 1);
 
+		// -> windowed cloud sun transmittance (needs only the cbuffer)
+		uav = texCloudSunTr->uav.get();
+		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+		context->CSSetShader(csCloudTrLutGen.get(), nullptr, 0);
+		context->Dispatch((kCloudTrLutW + 7) >> 3, (kCloudTrLutH + 7) >> 3, 1);
+
 		// -> multiscatter
 		uav = texMsLut->uav.get();
 		srvs.at(0) = texTrLut->srv.get();
@@ -853,11 +962,17 @@ void PhysicalSky::GenerateLuts()
 		context->CSSetShader(csMsLutGen.get(), nullptr, 0);
 		context->Dispatch((kMsLutW + 7) >> 3, (kMsLutH + 7) >> 3, 1);
 
-		// -> sky-view
-		uav = texSvLut->uav.get();
+		// -> cloud ambient endpoints (samples the Tr and Ms LUTs)
+		uav = texCloudAmbient->uav.get();
 		srvs.at(1) = texMsLut->srv.get();
 		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 		context->CSSetShaderResources(0, (int)srvs.size(), srvs.data());
+		context->CSSetShader(csCloudAmbLutGen.get(), nullptr, 0);
+		context->Dispatch(1, 1, 1);
+
+		// -> sky-view
+		uav = texSvLut->uav.get();
+		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 		context->CSSetShader(csSvLutGen.get(), nullptr, 0);
 		context->Dispatch((kSvLutW + 7) >> 3, (kSvLutH + 7) >> 3, 1);
 
@@ -1026,11 +1141,17 @@ void PhysicalSky::CreateCloudResources()
 	}
 
 	cloudBuffer = new ConstantBuffer(ConstantBufferDesc<CloudCB>());
+	cloudDebugBuffer = new ConstantBuffer(ConstantBufferDesc<CloudDebugCB>(), "PhysicalSky::CloudDebugCB");
 }
 #pragma warning(pop)
 
 void PhysicalSky::RenderClouds()
 {
+	// The cloud lighting chain depends on physSkyData and the per-frame LUTs
+	// (LUTGEN 4/5), which are only valid while the feature is active.
+	if (!cbData.enabled)
+		return;
+
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
 
@@ -1077,6 +1198,13 @@ void PhysicalSky::RenderClouds()
 	};
 	context->PSSetShaderResources(0, 12, srvs);
 
+	// Lighting LUTs: windowed sun transmittance + ambient endpoints (t18/t19),
+	// and the global Tr LUT (t61) for the DebugSunTrMode == 3 A/B path.
+	ID3D11ShaderResourceView* lutSrvs[] = { texCloudSunTr->srv.get(), texCloudAmbient->srv.get() };
+	context->PSSetShaderResources(18, 2, lutSrvs);
+	ID3D11ShaderResourceView* trLutSrv = texTrLut->srv.get();
+	context->PSSetShaderResources(61, 1, &trLutSrv);
+
 	auto bayerIndex = bayerIndices4x4[frameCount % 16];
 	auto playerPos = RE::PlayerCharacter::GetSingleton()->GetPosition();
 
@@ -1087,6 +1215,31 @@ void PhysicalSky::RenderClouds()
 	cb.atmTopRadius = settings.atmosphereRadius;
 	cb.bottomRadius = settings.planetRadius + cloudSettings.bottomRadius;
 	cb.topRadius = settings.planetRadius + cloudSettings.topRadius;
+
+	// The sky LUTs (physSkyData) work in game units; this cbuffer works in km.
+	// Both must describe the same planet and cloud layer -- a scale mismatch
+	// does not crash, it just silently produces slightly wrong cloud colors.
+	if (cbData.enabled) {
+		const auto sameScale = [](float gameUnits, float km) {
+			return std::abs(gameUnits * Util::Units::GAME_UNIT_TO_KM - km) <= 0.5f;
+		};
+		assert(sameScale(cbData.rPlanet, cb.groundRadius));
+		assert(sameScale(cbData.cloudTrRBot, cb.bottomRadius));
+		assert(sameScale(cbData.cloudTrRTop, std::max(cb.topRadius, cb.bottomRadius + 1e-3f)));
+		static bool loggedScaleMismatch = false;
+		if (!loggedScaleMismatch &&
+			(!sameScale(cbData.rPlanet, cb.groundRadius) ||
+				!sameScale(cbData.cloudTrRBot, cb.bottomRadius) ||
+				!sameScale(cbData.cloudTrRTop, std::max(cb.topRadius, cb.bottomRadius + 1e-3f)))) {
+			loggedScaleMismatch = true;
+			logger::error(
+				"PhysicalSky: sky-LUT radii (game units) and cloud radii (km) disagree "
+				"(rPlanet {} gu vs groundRadius {} km, layer [{}, {}] gu vs [{}, {}] km); "
+				"cloud sunset colors will be wrong",
+				cbData.rPlanet, cb.groundRadius,
+				cbData.cloudTrRBot, cbData.cloudTrRTop, cb.bottomRadius, cb.topRadius);
+		}
+	}
 	cb.minDistance = cloudSettings.minDistance;
 	cb.maxDistance = cloudSettings.maxDistance;
 	cb.coverage2 = cloudSettings.coverage2;
@@ -1095,8 +1248,29 @@ void PhysicalSky::RenderClouds()
 	cb.cloudType = cloudSettings.cloudType;
 	cloudBuffer->Update(cb);
 
-	auto buffer = cloudBuffer->CB();
-	context->PSSetConstantBuffers(0, 1, &buffer);
+	CloudDebugCB debugCb{};
+	debugCb.debugSunTrMode = cloudLighting.debugSunTrMode;
+	debugCb.debugAmbientMode = cloudLighting.debugAmbientMode;
+	debugCb.debugColor = cloudLighting.debugColor;
+	debugCb.sunGain = cloudLighting.sunGain;
+	debugCb.ambientGain = cloudLighting.ambientGain;
+	debugCb.sunMsGain = cloudLighting.sunMsGain;
+	debugCb.cloudTrMuMin = cbData.cloudTrMuMin;
+	debugCb.cloudTrMuMax = cbData.cloudTrMuMax;
+	// Converting from the game-unit values LUTGEN 4 used guarantees the shader
+	// remaps onto exactly the generated axes.
+	debugCb.cloudTrRBot = cbData.cloudTrRBot * Util::Units::GAME_UNIT_TO_KM;
+	debugCb.cloudTrRTop = cbData.cloudTrRTop * Util::Units::GAME_UNIT_TO_KM;
+	debugCb.octaveAttenA = cloudLighting.octaveAttenA;
+	debugCb.octaveAttenB = cloudLighting.octaveAttenB;
+	// The shader divides by extinction (albedo) and single-scatter albedo
+	// cannot exceed 1; enforce both no matter what the UI fed us.
+	debugCb.cloudExtinction = std::max(cloudLighting.cloudExtinction, 1e-3f);
+	debugCb.cloudScattering = std::clamp(cloudLighting.cloudScattering, 0.f, debugCb.cloudExtinction);
+	cloudDebugBuffer->Update(debugCb);
+
+	ID3D11Buffer* buffers[2] = { cloudBuffer->CB(), cloudDebugBuffer->CB() };
+	context->PSSetConstantBuffers(0, 2, buffers);
 
 	ID3D11SamplerState* samplers[2] = { sampTr.get(), sampNoise.get() };
 	context->PSSetSamplers(0, 2, samplers);
@@ -1118,6 +1292,8 @@ void PhysicalSky::RenderClouds()
 		nullptr,
 	};
 	context->PSSetShaderResources(0, 12, nullSrvs);
+	context->PSSetShaderResources(18, 2, nullSrvs);
+	context->PSSetShaderResources(61, 1, nullSrvs);
 
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET, RE::BSGraphics::DIRTY_VIEWPORT);
 
@@ -1126,6 +1302,9 @@ void PhysicalSky::RenderClouds()
 
 void PhysicalSky::CloudCompose()
 {
+	if (!cbData.enabled)
+		return;
+
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
 
@@ -1155,6 +1334,41 @@ void PhysicalSky::CloudCompose()
 	context->PSSetShaderResources(0, 3, srv);
 
 	context->Draw(3, 0);
+
+	// Verification overlay: the windowed sun-Tr LUT scaled up 4x, plus the two
+	// ambient endpoint texels as swatches, in the top-left screen corner.
+	if (cloudLighting.showDebugOverlay && cloudDebugBlitShader) {
+		context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+		context->PSSetShader(cloudDebugBlitShader, nullptr, NULL);
+
+		constexpr float overlayMargin = 16.f;
+		constexpr float overlayScale = 4.f;
+
+		D3D11_VIEWPORT lutPort;
+		lutPort.MinDepth = 0.f;
+		lutPort.MaxDepth = 1.f;
+		lutPort.TopLeftX = overlayMargin;
+		lutPort.TopLeftY = overlayMargin;
+		lutPort.Width = kCloudTrLutW * overlayScale;
+		lutPort.Height = kCloudTrLutH * overlayScale;
+		context->RSSetViewports(1, &lutPort);
+
+		ID3D11ShaderResourceView* blitSrv = texCloudSunTr->srv.get();
+		context->PSSetShaderResources(0, 1, &blitSrv);
+		context->Draw(3, 0);
+
+		D3D11_VIEWPORT swatchPort = lutPort;
+		swatchPort.TopLeftY = overlayMargin + lutPort.Height + 8.f;
+		swatchPort.Width = 96.f;  // two 48px swatches: bottom | top
+		swatchPort.Height = 48.f;
+		context->RSSetViewports(1, &swatchPort);
+
+		blitSrv = texCloudAmbient->srv.get();
+		context->PSSetShaderResources(0, 1, &blitSrv);
+		context->Draw(3, 0);
+
+		globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
+	}
 
 	ID3D11ShaderResourceView* nullSrvs[] = { nullptr, nullptr, nullptr };
 	context->PSSetShaderResources(0, 3, nullSrvs);

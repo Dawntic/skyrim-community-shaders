@@ -39,6 +39,35 @@ cbuffer CloudDataCB : register(b0)
 	float WeatherScale;
 };
 
+// Debug/verification seams for the cloud lighting chain. Uniform flow control
+// on purpose: a single shader build supports the whole verification ladder.
+cbuffer CloudDebugCB : register(b1)
+{
+	uint DebugSunTrMode;    // 0 live | 1 force white(=1) | 2 force orange | 3 A/B: sample GLOBAL Tr LUT instead
+	uint DebugAmbientMode;  // 0 live | 1 DebugColor | 2 literal red | 3 red->blue height gradient
+	float2 debugPad0;
+
+	float3 DebugColor;
+	float SunGain;  // 0 while validating ambient, 1 normally
+
+	float AmbientGain;
+	float SunMsGain;     // replaces CLOUD_MS_GAIN on the sun path only
+	float cloudTrMuMin;  // windowed sun-transmittance LUT axes; radii in km
+	float cloudTrMuMax;  // (this shader's scale -- the LUT was generated over
+						 // the same normalized axes in game units)
+
+	float cloudTrRBot;
+	float cloudTrRTop;
+	float OctaveAttenA;  // Wrenninge octave extinction attenuation (default 0.5)
+	float OctaveAttenB;  // Wrenninge octave energy attenuation (default 0.6)
+
+	// Cloud droplets are spectrally neutral with albedo ~0.996; no color may
+	// be injected in the medium itself.
+	float CloudScattering;  // km^-1 (default 24.9)
+	float CloudExtinction;  // km^-1 (default 25)
+	float2 debugPad1;
+};
+
 Texture2D DepthTex : register(t0);
 Texture2D DisocculsionTex : register(t1);
 Texture2D PrevFrameCloudTex : register(t2);
@@ -60,6 +89,10 @@ Texture2D Base : register(t13);
 Texture3D DetailOne : register(t14);
 Texture3D DetailTwo : register(t15);
 Texture3D Curl : register(t16);
+
+// t17 is SharedData::DepthTexture -- do not reuse.
+Texture2D<float4> TexCloudSunTr : register(t18);    // windowed sun transmittance (LUTGEN 4)
+Texture2D<float4> TexCloudAmbient : register(t19);  // ambient endpoints, 2x1 (LUTGEN 5)
 
 SamplerState LinearSampler : register(s0);
 SamplerState LinearRepeatSampler : register(s1);
@@ -309,16 +342,26 @@ float Draine(float cos_theta, float g, float alpha)
 }
 
 // Phase Method from alpha piscium
-float3 CloudPhase(float cosTheta)
+// gScale attenuates both lobes' eccentricity (1 = physical fit); the
+// Wrenninge octave path passes 0.5^octave so deeply-scattered light goes
+// isotropic.
+float3 CloudPhase(float cosTheta, float gScale)
 {
 	float CLOUDS_CU_R_EFF = 5.77;  //////////
 	// d: droplet diameter in µm (micrometers)
 	float d = CLOUDS_CU_R_EFF * 2.0;
-	float gHG = exp(-0.0990567 / (d - 1.67154));
-	float gD = exp(-2.20679 / (d + 3.91029) - 0.428934);
+	float gHG = exp(-0.0990567 / (d - 1.67154)) * gScale;
+	float gD = exp(-2.20679 / (d + 3.91029) - 0.428934) * gScale;
 	float a = exp(3.62489 - 8.29288 / (d + 5.52825));
 	float wD = exp(-0.599085 / (d - 0.641583) - 0.665888);
-	float HGDraine = lerp(hgPhase(cosTheta, gHG), Draine(cosTheta, gD, a), wD);
+	// hgPhase's signature is (anisotropy, cosTheta) -- the previous call here
+	// passed them swapped.
+	float HGDraine = lerp(hgPhase(gHG, cosTheta), Draine(cosTheta, gD, a), wD);
 	return HGDraine;
+}
+
+float3 CloudPhase(float cosTheta)
+{
+	return CloudPhase(cosTheta, 1.0);
 }
 //#endif

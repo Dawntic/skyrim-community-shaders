@@ -387,6 +387,15 @@ namespace SharedData
 		uint lightSkyStatics;
 		float skyStaticsBrightness;
 		uint2 pad0;
+
+		// CLOUD LUT WINDOW (LUTGEN 4/5)
+		// mu is dimensionless; radii are planet-center-relative GAME UNITS to
+		// match rPlanet (the cloud raymarcher samples the same normalized axes
+		// with its km-scale values).
+		float cloudTrMuMin;
+		float cloudTrMuMax;
+		float cloudTrRBot;
+		float cloudTrRTop;
 	};
 
 	cbuffer FeatureData : register(b6)

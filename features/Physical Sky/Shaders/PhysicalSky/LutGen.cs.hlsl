@@ -4,6 +4,12 @@
 #ifndef LUTGEN
 #	define LUTGEN 0
 #endif
+// Multiscatter LUT hemisphere integration: N*N rays per texel. 4 (16 rays)
+// visibly aliases at twilight, when the illumination is maximally
+// anisotropic; 8 (64 rays) is Hillaire's reference configuration.
+#ifndef MS_SQRT_SAMPLES
+#	define MS_SQRT_SAMPLES 8
+#endif
 
 #define PS_PREPASS_SAMPLERS
 #define PS_PREPASS_RSRCS
@@ -25,7 +31,7 @@ void rayMarch(
 	float3 sunDir,
 	inout float3 tr,
 	inout float3 lum, inout float3 lumFactor
-#elif LUTGEN == 2
+#elif LUTGEN == 2 || LUTGEN == 5
 	inout float3 tr,
 	inout float3 lum
 #elif LUTGEN == 3
@@ -41,7 +47,7 @@ void rayMarch(
 	const uint nsteps = 40;
 #elif LUTGEN == 1
 	const uint nsteps = 20;
-#elif LUTGEN == 2
+#elif LUTGEN == 2 || LUTGEN == 5
 	const uint nsteps = 30;
 #else
 	const uint nsteps = depth - 1;
@@ -145,12 +151,15 @@ void rayMarch(
 
 #if LUTGEN == 1  // multiscatter
 	if (tGround > 0) {
+		// Lambert ground bounce: albedo/pi BRDF times N.L. The old
+		// dot(pos, sunDir) > 0 guard keyed on the ray ORIGIN and is subsumed
+		// by the N.L term at the actual hit point.
 		float3 hit_pos = pos + tGround * rayDir;
-		if (dot(pos, sunDir) > 0) {
-			hit_pos = normalize(hit_pos) * data.rPlanet;
-			float2 lutUv = TrLutUvPlanet(hit_pos, sunDir);
-			lum += tr * data.groundAlbedo * TexTrLut.SampleLevel(SampTr, lutUv, 0).rgb;
-		}
+		float3 normal = normalize(hit_pos);
+		hit_pos = normal * data.rPlanet;
+		float ndl = saturate(dot(normal, sunDir));
+		float2 lutUv = TrLutUvPlanet(hit_pos, sunDir);
+		lum += tr * (data.groundAlbedo / Math::PI) * ndl * TexTrLut.SampleLevel(SampTr, lutUv, 0).rgb;
 	}
 #endif
 }
@@ -179,7 +188,7 @@ void rayMarch(
 	float horZenithCos = -0.414;
 	float zenithCos = lerp(horZenithCos, 1, uv.x);
 	float3 sunDir = float3(0, sqrt(1 - zenithCos * zenithCos), zenithCos);
-#else
+#elif LUTGEN == 2 || LUTGEN == 3
 	float3 rayDir = InvSkyViewLutUv(uv);
 	float3 sunDir = data.sunDir;
 	float3 pos = float3(0, 0, data.zCameraPlanet);
@@ -191,7 +200,7 @@ void rayMarch(
 	RWTexOutput[tid.xy] = float4(tr, 1.0);
 
 #elif LUTGEN == 1
-	const uint sqrtSamples = 4;
+	const uint sqrtSamples = MS_SQRT_SAMPLES;
 	const float rcpSqrtSamples = rcp(sqrtSamples);
 	const float rcpSamples = rcpSqrtSamples * rcpSqrtSamples;
 
@@ -221,5 +230,80 @@ void rayMarch(
 #elif LUTGEN == 3
 	float3 lum = 0;
 	rayMarch(pos, rayDir, tid.xy, outDims.z, tr, lum);
+
+#elif LUTGEN == 4
+	// Windowed cloud sun-transmittance LUT: x = sun zenith cosine mu over
+	// [cloudTrMuMin, cloudTrMuMax] (window tracks the sun per frame, mu < 0 is
+	// the afterglow/underlighting range), y = radius over [cloudTrRBot,
+	// cloudTrRTop]. Self-contained integrand: deliberately does NOT reuse
+	// rayMarch, so the dense preprocessor lattice above stays untouched.
+	float r = lerp(data.cloudTrRBot, data.cloudTrRTop, uv.y);
+	// The window may overshoot the physical domain; clamp so dir stays unit.
+	float mu = clamp(lerp(data.cloudTrMuMin, data.cloudTrMuMax, uv.x), -1.0, 1.0);
+	float3 pos = float3(0, 0, r);
+	float3 dir = float3(0, sqrt(saturate(1.0 - mu * mu)), mu);
+
+	tr = 0;  // ground-occluded default -- this encodes the rising terminator
+	if (RayIntersectSphere(pos, dir, 0, data.rPlanet) < 0.0) {
+		float tMax = RayIntersectSphere(pos, dir, 0, data.rAtmosphere);
+		const uint nsteps = 64;
+		float dt = tMax / nsteps;
+		float3 odSum = 0;
+		float3 p = pos + 0.5 * dt * dir;  // midpoint rule
+		[loop] for (uint i = 0; i < nsteps; ++i, p += dt * dir)
+		{
+			float rouRayleigh, rouAerosol, rouOzone;
+			SampleAtmosphere(
+				max(0.f, length(p) - data.rPlanet),
+				rouRayleigh, rouAerosol, rouOzone);
+			odSum += rouRayleigh * data.rayleighScatter +
+			         rouAerosol * (data.aerosolScatter + data.aerosolAbsorption) +
+			         rouOzone * data.ozoneAbsorption;
+		}
+		tr = exp(-dt * odSum);
+	}
+	RWTexOutput[tid.xy] = float4(tr, 1.0);
+
+#elif LUTGEN == 5
+	// Cloud ambient endpoint LUT. Texel 0 = cosine-weighted mean radiance
+	// (E/pi) over the LOWER hemisphere at the cloud layer bottom (upwelling:
+	// ground bounce + low-atmosphere in-scatter); texel 1 = same over the
+	// UPPER hemisphere at the layer top (downwelling sky). Reuses rayMarch in
+	// its LUTGEN 2 configuration (sun + both moons + psi_ms, march stops at
+	// the ground).
+	if (tid.x >= 2 || tid.y >= 1)
+		return;  // Dispatch(1, 1, 1)
+
+	const bool top = (tid.x == 1);
+	const float r = top ? data.cloudTrRTop : data.cloudTrRBot;
+	const float zSign = top ? 1.0 : -1.0;
+	const float3 pos = float3(0, 0, r);
+
+	const uint K = 64;
+	float3 sum = 0;
+	[loop] for (uint i = 0; i < K; ++i)
+	{
+		float z = (i + 0.5) / K;  // Fibonacci hemisphere
+		float rad = sqrt(saturate(1.0 - z * z));
+		float phi = i * 2.39996323;  // golden angle
+		float3 dir = float3(rad * cos(phi), rad * sin(phi), z * zSign);
+
+		float3 trRay = 1.0;
+		float3 lumRay = 0;
+		rayMarch(pos, dir, trRay, lumRay);
+
+		// ground bounce for rays that hit the planet (rayMarch clamps tMax to
+		// the ground but adds no bounce for this configuration)
+		float tGround = RayIntersectSphere(pos, dir, 0, data.rPlanet);
+		if (tGround > 0.0) {
+			float3 n = normalize(pos + tGround * dir);
+			float ndl = saturate(dot(n, data.sunDir));
+			float2 uvGround = TrLutUvPlanet(n * data.rPlanet, data.sunDir);
+			lumRay += trRay * data.groundAlbedo * (1.0 / Math::PI) * ndl *
+			          TexTrLut.SampleLevel(SampTr, uvGround, 0).rgb * data.sunlightColor;
+		}
+		sum += lumRay * z;  // cosine weight; |dir.z| == z
+	}
+	RWTexOutput[tid.xy] = float4(sum * (2.0 / K), 1.0);  // E/pi = (2/K) * sum(L*cos)
 #endif
 }
