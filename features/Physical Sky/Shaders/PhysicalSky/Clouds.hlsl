@@ -59,7 +59,10 @@ VertexOut main(uint vertexID : SV_VertexID)
 #		define CLOUD_SUN_OCTAVE_PHASE 1
 #	endif
 
-float GetCloudProfile(float3 SamplePos, float Height)
+// Shape params come in as arguments rather than straight from the cbuffer so
+// the weather front can blend them per sample between the outgoing and
+// incoming weather.
+float GetCloudProfile(float3 SamplePos, float Height, float coverage, float cloudType, float coverage2)
 {
 	// Scroll comes from CloudDataCB (settings-driven noise z offset).
 	float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0);  // Perlin-Worley + 3 octaves of worley
@@ -67,12 +70,12 @@ float GetCloudProfile(float3 SamplePos, float Height)
 	float3 Worley = NoiseSample.yzw;
 
 	float WorleyFBM = dot(Worley, float3(0.625, 0.25, 0.125));
-	float cloudCover = Coverage2;
+	float cloudCover = coverage2;
 
 	// Method used in frost nova
-	float layerDensity = GetDensityHeightGradientForPoint(SamplePos, CloudType, Height);
+	float layerDensity = GetDensityHeightGradientForPoint(SamplePos, cloudType, Height);
 	float Density = layerDensity * LerpLinearStepClamped(PerlinWorley, 0.3, 1.0, 0.0, 1.0);
-	float Coverage = pow(CloudCoverage, LerpLinearStep(Height, 0.7, 0.8, 1.0, 0.8));
+	float Coverage = pow(coverage, LerpLinearStep(Height, 0.7, 0.8, 1.0, 0.8));
 
 	float Erosion = LerpLinearStepClamped(WorleyFBM, Coverage, 1.0, 0.0, 1.0);
 	Erosion = LerpLinearStepClamped(Erosion, cloudCover, 1.0, 0.0, 1.0);
@@ -80,6 +83,27 @@ float GetCloudProfile(float3 SamplePos, float Height)
 	Density = LerpLinearStepClamped(Density, Erosion, 1.0, 0.0, 1.0);
 
 	return Density;
+}
+
+// Weight of the INCOMING weather at a sample position. During a weather
+// transition a soft front sweeps across the cloud field along the wind
+// direction; the incoming weather owns the upwind side (d < WeatherFrontPos),
+// so its clouds first appear at the horizon the wind blows from and advance
+// across the sky as the transition progresses. The edge is jittered by a
+// large-scale noise fetch so it reads as a ragged weather front rather than a
+// ruler line.
+float WeatherFrontWeight(float3 SamplePos, float3 cameraPos)
+{
+	if (WeatherBlendActive < 0.5)
+		return 0.0;
+
+	float d = dot(SamplePos.xy - cameraPos.xy, WindDir);
+	// Swapped coordinates decorrelate this fetch from the curl-vector use of
+	// the same texture in ApplyCloudDetail.
+	float jitter = CurlNoiseTex.SampleLevel(LinearRepeatSampler, SamplePos.yx * (HeightScale * 0.5), 0).x * 2.0 - 1.0;
+	d += jitter * WeatherFrontWidth * 0.5;
+
+	return LerpLinearStepClamped(d, WeatherFrontPos - WeatherFrontWidth * 0.5, WeatherFrontPos + WeatherFrontWidth * 0.5, 1.0, 0.0);
 }
 
 // Detail sculpting pass: runs AFTER the base density and carves
@@ -140,7 +164,7 @@ float ApplyCloudDetail(float BaseDensity, float3 SamplePos, float Height, float 
 // the unoccluded case, exactly like exiting through the top. The atmosphere
 // beyond the exit is already accounted for by the windowed sun-transmittance
 // LUT; the two are independent path segments composed by multiplication.
-float SunOpticalDepth(float3 samplePos, float3 sunDir, float extinction)
+float SunOpticalDepth(float3 samplePos, float3 sunDir, float extinction, float coverage, float cloudType, float coverage2)
 {
 	float od = 0.0;
 	float t = 0.0, dt = 0.05;  // km
@@ -153,7 +177,9 @@ float SunOpticalDepth(float3 samplePos, float3 sunDir, float extinction)
 		float h = LinearStep(bottomRadius, topRadius, p.z);
 		if (h < 0.0 || h > 1.0)
 			break;  // exited layer (through base OR top) -> unoccluded beyond
-		od += GetCloudProfile(p, h) * dt * extinction;
+		// The view sample's weather-blended shape params are reused: the
+		// front is km-scale, the march ~1.5 km.
+		od += GetCloudProfile(p, h, coverage, cloudType, coverage2) * dt * extinction;
 		dt *= 2.0;
 	}
 	return od;
@@ -378,7 +404,14 @@ PixelOut main(VertexOut input)
 		float3 SamplePos = ray.direction * (RayT.x + i * StepLength) + cameraPos;
 		float EnvelopeZ = GetEnvelopeRelativeZ(SamplePos, float2(bottomRadius, topRadius));
 
-		float CloudDensity = GetCloudProfile(SamplePos, EnvelopeZ);
+		// Weather front: blend the shape params spatially between the
+		// outgoing weather (cbuffer base values) and the incoming one.
+		float weatherW = WeatherFrontWeight(SamplePos, cameraPos);
+		float coverage = lerp(CloudCoverage, CoverageIn, weatherW);
+		float cloudType = lerp(CloudType, CloudTypeIn, weatherW);
+		float coverage2 = lerp(Coverage2, Coverage2In, weatherW);
+
+		float CloudDensity = GetCloudProfile(SamplePos, EnvelopeZ, coverage, cloudType, coverage2);
 		if (CloudDensity <= 0.0)
 			continue;
 
@@ -402,7 +435,7 @@ PixelOut main(VertexOut input)
 		// accumulates for the step).
 		float3 sunPhaseVis = 0;
 		if (Transmittance >= 0.01) {
-			float od = SunOpticalDepth(SamplePos, SharedData::physSkyData.sunDir, medium.extinction.x);
+			float od = SunOpticalDepth(SamplePos, SharedData::physSkyData.sunDir, medium.extinction.x, coverage, cloudType, coverage2);
 #	if CLOUD_SUN_OCTAVE_PHASE
 			sunPhaseVis = SunVisibilityMSPhased(od, phaseOctaves);
 #	else

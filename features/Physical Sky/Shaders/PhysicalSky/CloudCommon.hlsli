@@ -46,6 +46,18 @@ cbuffer CloudDataCB : register(b0)
 
 	float DetailFadeStart;  // km -- detail fades out over [start, end]; the 32^3
 	float DetailFadeEnd;    // texture has no mips, so it goes subpixel past this
+	// Weather front: during weather transitions the incoming weather's cloud
+	// shape sweeps in from the horizon along the wind (Clouds.hlsl,
+	// WeatherFrontWeight).
+	float2 WindDir;  // normalized xy; the direction the weather MOVES toward
+
+	float WeatherFrontPos;    // km along WindDir from the camera; incoming owns d < pos
+	float WeatherFrontWidth;  // km, soft blend band
+	float CoverageIn;         // incoming weather's shape params
+	float CloudTypeIn;
+
+	float Coverage2In;
+	float WeatherBlendActive;  // 0 = no front: base params everywhere
 	float2 cloudDataPad;
 };
 
