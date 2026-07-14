@@ -148,16 +148,33 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		sh2 skylightingSH = Skylighting::Sample(positionMS.xyz, normalWS);
 		float skylightingDiffuse = Skylighting::EvaluateDiffuse(skylightingSH, normalWS);
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBLOccluded(vanillaDALC, -normalWS, skylightingDiffuse) * albedo;
+
+		sh2RGB IrradianceProbe = Skylighting::SampleIrradianceProbe(positionMS.xyz);
+
+		// skylightingSH comes in using 4PI weight but clamped 0-1 output
+		//skylightingSH = lerp(SphericalHarmonics::UnitSH2(), skylightingSH, skylightingFadeOutFactor);
+		sh2 SkyAO = SphericalHarmonics::Product(SphericalHarmonics::EvaluateCosineLobe(normalWS), skylightingSH);
+		SkyAO = SphericalHarmonics::Product(SkyAO, SphericalHarmonics::HemisphereSH2());  // only consider things in upper hemi
+
+		sh2 BounceAO = SphericalHarmonics::EvaluateCosineLobe(float3(0, 0, -1));
+		float3 BounceIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, BounceAO);
+		BounceIrradiance = max(BounceIrradiance / Math::PI, 0);
+
+		float3 SkyIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, SkyAO);
+		SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
+
+		directionalAmbientColor = SkyIrradiance + BounceIrradiance;
+
 #		else
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(vanillaDALC, -normalWS) * albedo;
-#		endif
+#		endif  // SKYLIGHTING
 
 		directionalAmbientColor = Color::RGBToYCoCg(directionalAmbientColor);
 		directionalAmbientColor.x = MasksTexture[dispatchID.xy].z;
 		directionalAmbientColor = Color::YCoCgToRGB(directionalAmbientColor);
 		directionalAmbientColor = max(0, directionalAmbientColor);
 	} else
-#	endif
+#	endif  // IBL
 	{
 		directionalAmbientColor = Color::Ambient(max(0, SharedData::GetAmbient(normalWS)));
 		directionalAmbientColor *= albedo;
@@ -244,11 +261,12 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 			}
 
 			finalIrradiance = envSpecular + skySpecular;
-			//sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, ProbeArrayGrid, positionWS.xyz);
-			//finalIrradiance = SphericalHarmonics::Irradiance(probeSample, R);
+
+			//sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, positionWS.xyz, ProbeArrayGrid);
+			//finalIrradiance = SphericalHarmonics::Irradiance(probeSample, R); ///////////////////////////////////////////////////////////////////////
 
 		} else
-#	endif
+#	endif  // IBL
 		{
 			// Fallback without IBL: normalize-by-luminance with DALC
 #	if defined(INTERIOR)
@@ -296,12 +314,8 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 		finalIrradiance += ssgiIlSpecular;
 #	endif
-		//finalIrradiance = ImageBasedLighting::GetSkyIBL(R);
 
-		//sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, ProbeArrayGrid, positionWS.xyz);
-		//finalIrradiance = SphericalHarmonics::DiffuseRadiance(probeSample, R);
-
-		color += reflectance * finalIrradiance;
+		color += reflectance * finalIrradiance;  /////////////////////
 	}
 
 #endif
@@ -311,23 +325,29 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 #if defined(PHYSICAL_SKY)
 	if (SharedData::physSkyData.enabled && depth < 1 - 1e-6) {
 		const float4 apSample = PhysSky::SampleAp(normalize(positionWS.xyz), dispatchID.xy, length(positionWS.xyz), PhysSky::SampSv);
-		color.xyz = color.xyz * apSample.w + apSample.xyz;
+		//color.xyz = color.xyz * apSample.w + apSample.xyz;
 	}
 #endif
 
-#if defined(DEBUG)
+	if (depth < 0.99999999) {
+		//float factor = dot(float3(0,0,1), normalWS);
+		//factor = (factor + 1.0) * 0.5;
+		//float3 Normal = reflect(normalize(positionWS.xyz), normalWS); // dont use this for some reason
 
-	if (uv.x < 0.5 && uv.y < 0.5) {
-		color = color;
-	} else if (uv.x < 0.5) {
-		color = albedo;
-	} else if (uv.y < 0.5) {
-		color = normalVS;
-	} else {
-		color = glossiness;
+		//sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, positionWS.xyz, ProbeArrayGrid);
+
+		const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
+		float2 CoordsUV = (positionWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
+		CoordsUV = float2(CoordsUV.x, 1 - CoordsUV.y);
+		int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
+		sh2RGB probeSample = SphericalHarmonics::UnpackSH2RGB(Probe, ProbeArrayGrid);
+
+		//color = SphericalHarmonics::Irradiance(probeSample, normalWS); ///////////////////////////////////////////////////////////////////////
+
+		//color = ProbeArrayGrid.SampleLevel(LinearSampler, float3(CoordsUV, 0), 0);
 	}
 
-#endif
+	//color = diffuseColor;
 
 	MainRW[dispatchID.xy] = float4(color, 1.0);
 	NormalTAAMaskSpecularMaskRW[dispatchID.xy] = float4(GBuffer::EncodeNormalVanilla(normalVS), 0.0, 0.0);
