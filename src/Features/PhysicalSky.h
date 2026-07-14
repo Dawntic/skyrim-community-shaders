@@ -37,6 +37,7 @@ struct PhysicalSky final : public Feature
 	void RestoreDefaultSettings() override;
 	void LoadSettings(json& o_json) override;
 	void SaveSettings(json& o_json) override;
+	void RegisterWeatherVariables() override;
 
 	void DrawSettings() override;
 	void SettingsGeneral();
@@ -65,6 +66,13 @@ struct PhysicalSky final : public Feature
 	void CloudCompose();
 
 	// Clouds
+
+	// Weather-variable JSON keys shared between RegisterWeatherVariables and
+	// the horizon-front endpoint extraction -- the registry keys overrides by
+	// the variable's name.
+	static constexpr const char* kWeatherKeyCoverage = "Coverage";
+	static constexpr const char* kWeatherKeyCloudType = "Cloud Type";
+	static constexpr const char* kWeatherKeyCoverage2 = "Coverage 2";
 
 	bool par = false;
 

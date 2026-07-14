@@ -19,6 +19,8 @@
 #include "VolumetricShadows.h"
 
 #include "State.h"
+#include "WeatherManager.h"
+#include "WeatherVariableRegistry.h"
 
 #define I18N_KEY_PREFIX "feature.physical_sky."
 #include "Util.h"
@@ -183,6 +185,129 @@ void PhysicalSky::SaveSettings(json& o_json)
 	o_json = settings;
 	o_json["cloudSettings"] = cloudSettings;
 	o_json["cloudLighting"] = cloudLighting;
+}
+
+void PhysicalSky::RegisterWeatherVariables()
+{
+	auto* registry = WeatherVariables::GlobalWeatherRegistry::GetSingleton()->GetOrCreateFeatureRegistry(GetShortName());
+
+	// Registered defaults track the struct defaults so they cannot drift.
+	const Settings defaults{};
+	const CloudSettings cloudDefaults{};
+	const CloudLightingSettings lightingDefaults{};
+
+	// Sky scattering -- what makes a weather's sky look the way it does.
+	registry->RegisterVariable(std::make_shared<WeatherVariables::Float3Variable>(
+		"Rayleigh Scatter", "rayleighScatter",
+		"Air molecule scattering coefficients (megameter^-1). Drives sky blue and sunset red.",
+		&settings.rayleighScatter, defaults.rayleighScatter));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Rayleigh Falloff", "rayleighFalloff",
+		"Air density falloff with altitude (km^-1).",
+		&settings.rayleighFalloff, defaults.rayleighFalloff, 0.0f, 2.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::Float3Variable>(
+		"Aerosol Scatter", "aerosolScatter",
+		"Aerosol (Mie) scattering coefficients (megameter^-1). Haze and aureole.",
+		&settings.aerosolScatter, defaults.aerosolScatter));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::Float3Variable>(
+		"Aerosol Absorption", "aerosolAbsorption",
+		"Aerosol absorption coefficients (megameter^-1).",
+		&settings.aerosolAbsorption, defaults.aerosolAbsorption));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Aerosol Falloff", "aerosolFalloff",
+		"Aerosol density falloff with altitude (km^-1).",
+		&settings.aerosolFalloff, defaults.aerosolFalloff, 0.0f, 2.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Aerosol Anisotropy", "aerosolPhaseG",
+		"Mie phase anisotropy. Higher = tighter aureole around the sun.",
+		&settings.aerosolPhaseG, defaults.aerosolPhaseG, -1.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::Float3Variable>(
+		"Ozone Absorption", "ozoneAbsorption",
+		"Ozone absorption coefficients (megameter^-1). Keeps the zenith blue at twilight.",
+		&settings.ozoneAbsorption, defaults.ozoneAbsorption));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Ozone Mean Altitude", "ozoneAltitude",
+		"Center altitude of the ozone layer (km).",
+		&settings.ozoneAltitude, defaults.ozoneAltitude, 0.0f, 100.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Ozone Layer Thickness", "ozoneThickness",
+		"Thickness of the ozone layer tent profile (km).",
+		&settings.ozoneThickness, defaults.ozoneThickness, 0.0f, 50.0f));
+
+	// Cloud layer + shape. Coverage / Cloud Type / Coverage 2 additionally
+	// feed the horizon weather front, which blends them SPATIALLY during
+	// transitions instead of consuming the registry's time-lerp (the keys are
+	// shared via kWeatherKey*).
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Cloud Bottom Height", "bottomRadius",
+		"Cloud layer start height above sea level (km).",
+		&cloudSettings.bottomRadius, cloudDefaults.bottomRadius, 0.0f, 19.9f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Cloud Top Height", "topRadius",
+		"Cloud layer end height above sea level (km).",
+		&cloudSettings.topRadius, cloudDefaults.topRadius, 0.01f, 20.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		kWeatherKeyCoverage, "coverage",
+		"Cloud coverage. Blended in from the horizon during weather transitions.",
+		&cloudSettings.coverage, cloudDefaults.coverage, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Height Scale", "heightScale",
+		"Cloud noise scale.",
+		&cloudSettings.heightScale, cloudDefaults.heightScale, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		kWeatherKeyCloudType, "cloudType",
+		"Stratus/cumulus/cumulonimbus mix. Blended in from the horizon during weather transitions.",
+		&cloudSettings.cloudType, cloudDefaults.cloudType, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		kWeatherKeyCoverage2, "coverage2",
+		"Global coverage erosion. Blended in from the horizon during weather transitions.",
+		&cloudSettings.coverage2, cloudDefaults.coverage2, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Frequency", "detailFrequency",
+		"Billow/wisp feature frequency, relative to the base noise scale.",
+		&cloudSettings.detailFrequency, cloudDefaults.detailFrequency, 1.0f, 32.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Strength", "detailStrength",
+		"How much of the low-density shell the detail pass may erode.",
+		&cloudSettings.detailStrength, cloudDefaults.detailStrength, 0.0f, 0.9f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Curl Scale", "detailCurlScale",
+		"Curl lookup frequency, relative to the base noise scale.",
+		&cloudSettings.detailCurlScale, cloudDefaults.detailCurlScale, 0.0f, 8.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Curl Strength", "detailCurlStrength",
+		"Turbulent distortion of the detail lookup at the cloud base (km).",
+		&cloudSettings.detailCurlStrength, cloudDefaults.detailCurlStrength, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Fade Start", "detailFadeStart",
+		"Distance where detail sculpting starts fading out (km).",
+		&cloudSettings.detailFadeStart, cloudDefaults.detailFadeStart, 0.0f, 100.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Fade End", "detailFadeEnd",
+		"Distance where detail sculpting is fully gone (km).",
+		&cloudSettings.detailFadeEnd, cloudDefaults.detailFadeEnd, 0.0f, 100.0f));
+
+	// Cloud lighting tuning -- storms want darker, denser media.
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Sun Gain", "sunGain",
+		"Gain on the direct sun path.",
+		&cloudLighting.sunGain, lightingDefaults.sunGain, 0.0f, 8.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Ambient Gain", "ambientGain",
+		"Gain on the ambient term.",
+		&cloudLighting.ambientGain, lightingDefaults.ambientGain, 0.0f, 2.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Octave Extinction Atten", "octaveAttenA",
+		"Wrenninge octave extinction attenuation: how deep sunlight glows into the cloud.",
+		&cloudLighting.octaveAttenA, lightingDefaults.octaveAttenA, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Cloud Scattering", "cloudScattering",
+		"Cloud medium scattering coefficient (km^-1).",
+		&cloudLighting.cloudScattering, lightingDefaults.cloudScattering, 0.0f, 100.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Cloud Extinction", "cloudExtinction",
+		"Cloud medium extinction coefficient (km^-1).",
+		&cloudLighting.cloudExtinction, lightingDefaults.cloudExtinction, 0.01f, 100.0f));
 }
 
 void PhysicalSky::DrawSettings()
