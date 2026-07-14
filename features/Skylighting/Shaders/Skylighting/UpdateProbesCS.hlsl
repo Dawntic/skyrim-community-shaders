@@ -33,10 +33,27 @@ SamplerComparisonState comparisonSampler : register(s0);
 
 	if (all(occlusionUV > 0) && all(occlusionUV < 1)) {
 		uint accumFrames = isValid ? (outAccumFramesArray[dtid] + 1) : 1;
-		float occlusionDepth = srcOcclusionDepth.SampleCmpLevelZero(comparisonSampler, occlusionUV, 0);
 		float visibility = srcOcclusionDepth.SampleCmpLevelZero(comparisonSampler, occlusionUV, cellCentreOS.z);
 
-		sh2 occlusionSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(settings.OcclusionDir.xyz), visibility * 4.0 * Math::PI);  // 4 pi from monte carlo
+		//float Zenith = 90;
+		//float rcpPdf = Math::PI * sin(radians(Zenith)) / max(settings.OcclusionDir.z, 0.05);
+		//sh2 occlusionSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(settings.OcclusionDir.xyz), visibility * rcpPdf);
+		sh2 occlusionSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(settings.OcclusionDir.xyz), visibility * 4 * Math::PI);
+		//occlusionSH = SphericalHarmonics::Add(occlusionSH, SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(-settings.OcclusionDir.xyz), visibility * 2 * Math::PI));
+
+		const float Y00 = 0.28209479f;
+		const float Y1 = 0.48860251f;
+		float c0 = occlusionSH.x;
+		float3 c1 = occlusionSH.yzw;
+		float l1 = length(c1);
+		float dcVal = Y00 * c0;
+		float amp = Y1 * l1;                         // reconstruction's linear amplitude
+		float maxAllowed = min(1.0 - dcVal, dcVal);  // symmetric headroom around dcVal
+		if (amp > maxAllowed && l1 > 1e-6) {
+			float scale = max(maxAllowed, 0) / amp;
+			occlusionSH.yzw = c1 * scale;
+		}
+
 		if (isValid) {
 			float lerpFactor = rcp(accumFrames);
 			sh2 prevProbeSH = unitSH;
@@ -79,7 +96,7 @@ RWTexture2DArray<float4> ProbeArray : register(u0);
 
 static const float GOLDEN_ANGLE = 2.39996322972865332;  // PI * (3 - sqrt(5))
 
-#	define SAMPLES 64      //256
+#	define SAMPLES 256     //256
 #	define RAY_SAMPLES 16  //128
 
 float2 LinearStep(float2 edge0, float2 edge1, float2 x)
@@ -103,10 +120,36 @@ float3 SampleSkyRadiance(float3 rayDir)
 // domain: xy[-1, 1] z[1-ap, 1]
 float3 FibonacciHemisphere(float i, float n, float ap)
 {
-	float cosT = lerp(1.0, 1 - ap, (i + 0.5) / n);  // uniform in solid angle within the cone
+	float cosT = lerp(1.0, 1 - ap, (i + 0.5) / n);  // ap == 2 gives full sphere
 	float3 Out = float3(0, 0, cosT);
 	sincos(i * GOLDEN_ANGLE, Out.y, Out.x);
 	Out.xy *= sqrt(saturate(1.0 - cosT * cosT));
+	return Out;
+}
+
+// Uniform (area-weighted) hemisphere/sphere sampler, stratified via Hammersley.
+// ap == 1 -> hemisphere, solid angle 2PI.  ap == 2 -> full sphere.
+// domain: xy[-1,1], z[1-ap, 1].
+float3 UniformHemisphere(float i, float n, float ap)
+{
+	// radical inverse base 2 (van der Corput) for the second dimension
+	uint bits = uint(i);
+	bits = (bits << 16) | (bits >> 16);
+	bits = ((bits & 0x55555555u) << 1) | ((bits & 0xAAAAAAAAu) >> 1);
+	bits = ((bits & 0x33333333u) << 2) | ((bits & 0xCCCCCCCCu) >> 2);
+	bits = ((bits & 0x0F0F0F0Fu) << 4) | ((bits & 0xF0F0F0F0u) >> 4);
+	bits = ((bits & 0x00FF00FFu) << 8) | ((bits & 0xFF00FF00u) >> 8);
+	float u2 = float(bits) * 2.3283064365386963e-10;  // / 2^32
+
+	float u1 = (i + 0.5) / n;  // stratified first dim
+
+	float cosT = lerp(1.0, 1.0 - ap, u2);  // uniform in z -> area-uniform
+	float phi = u1 * Math::PI * 2;
+
+	float3 Out;
+	sincos(phi, Out.y, Out.x);
+	Out.xy *= sqrt(saturate(1.0 - cosT * cosT));
+	Out.z = cosT;
 	return Out;
 }
 
@@ -236,7 +279,7 @@ struct HorizonData
 };
 
 // azDir = normalize(SampleDir.xy + 1e-5)
-void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float wallD)
+void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDist)
 {
 	// cosine-power hat weights against the 8 baked azimuths
 	// CARD: E(+x) S(+y) W(-x) N(-y)   DIAG: (+ +)(- +)(- -)(+ -)
@@ -248,61 +291,16 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float wallD)
 
 	float invSum = rcp(dot(wC, (float4)1.0) + dot(wD, (float4)1.0) + 1e-6);
 	sinH = (dot(H.SinC, wC) + dot(H.SinD, wD)) * invSum;
-	wallD = (dot(H.WallC, wC) + dot(H.WallD, wD)) * invSum;
-}
-
-static const float2 AZ_DIR[8] = {
-	float2(1, 0), float2(0, 1), float2(-1, 0), float2(0, -1),  // CARD: E S W N
-	float2(0.70710678, 0.70710678), float2(-0.70710678, 0.70710678),
-	float2(-0.70710678, -0.70710678), float2(0.70710678, -0.70710678)  // DIAG
-};
-// SinH[i], Near[i], Far[i] laid out card(0..3) then diag(0..3), matching the bake.
-void InterpAzimuth(float2 azDir, float SinH[8], float Near[8], float Far[8], out float sinH, out float domNear, out float domFar)
-{
-	const float k = 8.0;  // hat sharpness; higher = more local
-	float wSum = 0.0;     // Σ w              (direction blend)
-	float dwSum = 0.0;    // Σ w·sinH         (distance blend)
-	sinH = 0.0;
-	domNear = 0.0;
-	domFar = 0.0;
-
-	[unroll] for (int i = 0; i < 8; ++i)
-	{
-		float w = pow(saturate(dot(azDir, AZ_DIR[i])), k);  // one-sided lobe
-		wSum += w;
-		sinH += w * SinH[i];
-
-		float dw = w * SinH[i];  // open azimuths (SinH~0) don't pull distances down
-		dwSum += dw;
-		domNear += dw * Near[i];
-		domFar += dw * Far[i];
-	}
-
-	float invW = rcp(max(wSum, 1e-5));
-	float invDW = rcp(max(dwSum, 1e-5));
-	sinH *= invW;
-	domNear *= invDW;
-	domFar *= invDW;
+	OcclDist = (dot(H.WallC, wC) + dot(H.WallD, wD)) * invSum;
 }
 
 #	define MIN_SAMPLE_RADIUS 10  // in texels
 
 // Fix albedo and normal texture shape/size
+// Some sections maybe picking up way more snow than others? - comes from GroundLight - probably too few sampling in SH
 
-// Create high res heightmap using raycast
-// Create sampling method for terrain
-// Make occluded amibent darker on terrain radiance map - maybe
-
-// Improve cloud rendering
 // Add volumetric effects to probe grid
-
-float3 UniformHemisphereSample(float2 u)
-{
-	float z = u.x;  // uniform in [0, 1]
-	float r = sqrt(max(0.0, 1.0 - z * z));
-	float phi = 2.0 * 3.14159265 * u.y;
-	return float3(r * cos(phi), r * sin(phi), z);
-}
+// Add AO control
 
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
@@ -314,98 +312,101 @@ float3 UniformHemisphereSample(float2 u)
 
 	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvGridTexSize.xy;
 
-	float WorldHeight = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0);  // * 65535;
-																			//WorldHeight = (WorldHeight - 32767) * 8.0;
+	float WorldHeight = HeightTex.SampleLevel(LinearSampler, float2(CoordsUV.x, 1.0 - CoordsUV.y), 0);  // * 65535;
+																										//WorldHeight = (WorldHeight - 32767) * 8.0;
 
 	float3 WorldPos = float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, float2(CoordsUV.x, 1 - CoordsUV.y)), WorldHeight);
 
+	//debug
+	//ProbeArray[ThreadID.xyz] = NormalTex.SampleLevel(LinearSampler, CoordsUV, 0);//float4(GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV, 0).xyz, 1) * 6;//
+	//float2 PlayerUV = LinearStep(settings.GridBounds.xy, settings.GridBounds.zw, FrameBuffer::CameraPosAdjust.xy);
+	//	   PlayerUV.y = 1.0 - PlayerUV.y;
+	//CoordsUV = PlayerUV;
+	//WorldHeight = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0);
+
 	float4 BNSample = BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);
-	float3 BentNormalDir = float3(0, 0, 1);  //BNSample.xyz * 2.0 - 1.0; // - add bn back later
-	float SkyAperture = BNSample.w;          // AO
+	float3 BentNormalDir = BNSample.xyz * 2.0 - 1.0;  // - add bn back later
+	float SkyAperture = BNSample.w;                   // AO
 
 	// Cone Tracing
 	float SkySolidAngle = 2.0 * Math::PI * SkyAperture;
 	const float SkyWeight = SkySolidAngle / SAMPLES;
 
-	float GroundAperture = 1.0;                                // + (1.0 - SkyAperture);
+	float GroundAperture = 1.0 + (1.0 - SkyAperture);
 	float GroundSolidAngle = 2.0 * Math::PI * GroundAperture;  // add the part of upper hemisphere thats occluded
 	const float GroundWeight = GroundSolidAngle / SAMPLES;
 
 	float3x3 BentTBN = BuildTBN(BentNormalDir);
 
-	//debug
-	ProbeArray[ThreadID.xyz] = NormalTex.SampleLevel(LinearSampler, CoordsUV, 0);  //float4(GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV, 0).xyz, 1) * 6;//
-	float2 PlayerUV = LinearStep(settings.GridBounds.xy, settings.GridBounds.zw, FrameBuffer::CameraPosAdjust.xy);
-	PlayerUV.y = 1.0 - PlayerUV.y;
-	CoordsUV = PlayerUV;
-	WorldHeight = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0);
+	HorizonData HData;
+	HData.SinC = Card1.SampleLevel(LinearSampler, CoordsUV, 0);
+	HData.SinD = Diag1.SampleLevel(LinearSampler, CoordsUV, 0);
+	HData.WallC = Card2.SampleLevel(LinearSampler, CoordsUV, 0);
+	HData.WallD = Diag2.SampleLevel(LinearSampler, CoordsUV, 0);
 
-	float SinH[8], Near[8], Far[8];
-	float4 hCard = CardinalOcclusionTex.SampleLevel(LinearSampler, CoordsUV, 0);
-	float4 hDiag = CardinalOcclusionDiagTex.SampleLevel(LinearSampler, CoordsUV, 0);
-	float4 nCard = Card1.SampleLevel(LinearSampler, CoordsUV, 0);
-	float4 nDiag = Diag1.SampleLevel(LinearSampler, CoordsUV, 0);
-	float4 fCard = Card2.SampleLevel(LinearSampler, CoordsUV, 0);  // far
-	float4 fDiag = Diag2.SampleLevel(LinearSampler, CoordsUV, 0);
-
-	[unroll] for (int j = 0; j < 4; ++j)
-	{
-		SinH[j] = hCard[j];
-		SinH[j + 4] = hDiag[j];
-		Near[j] = nCard[j];
-		Near[j + 4] = nDiag[j];
-		Far[j] = fCard[j];
-		Far[j + 4] = fDiag[j];
-	}
-
-	// old
-	//float MeanD[8];
-	//[unroll] for (int j = 0; j < 4; ++j) { MeanD[j] = nCard[j]; MeanD[j+4] = fCard[j]; }
-
-	static const float ProbeHeightOffset = 100;
+	static const float ProbeHeightOffset = 100;  // world units
 	float ProbeHeight = WorldHeight + ProbeHeightOffset;
-	float FloorMax = 2500;        // 350m
-	static const float RLim = 5;  // texels
+	float MaxSampleDist = 25000;
+	static const float MinSampleDistSq = 5000;
 
 	float2 Extent = abs(settings.GridBounds.xy) + settings.GridBounds.zw;  // pull out later
 	float2 WorldUnitsPerTexel = Extent / 1024;                             // remove 1024 later
 
 	sh2RGB Output = SphericalHarmonics::Zero2RGB();
 	for (int i = 0; i < SAMPLES; ++i) {
-		float3 SkySampleDir = FibonacciHemisphere(i, SAMPLES, SkyAperture);
+		float3 SkySampleDir = UniformHemisphere(i, SAMPLES, SkyAperture);
 		SkySampleDir = mul(SkySampleDir, BentTBN);
 
-		float3 SkyRadiance = SampleSkyRadiance(SkySampleDir) * 0.1;
+		float3 SkyRadiance = SampleSkyRadiance(SkySampleDir) * 4.0;  // CHANGED
 
 		float cloudTr = 1;
 		float3 cloudInscattering = 0;
 		RaymarchCloud(SkySampleDir, WorldPos, cloudInscattering, cloudTr);
-		cloudInscattering *= 0.1;
+		//cloudInscattering *= 0.1;
 
-		SkyRadiance = SkyRadiance * cloudTr + cloudInscattering;
+		SkyRadiance = SkyRadiance;  // * cloudTr + cloudInscattering;
 
 		sh2RGB SkySH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(SkySampleDir), SkyRadiance * SkyWeight);
-		//Output = SphericalHarmonics::Add(Output, SkySH);
+		Output = SphericalHarmonics::Add(Output, SkySH);
 
-		float3 GroundSampleDir = FibonacciHemisphere(i, SAMPLES, GroundAperture);
+		float3 GroundSampleDir = UniformHemisphere(i, SAMPLES, GroundAperture);
+		GroundSampleDir.z = -GroundSampleDir.z;
 
-		/*
-static const float2 AZ_DIR[8] = {
-    float2( 1, 0), float2( 0, 1), float2(-1, 0), float2( 0,-1),        // CARD: E S W N
-    float2( 0.70710678, 0.70710678), float2(-0.70710678, 0.70710678),
-    float2(-0.70710678,-0.70710678), float2( 0.70710678,-0.70710678)   // DIAG
-};
-*/
-		int slot = 0;
-		float2 azDir = normalize(AZ_DIR[slot]);  // <-- set your direction here
-		float DeltaR = Far[slot];                //50000.0;                    // raw world-unit distance you want
-		DeltaR /= WorldUnitsPerTexel;
+		float sinH, OcclDist;
+		InterpAzimuth(GroundSampleDir.xy, HData, sinH, OcclDist);  //only needed for OcclDist eh
 
-		float2 EnvOffset = float2(azDir.x, -azDir.y) * DeltaR * rcp(GroundRadianceTexSize);
-		//BounceRadiance = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV + EnvOffset, 0).xyz;
+		float GrSin = GroundSampleDir.z;
+		float GrCos = sqrt(1 - GrSin * GrSin);
 
-		ProbeArray[int3((CoordsUV + EnvOffset) * settings.GridTexSize.xy, 0)] = float4(1.0.xxx * 5, 1);
+		float RayDist = min(ProbeHeight * GrCos / max(-GrSin, 1e-6), MaxSampleDist);
+		float DeltaR = (GrSin > 0.0) ? OcclDist : RayDist;
+		DeltaR = sqrt(DeltaR * DeltaR + MinSampleDistSq) / WorldUnitsPerTexel;
+
+		float2 EnvOffset = float2(GroundSampleDir.x, -GroundSampleDir.y) * DeltaR * rcp(GroundRadianceTexSize);
+		float3 BounceRadiance = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV + EnvOffset, 0).xyz;  // * 0.6
+
+		// The issue is if amb normal is pointing to ground then you get stronger ground light so overhangs are brighter...
+		sh2RGB GroundSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(GroundSampleDir), BounceRadiance * GroundWeight);
+		Output = SphericalHarmonics::Add(Output, GroundSH);
+
+		// debug
+		//ProbeArray[int3((CoordsUV + EnvOffset) * settings.GridTexSize.xy, 0)] = float4(1.0.xxx * 1, 1);
 	}
+
+	//Output = SphericalHarmonics::Add(Output, DirOcclusionRGB);
+
+	// debug
+	//float3 BounceRadianceA = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV, 0);
+	//ProbeArray[ThreadID.xyz] = float4(BounceRadianceA.xyz, 1);
+	//ProbeArray[int3(PlayerUV * settings.GridTexSize.xy, 0)] = 1.0.xxxx;
+	//float2 PlayerUV = LinearStep(settings.GridBounds.xy, settings.GridBounds.zw, FrameBuffer::CameraPosAdjust.xy);
+	////PlayerUV.y = 1.0 - PlayerUV.y;
+	//float sdf = length(CoordsUV - PlayerUV) - 0.008;
+	//float sdf = length(WorldPos.xy - FrameBuffer::CameraPosAdjust.xy) - 2000;
+	//if(sdf <= 0)
+	//ProbeArray[ThreadID.xyz] = 1.0.xxxx;
+
+	SphericalHarmonics::PackSH2RGB(Output, ThreadID.xy, ProbeArray);
 }
 #endif
 
@@ -421,6 +422,7 @@ Texture2D CardinalOcclusionTex : register(t3);
 Texture2D CardinalOcclusionDiagTex : register(t4);
 Texture2D AlbedoTex : register(t5);
 Texture2D NormalTex : register(t6);
+Texture2D TexTrLut : register(t7);
 
 RWTexture2D<float4> TerrainRelight : register(u0);
 
@@ -433,6 +435,22 @@ float3 SampleSkyRadiance(float3 rayDir)
 	v = max(v, 0.01);
 
 	return SkyViewLUTTex.SampleLevel(LinearWrapSampler, frac(float2(u, v)), 0).rgb;
+}
+
+float3 SampleTr(float3 sunDir)
+{
+	SharedData::PhysSkyData data = SharedData::physSkyData;
+
+	if (data.trMix < 1e-8)
+		return 1;
+
+	const float2 lutUv = PhysSky::TrLutUv(data.zCameraPlanet, sunDir.z);
+	float3 tr = TexTrLut.SampleLevel(LinearWrapSampler, lutUv, 0).rgb;
+	if (sunDir.z <= -0.414)
+		tr = 0;
+	tr = lerp(1, tr, data.trMix);
+
+	return tr;
 }
 
 float GetDirOcclusion(float2 PxCoords)
@@ -456,6 +474,13 @@ float GetDirOcclusion(float2 PxCoords)
 	return saturate(Visibility);
 }
 
+#	define DIR_LIGHT_MULT 1  // 0.2
+#	define SKY_MULT 1
+#	define ALBEDO_MULT 1.9  //account for dark tex - can maybe remove later
+
+#	define AO_SCALE 1
+#	define MIN_AMBIENT_LUM 0.1
+
 // todo: fix Albedo map - wrong scale
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
@@ -468,176 +493,68 @@ float GetDirOcclusion(float2 PxCoords)
 
 	float2 CoordsUV = (ThreadID.xy + 0.5) * InvTexSize;
 
-	float WorldHeight = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0);  // * 65535;
-																			//WorldHeight = (WorldHeight - 32767) * 8.0;
-
+	float WorldHeight = HeightTex.SampleLevel(LinearSampler, float2(CoordsUV.x, 1.0 - CoordsUV.y), 0);
 	float3 WorldPos = float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, float2(CoordsUV.x, 1.0 - CoordsUV.y)), WorldHeight);
 
 	float4 BentNormal = BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);
-	float3 BentNormalDir = BentNormal.xyz * 2.0 - 1.0;
-	float SkyAO = BentNormal.w;
+	//float3 BentNormalDir = BentNormal.xyz * 2.0 - 1.0;
+	float BentNormalAO = BentNormal.w;
+	float SkyAO = pow(BentNormalAO, AO_SCALE);
 	float3 SkySampleDir = float3(0, 0, 1);  // looks better than using bent normal
 
-	float3 Temp = 0.5.xxx;
 	float3 NormalWS = NormalTex.SampleLevel(LinearSampler, CoordsUV, 0) * 2 - 1;
-	float3 Albedo = AlbedoTex.SampleLevel(LinearSampler, CoordsUV, 0);
-	Albedo = Color::SkyrimGammaToLinear(Albedo) * Color::VanillaDiffuseColorMult();  // doesnt do anything unless ll is on
+	float3 Albedo = AlbedoTex.SampleLevel(LinearSampler, CoordsUV, 0) * ALBEDO_MULT;
+	//Albedo = Color::SkyrimGammaToLinear(Albedo) * Color::VanillaDiffuseColorMult(); // looks weird - surely lod isnt linear tho
+	//Albedo = Color::SrgbToLinear(Albedo);
+	float3 EnvAlbedo = AlbedoTex.SampleLevel(LinearSampler, CoordsUV, 4) * ALBEDO_MULT;
+	//EnvAlbedo = Color::SkyrimGammaToLinear(EnvAlbedo) * Color::VanillaDiffuseColorMult();
+	//EnvAlbedo = Color::SrgbToLinear(EnvAlbedo);
 
-	// Ambient lighting
-	float NormalWeight = (1.0 + saturate(dot(NormalWS, SkySampleDir))) * 0.5;  // 0 = ground, 1 = sky
+	// Ambient lighting //
+	float NormalWeight = (1.0 + saturate(dot(NormalWS, SkySampleDir))) * 0.5;
 
 	// Sky
 	float SkyWeight = NormalWeight * SkyAO;
 
 	float3 SkyRadiance = SampleSkyRadiance(SkySampleDir);
+	//float3 SkyRadianceUp = SampleSkyRadiance(float3(0,0,1));
 	float3 CloudRadiance = float3(0.5, 0.5, 0.5);  // no fast src for this yet
 	float CloudShadow = 1;                         //CloudShadows::GetCloudShadowMult(WorldPos, LinearSampler);
 	float3 SkyAmbient = lerp(CloudRadiance, SkyRadiance, CloudShadow);
 
 	float3 SkyLight = SkyAmbient * SkyWeight;
 
-	// Ground Bounce
-	float BounceWeight = SkyWeight;  //(1.0 + 1.0 - SkyAO); // add unoccluded part of upper hemisphere
-	//BounceWeight += 1.0 - NormalWeight; // more bounce when N = ground
-	BounceWeight *= Color::RGBToLuminance(SkyRadiance * Math::PI);  // approx sky irradiance otherwise ground is always lit
+	// Ground multi bounce approx
+	float BounceWeight = (1.0 + 1.0 - BentNormalAO);                                  // add unoccluded part of upper hemisphere
+	BounceWeight += 1.0 - NormalWeight;                                               // more bounce when N = ground
+	BounceWeight *= saturate(Color::RGBToLuminance(SkyRadiance * SkyAO * Math::PI));  // approx sky irradiance otherwise ground is always lit
 
-	float3 EnvAlbedo = AlbedoTex.SampleLevel(LinearSampler, CoordsUV, 4);
-	EnvAlbedo = Color::SkyrimGammaToLinear(EnvAlbedo) * Color::VanillaDiffuseColorMult();
+	float3 GroundLight = EnvAlbedo * BounceWeight;  // sky radiance should be from 0,0,1 here
 
-	float3 GroundLight = EnvAlbedo * BounceWeight;  // sky radiance should be from 0,0,1 here. idk about including cloud radiance
+	float3 AmbientLighting = SKY_MULT * SkyLight + GroundLight;
+	float lum = Color::RGBToLuminance(AmbientLighting);
+	float mult = MIN_AMBIENT_LUM / lum;
+	AmbientLighting *= max(1, mult);
 
-	float3 AmbientLighting = GroundLight + SkyLight;
-
-	// Direct lighting
+	// Direct lighting //
 	float SunShadow = GetDirOcclusion(ThreadID.xy);
 	float Shadow = SunShadow * max(CloudShadow, 0.5);  // 0.5 lim so cloud doesn't stomp dir light
 	float NdotL = saturate(dot(NormalWS, SharedData::DirLightDirection));
-	float3 DirLighting = SharedData::DirLightColor.xyz * Shadow * NdotL * BRDF::Diffuse_Lambert();
+
+	float llDirLightMult = SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear && !SharedData::InInterior ? SharedData::linearLightingSettings.dirLightMult : 1.0;
+	float3 DirLightColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * llDirLightMult;
+	DirLightColor *= SampleTr(normalize(SharedData::DirLightDirection.xyz));
+	//DirLightColor = float3(1,1,1) * 3;
+	// Not const seems inconsisent
+	DirLightColor = clamp(DirLightColor, 0, 1);
+
+	float3 DirLighting = DIR_LIGHT_MULT * DirLightColor * Shadow * NdotL * BRDF::Diffuse_Lambert();
 
 	float3 Lighting = (AmbientLighting + DirLighting);
 	Lighting *= Albedo;
 
+	//Lighting = Color::LinearToSkyrimGamma(Lighting);
+
 	TerrainRelight[ThreadID.xy] = float4(Lighting, 1);
 }
 #endif
-
-//float3 EnvAmbient = EnvAlbedo;// * (1.0 + 1.0 - SkyAO); // fake bounce ig
-//AmbientLighting = lerp(EnvAmbient, SkyAmbient, NormalWeight); //SkyAmbient + EnvAmbient;
-//AmbientLighting = lerp(GroundLight, SkyAmbient, 1) * 2;
-
-//EnvAmbient = 2 + AlbedoTex.SampleLevel(LinearSampler, CoordsUV, 4) * (1.0 + 1.0 - SkyAO); // fake bounce ig
-//NormalWeight = (1.0 + saturate(dot(NormalWS, SkySampleDir))) * 0.5;
-//AmbientLighting = lerp(EnvAmbient, SkyAmbient, NormalWeight); //SkyAmbient + EnvAmbient;
-
-//float sdf = length(WorldPos - FrameBuffer::CameraPosAdjust.xy) - 2000;
-//if(sdf <= 0)
-//	TerrainRelight[ThreadID.xy] = 5.0.xxxx;
-
-// sin = 1.0 is vertical wall
-// Store first texel in dir x with sin >= 0.7ish only if the next texel is decreasing otherwise store max since thats the max height of hill
-
-/*
-
-uint Hash(uint x)
-{
-    x ^= x >> 16; x *= 0x7feb352du;
-    x ^= x >> 15; x *= 0x846ca68bu;
-    x ^= x >> 16;
-    return x;
-}
-
-uint CardinalIndex(float2 dir)
-{
-    if (abs(dir.x) >= abs(dir.y))
-        return dir.x >= 0.0 ? 0 : 2;   // +X / -X
-    else
-        return dir.y >= 0.0 ? 1 : 3;   // +Y / -Y
-}
-
-static const float2 CARD[4] = { float2(1, 0), float2(0, 1), float2(-1, 0), float2(0, -1) };
-static const float2 DIAG[4] = { float2(0.70710678f, 0.70710678f), float2(-0.70710678f, 0.70710678f),
-                                 float2(-0.70710678f, -0.70710678f), float2(0.70710678f, -0.70710678f) };
-
-float4 BuildHorizonBasis(float2 dirs[4], float ax, float ay, float sharpness)
-{
-	float w[4];
-	float sum = 0.f;
-	[unroll]
-	for (int k = 0; k < 4; ++k) {
-		float d = max(0.f, ax * dirs[k].x + ay * dirs[k].y); // project azimuth onto bin
-		d = pow(d, sharpness);                               // 1 = linear cosine blend
-		w[k] = d;
-		sum += d;
-	}
-	float inv = sum > 1e-5f ? 1.f / sum : 0.f; // 0 weights when sun is overhead -> occVal 0 -> lit
-	return float4(w[0] * inv, w[1] * inv, w[2] * inv, w[3] * inv);
-}
-
-void BuildOcclusionBasis(float3 lightDir, out float4 basis0, out float4 basis1, float sharpness = 1.f)
-{
-	float hl = sqrt(lightDir.x * lightDir.x + lightDir.y * lightDir.y); // azimuth length
-	float ax = hl > 1e-5f ? lightDir.x / hl : 0.f;
-	float ay = hl > 1e-5f ? lightDir.y / hl : 0.f;
-	basis0 = BuildHorizonBasis(CARD, ax, ay, sharpness);
-	basis1 = BuildHorizonBasis(DIAG, ax, ay, sharpness);
-}
-float GetDirOcclusion(float2 PxCoords){
-	float Visibility;
-
-	float4 Card = CardinalOcclusionTex[PxCoords];
-    float4 Diag = CardinalOcclusionDiagTex[PxCoords];
-
-	// Horizon height in sun direction
-	float4 basis0 = SharedData::skylightingSettings.Basis0;
-	float4 basis1 = SharedData::skylightingSettings.Basis1;
-    float Horizon = max(dot(Card, basis0), dot(Diag, basis1));
-
-	float Scale = 15.0;
-	float Bias = 0.12;
-	bool belowHorizon = (Horizon > SharedData::DirLightDirection.z);
-	Visibility = saturate(abs(SharedData::DirLightDirection.z - Horizon) * Scale + Bias);
-    Visibility = belowHorizon ? 0.5 * smoothstep(0.0, 1.0, 1.0 - Visibility) : 0.5 + smoothstep(0.0, 1.0, Visibility);
-
-	return saturate(Visibility);
-}
-
-float SinToTan(float s)
-{
-	return s / sqrt(max(1.0 - s * s, 1e-6));
-}
-
-// Reconstruct approx distance (game units) to the horizon-defining occluder.
-// DirIdx: 0-3 -> HorizonTex0 (cardinals), 4-7 -> HorizonTex1 (diagonals)
-float ReconstructHorizonDist(float2 CoordsUV, float2 Dir, uint DirIdx)
-{
-	float2 InvPxSize = 1.0 / float2(3808, 3008);
-	float TexelWorldSize = 128;
-	float2 StepUV = Dir * InvPxSize; // one texel toward the occluder
-
-	// stored horizon sin at current texel and one texel along Dir
-	float4 h0 = (DirIdx < 4) ? CardinalOcclusionTex.SampleLevel(LinearSampler, CoordsUV, 0) : CardinalOcclusionDiagTex.SampleLevel(LinearSampler, CoordsUV, 0);
-	float4 h1 = (DirIdx < 4) ? CardinalOcclusionTex.SampleLevel(LinearSampler, CoordsUV + StepUV, 0) : CardinalOcclusionDiagTex.SampleLevel(LinearSampler, CoordsUV + StepUV, 0);
-	uint c = DirIdx & 3;
-
-	float t  = SinToTan(h0[c]);
-	float tn = SinToTan(h1[c]);
-
-	// local terrain slope in Dir (world units per world step)
-	float H0 = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0) * 65535;
-		  H0 = (H0 - 32767) * 8.0;
-	float H1 = HeightTex.SampleLevel(LinearSampler, CoordsUV + StepUV, 0) * 65535;
-		  H1 = (H1 - 32767) * 8.0;
-
-	float gp = (H1 - H0) / TexelWorldSize;
-	float dtdx = (tn - t) / TexelWorldSize;
-
-	// d = (t - g') / (dt/dx); reject flat/degenerate/behind cases
-	if (abs(dtdx) < 1e-6)
-		return -1.0;
-
-	float d = (t - gp) / dtdx;
-
-	return (d > 0.0) ? d : -1.0;
-}
-
-*/

@@ -11,7 +11,7 @@ namespace Skylighting
 {
 #if defined(SKYLIGHTING_PROBE_REGISTER)
 	Texture3D<sh2> SkylightingProbeArray : register(SKYLIGHTING_PROBE_REGISTER);
-	Texture2DArray<float4> SparseProbeArray : register(SKYLIGHTING_PROBE_REGISTER);
+	Texture2DArray<float4> SparseProbeArray : register(t51);
 #elif defined(PSHADER)
 	Texture3D<sh2> SkylightingProbeArray : register(t50);
 	Texture2DArray<float4> SparseProbeArray : register(t51);
@@ -77,61 +77,20 @@ namespace Skylighting
 	}
 	//#endif
 
-	//#if defined(PSHADER) || defined(SKYLIGHTING_PROBE_REGISTER)
-	sh3 SampleSparseProbeGrid(SharedData::SkylightingSettings settings, float3 CoordsWS)
+	sh2RGB SampleIrradianceProbe(float3 WorldPosition)
 	{
-		sh3 outputSH = SphericalHarmonics::UnitSH3();
+		const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
 
-		if (!settings.WorldHasCache)
-			return outputSH;
-
-		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
-		CoordsUV = float2(CoordsUV.x, 1.0 - CoordsUV.y);
-		//CoordsUV = float2(0.75, 0.25);
-		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
-			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
-			outputSH = SphericalHarmonics::UnpackSH3(Probe, SparseProbeArray);
-		}
-
-		return outputSH;
-	}
-
-	sh2RGB SampleIrradiance(SharedData::SkylightingSettings settings, float3 CoordsWS)
-	{
-		sh2RGB outputSH = SphericalHarmonics::Zero2RGB();
-
-		//if (!settings.WorldHasCache)
-		//	return outputSH;
-
-		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
-		CoordsUV = float2(CoordsUV.x, CoordsUV.y);
-		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
-			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
-			outputSH = SphericalHarmonics::UnpackSH2RGB(Probe, SparseProbeArray);
-		}
-
-		return outputSH;
-	}
-
-	sh2RGB SampleIrradiance(SharedData::SkylightingSettings settings, float3 CoordsWS, Texture2DArray ProbeArrayT)
-	{
-		sh2RGB outputSH = SphericalHarmonics::Zero2RGB();
-
-		//if (!settings.WorldHasCache)
-		//	return outputSH;
-
-		float2 CoordsUV = (CoordsWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
-		if (all(CoordsUV >= 0) && all(CoordsUV <= 1)) {
-			int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
-			outputSH = SphericalHarmonics::UnpackSH2RGB(Probe, ProbeArrayT);
-		}
-
-		return outputSH;
+		float2 CoordsUV = (WorldPosition.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
+		CoordsUV = float2(CoordsUV.x, 1 - CoordsUV.y);
+		int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
+		sh2RGB probeSample = SphericalHarmonics::UnpackSH2RGB(Probe, SparseProbeArray);
+		return probeSample;
 	}
 
 	sh2 Sample(float3 positionMS, float3 normalWS)
 	{
-		sh2 scaledUnitSH = UNIT_SH / 1e-10;
+		sh2 scaledUnitSH = UNIT_SH;  // / 1e-10;
 
 		if (SharedData::InInterior)
 			return scaledUnitSH;
@@ -176,7 +135,9 @@ namespace Skylighting
 					wsum += w;
 				}
 
-		return SphericalHarmonics::Scale(sum, rcp(wsum + EPSILON_WEIGHT_SUM));
+		sh2 result = SphericalHarmonics::Scale(sum, rcp(wsum + EPSILON_WEIGHT_SUM));
+
+		return result;
 	}
 
 	// Compute skylighting diffuse for a receiver biased to face upward (grass/foliage).

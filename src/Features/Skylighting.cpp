@@ -44,7 +44,29 @@ void Skylighting::DrawSettings()
 		ClearShaderCache();
 
 	ImGui::Checkbox("Run Sparse", &runSparse);
+	ImGui::SliderFloat("Diffuse Min Visibility", &settings.MinDiffuseVisibility, 0.01f, 1.f, "%.2f");
+	ImGui::SliderFloat("Specular Min Visibility", &settings.MinSpecularVisibility, 0.01f, 1.f, "%.2f");
 
+	static float debugRescale = 1.0f;
+	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
+
+	BUFFER_VIEWER_NODE_BULLETA(terrainLightingTex->srv.get(), debugRescale)
+
+	//if(!HMapSRV){
+	//auto path = cachePath / "Tamriel_H.dds";
+	//DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &tmpTex));
+	//}
+	//if (HMapSRV) {
+	//	BUFFER_VIEWER_NODE_BULLETA(HMapSRV, debugRescale)
+	//}
+
+	//ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
+	if (texSparseProbeArray) {
+		ImGui::BulletText("View");
+		BUFFER_VIEWER_NODE_BULLET(texSparseProbeArray, debugRescale)
+	}
+
+	//ImGui::Text("Minimum visibility values. Diffuse darkens objects. Specular removes the sky from reflections.");
 	if (ImGui::Button("Generate albedo and norm")) {
 		auto outputPath = cachePath / "Tamriel_A.dds";
 		auto outputPath2 = cachePath / "Tamriel_N.dds";
@@ -83,29 +105,6 @@ void Skylighting::DrawSettings()
 	//ImGui::Checkbox("disable save", &test3);
 
 	//ImGui::Text("Cells Done: %d", cellsDone);
-
-	static float debugRescale = 1.0f;
-	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
-
-	BUFFER_VIEWER_NODE_BULLETA(terrainLightingTex->srv.get(), debugRescale)
-
-	//if(!HMapSRV){
-	//auto path = cachePath / "Tamriel_H.dds";
-	//DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &tmpTex));
-	//}
-	//if (HMapSRV) {
-	//	BUFFER_VIEWER_NODE_BULLETA(HMapSRV, debugRescale)
-	//}
-
-	//ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
-	if (texSparseProbeArray) {
-		ImGui::BulletText("View");
-		BUFFER_VIEWER_NODE_BULLET(texSparseProbeArray, debugRescale)
-	}
-
-	ImGui::Text("Minimum visibility values. Diffuse darkens objects. Specular removes the sky from reflections.");
-	ImGui::SliderFloat("Diffuse Min Visibility", &settings.MinDiffuseVisibility, 0.01f, 1.f, "%.2f");
-	ImGui::SliderFloat("Specular Min Visibility", &settings.MinSpecularVisibility, 0.01f, 1.f, "%.2f");
 
 	ImGui::Separator();
 
@@ -755,6 +754,7 @@ void Skylighting::UpdateTerrainLighting()
 		CO2MapSRV,
 		AMapSRV,
 		NMapSRV,
+		globals::features::physicalSky.texTrLut->srv.get(),
 	};
 
 	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
@@ -817,6 +817,7 @@ void Skylighting::UpdateSparseProbeGrid()
 		DO2MapSRV,
 		DOMapSRVB,
 		DO2MapSRVB,
+
 	};
 
 	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
@@ -935,15 +936,9 @@ void Skylighting::PostPostLoad()
 {
 	logger::info("[SKYLIGHTING] Hooking BSLightingShaderProperty::GetPrecipitationOcclusionMapRenderPassesImp");
 	stl::write_vfunc<0x2D, BSLightingShaderProperty_GetPrecipitationOcclusionMapRenderPassesImpl>(RE::VTABLE_BSLightingShaderProperty[0]);
-	stl::write_thunk_call<Main_Precipitation_RenderOcclusion>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x3A1, 0x3A1, 0x2FA));
+	stl::write_thunk_call<Main_Precipitation_RenderOcclusion>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x3A1, 0x3A1));
 
-	if (REL::Module::IsVR())
-		stl::write_thunk_call<SetViewFrustumVR>(REL::RelocationID(25643, 26185).address() + REL::Relocate(0x5D9, 0x59D, 0x5DC));
-	else
-		stl::write_thunk_call<SetViewFrustum>(REL::RelocationID(25643, 26185).address() + REL::Relocate(0x5D9, 0x59D, 0x5DC));
-
-	// Remove call to update local camera translation - we'll do it manually
-	REL::safe_fill(REL::RelocationID(25643, 26185).address() + REL::Relocate(0x558, 0x511), REL::NOP, 15);
+	stl::write_thunk_call<SetViewFrustum>(REL::RelocationID(25643, 26185).address() + REL::Relocate(0x5D9, 0x59D));
 
 	MenuOpenCloseEventHandler::Register();
 }
@@ -1090,42 +1085,53 @@ void Skylighting::SetViewFrustumVR::thunk(RE::NiCamera* a_camera, RE::NiFrustum*
 
 void Skylighting::RenderOcclusion()
 {
+	ZoneScopedS(8);
 	auto shaderCache = globals::shaderCache;
 	auto state = globals::state;
 	auto renderer = globals::game::renderer;
 	auto sky = globals::game::sky;
 
+	if (!shaderCache->IsEnabled()) {
+		TracyD3D11Zone(globals::state->tracyCtx, "Precipitation Mask");
+		state->BeginPerfEvent("Precipitation Mask");
+		Main_Precipitation_RenderOcclusion::func();
+		state->EndPerfEvent();
+		return;
+	}
+
 	if (sky) {
-		auto precip = sky->precip;
-		if (!shaderCache->IsEnabled()) {
-			state->BeginPerfEvent("Precipitation Mask");
-			precip->occlusionData.camera->local.translate = RE::PlayerCamera::GetSingleton()->cameraRoot->world.translate;
-			Main_Precipitation_RenderOcclusion::func();
-			state->EndPerfEvent();
-			return;
-		}
-
 		if (!Util::IsInterior()) {
-			state->BeginPerfEvent("Precipitation Mask");
+			static bool doPrecip = false;
 
-			auto precipObject = precip->currentPrecip;
-			if (!precipObject) {
-				precipObject = precip->lastPrecip;
-			}
-
-			if (precipObject) {
-				precip->SetupMask();
-				auto& effect = precipObject->GetGeometryRuntimeData().shaderProperty;
-				auto shaderProp = effect.get();
-				auto particleShaderProperty = netimmerse_cast<RE::BSParticleShaderProperty*>(shaderProp);
-				auto rain = (RE::BSParticleShaderRainEmitter*)(particleShaderProperty->particleEmitter);
-
-				precip->RenderMask(rain);
-			}
-
-			state->EndPerfEvent();
+			auto precip = sky->precip;
 
 			{
+				TracyD3D11Zone(globals::state->tracyCtx, "Precipitation Mask");
+				state->BeginPerfEvent("Precipitation Mask");
+
+				doPrecip = false;
+
+				auto precipObject = precip->currentPrecip;
+				if (!precipObject) {
+					precipObject = precip->lastPrecip;
+				}
+				if (precipObject) {
+					precip->SetupMask();
+					auto& effect = precipObject->GetGeometryRuntimeData().shaderProperty;
+					auto shaderProp = effect.get();
+					auto particleShaderProperty = netimmerse_cast<RE::BSParticleShaderProperty*>(shaderProp);
+					auto rain = (RE::BSParticleShaderRainEmitter*)(particleShaderProperty->particleEmitter);
+
+					globals::profiler->BeginPass("Skylighting::PrecipMask");
+					precip->RenderMask(rain);
+					globals::profiler->EndPass();
+				}
+
+				state->EndPerfEvent();
+			}
+
+			{
+				TracyD3D11Zone(globals::state->tracyCtx, "Skylighting Mask");
 				state->BeginPerfEvent("Skylighting Mask");
 
 				if (queuedResetSkylighting)
@@ -1143,8 +1149,8 @@ void Skylighting::RenderOcclusion()
 				static float& PrecipitationShaderCubeSize = (*(float*)REL::RelocationID(515451, 401590).address());
 				float originalPrecipitationShaderCubeSize = PrecipitationShaderCubeSize;
 
-				static RE::NiPoint3& PrecipitationShaderForward = (*(RE::NiPoint3*)REL::RelocationID(515509, 401648).address());
-				RE::NiPoint3 originalParticleShaderDirection = PrecipitationShaderForward;
+				static RE::NiPoint3& PrecipitationShaderDirection = (*(RE::NiPoint3*)REL::RelocationID(515509, 401648).address());
+				RE::NiPoint3 originalParticleShaderDirection = PrecipitationShaderDirection;
 
 				inOcclusion = true;
 				PrecipitationShaderCubeSize = occlusionDistance;
@@ -1152,9 +1158,6 @@ void Skylighting::RenderOcclusion()
 				float originaLastCubeSize = precip->lastCubeSize;
 				precip->lastCubeSize = PrecipitationShaderCubeSize;
 
-				static REL::Relocation<void(RE::Precipitation*, RE::NiPointer<RE::NiCamera>)> _computeProjection{ REL::RelocationID(25643, 26185) };
-
-				float3 PrecipitationShaderDirectionF;
 				float2 vPoint;
 				{
 					constexpr float rcpRandMax = 1.f / RAND_MAX;
@@ -1179,19 +1182,24 @@ void Skylighting::RenderOcclusion()
 					vPoint = { vPoint.x * cos(vPoint.y), vPoint.x * sin(vPoint.y) };
 				}
 
-				PrecipitationShaderDirectionF = -float3{ vPoint.x, vPoint.y, sqrt(1 - vPoint.LengthSquared()) };
+				float3 PrecipitationShaderDirectionF = -float3{ vPoint.x, vPoint.y, sqrt(1 - vPoint.LengthSquared()) };
 				PrecipitationShaderDirectionF.Normalize();
 
-				PrecipitationShaderForward = { PrecipitationShaderDirectionF.x, PrecipitationShaderDirectionF.y, PrecipitationShaderDirectionF.z };
+				PrecipitationShaderDirection = { PrecipitationShaderDirectionF.x, PrecipitationShaderDirectionF.y, PrecipitationShaderDirectionF.z };
 
-				precip->occlusionData.camera->local.translate = RE::PlayerCamera::GetSingleton()->cameraRoot->world.translate;
-
-				precip->SetupMask();
+				static REL::Relocation<void(RE::Precipitation*, RE::NiPointer<RE::NiCamera>)> _computeProjection{ REL::RelocationID(25643, 26185) };
+				{
+					ZoneScopedN("Skylighting - Setup Projection");
+					_computeProjection(precip, precip->occlusionData.camera);
+					precip->SetupMask();
+				}
 
 				BSParticleShaderRainEmitter* rain = new BSParticleShaderRainEmitter;
 				{
 					TracyD3D11Zone(state->tracyCtx, "Skylighting - Render Height Map");
+					globals::profiler->BeginPass("Skylighting::OcclusionMask");
 					precip->RenderMask((RE::BSParticleShaderRainEmitter*)rain);
+					globals::profiler->EndPass();
 				}
 				inOcclusion = false;
 
@@ -1203,18 +1211,20 @@ void Skylighting::RenderOcclusion()
 				PrecipitationShaderCubeSize = originalPrecipitationShaderCubeSize;
 				precip->lastCubeSize = originaLastCubeSize;
 
-				PrecipitationShaderForward = originalParticleShaderDirection;
+				PrecipitationShaderDirection = originalParticleShaderDirection;
 
 				precipitation = precipitationCopy;
 
-				_computeProjection(precip, precip->occlusionData.camera);
+				{
+					ZoneScopedN("Skylighting - Restore Projection");
+					_computeProjection(precip, precip->occlusionData.camera);
+				}
 
 				state->EndPerfEvent();
 			}
 		}
 	}
 }
-
 void Skylighting::Main_Precipitation_RenderOcclusion::thunk()
 {
 	auto& skylighting = globals::features::skylighting;
