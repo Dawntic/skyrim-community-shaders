@@ -82,6 +82,58 @@ float GetCloudProfile(float3 SamplePos, float Height)
 	return Density;
 }
 
+// Detail sculpting pass: runs AFTER the base density and carves
+// high-frequency structure into the LOW-DENSITY SHELL of the base shape,
+// producing the billowing tops and wispy fringes of real clouds. Follows the
+// Nubis/Decima technique (Schneider, "Real-Time Volumetric Cloudscapes",
+// GPU Pro 7 / SIGGRAPH 2015):
+//
+//   1. CloudDetailTex (32^3, RGB = 3 octaves of high-frequency Worley) is
+//      composited into an FBM with the same 0.625/0.25/0.125 weights the
+//      base shape uses.
+//   2. The lookup is distorted by 2D curl noise before sampling, faking
+//      turbulent advection; the distortion is strongest at the sheared cloud
+//      BASE and calms toward the top ((1 - Height) falloff).
+//   3. The erosion target transitions with height: near the base the FBM is
+//      used as-is, so dense worley cells get carved OUT of the shape and thin
+//      connective tendrils remain (wisps); above ~10% height it flips to
+//      1 - FBM, so the worley cells themselves survive as rounded bumps
+//      (cauliflower billows). This is Schneider's
+//      lerp(fbm, 1 - fbm, saturate(height * 10)).
+//   4. The erosion is applied through the same edge-biased remap the base
+//      erosion uses -- remap(base, erosion, 1, 0, 1) -- which by construction
+//      cannot touch saturated interiors (base near 1 maps to 1): only the
+//      outer DetailStrength-sized density band is sculpted, so the
+//      established base silhouette survives. DetailStrength ~0.2 is the
+//      reference value; the UI clamps it well below full erosion.
+//
+// The pass fades out over [DetailFadeStart, DetailFadeEnd]: the detail
+// texture has no mip chain, so past that range it is subpixel shimmer, and
+// skipping the two fetches is pure profit. The 5-step sun light march
+// deliberately keeps the un-detailed base density -- detail there is
+// invisible in the lit result (Wrenninge octaves low-pass it anyway) and
+// would double the march's texture cost.
+float ApplyCloudDetail(float BaseDensity, float3 SamplePos, float Height, float ViewDistance)
+{
+	float fade = 1.0 - LerpLinearStepClamped(ViewDistance, DetailFadeStart, DetailFadeEnd, 0.0, 1.0);
+	float strength = DetailStrength * fade;
+	if (strength <= 0.0)
+		return BaseDensity;
+
+	// Turbulent advection: curl-distort the detail lookup (2D field, strongest
+	// at the cloud base where wind shear lives).
+	float2 curl = CurlNoiseTex.SampleLevel(LinearRepeatSampler, SamplePos.xy * (HeightScale * DetailCurlScale), 0).xy * 2.0 - 1.0;
+	float3 detailPos = SamplePos + float3(curl * ((1.0 - Height) * DetailCurlStrength), Scroll);
+
+	float3 worley = CloudDetailTex.SampleLevel(LinearRepeatSampler, detailPos * (HeightScale * DetailFrequency), 0).xyz;
+	float detailFBM = dot(worley, float3(0.625, 0.25, 0.125));
+
+	// Wispy at the base, billowy at the top.
+	float erosion = lerp(detailFBM, 1.0 - detailFBM, saturate(Height * 10.0)) * strength;
+
+	return LerpLinearStepClamped(BaseDensity, erosion, 1.0, 0.0, 1.0);
+}
+
 // Optical depth toward the sun: 5 exponential steps, ~1.5 km total, coarse
 // density only (erosion skipped). sunDir points TOWARD the sun, which at
 // sunset goes DOWNWARD through the layer -- exiting through the layer BASE is
@@ -327,6 +379,11 @@ PixelOut main(VertexOut input)
 		float EnvelopeZ = GetEnvelopeRelativeZ(SamplePos, float2(bottomRadius, topRadius));
 
 		float CloudDensity = GetCloudProfile(SamplePos, EnvelopeZ);
+		if (CloudDensity <= 0.0)
+			continue;
+
+		// Sculpt billows/wisps into the base shape (view march only).
+		CloudDensity = ApplyCloudDetail(CloudDensity, SamplePos, EnvelopeZ, RayT.x + i * StepLength);
 		if (CloudDensity <= 0.0)
 			continue;
 

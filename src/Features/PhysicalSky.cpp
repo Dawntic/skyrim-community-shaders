@@ -461,6 +461,29 @@ void PhysicalSky::SettingsClouds()
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", "Offsets the cloud noise pattern (the z slice of the 3D noise). Drag or animate to evolve the clouds.");
 
+	ImGui::SeparatorText("Detail Sculpting");
+	{
+		ImGui::SliderFloat("Detail Strength", &cloudSettings.detailStrength, 0.f, 0.9f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"How much of the low-density shell the detail pass may erode. The base\n"
+				"silhouette always survives (interiors cannot be carved); ~0.2 is the\n"
+				"reference value, 0 disables the pass.");
+		ImGui::SliderFloat("Detail Frequency", &cloudSettings.detailFrequency, 1.f, 32.f, "%.1f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", "Billow/wisp feature frequency, relative to the base noise scale.");
+		ImGui::SliderFloat("Curl Strength", &cloudSettings.detailCurlStrength, 0.f, 1.f, "%.2f km");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"Turbulent distortion of the detail lookup, strongest at the cloud base.\n"
+				"Breaks up the regular worley pattern into sheared wisps.");
+		ImGui::SliderFloat("Curl Scale", &cloudSettings.detailCurlScale, 0.f, 8.f, "%.2f");
+		ImGui::SliderFloat("Detail Fade Start", &cloudSettings.detailFadeStart, 0.f, 100.f, "%.0f km");
+		ImGui::SliderFloat("Detail Fade End", &cloudSettings.detailFadeEnd, 0.f, 100.f, "%.0f km");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", "Distance window over which detail fades out (it is subpixel far away; also saves two fetches per step).");
+	}
+
 	ImGui::SliderFloat("Min Distance", &cloudSettings.minDistance, 0.0, 400.0);
 	ImGui::SliderFloat("Max Distance", &cloudSettings.maxDistance, 0.0, 600.0);
 	//ImGui::Checkbox("noDelay", &cloudSettings.noDelay);
@@ -1252,6 +1275,14 @@ void PhysicalSky::RenderClouds()
 	cb.heightScale = 1.0f - std::clamp(cloudSettings.heightScale, 0.0f, 1.0f);
 	cb.cloudType = cloudSettings.cloudType;
 	cb.scroll = cloudSettings.scroll;
+	cb.detailFrequency = std::max(cloudSettings.detailFrequency, 0.f);
+	// Full-range erosion would let detail delete the base shape entirely.
+	cb.detailStrength = std::clamp(cloudSettings.detailStrength, 0.f, 0.9f);
+	cb.detailCurlScale = std::max(cloudSettings.detailCurlScale, 0.f);
+	cb.detailCurlStrength = std::max(cloudSettings.detailCurlStrength, 0.f);
+	// The shader's fade remap divides by (end - start).
+	cb.detailFadeStart = std::max(cloudSettings.detailFadeStart, 0.f);
+	cb.detailFadeEnd = std::max(cloudSettings.detailFadeEnd, cb.detailFadeStart + 0.1f);
 	cloudBuffer->Update(cb);
 
 	CloudDebugCB debugCb{};

@@ -37,6 +37,16 @@ cbuffer CloudDataCB : register(b0)
 	float HeightScale;
 	float CloudType;
 	float Scroll;  // z offset of the noise lookups; drag/animate to evolve the pattern
+
+	// Detail sculpting pass (billows/wisps), see ApplyCloudDetail
+	float DetailFrequency;     // detail noise frequency, as a multiple of the base noise scale
+	float DetailStrength;      // max fraction of the density range the detail may erode (0 = off)
+	float DetailCurlScale;     // curl lookup frequency, as a multiple of the base noise scale
+	float DetailCurlStrength;  // km of turbulent lookup distortion at the cloud base
+
+	float DetailFadeStart;  // km -- detail fades out over [start, end]; the 32^3
+	float DetailFadeEnd;    // texture has no mips, so it goes subpixel past this
+	float2 cloudDataPad;
 };
 
 // Debug/verification seams for the cloud lighting chain. Uniform flow control

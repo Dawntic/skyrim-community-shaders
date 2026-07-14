@@ -97,7 +97,17 @@ struct PhysicalSky final : public Feature
 		float heightScale;
 		float cloudType;
 		float scroll;
+
+		float detailFrequency;
+		float detailStrength;
+		float detailCurlScale;
+		float detailCurlStrength;
+
+		float detailFadeStart;
+		float detailFadeEnd;
+		float2 cloudDataPad;
 	};
+	STATIC_ASSERT_ALIGNAS_16(CloudCB);
 
 	// CB struct matching CloudDebugCB in CloudCommon.hlsli
 	struct alignas(16) CloudDebugCB
@@ -150,6 +160,13 @@ struct PhysicalSky final : public Feature
 		float coverage2 = 0.0f;    /**< Custom current time value. (For a multiplayer sync) */
 		float scroll = 0.0f;       /**< Noise z offset; drag/animate to evolve the cloud pattern. */
 								   //bool noDelay = false;          /**< Make all computation in one frame. (Expensive!) */
+
+		float detailFrequency = 6.0f;    /**< Detail noise frequency as a multiple of the base noise scale. */
+		float detailStrength = 0.2f;     /**< Max fraction of the density range detail may erode (0 disables). */
+		float detailCurlScale = 1.0f;    /**< Curl lookup frequency as a multiple of the base noise scale. */
+		float detailCurlStrength = 0.2f; /**< km of turbulent lookup distortion at the cloud base. */
+		float detailFadeStart = 12.0f;   /**< km. Detail fades out over [start, end]. */
+		float detailFadeEnd = 32.0f;     /**< km. No mips on the detail noise; it is subpixel past this. */
 	};
 	CloudSettings cloudSettings;
 
