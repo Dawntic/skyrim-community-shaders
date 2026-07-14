@@ -879,8 +879,8 @@ void PhysicalSky::Reset()
 		// Planet-center-relative camera position in the cloud raymarcher's
 		// convention (planet center on the world-origin vertical), in km.
 		float3 posPlanetRelKm = { 0.f, 0.f, settings.planetRadius };
-		if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-			const auto playerPos = player->GetPosition();
+		if (auto* playerA = RE::PlayerCharacter::GetSingleton()) {
+			const auto playerPos = playerA->GetPosition();
 			posPlanetRelKm = float3(playerPos.x, playerPos.y, playerPos.z) * Util::Units::GAME_UNIT_TO_KM;
 			posPlanetRelKm.z += settings.planetRadius;
 		}

@@ -131,10 +131,10 @@ struct PhysicalSky final : public Feature
 		uint debugSunTrMode = 0;   /**< 0 live | 1 force white | 2 force orange | 3 A/B global Tr LUT. */
 		uint debugAmbientMode = 0; /**< 0 live | 1 DebugColor | 2 literal red | 3 red->blue height gradient. */
 		float3 debugColor = { 1.f, 0.f, 1.f };
-		float sunGain = 1.f;           /**< Debug gate for the direct sun term. 0 while validating ambient. */
-		float ambientGain = 1.f;       /**< Debug gate for the ambient term. */
-		float sunMsGain = 1.f;         /**< Flat gain on the sun path only (replaces CLOUD_MS_GAIN). */
-		float octaveAttenA = .5f;      /**< Wrenninge octave extinction attenuation. */
+		float sunGain = 2.f;           /**< Debug gate for the direct sun term. 0 while validating ambient. */
+		float ambientGain = 1.2f;      /**< Debug gate for the ambient term. */
+		float sunMsGain = 1.8f;        /**< Flat gain on the sun path only (replaces CLOUD_MS_GAIN). */
+		float octaveAttenA = .7f;      /**< Wrenninge octave extinction attenuation. */
 		float octaveAttenB = .6f;      /**< Wrenninge octave energy attenuation. */
 		bool showDebugOverlay = false; /**< Blit the sun-Tr LUT + ambient swatches into a screen corner. */
 		float cloudScattering = 24.9f; /**< km^-1. Spectrally neutral droplets: albedo = scattering / extinction ~ 0.996. */
@@ -146,15 +146,15 @@ struct PhysicalSky final : public Feature
 	{
 		//bool isEnabled = true;         /**< Is physically based volumetric clouds rendering enabled. */
 		//bool renderShadows = true;     /**< Render cloud shadows to the shadow buffer. */
-		float bottomRadius = 0.0f;  /**< Stratus and cumulus clouds start height. (km) */
-		float topRadius = 1.6f;     /**< Stratus and cumulus clouds end height. (km) */
-		float minDistance = 0.0f;   /**< Clouds volume tracing offset in front of camera. (km) */
-		float maxDistance = 600.0f; /**< Maximum clouds volume tracing distance. (km) */
-		float coverage = 0.6f;      /**< Amount of cumulus clouds. (Clear or cloudy weather) */
-		float heightScale = 0.95f;  /**< Amount of cirrus clouds. (Clear or cloudy weather) */
-		float cloudType = 0.8f;     /**< Temperature difference between layers. (Storm clouds) */
-		float coverage2 = 0.0f;     /**< Custom current time value. (For a multiplayer sync) */
-									//bool noDelay = false;          /**< Make all computation in one frame. (Expensive!) */
+		float bottomRadius = 1.0f; /**< Stratus and cumulus clouds start height. (km) */
+		float topRadius = 2.4f;    /**< Stratus and cumulus clouds end height. (km) */
+		float minDistance = 0.0f;  /**< Clouds volume tracing offset in front of camera. (km) */
+		float maxDistance = 30.0f; /**< Maximum clouds volume tracing distance. (km) */
+		float coverage = 0.6f;     /**< Amount of cumulus clouds. (Clear or cloudy weather) */
+		float heightScale = 0.95f; /**< Amount of cirrus clouds. (Clear or cloudy weather) */
+		float cloudType = 0.8f;    /**< Temperature difference between layers. (Storm clouds) */
+		float coverage2 = 0.0f;    /**< Custom current time value. (For a multiplayer sync) */
+								   //bool noDelay = false;          /**< Make all computation in one frame. (Expensive!) */
 	};
 	CloudSettings cloudSettings;
 
@@ -242,9 +242,9 @@ struct PhysicalSky final : public Feature
 		float planetRadius = 6.36e3f;      // in km
 		float atmosphereRadius = 6.42e3f;  // in km
 
-		float rayleighFalloff = 1 / 8.69645f;                    // in km^-1
-		float3 rayleighScatter = { 6.6049f, 12.345f, 29.413f };  // in megameter^-1
-		float aerosolFalloff = 1 / 1.2f;
+		float rayleighFalloff = 0.05f;                    //1 / 8.69645f;                    // in km^-1
+		float3 rayleighScatter = { 4.0f, 12.0f, 29.0f };  //{ 6.6049f, 12.345f, 29.413f };  // in megameter^-1
+		float aerosolFalloff = 0.7f;                      //1 / 1.2f;
 		float aerosolPhaseG = 0.8f;
 		float3 aerosolScatter = { 39.96f, 39.96f, 39.96f };
 		float3 aerosolAbsorption = { 4.44f, 4.44f, 4.44f };
