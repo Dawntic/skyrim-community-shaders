@@ -19,6 +19,8 @@
 #include "VolumetricShadows.h"
 
 #include "State.h"
+#include "WeatherManager.h"
+#include "WeatherVariableRegistry.h"
 
 #define I18N_KEY_PREFIX "feature.physical_sky."
 #include "Util.h"
@@ -43,7 +45,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	detailCurlScale,
 	detailCurlStrength,
 	detailFadeStart,
-	detailFadeEnd)
+	detailFadeEnd,
+	weatherFrontWidth)
 
 // Only the artistic tuning subset persists; the debug seams (override modes,
 // debug color, overlay toggle) stay runtime-only so a save can never come
@@ -167,6 +170,7 @@ void PhysicalSky::RestoreDefaultSettings()
 	settings = {};
 	cloudSettings = {};
 	cloudLighting = {};
+	weatherUserShape = weatherStableShape = { cloudSettings.coverage, cloudSettings.cloudType, cloudSettings.coverage2 };
 }
 
 void PhysicalSky::LoadSettings(json& o_json)
@@ -176,6 +180,7 @@ void PhysicalSky::LoadSettings(json& o_json)
 		cloudSettings = o_json["cloudSettings"];
 	if (o_json.contains("cloudLighting"))
 		cloudLighting = o_json["cloudLighting"];
+	weatherUserShape = weatherStableShape = { cloudSettings.coverage, cloudSettings.cloudType, cloudSettings.coverage2 };
 }
 
 void PhysicalSky::SaveSettings(json& o_json)
@@ -183,6 +188,129 @@ void PhysicalSky::SaveSettings(json& o_json)
 	o_json = settings;
 	o_json["cloudSettings"] = cloudSettings;
 	o_json["cloudLighting"] = cloudLighting;
+}
+
+void PhysicalSky::RegisterWeatherVariables()
+{
+	auto* registry = WeatherVariables::GlobalWeatherRegistry::GetSingleton()->GetOrCreateFeatureRegistry(GetShortName());
+
+	// Registered defaults track the struct defaults so they cannot drift.
+	const Settings defaults{};
+	const CloudSettings cloudDefaults{};
+	const CloudLightingSettings lightingDefaults{};
+
+	// Sky scattering -- what makes a weather's sky look the way it does.
+	registry->RegisterVariable(std::make_shared<WeatherVariables::Float3Variable>(
+		"Rayleigh Scatter", "rayleighScatter",
+		"Air molecule scattering coefficients (megameter^-1). Drives sky blue and sunset red.",
+		&settings.rayleighScatter, defaults.rayleighScatter));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Rayleigh Falloff", "rayleighFalloff",
+		"Air density falloff with altitude (km^-1).",
+		&settings.rayleighFalloff, defaults.rayleighFalloff, 0.0f, 2.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::Float3Variable>(
+		"Aerosol Scatter", "aerosolScatter",
+		"Aerosol (Mie) scattering coefficients (megameter^-1). Haze and aureole.",
+		&settings.aerosolScatter, defaults.aerosolScatter));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::Float3Variable>(
+		"Aerosol Absorption", "aerosolAbsorption",
+		"Aerosol absorption coefficients (megameter^-1).",
+		&settings.aerosolAbsorption, defaults.aerosolAbsorption));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Aerosol Falloff", "aerosolFalloff",
+		"Aerosol density falloff with altitude (km^-1).",
+		&settings.aerosolFalloff, defaults.aerosolFalloff, 0.0f, 2.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Aerosol Anisotropy", "aerosolPhaseG",
+		"Mie phase anisotropy. Higher = tighter aureole around the sun.",
+		&settings.aerosolPhaseG, defaults.aerosolPhaseG, -1.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::Float3Variable>(
+		"Ozone Absorption", "ozoneAbsorption",
+		"Ozone absorption coefficients (megameter^-1). Keeps the zenith blue at twilight.",
+		&settings.ozoneAbsorption, defaults.ozoneAbsorption));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Ozone Mean Altitude", "ozoneAltitude",
+		"Center altitude of the ozone layer (km).",
+		&settings.ozoneAltitude, defaults.ozoneAltitude, 0.0f, 100.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Ozone Layer Thickness", "ozoneThickness",
+		"Thickness of the ozone layer tent profile (km).",
+		&settings.ozoneThickness, defaults.ozoneThickness, 0.0f, 50.0f));
+
+	// Cloud layer + shape. Coverage / Cloud Type / Coverage 2 additionally
+	// feed the horizon weather front, which blends them SPATIALLY during
+	// transitions instead of consuming the registry's time-lerp (the keys are
+	// shared via kWeatherKey*).
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Cloud Bottom Height", "bottomRadius",
+		"Cloud layer start height above sea level (km).",
+		&cloudSettings.bottomRadius, cloudDefaults.bottomRadius, 0.0f, 19.9f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Cloud Top Height", "topRadius",
+		"Cloud layer end height above sea level (km).",
+		&cloudSettings.topRadius, cloudDefaults.topRadius, 0.01f, 20.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		kWeatherKeyCoverage, "coverage",
+		"Cloud coverage. Blended in from the horizon during weather transitions.",
+		&cloudSettings.coverage, cloudDefaults.coverage, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Height Scale", "heightScale",
+		"Cloud noise scale.",
+		&cloudSettings.heightScale, cloudDefaults.heightScale, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		kWeatherKeyCloudType, "cloudType",
+		"Stratus/cumulus/cumulonimbus mix. Blended in from the horizon during weather transitions.",
+		&cloudSettings.cloudType, cloudDefaults.cloudType, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		kWeatherKeyCoverage2, "coverage2",
+		"Global coverage erosion. Blended in from the horizon during weather transitions.",
+		&cloudSettings.coverage2, cloudDefaults.coverage2, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Frequency", "detailFrequency",
+		"Billow/wisp feature frequency, relative to the base noise scale.",
+		&cloudSettings.detailFrequency, cloudDefaults.detailFrequency, 1.0f, 32.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Strength", "detailStrength",
+		"How much of the low-density shell the detail pass may erode.",
+		&cloudSettings.detailStrength, cloudDefaults.detailStrength, 0.0f, 0.9f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Curl Scale", "detailCurlScale",
+		"Curl lookup frequency, relative to the base noise scale.",
+		&cloudSettings.detailCurlScale, cloudDefaults.detailCurlScale, 0.0f, 8.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Curl Strength", "detailCurlStrength",
+		"Turbulent distortion of the detail lookup at the cloud base (km).",
+		&cloudSettings.detailCurlStrength, cloudDefaults.detailCurlStrength, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Fade Start", "detailFadeStart",
+		"Distance where detail sculpting starts fading out (km).",
+		&cloudSettings.detailFadeStart, cloudDefaults.detailFadeStart, 0.0f, 100.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Detail Fade End", "detailFadeEnd",
+		"Distance where detail sculpting is fully gone (km).",
+		&cloudSettings.detailFadeEnd, cloudDefaults.detailFadeEnd, 0.0f, 100.0f));
+
+	// Cloud lighting tuning -- storms want darker, denser media.
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Sun Gain", "sunGain",
+		"Gain on the direct sun path.",
+		&cloudLighting.sunGain, lightingDefaults.sunGain, 0.0f, 8.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Ambient Gain", "ambientGain",
+		"Gain on the ambient term.",
+		&cloudLighting.ambientGain, lightingDefaults.ambientGain, 0.0f, 2.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Octave Extinction Atten", "octaveAttenA",
+		"Wrenninge octave extinction attenuation: how deep sunlight glows into the cloud.",
+		&cloudLighting.octaveAttenA, lightingDefaults.octaveAttenA, 0.0f, 1.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Cloud Scattering", "cloudScattering",
+		"Cloud medium scattering coefficient (km^-1).",
+		&cloudLighting.cloudScattering, lightingDefaults.cloudScattering, 0.0f, 100.0f));
+	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+		"Cloud Extinction", "cloudExtinction",
+		"Cloud medium extinction coefficient (km^-1).",
+		&cloudLighting.cloudExtinction, lightingDefaults.cloudExtinction, 0.01f, 100.0f));
 }
 
 void PhysicalSky::DrawSettings()
@@ -487,12 +615,17 @@ void PhysicalSky::SettingsClouds()
 
 	ImGui::SliderFloat("Bottom Height", &cloudSettings.bottomRadius, 0.0, 19.9);
 	ImGui::SliderFloat("Top Height", &cloudSettings.topRadius, 0.01, 20.0);
-	ImGui::SliderFloat("Coverage", &cloudSettings.coverage, 0.0, 1.0);
+	// Edits to the three front-blended shape params also refresh the user
+	// (non-weather) copy that weather transitions fall back to.
+	if (ImGui::SliderFloat("Coverage", &cloudSettings.coverage, 0.0, 1.0))
+		weatherUserShape.coverage = cloudSettings.coverage;
 
 	ImGui::SliderFloat("Height Scale", &cloudSettings.heightScale, 0.0, 1.0);
-	ImGui::SliderFloat("Cloud Type", &cloudSettings.cloudType, 0.0, 1.0);
+	if (ImGui::SliderFloat("Cloud Type", &cloudSettings.cloudType, 0.0, 1.0))
+		weatherUserShape.cloudType = cloudSettings.cloudType;
 
-	ImGui::SliderFloat("Coverage 2", &cloudSettings.coverage2, 0.0, 1.0);
+	if (ImGui::SliderFloat("Coverage 2", &cloudSettings.coverage2, 0.0, 1.0))
+		weatherUserShape.coverage2 = cloudSettings.coverage2;
 
 	ImGui::DragFloat("Scroll", &cloudSettings.scroll, 0.005f);
 	if (auto _tt = Util::HoverTooltipWrapper())
@@ -519,6 +652,37 @@ void PhysicalSky::SettingsClouds()
 		ImGui::SliderFloat("Detail Fade End", &cloudSettings.detailFadeEnd, 0.f, 100.f, "%.0f km");
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", "Distance window over which detail fades out (it is subpixel far away; also saves two fetches per step).");
+	}
+
+	ImGui::SeparatorText("Weather Front");
+	{
+		ImGui::TextWrapped("%s",
+			"During weather transitions the incoming weather's clouds sweep in from the "
+			"horizon along the wind instead of cross-fading in place. Assign per-weather "
+			"cloud values in the CS Editor's weather widget. Wind direction is a fixed "
+			"placeholder heading for now.");
+
+		ImGui::SliderFloat("Front Width", &cloudSettings.weatherFrontWidth, 0.5f, 50.f, "%.1f km");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", "Width of the soft, noise-ragged band where the two weathers mix.");
+
+		ImGui::Checkbox("Manual Front Test", &weatherFrontTest.enabled);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"Drive the front by hand instead of game weather: blends from the current\n"
+				"cloud shape to the test values below as Transition goes 0 to 1.");
+		if (weatherFrontTest.enabled) {
+			ImGui::SliderFloat("Transition", &weatherFrontTest.transition, 0.f, 1.f, "%.2f");
+			ImGui::SliderFloat("Incoming Coverage", &weatherFrontTest.coverageIn, 0.f, 1.f, "%.2f");
+			ImGui::SliderFloat("Incoming Cloud Type", &weatherFrontTest.cloudTypeIn, 0.f, 1.f, "%.2f");
+			ImGui::SliderFloat("Incoming Coverage 2", &weatherFrontTest.coverage2In, 0.f, 1.f, "%.2f");
+		}
+
+		const auto weathers = WeatherManager::GetSingleton()->GetCurrentWeathers();
+		ImGui::Text("Game weather: %08X -> %08X (%.2f)",
+			weathers.lastWeather ? weathers.lastWeather->GetFormID() : 0u,
+			weathers.currentWeather ? weathers.currentWeather->GetFormID() : 0u,
+			weathers.lerpFactor);
 	}
 
 	ImGui::SliderFloat("Min Distance", &cloudSettings.minDistance, 0.0, 400.0);
@@ -1210,6 +1374,82 @@ void PhysicalSky::CreateCloudResources()
 }
 #pragma warning(pop)
 
+// Resolve what the horizon weather front should show this frame: which cloud
+// shape is departing, which is arriving, and how far the front has swept.
+// The registry time-lerps every other weather variable in place; these three
+// blend SPATIALLY in the shader instead, so the endpoints are reconstructed
+// here rather than consumed post-lerp.
+PhysicalSky::WeatherFrontState PhysicalSky::ResolveWeatherFront()
+{
+	WeatherFrontState state{};
+	state.from = state.to = { cloudSettings.coverage, cloudSettings.cloudType, cloudSettings.coverage2 };
+
+	if (weatherFrontTest.enabled) {
+		// Manual driver: blend from the live shape to the test values.
+		state.to = { weatherFrontTest.coverageIn, weatherFrontTest.cloudTypeIn, weatherFrontTest.coverage2In };
+		state.transition = weatherFrontTest.transition;
+		state.active = true;
+		return state;
+	}
+
+	auto* weatherManager = WeatherManager::GetSingleton();
+	const auto weathers = weatherManager->GetCurrentWeathers();
+
+	const bool transitioning = weathers.currentWeather && weathers.lastWeather &&
+	                           weathers.currentWeather != weathers.lastWeather &&
+	                           weathers.lerpFactor < 1.0f;
+
+	if (!transitioning) {
+		// Stable: remember the effective shape (any current-weather override
+		// has already been applied to cloudSettings by the registry) so the
+		// next transition departs from it. Only previous-frame values are
+		// consumed when a transition starts, so this is independent of the
+		// WeatherManager update order within the frame.
+		weatherStableShape = state.from;
+		weatherTrackedFrom = weathers.lastWeather;
+		weatherTrackedTo = weathers.currentWeather;
+		weatherFrontLive = false;
+		return state;
+	}
+
+	if (weathers.currentWeather != weatherTrackedTo || weathers.lastWeather != weatherTrackedFrom) {
+		// New transition: freeze the departure shape. If one was already in
+		// flight, fold its progress in (a global approximation of the
+		// half-swept field); otherwise depart from the last stable shape.
+		if (weatherFrontLive) {
+			weatherFromShape.coverage = std::lerp(weatherFromShape.coverage, weatherToShape.coverage, weatherLastLerp);
+			weatherFromShape.cloudType = std::lerp(weatherFromShape.cloudType, weatherToShape.cloudType, weatherLastLerp);
+			weatherFromShape.coverage2 = std::lerp(weatherFromShape.coverage2, weatherToShape.coverage2, weatherLastLerp);
+		} else {
+			weatherFromShape = weatherStableShape;
+		}
+		weatherTrackedFrom = weathers.lastWeather;
+		weatherTrackedTo = weathers.currentWeather;
+	}
+
+	// Arrival shape: the incoming weather's override where present, the user
+	// (non-weather) values where not -- mirroring the registry's fallback.
+	json toJson;
+	state.to = weatherUserShape;
+	if (weatherManager->LoadSettingsFromWeather(weathers.currentWeather, GetShortName(), toJson)) {
+		state.to.coverage = toJson.value(kWeatherKeyCoverage, state.to.coverage);
+		state.to.cloudType = toJson.value(kWeatherKeyCloudType, state.to.cloudType);
+		state.to.coverage2 = toJson.value(kWeatherKeyCoverage2, state.to.coverage2);
+	}
+	state.from = weatherFromShape;
+	state.transition = weathers.lerpFactor;
+
+	// A front is only worth drawing if the shape actually changes.
+	state.active = std::abs(state.from.coverage - state.to.coverage) > 1e-3f ||
+	               std::abs(state.from.cloudType - state.to.cloudType) > 1e-3f ||
+	               std::abs(state.from.coverage2 - state.to.coverage2) > 1e-3f;
+
+	weatherToShape = state.to;
+	weatherLastLerp = state.transition;
+	weatherFrontLive = true;
+	return state;
+}
+
 void PhysicalSky::RenderClouds()
 {
 	// The cloud lighting chain depends on physSkyData and the per-frame LUTs
@@ -1307,10 +1547,28 @@ void PhysicalSky::RenderClouds()
 	}
 	cb.minDistance = cloudSettings.minDistance;
 	cb.maxDistance = cloudSettings.maxDistance;
-	cb.coverage2 = cloudSettings.coverage2;
-	cb.coverage = cloudSettings.coverage;
+
+	// Horizon weather front. While a front is active the shader blends the
+	// shape params spatially from the frozen departure values (base slots) to
+	// the arrival values (*In slots); the registry's in-place time-lerp of
+	// cloudSettings is deliberately not consumed for these three during that
+	// window.
+	const auto front = ResolveWeatherFront();
+	cb.coverage = front.active ? front.from.coverage : cloudSettings.coverage;
+	cb.cloudType = front.active ? front.from.cloudType : cloudSettings.cloudType;
+	cb.coverage2 = front.active ? front.from.coverage2 : cloudSettings.coverage2;
+	cb.coverageIn = front.to.coverage;
+	cb.cloudTypeIn = front.to.cloudType;
+	cb.coverage2In = front.to.coverage2;
+	cb.windDir = kWeatherWindDir;
+	cb.weatherFrontWidth = std::max(cloudSettings.weatherFrontWidth, 0.1f);
+	// Sweep the front from just beyond the upwind horizon to just past the
+	// downwind one, so t = 0 shows only outgoing and t = 1 only incoming.
+	const float frontReach = cb.maxDistance + cb.weatherFrontWidth;
+	cb.weatherFrontPos = std::lerp(-frontReach, frontReach, std::clamp(front.transition, 0.f, 1.f));
+	cb.weatherBlendActive = front.active ? 1.f : 0.f;
+
 	cb.heightScale = 1.0f - std::clamp(cloudSettings.heightScale, 0.0f, 1.0f);
-	cb.cloudType = cloudSettings.cloudType;
 	cb.scroll = cloudSettings.scroll;
 	cb.detailFrequency = std::max(cloudSettings.detailFrequency, 0.f);
 	// Full-range erosion would let detail delete the base shape entirely.

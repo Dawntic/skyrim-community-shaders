@@ -37,6 +37,7 @@ struct PhysicalSky final : public Feature
 	void RestoreDefaultSettings() override;
 	void LoadSettings(json& o_json) override;
 	void SaveSettings(json& o_json) override;
+	void RegisterWeatherVariables() override;
 
 	void DrawSettings() override;
 	void SettingsGeneral();
@@ -65,6 +66,13 @@ struct PhysicalSky final : public Feature
 	void CloudCompose();
 
 	// Clouds
+
+	// Weather-variable JSON keys shared between RegisterWeatherVariables and
+	// the horizon-front endpoint extraction -- the registry keys overrides by
+	// the variable's name.
+	static constexpr const char* kWeatherKeyCoverage = "Coverage";
+	static constexpr const char* kWeatherKeyCloudType = "Cloud Type";
+	static constexpr const char* kWeatherKeyCoverage2 = "Coverage 2";
 
 	bool par = false;
 
@@ -105,6 +113,15 @@ struct PhysicalSky final : public Feature
 
 		float detailFadeStart;
 		float detailFadeEnd;
+		float2 windDir;
+
+		float weatherFrontPos;
+		float weatherFrontWidth;
+		float coverageIn;
+		float cloudTypeIn;
+
+		float coverage2In;
+		float weatherBlendActive;
 		float2 cloudDataPad;
 	};
 	STATIC_ASSERT_ALIGNAS_16(CloudCB);
@@ -169,8 +186,60 @@ struct PhysicalSky final : public Feature
 		float detailCurlStrength = 0.2f; /**< km of turbulent lookup distortion at the cloud base. */
 		float detailFadeStart = 12.0f;   /**< km. Detail fades out over [start, end]. */
 		float detailFadeEnd = 32.0f;     /**< km. No mips on the detail noise; it is subpixel past this. */
+
+		float weatherFrontWidth = 6.0f; /**< km. Soft band where outgoing and incoming weather clouds mix. */
 	};
 	CloudSettings cloudSettings;
+
+	// Horizon weather front: during game weather transitions the incoming
+	// weather's cloud shape sweeps in from the upwind horizon instead of
+	// cross-fading in place.
+
+	// Placeholder heading (normalized (2, 1)) until a real wind system drives
+	// the front direction.
+	static inline const float2 kWeatherWindDir = { 0.8944272f, 0.4472136f };
+
+	// The three shape params that blend SPATIALLY across the front.
+	struct CloudShapeParams
+	{
+		float coverage = 0.6f;
+		float cloudType = 0.8f;
+		float coverage2 = 0.0f;
+	};
+
+	struct WeatherFrontState
+	{
+		CloudShapeParams from;
+		CloudShapeParams to;
+		float transition = 1.f;
+		bool active = false;
+	};
+	WeatherFrontState ResolveWeatherFront();
+
+	// Runtime-only manual driver for authoring/verification without waiting
+	// on game weather.
+	struct WeatherFrontTest
+	{
+		bool enabled = false;
+		float transition = 0.f;
+		float coverageIn = 0.9f;
+		float cloudTypeIn = 1.0f;
+		float coverage2In = 0.0f;
+	};
+	WeatherFrontTest weatherFrontTest;
+
+	// Endpoint tracking. Stable = last effective shape while no transition
+	// ran (registry-managed values); user = non-weather values, the fallback
+	// when the incoming weather has no override -- mirrors the registry's own
+	// fallback semantics.
+	CloudShapeParams weatherStableShape;
+	CloudShapeParams weatherUserShape;
+	CloudShapeParams weatherFromShape;
+	CloudShapeParams weatherToShape;
+	float weatherLastLerp = 1.f;
+	bool weatherFrontLive = false;
+	RE::TESWeather* weatherTrackedFrom = nullptr;
+	RE::TESWeather* weatherTrackedTo = nullptr;
 
 	eastl::unique_ptr<Texture2D> cloudColorTex[2] = { nullptr, nullptr };
 	eastl::unique_ptr<Texture2D> cloudDepthTex[2] = { nullptr, nullptr };

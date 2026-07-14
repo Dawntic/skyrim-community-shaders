@@ -17,7 +17,12 @@
 3. ~~Fold redundant gains~~ — done: `SunMsGain` removed (it multiplied the same term as `SunGain`; effective product folded into the 3.6 default) and the Wrenninge octave *energy* attenuation fixed in-shader at 0.6 (it acted as another flat sun gain). The *extinction* attenuation stays tunable — it shapes glow depth, not brightness.
 4. ~~Detail density function~~ — done: `ApplyCloudDetail` runs after `GetCloudProfile` in the view march (Nubis/Schneider technique): curl-distorted 32³ Worley FBM, wispy-base → billowy-top height transition, applied through the edge-biased remap so interiors can't be carved and the base silhouette survives (`DetailStrength`, reference 0.2, hard clamp 0.9); distance-faded since the detail texture has no mips. The sun light march keeps the un-detailed base density.
 
-**Still open**: the V1–V4 in-game verification ladder below (needs a Windows build + sunset sweeps); the gamma-placement TODO at the cloud encode; the global Tr LUT reparameterization remains a documented follow-up option, not scheduled.
+**Weather system (third PR, stacked on the second)**:
+
+1. ~~Weather config~~ — done: PhysicalSky registers its sky scattering (Rayleigh/aerosol/ozone), cloud layer + shape + detail, and cloud lighting tuning with the existing `WeatherVariables` registry. Weathers are authored per TESWeather form in the CS Editor's weather widget (persisted by `WeatherManager`); overridden values lerp through game weather transitions automatically.
+2. ~~Incoming clouds over the horizon~~ — done: during transitions, Coverage / Cloud Type / Coverage 2 blend **spatially** across a wind-aligned front instead of time-fading in place — the incoming weather's clouds appear at the upwind horizon and sweep across the sky with the transition. Soft, noise-ragged front edge (`WeatherFrontWidth`); departure/arrival endpoints reconstructed from `WeatherManager` overrides (interrupted transitions fold their progress in); the sun light march reuses the view sample's blended shape. Wind direction is a fixed placeholder heading (`kWeatherWindDir`) until a real wind system exists. A Manual Front Test panel drives the front without waiting on game weather.
+
+**Still open**: the V1–V4 in-game verification ladder below (needs a Windows build + sunset sweeps); the gamma-placement TODO at the cloud encode; the global Tr LUT reparameterization remains a documented follow-up option, not scheduled; real wind direction for the weather front.
 
 ## Goal
 
