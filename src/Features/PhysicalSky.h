@@ -96,7 +96,7 @@ struct PhysicalSky final : public Feature
 		float coverage;
 		float heightScale;
 		float cloudType;
-		float pad;
+		float scroll;
 	};
 
 	// CB struct matching CloudDebugCB in CloudCommon.hlsli
@@ -154,6 +154,7 @@ struct PhysicalSky final : public Feature
 		float heightScale = 0.95f; /**< Amount of cirrus clouds. (Clear or cloudy weather) */
 		float cloudType = 0.8f;    /**< Temperature difference between layers. (Storm clouds) */
 		float coverage2 = 0.0f;    /**< Custom current time value. (For a multiplayer sync) */
+		float scroll = 0.0f;       /**< Noise z offset; drag/animate to evolve the cloud pattern. */
 								   //bool noDelay = false;          /**< Make all computation in one frame. (Expensive!) */
 	};
 	CloudSettings cloudSettings;

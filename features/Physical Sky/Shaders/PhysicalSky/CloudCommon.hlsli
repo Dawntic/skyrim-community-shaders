@@ -36,7 +36,7 @@ cbuffer CloudDataCB : register(b0)
 	float CloudCoverage;
 	float HeightScale;
 	float CloudType;
-	float WeatherScale;
+	float Scroll;  // z offset of the noise lookups; drag/animate to evolve the pattern
 };
 
 // Debug/verification seams for the cloud lighting chain. Uniform flow control

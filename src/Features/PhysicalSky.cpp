@@ -457,6 +457,10 @@ void PhysicalSky::SettingsClouds()
 
 	ImGui::SliderFloat("Coverage 2", &cloudSettings.coverage2, 0.0, 1.0);
 
+	ImGui::DragFloat("Scroll", &cloudSettings.scroll, 0.005f);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", "Offsets the cloud noise pattern (the z slice of the 3D noise). Drag or animate to evolve the clouds.");
+
 	ImGui::SliderFloat("Min Distance", &cloudSettings.minDistance, 0.0, 400.0);
 	ImGui::SliderFloat("Max Distance", &cloudSettings.maxDistance, 0.0, 600.0);
 	//ImGui::Checkbox("noDelay", &cloudSettings.noDelay);
@@ -1246,6 +1250,7 @@ void PhysicalSky::RenderClouds()
 	cb.coverage = cloudSettings.coverage;
 	cb.heightScale = 1.0f - std::clamp(cloudSettings.heightScale, 0.0f, 1.0f);
 	cb.cloudType = cloudSettings.cloudType;
+	cb.scroll = cloudSettings.scroll;
 	cloudBuffer->Update(cb);
 
 	CloudDebugCB debugCb{};

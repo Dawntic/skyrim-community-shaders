@@ -61,7 +61,7 @@ VertexOut main(uint vertexID : SV_VertexID)
 
 float GetCloudProfile(float3 SamplePos, float Height)
 {
-	float Scroll = 0;
+	// Scroll comes from CloudDataCB (settings-driven noise z offset).
 	float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0);  // Perlin-Worley + 3 octaves of worley
 	float PerlinWorley = NoiseSample.x;
 	float3 Worley = NoiseSample.yzw;
