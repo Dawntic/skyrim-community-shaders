@@ -500,16 +500,17 @@ void PhysicalSky::SettingsClouds()
 
 		ImGui::ColorEdit3("Debug Color", &cloudLighting.debugColor.x, ImGuiColorEditFlags_Float);
 
-		ImGui::SliderFloat("Sun Gain", &cloudLighting.sunGain, 0.f, 2.f, "%.2f");
-		ImGui::SliderFloat("Ambient Gain", &cloudLighting.ambientGain, 0.f, 2.f, "%.2f");
-		ImGui::SliderFloat("Sun MS Gain", &cloudLighting.sunMsGain, 0.f, 4.f, "%.2f");
+		ImGui::SliderFloat("Sun Gain", &cloudLighting.sunGain, 0.f, 8.f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", "Flat gain on the sun path only (replaces the old CLOUD_MS_GAIN).");
+			ImGui::Text("%s", "Gain on the direct sun path. Set 0 to isolate the ambient chain while verifying.");
+		ImGui::SliderFloat("Ambient Gain", &cloudLighting.ambientGain, 0.f, 2.f, "%.2f");
 
 		ImGui::SliderFloat("Octave Extinction Atten", &cloudLighting.octaveAttenA, 0.f, 1.f, "%.2f");
-		ImGui::SliderFloat("Octave Energy Atten", &cloudLighting.octaveAttenB, 0.f, 1.f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", "Wrenninge multi-scatter octave attenuation (a/b). Defaults 0.5 / 0.6.");
+			ImGui::Text("%s",
+				"How quickly the Wrenninge multi-scatter octaves relax extinction:\n"
+				"higher lets sunlight glow deeper into the cloud. The octave energy\n"
+				"attenuation is fixed in-shader (it duplicated Sun Gain).");
 
 		ImGui::Checkbox("Show LUT Overlay", &cloudLighting.showDebugOverlay);
 		if (auto _tt = Util::HoverTooltipWrapper())
@@ -1259,7 +1260,6 @@ void PhysicalSky::RenderClouds()
 	debugCb.debugColor = cloudLighting.debugColor;
 	debugCb.sunGain = cloudLighting.sunGain;
 	debugCb.ambientGain = cloudLighting.ambientGain;
-	debugCb.sunMsGain = cloudLighting.sunMsGain;
 	debugCb.cloudTrMuMin = cbData.cloudTrMuMin;
 	debugCb.cloudTrMuMax = cbData.cloudTrMuMax;
 	// Converting from the game-unit values LUTGEN 4 used guarantees the shader
@@ -1267,7 +1267,6 @@ void PhysicalSky::RenderClouds()
 	debugCb.cloudTrRBot = cbData.cloudTrRBot * Util::Units::GAME_UNIT_TO_KM;
 	debugCb.cloudTrRTop = cbData.cloudTrRTop * Util::Units::GAME_UNIT_TO_KM;
 	debugCb.octaveAttenA = cloudLighting.octaveAttenA;
-	debugCb.octaveAttenB = cloudLighting.octaveAttenB;
 	// The shader divides by extinction (albedo) and single-scatter albedo
 	// cannot exceed 1; enforce both no matter what the UI fed us.
 	debugCb.cloudExtinction = std::max(cloudLighting.cloudExtinction, 1e-3f);

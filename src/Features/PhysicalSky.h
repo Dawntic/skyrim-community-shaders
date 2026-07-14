@@ -110,18 +110,14 @@ struct PhysicalSky final : public Feature
 		float sunGain;
 
 		float ambientGain;
-		float sunMsGain;
 		float cloudTrMuMin;
 		float cloudTrMuMax;
-
 		float cloudTrRBot;
+
 		float cloudTrRTop;
 		float octaveAttenA;
-		float octaveAttenB;
-
 		float cloudScattering;
 		float cloudExtinction;
-		float2 debugPad1;
 	};
 	STATIC_ASSERT_ALIGNAS_16(CloudDebugCB);
 
@@ -131,11 +127,9 @@ struct PhysicalSky final : public Feature
 		uint debugSunTrMode = 0;   /**< 0 live | 1 force white | 2 force orange | 3 A/B global Tr LUT. */
 		uint debugAmbientMode = 0; /**< 0 live | 1 DebugColor | 2 literal red | 3 red->blue height gradient. */
 		float3 debugColor = { 1.f, 0.f, 1.f };
-		float sunGain = 2.f;           /**< Debug gate for the direct sun term. 0 while validating ambient. */
-		float ambientGain = 1.2f;      /**< Debug gate for the ambient term. */
-		float sunMsGain = 1.8f;        /**< Flat gain on the sun path only (replaces CLOUD_MS_GAIN). */
-		float octaveAttenA = .7f;      /**< Wrenninge octave extinction attenuation. */
-		float octaveAttenB = .6f;      /**< Wrenninge octave energy attenuation. */
+		float sunGain = 3.6f;          /**< Sun path gain (absorbed the old Sun MS Gain: 2.0 * 1.8). 0 while validating ambient. */
+		float ambientGain = 1.2f;      /**< Gain on the ambient term. */
+		float octaveAttenA = .7f;      /**< Wrenninge octave extinction attenuation. Energy attenuation is fixed in-shader. */
 		bool showDebugOverlay = false; /**< Blit the sun-Tr LUT + ambient swatches into a screen corner. */
 		float cloudScattering = 24.9f; /**< km^-1. Spectrally neutral droplets: albedo = scattering / extinction ~ 0.996. */
 		float cloudExtinction = 25.f;  /**< km^-1. */

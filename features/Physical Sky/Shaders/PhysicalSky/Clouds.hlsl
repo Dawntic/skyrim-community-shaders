@@ -107,6 +107,11 @@ float SunOpticalDepth(float3 samplePos, float3 sunDir, float extinction)
 	return od;
 }
 
+// Octave energy attenuation is fixed: varying it acted as a flat gain on the
+// sun path (redundant with SunGain), so only the extinction attenuation
+// (OctaveAttenA, which shapes how light penetrates depth) stays tunable.
+static const float OCTAVE_ENERGY_ATTEN = 0.6;
+
 // Wrenninge multi-scatter octaves: fakes deep multiple scattering of the
 // (gray, spectrally neutral) droplet medium.
 float SunVisibilityMS(float od)
@@ -117,7 +122,7 @@ float SunVisibilityMS(float od)
 	{
 		vis += b * exp(-a * od);
 		a *= OctaveAttenA;
-		b *= OctaveAttenB;
+		b *= OCTAVE_ENERGY_ATTEN;
 	}
 	return vis;
 }
@@ -133,7 +138,7 @@ float SunVisibilityMSPhased(float od, float3 phaseOctaves)
 	{
 		vis += b * exp(-a * od) * phaseOctaves[o];
 		a *= OctaveAttenA;
-		b *= OctaveAttenB;
+		b *= OCTAVE_ENERGY_ATTEN;
 	}
 	return vis;
 }
@@ -216,7 +221,7 @@ void ComputeLightingV3(float density, float stepLength, float3 sunPhaseVis, floa
 	// time-of-day color enters through sunTr. SharedData::DirLightColor is
 	// artist-tinted at sunset and would double-tint. The sun is never clamped
 	// here -- the Tr LUT decides when light stops arriving.
-	float3 sunRad = SharedData::physSkyData.sunlightColor * sunTr * sunPhaseVis * SunGain * SunMsGain;
+	float3 sunRad = SharedData::physSkyData.sunlightColor * sunTr * sunPhaseVis * SunGain;
 	float3 ambRad = EvalCloudAmbient(heightFrac, ambBottom, ambTop) * AmbientGain;  // no phase: pre-integrated
 
 	float3 inscatter = (sunRad + ambRad) * albedo * (1.0 - tr);
