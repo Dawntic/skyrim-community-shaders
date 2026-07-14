@@ -36,7 +36,17 @@ cbuffer CloudDataCB : register(b0)
 	float CloudCoverage;
 	float HeightScale;
 	float CloudType;
-	float WeatherScale;
+	float Scroll;  // z offset of the noise lookups; drag/animate to evolve the pattern
+
+	// Detail sculpting pass (billows/wisps), see ApplyCloudDetail
+	float DetailFrequency;     // detail noise frequency, as a multiple of the base noise scale
+	float DetailStrength;      // max fraction of the density range the detail may erode (0 = off)
+	float DetailCurlScale;     // curl lookup frequency, as a multiple of the base noise scale
+	float DetailCurlStrength;  // km of turbulent lookup distortion at the cloud base
+
+	float DetailFadeStart;  // km -- detail fades out over [start, end]; the 32^3
+	float DetailFadeEnd;    // texture has no mips, so it goes subpixel past this
+	float2 cloudDataPad;
 };
 
 // Debug/verification seams for the cloud lighting chain. Uniform flow control
@@ -48,24 +58,20 @@ cbuffer CloudDebugCB : register(b1)
 	float2 debugPad0;
 
 	float3 DebugColor;
-	float SunGain;  // 0 while validating ambient, 1 normally
+	float SunGain;  // sun path gain; 0 while validating ambient
 
 	float AmbientGain;
-	float SunMsGain;     // replaces CLOUD_MS_GAIN on the sun path only
 	float cloudTrMuMin;  // windowed sun-transmittance LUT axes; radii in km
 	float cloudTrMuMax;  // (this shader's scale -- the LUT was generated over
 						 // the same normalized axes in game units)
-
 	float cloudTrRBot;
-	float cloudTrRTop;
-	float OctaveAttenA;  // Wrenninge octave extinction attenuation (default 0.5)
-	float OctaveAttenB;  // Wrenninge octave energy attenuation (default 0.6)
 
+	float cloudTrRTop;
+	float OctaveAttenA;  // Wrenninge octave extinction attenuation
 	// Cloud droplets are spectrally neutral with albedo ~0.996; no color may
 	// be injected in the medium itself.
 	float CloudScattering;  // km^-1 (default 24.9)
 	float CloudExtinction;  // km^-1 (default 25)
-	float2 debugPad1;
 };
 
 Texture2D DepthTex : register(t0);

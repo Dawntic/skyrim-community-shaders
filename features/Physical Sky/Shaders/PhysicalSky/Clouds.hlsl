@@ -61,7 +61,7 @@ VertexOut main(uint vertexID : SV_VertexID)
 
 float GetCloudProfile(float3 SamplePos, float Height)
 {
-	float Scroll = 0;
+	// Scroll comes from CloudDataCB (settings-driven noise z offset).
 	float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0);  // Perlin-Worley + 3 octaves of worley
 	float PerlinWorley = NoiseSample.x;
 	float3 Worley = NoiseSample.yzw;
@@ -80,6 +80,58 @@ float GetCloudProfile(float3 SamplePos, float Height)
 	Density = LerpLinearStepClamped(Density, Erosion, 1.0, 0.0, 1.0);
 
 	return Density;
+}
+
+// Detail sculpting pass: runs AFTER the base density and carves
+// high-frequency structure into the LOW-DENSITY SHELL of the base shape,
+// producing the billowing tops and wispy fringes of real clouds. Follows the
+// Nubis/Decima technique (Schneider, "Real-Time Volumetric Cloudscapes",
+// GPU Pro 7 / SIGGRAPH 2015):
+//
+//   1. CloudDetailTex (32^3, RGB = 3 octaves of high-frequency Worley) is
+//      composited into an FBM with the same 0.625/0.25/0.125 weights the
+//      base shape uses.
+//   2. The lookup is distorted by 2D curl noise before sampling, faking
+//      turbulent advection; the distortion is strongest at the sheared cloud
+//      BASE and calms toward the top ((1 - Height) falloff).
+//   3. The erosion target transitions with height: near the base the FBM is
+//      used as-is, so dense worley cells get carved OUT of the shape and thin
+//      connective tendrils remain (wisps); above ~10% height it flips to
+//      1 - FBM, so the worley cells themselves survive as rounded bumps
+//      (cauliflower billows). This is Schneider's
+//      lerp(fbm, 1 - fbm, saturate(height * 10)).
+//   4. The erosion is applied through the same edge-biased remap the base
+//      erosion uses -- remap(base, erosion, 1, 0, 1) -- which by construction
+//      cannot touch saturated interiors (base near 1 maps to 1): only the
+//      outer DetailStrength-sized density band is sculpted, so the
+//      established base silhouette survives. DetailStrength ~0.2 is the
+//      reference value; the UI clamps it well below full erosion.
+//
+// The pass fades out over [DetailFadeStart, DetailFadeEnd]: the detail
+// texture has no mip chain, so past that range it is subpixel shimmer, and
+// skipping the two fetches is pure profit. The 5-step sun light march
+// deliberately keeps the un-detailed base density -- detail there is
+// invisible in the lit result (Wrenninge octaves low-pass it anyway) and
+// would double the march's texture cost.
+float ApplyCloudDetail(float BaseDensity, float3 SamplePos, float Height, float ViewDistance)
+{
+	float fade = 1.0 - LerpLinearStepClamped(ViewDistance, DetailFadeStart, DetailFadeEnd, 0.0, 1.0);
+	float strength = DetailStrength * fade;
+	if (strength <= 0.0)
+		return BaseDensity;
+
+	// Turbulent advection: curl-distort the detail lookup (2D field, strongest
+	// at the cloud base where wind shear lives).
+	float2 curl = CurlNoiseTex.SampleLevel(LinearRepeatSampler, SamplePos.xy * (HeightScale * DetailCurlScale), 0).xy * 2.0 - 1.0;
+	float3 detailPos = SamplePos + float3(curl * ((1.0 - Height) * DetailCurlStrength), Scroll);
+
+	float3 worley = CloudDetailTex.SampleLevel(LinearRepeatSampler, detailPos * (HeightScale * DetailFrequency), 0).xyz;
+	float detailFBM = dot(worley, float3(0.625, 0.25, 0.125));
+
+	// Wispy at the base, billowy at the top.
+	float erosion = lerp(detailFBM, 1.0 - detailFBM, saturate(Height * 10.0)) * strength;
+
+	return LerpLinearStepClamped(BaseDensity, erosion, 1.0, 0.0, 1.0);
 }
 
 // Optical depth toward the sun: 5 exponential steps, ~1.5 km total, coarse
@@ -107,6 +159,11 @@ float SunOpticalDepth(float3 samplePos, float3 sunDir, float extinction)
 	return od;
 }
 
+// Octave energy attenuation is fixed: varying it acted as a flat gain on the
+// sun path (redundant with SunGain), so only the extinction attenuation
+// (OctaveAttenA, which shapes how light penetrates depth) stays tunable.
+static const float OCTAVE_ENERGY_ATTEN = 0.6;
+
 // Wrenninge multi-scatter octaves: fakes deep multiple scattering of the
 // (gray, spectrally neutral) droplet medium.
 float SunVisibilityMS(float od)
@@ -117,7 +174,7 @@ float SunVisibilityMS(float od)
 	{
 		vis += b * exp(-a * od);
 		a *= OctaveAttenA;
-		b *= OctaveAttenB;
+		b *= OCTAVE_ENERGY_ATTEN;
 	}
 	return vis;
 }
@@ -133,7 +190,7 @@ float SunVisibilityMSPhased(float od, float3 phaseOctaves)
 	{
 		vis += b * exp(-a * od) * phaseOctaves[o];
 		a *= OctaveAttenA;
-		b *= OctaveAttenB;
+		b *= OCTAVE_ENERGY_ATTEN;
 	}
 	return vis;
 }
@@ -176,6 +233,11 @@ float3 SampleCloudSunTr(float3 posPlanetRel)
 	}
 	float r = length(posPlanetRel);
 	float mu = dot(posPlanetRel / r, SharedData::physSkyData.sunDir);
+	// Atmospheric refraction lifts the apparent sun ~0.5 deg at the horizon,
+	// extending the underlighting window slightly. Deliberately not enabled
+	// (out of scope per the upgrade plan); if wanted later:
+	// static const float REFRACTION_MU_BIAS = 0.009;
+	// if (mu < 0.0) mu += REFRACTION_MU_BIAS;
 	float2 uv = float2((mu - cloudTrMuMin) / (cloudTrMuMax - cloudTrMuMin),
 		(r - cloudTrRBot) / (cloudTrRTop - cloudTrRBot));
 	return TexCloudSunTr.SampleLevel(LinearSampler, saturate(uv), 0).rgb;
@@ -211,7 +273,7 @@ void ComputeLightingV3(float density, float stepLength, float3 sunPhaseVis, floa
 	// time-of-day color enters through sunTr. SharedData::DirLightColor is
 	// artist-tinted at sunset and would double-tint. The sun is never clamped
 	// here -- the Tr LUT decides when light stops arriving.
-	float3 sunRad = SharedData::physSkyData.sunlightColor * sunTr * sunPhaseVis * SunGain * SunMsGain;
+	float3 sunRad = SharedData::physSkyData.sunlightColor * sunTr * sunPhaseVis * SunGain;
 	float3 ambRad = EvalCloudAmbient(heightFrac, ambBottom, ambTop) * AmbientGain;  // no phase: pre-integrated
 
 	float3 inscatter = (sunRad + ambRad) * albedo * (1.0 - tr);
@@ -317,6 +379,11 @@ PixelOut main(VertexOut input)
 		float EnvelopeZ = GetEnvelopeRelativeZ(SamplePos, float2(bottomRadius, topRadius));
 
 		float CloudDensity = GetCloudProfile(SamplePos, EnvelopeZ);
+		if (CloudDensity <= 0.0)
+			continue;
+
+		// Sculpt billows/wisps into the base shape (view march only).
+		CloudDensity = ApplyCloudDetail(CloudDensity, SamplePos, EnvelopeZ, RayT.x + i * StepLength);
 		if (CloudDensity <= 0.0)
 			continue;
 

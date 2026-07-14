@@ -96,8 +96,18 @@ struct PhysicalSky final : public Feature
 		float coverage;
 		float heightScale;
 		float cloudType;
-		float pad;
+		float scroll;
+
+		float detailFrequency;
+		float detailStrength;
+		float detailCurlScale;
+		float detailCurlStrength;
+
+		float detailFadeStart;
+		float detailFadeEnd;
+		float2 cloudDataPad;
 	};
+	STATIC_ASSERT_ALIGNAS_16(CloudCB);
 
 	// CB struct matching CloudDebugCB in CloudCommon.hlsli
 	struct alignas(16) CloudDebugCB
@@ -110,32 +120,28 @@ struct PhysicalSky final : public Feature
 		float sunGain;
 
 		float ambientGain;
-		float sunMsGain;
 		float cloudTrMuMin;
 		float cloudTrMuMax;
-
 		float cloudTrRBot;
+
 		float cloudTrRTop;
 		float octaveAttenA;
-		float octaveAttenB;
-
 		float cloudScattering;
 		float cloudExtinction;
-		float2 debugPad1;
 	};
 	STATIC_ASSERT_ALIGNAS_16(CloudDebugCB);
 
-	// Runtime-only lighting verification knobs (deliberately not serialized).
+	// Lighting knobs. The tuning subset (gains, octave attenuation, medium
+	// coefficients) is serialized; the debug seams (override modes, debug
+	// color, overlay toggle) are deliberately runtime-only.
 	struct CloudLightingSettings
 	{
 		uint debugSunTrMode = 0;   /**< 0 live | 1 force white | 2 force orange | 3 A/B global Tr LUT. */
 		uint debugAmbientMode = 0; /**< 0 live | 1 DebugColor | 2 literal red | 3 red->blue height gradient. */
 		float3 debugColor = { 1.f, 0.f, 1.f };
-		float sunGain = 2.f;           /**< Debug gate for the direct sun term. 0 while validating ambient. */
-		float ambientGain = 1.2f;      /**< Debug gate for the ambient term. */
-		float sunMsGain = 1.8f;        /**< Flat gain on the sun path only (replaces CLOUD_MS_GAIN). */
-		float octaveAttenA = .7f;      /**< Wrenninge octave extinction attenuation. */
-		float octaveAttenB = .6f;      /**< Wrenninge octave energy attenuation. */
+		float sunGain = 3.6f;          /**< Sun path gain (absorbed the old Sun MS Gain: 2.0 * 1.8). 0 while validating ambient. */
+		float ambientGain = 1.2f;      /**< Gain on the ambient term. */
+		float octaveAttenA = .7f;      /**< Wrenninge octave extinction attenuation. Energy attenuation is fixed in-shader. */
 		bool showDebugOverlay = false; /**< Blit the sun-Tr LUT + ambient swatches into a screen corner. */
 		float cloudScattering = 24.9f; /**< km^-1. Spectrally neutral droplets: albedo = scattering / extinction ~ 0.996. */
 		float cloudExtinction = 25.f;  /**< km^-1. */
@@ -154,7 +160,15 @@ struct PhysicalSky final : public Feature
 		float heightScale = 0.95f; /**< Amount of cirrus clouds. (Clear or cloudy weather) */
 		float cloudType = 0.8f;    /**< Temperature difference between layers. (Storm clouds) */
 		float coverage2 = 0.0f;    /**< Custom current time value. (For a multiplayer sync) */
+		float scroll = 0.0f;       /**< Noise z offset; drag/animate to evolve the cloud pattern. */
 								   //bool noDelay = false;          /**< Make all computation in one frame. (Expensive!) */
+
+		float detailFrequency = 6.0f;    /**< Detail noise frequency as a multiple of the base noise scale. */
+		float detailStrength = 0.2f;     /**< Max fraction of the density range detail may erode (0 disables). */
+		float detailCurlScale = 1.0f;    /**< Curl lookup frequency as a multiple of the base noise scale. */
+		float detailCurlStrength = 0.2f; /**< km of turbulent lookup distortion at the cloud base. */
+		float detailFadeStart = 12.0f;   /**< km. Detail fades out over [start, end]. */
+		float detailFadeEnd = 32.0f;     /**< km. No mips on the detail noise; it is subpixel past this. */
 	};
 	CloudSettings cloudSettings;
 

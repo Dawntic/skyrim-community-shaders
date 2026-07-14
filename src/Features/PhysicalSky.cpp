@@ -28,6 +28,35 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	zBottom)
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	PhysicalSky::CloudSettings,
+	bottomRadius,
+	topRadius,
+	minDistance,
+	maxDistance,
+	coverage,
+	heightScale,
+	cloudType,
+	coverage2,
+	scroll,
+	detailFrequency,
+	detailStrength,
+	detailCurlScale,
+	detailCurlStrength,
+	detailFadeStart,
+	detailFadeEnd)
+
+// Only the artistic tuning subset persists; the debug seams (override modes,
+// debug color, overlay toggle) stay runtime-only so a save can never come
+// back up with, say, the ambient chain forced red.
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	PhysicalSky::CloudLightingSettings,
+	sunGain,
+	ambientGain,
+	octaveAttenA,
+	cloudScattering,
+	cloudExtinction)
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	PhysicalSky::Settings,
 	enabled,
 	enableAllExteriorCells,
@@ -136,16 +165,24 @@ void PhysicalSky::DataLoaded()
 void PhysicalSky::RestoreDefaultSettings()
 {
 	settings = {};
+	cloudSettings = {};
+	cloudLighting = {};
 }
 
 void PhysicalSky::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	if (o_json.contains("cloudSettings"))
+		cloudSettings = o_json["cloudSettings"];
+	if (o_json.contains("cloudLighting"))
+		cloudLighting = o_json["cloudLighting"];
 }
 
 void PhysicalSky::SaveSettings(json& o_json)
 {
 	o_json = settings;
+	o_json["cloudSettings"] = cloudSettings;
+	o_json["cloudLighting"] = cloudLighting;
 }
 
 void PhysicalSky::DrawSettings()
@@ -457,6 +494,33 @@ void PhysicalSky::SettingsClouds()
 
 	ImGui::SliderFloat("Coverage 2", &cloudSettings.coverage2, 0.0, 1.0);
 
+	ImGui::DragFloat("Scroll", &cloudSettings.scroll, 0.005f);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", "Offsets the cloud noise pattern (the z slice of the 3D noise). Drag or animate to evolve the clouds.");
+
+	ImGui::SeparatorText("Detail Sculpting");
+	{
+		ImGui::SliderFloat("Detail Strength", &cloudSettings.detailStrength, 0.f, 0.9f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"How much of the low-density shell the detail pass may erode. The base\n"
+				"silhouette always survives (interiors cannot be carved); ~0.2 is the\n"
+				"reference value, 0 disables the pass.");
+		ImGui::SliderFloat("Detail Frequency", &cloudSettings.detailFrequency, 1.f, 32.f, "%.1f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", "Billow/wisp feature frequency, relative to the base noise scale.");
+		ImGui::SliderFloat("Curl Strength", &cloudSettings.detailCurlStrength, 0.f, 1.f, "%.2f km");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s",
+				"Turbulent distortion of the detail lookup, strongest at the cloud base.\n"
+				"Breaks up the regular worley pattern into sheared wisps.");
+		ImGui::SliderFloat("Curl Scale", &cloudSettings.detailCurlScale, 0.f, 8.f, "%.2f");
+		ImGui::SliderFloat("Detail Fade Start", &cloudSettings.detailFadeStart, 0.f, 100.f, "%.0f km");
+		ImGui::SliderFloat("Detail Fade End", &cloudSettings.detailFadeEnd, 0.f, 100.f, "%.0f km");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", "Distance window over which detail fades out (it is subpixel far away; also saves two fetches per step).");
+	}
+
 	ImGui::SliderFloat("Min Distance", &cloudSettings.minDistance, 0.0, 400.0);
 	ImGui::SliderFloat("Max Distance", &cloudSettings.maxDistance, 0.0, 600.0);
 	//ImGui::Checkbox("noDelay", &cloudSettings.noDelay);
@@ -496,16 +560,17 @@ void PhysicalSky::SettingsClouds()
 
 		ImGui::ColorEdit3("Debug Color", &cloudLighting.debugColor.x, ImGuiColorEditFlags_Float);
 
-		ImGui::SliderFloat("Sun Gain", &cloudLighting.sunGain, 0.f, 2.f, "%.2f");
-		ImGui::SliderFloat("Ambient Gain", &cloudLighting.ambientGain, 0.f, 2.f, "%.2f");
-		ImGui::SliderFloat("Sun MS Gain", &cloudLighting.sunMsGain, 0.f, 4.f, "%.2f");
+		ImGui::SliderFloat("Sun Gain", &cloudLighting.sunGain, 0.f, 8.f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", "Flat gain on the sun path only (replaces the old CLOUD_MS_GAIN).");
+			ImGui::Text("%s", "Gain on the direct sun path. Set 0 to isolate the ambient chain while verifying.");
+		ImGui::SliderFloat("Ambient Gain", &cloudLighting.ambientGain, 0.f, 2.f, "%.2f");
 
 		ImGui::SliderFloat("Octave Extinction Atten", &cloudLighting.octaveAttenA, 0.f, 1.f, "%.2f");
-		ImGui::SliderFloat("Octave Energy Atten", &cloudLighting.octaveAttenB, 0.f, 1.f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", "Wrenninge multi-scatter octave attenuation (a/b). Defaults 0.5 / 0.6.");
+			ImGui::Text("%s",
+				"How quickly the Wrenninge multi-scatter octaves relax extinction:\n"
+				"higher lets sunlight glow deeper into the cloud. The octave energy\n"
+				"attenuation is fixed in-shader (it duplicated Sun Gain).");
 
 		ImGui::Checkbox("Show LUT Overlay", &cloudLighting.showDebugOverlay);
 		if (auto _tt = Util::HoverTooltipWrapper())
@@ -1246,6 +1311,15 @@ void PhysicalSky::RenderClouds()
 	cb.coverage = cloudSettings.coverage;
 	cb.heightScale = 1.0f - std::clamp(cloudSettings.heightScale, 0.0f, 1.0f);
 	cb.cloudType = cloudSettings.cloudType;
+	cb.scroll = cloudSettings.scroll;
+	cb.detailFrequency = std::max(cloudSettings.detailFrequency, 0.f);
+	// Full-range erosion would let detail delete the base shape entirely.
+	cb.detailStrength = std::clamp(cloudSettings.detailStrength, 0.f, 0.9f);
+	cb.detailCurlScale = std::max(cloudSettings.detailCurlScale, 0.f);
+	cb.detailCurlStrength = std::max(cloudSettings.detailCurlStrength, 0.f);
+	// The shader's fade remap divides by (end - start).
+	cb.detailFadeStart = std::max(cloudSettings.detailFadeStart, 0.f);
+	cb.detailFadeEnd = std::max(cloudSettings.detailFadeEnd, cb.detailFadeStart + 0.1f);
 	cloudBuffer->Update(cb);
 
 	CloudDebugCB debugCb{};
@@ -1254,7 +1328,6 @@ void PhysicalSky::RenderClouds()
 	debugCb.debugColor = cloudLighting.debugColor;
 	debugCb.sunGain = cloudLighting.sunGain;
 	debugCb.ambientGain = cloudLighting.ambientGain;
-	debugCb.sunMsGain = cloudLighting.sunMsGain;
 	debugCb.cloudTrMuMin = cbData.cloudTrMuMin;
 	debugCb.cloudTrMuMax = cbData.cloudTrMuMax;
 	// Converting from the game-unit values LUTGEN 4 used guarantees the shader
@@ -1262,7 +1335,6 @@ void PhysicalSky::RenderClouds()
 	debugCb.cloudTrRBot = cbData.cloudTrRBot * Util::Units::GAME_UNIT_TO_KM;
 	debugCb.cloudTrRTop = cbData.cloudTrRTop * Util::Units::GAME_UNIT_TO_KM;
 	debugCb.octaveAttenA = cloudLighting.octaveAttenA;
-	debugCb.octaveAttenB = cloudLighting.octaveAttenB;
 	// The shader divides by extinction (albedo) and single-scatter albedo
 	// cannot exceed 1; enforce both no matter what the UI fed us.
 	debugCb.cloudExtinction = std::max(cloudLighting.cloudExtinction, 1e-3f);
