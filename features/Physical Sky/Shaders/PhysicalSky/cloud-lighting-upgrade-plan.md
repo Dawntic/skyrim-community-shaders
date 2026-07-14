@@ -1,5 +1,24 @@
 # Request: Physically-Based Sunset Lighting for Volumetric Clouds
 
+## Status
+
+**Implemented and merged (PR #1)** — all plan steps 0–6, one commit per step:
+
+-   **V0 report**: `docs/development/physical-sky-trlut-mapping-audit.md`. Verdict: the global Tr LUT forward/inverse mappings **agree** (both hardcode -0.414); round-trip error is zero. The windowed LUT is justified by μ resolution (~2–4 texels across the twilight transition), not by a mapping bug.
+-   LUTGEN 4 (windowed sun-transmittance LUT) + LUTGEN 5 (ambient endpoint LUT), cloud shader consumption via `ComputeLightingV3` (white TOA `sunlightColor` × `sunTr`, never `DirLightColor`), in-cloud sun light march + Wrenninge octaves with optional per-octave phase, debug seams on cbuffer uniforms, corner overlay + ImGui panel, and the five Step 6 fixes (albedo 0.996, TrDepthSum, LUTGEN 1 Lambert bounce, 8×8 MS sampling, gamma TODO).
+-   LUTGEN 0–3 verified token-identical except the two sanctioned Step 6 output changes (LUTGEN 1 only).
+
+**Post-merge fixes** (on `cloud-lighting`): LUTGEN 4 compile fix (the unused `rayMarch` definition had a malformed signature in that permutation — now guarded out), retuned lighting/layer defaults, the coarse light-march density removed (the light march now marches the full base profile), and vanilla game clouds discarded in `Sky.hlsl`.
+
+**Follow-up jobs (second PR)**:
+
+1. ~~Scroll setting~~ — done: `cloudSettings.scroll` → `CloudDataCB.Scroll` (the old unused `WeatherScale` slot) drives the base-noise z slice and the detail lookup; drag control in the Clouds tab.
+2. ~~Persist cloud settings~~ — done: `CloudSettings` (incl. scroll + detail sculpting params) serializes under `cloudSettings`; the lighting tuning subset (gains, octave extinction attenuation, medium coefficients) under `cloudLighting`. Debug seams stay runtime-only.
+3. ~~Fold redundant gains~~ — done: `SunMsGain` removed (it multiplied the same term as `SunGain`; effective product folded into the 3.6 default) and the Wrenninge octave *energy* attenuation fixed in-shader at 0.6 (it acted as another flat sun gain). The *extinction* attenuation stays tunable — it shapes glow depth, not brightness.
+4. ~~Detail density function~~ — done: `ApplyCloudDetail` runs after `GetCloudProfile` in the view march (Nubis/Schneider technique): curl-distorted 32³ Worley FBM, wispy-base → billowy-top height transition, applied through the edge-biased remap so interiors can't be carved and the base silhouette survives (`DetailStrength`, reference 0.2, hard clamp 0.9); distance-faded since the detail texture has no mips. The sun light march keeps the un-detailed base density.
+
+**Still open**: the V1–V4 in-game verification ladder below (needs a Windows build + sunset sweeps); the gamma-placement TODO at the cloud encode; the global Tr LUT reparameterization remains a documented follow-up option, not scheduled.
+
 ## Goal
 
 Make the volumetric cloud system correctly display twilight/sunset colors (orange/red underlit cloud bases, blue-lit tops, purple mixing zones) by:
