@@ -82,28 +82,6 @@ float GetCloudProfile(float3 SamplePos, float Height)
 	return Density;
 }
 
-// Coarse density for light marches: base Perlin-Worley remap + height
-// gradient + coverage only. The Worley FBM erosion chain is skipped -- its
-// detail is barely visible in a light march, and the noise textures have no
-// mip chains to LOD with. The FBM term is replaced by its mean (0.5) so the
-// coverage response survives; at typical coverage this degenerates to no
-// erosion, which only overestimates density (slightly darker cores, never
-// light leaks).
-float GetCloudProfileCoarse(float3 SamplePos, float Height)
-{
-	float Scroll = 0;
-	float PerlinWorley = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0).x;
-
-	float layerDensity = GetDensityHeightGradientForPoint(SamplePos, CloudType, Height);
-	float Density = layerDensity * LerpLinearStepClamped(PerlinWorley, 0.3, 1.0, 0.0, 1.0);
-	float Coverage = pow(CloudCoverage, LerpLinearStep(Height, 0.7, 0.8, 1.0, 0.8));
-
-	float Erosion = LerpLinearStepClamped(0.5, Coverage, 1.0, 0.0, 1.0);
-	Erosion = LerpLinearStepClamped(Erosion, Coverage2, 1.0, 0.0, 1.0);
-
-	return LerpLinearStepClamped(Density, Erosion, 1.0, 0.0, 1.0);
-}
-
 // Optical depth toward the sun: 5 exponential steps, ~1.5 km total, coarse
 // density only (erosion skipped). sunDir points TOWARD the sun, which at
 // sunset goes DOWNWARD through the layer -- exiting through the layer BASE is
@@ -123,7 +101,7 @@ float SunOpticalDepth(float3 samplePos, float3 sunDir, float extinction)
 		float h = LinearStep(bottomRadius, topRadius, p.z);
 		if (h < 0.0 || h > 1.0)
 			break;  // exited layer (through base OR top) -> unoccluded beyond
-		od += GetCloudProfileCoarse(p, h) * dt * extinction;
+		od += GetCloudProfile(p, h) * dt * extinction;
 		dt *= 2.0;
 	}
 	return od;
