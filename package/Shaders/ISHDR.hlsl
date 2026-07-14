@@ -123,9 +123,7 @@ PS_OUTPUT main(PS_INPUT input)
 #		if defined(DOWNADAPT)
 	float2 adaptValue = max(0.001, AdaptTex.Sample(AdaptSampler, input.TexCoord).xy);
 	float2 adaptDelta = downsampledColor.xy - adaptValue;
-	downsampledColor.xy =
-		sign(adaptDelta) * clamp(abs(Param.wz * adaptDelta), 0.00390625, abs(adaptDelta)) +
-		adaptValue;
+	downsampledColor.xy = sign(adaptDelta) * clamp(abs(Param.wz * adaptDelta), 0.00390625, abs(adaptDelta)) + adaptValue;
 #		endif
 	psout.Color = float4(downsampledColor, BlurScale.z);
 
@@ -135,13 +133,13 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 inputColor = BlendTex.Sample(BlendSampler, uv).xyz;
 
 	float3 bloomColor = 0;
-	if (Flags.x > 0.5) {
-		bloomColor = ImageTex.Sample(ImageSampler, uv).xyz;
-	} else {
-		bloomColor = ImageTex.Sample(ImageSampler, input.TexCoord.xy).xyz;
-	}
+	//if (Flags.x > 0.5) {
+	//	bloomColor = ImageTex.Sample(ImageSampler, uv).xyz;
+	//} else {
+	//	bloomColor = ImageTex.Sample(ImageSampler, input.TexCoord.xy).xyz;
+	//}
 
-	float2 avgValue = AvgTex.Sample(AvgSampler, input.TexCoord.xy).xy;
+	float2 avgValue = float2(0.18, 1);  //AvgTex.Sample(AvgSampler, input.TexCoord.xy).xy;
 
 	float4 hdrShared = SharedData::HDRData;
 	bool isHDR = hdrShared.x > 0.5;
@@ -152,8 +150,9 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float3 outputColor = 0.0;
 
-	if (avgValue.x != 0 && avgValue.y != 0)
-		inputColor *= avgValue.y / avgValue.x;
+	//avgValue.x = 0.18;
+	//if (avgValue.x != 0 && avgValue.y != 0)
+	//inputColor *= avgValue.y / avgValue.x;
 	inputColor = max(0, inputColor);
 
 	float3 blendedColor;
@@ -172,7 +171,7 @@ PS_OUTPUT main(PS_INPUT input)
 		// bloom intensity against this shoulder don't get blown-out highlights. HDR keeps the
 		// soft-saturation form (1 - exp2(-x)) which bleeds bloom into specular peaks intentionally.
 		float3 bloomMask = isHDR ? saturate(Param.x - (1.0 - exp2(-blendedColor))) : saturate(Param.x - blendedColor);
-		blendedColor += bloomMask * bloomColor;
+		//blendedColor += bloomMask * bloomColor;
 	}
 
 	float blendedLuminance = Color::RGBToLuminance(blendedColor);
