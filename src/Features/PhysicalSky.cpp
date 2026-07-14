@@ -28,6 +28,35 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	zBottom)
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	PhysicalSky::CloudSettings,
+	bottomRadius,
+	topRadius,
+	minDistance,
+	maxDistance,
+	coverage,
+	heightScale,
+	cloudType,
+	coverage2,
+	scroll,
+	detailFrequency,
+	detailStrength,
+	detailCurlScale,
+	detailCurlStrength,
+	detailFadeStart,
+	detailFadeEnd)
+
+// Only the artistic tuning subset persists; the debug seams (override modes,
+// debug color, overlay toggle) stay runtime-only so a save can never come
+// back up with, say, the ambient chain forced red.
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	PhysicalSky::CloudLightingSettings,
+	sunGain,
+	ambientGain,
+	octaveAttenA,
+	cloudScattering,
+	cloudExtinction)
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	PhysicalSky::Settings,
 	enabled,
 	enableAllExteriorCells,
@@ -136,16 +165,24 @@ void PhysicalSky::DataLoaded()
 void PhysicalSky::RestoreDefaultSettings()
 {
 	settings = {};
+	cloudSettings = {};
+	cloudLighting = {};
 }
 
 void PhysicalSky::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	if (o_json.contains("cloudSettings"))
+		cloudSettings = o_json["cloudSettings"];
+	if (o_json.contains("cloudLighting"))
+		cloudLighting = o_json["cloudLighting"];
 }
 
 void PhysicalSky::SaveSettings(json& o_json)
 {
 	o_json = settings;
+	o_json["cloudSettings"] = cloudSettings;
+	o_json["cloudLighting"] = cloudLighting;
 }
 
 void PhysicalSky::DrawSettings()

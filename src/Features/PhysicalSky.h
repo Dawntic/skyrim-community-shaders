@@ -131,7 +131,9 @@ struct PhysicalSky final : public Feature
 	};
 	STATIC_ASSERT_ALIGNAS_16(CloudDebugCB);
 
-	// Runtime-only lighting verification knobs (deliberately not serialized).
+	// Lighting knobs. The tuning subset (gains, octave attenuation, medium
+	// coefficients) is serialized; the debug seams (override modes, debug
+	// color, overlay toggle) are deliberately runtime-only.
 	struct CloudLightingSettings
 	{
 		uint debugSunTrMode = 0;   /**< 0 live | 1 force white | 2 force orange | 3 A/B global Tr LUT. */
