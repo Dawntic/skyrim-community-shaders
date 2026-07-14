@@ -22,64 +22,65 @@ RWTexture3D<float4> RWTexOutput : register(u0);
 RWTexture2D<float4> RWTexOutput : register(u0);
 #endif
 
+#if LUTGEN != 4
 void rayMarch(
-	float3 pos, float3 rayDir, 
-#if LUTGEN == 0
+	float3 pos, float3 rayDir,
+#	if LUTGEN == 0
 	float3 sunDir,
 	inout float3 tr
-#elif LUTGEN == 1
+#	elif LUTGEN == 1
 	float3 sunDir,
 	inout float3 tr,
 	inout float3 lum, inout float3 lumFactor
-#elif LUTGEN == 2 || LUTGEN == 5
+#	elif LUTGEN == 2 || LUTGEN == 5
 	inout float3 tr,
 	inout float3 lum
-#elif LUTGEN == 3
+#	elif LUTGEN == 3
 	uint2 tid, uint depth,
 	inout float3 tr,
 	inout float3 lum
-#endif
+#	endif
 )
 {
 	const SharedData::PhysSkyData data = SharedData::physSkyData;
 
-#if LUTGEN == 0
+#	if LUTGEN == 0
 	const uint nsteps = 40;
-#elif LUTGEN == 1
+#	elif LUTGEN == 1
 	const uint nsteps = 20;
-#elif LUTGEN == 2 || LUTGEN == 5
+#	elif LUTGEN == 2 || LUTGEN == 5
 	const uint nsteps = 30;
-#else
+#	elif LUTGEN == 3
 	const uint nsteps = depth - 1;
-#endif
+#	endif
 
-#if LUTGEN > 1
+#	if LUTGEN > 1
 	const float3 sunDir = data.sunDir;
-#endif
+#	endif
 
 	float tGround = RayIntersectSphere(pos, rayDir, 0, data.rPlanet);
-#if LUTGEN == 0
+#	if LUTGEN == 0
 	if (tGround > 0.0) {
 		tr = 0;
 		return;
 	}
-#endif
+#	endif
 
 	float tAtmos = RayIntersectSphere(pos, rayDir, 0, data.rAtmosphere);
-#if LUTGEN == 3
+#	if LUTGEN == 3
 	float tMax = AP_MAX_DIST;
-#else
+#	else
 	float tMax = tGround > 0 ? tGround : tAtmos;
-#endif
+#	endif
 	float dt = tMax / float(nsteps);
 	float3 stride = dt * rayDir;
 
-#if LUTGEN != 0
+#	if LUTGEN != 0
 	float uSun = dot(rayDir, sunDir);
 	float phaseAerosolSun = Phase::CornetteShanks(uSun, data.aerosolPhaseG);
 	float phaseRayleighSun = Phase::Rayleigh(uSun);
 
-#	if LUTGEN != 1
+#		if LUTGEN != 1
 	float uMasser = dot(rayDir, data.masserDir);
 	float phaseAerosolMasser = Phase::CornetteShanks(uMasser, data.aerosolPhaseG);
 	float phaseRayleighMasser = Phase::Rayleigh(uMasser);
@@ -87,8 +88,8 @@ void rayMarch(
 	float uSecunda = dot(rayDir, data.secundaDir);
 	float phaseAerosolSecunda = Phase::CornetteShanks(uSecunda, data.aerosolPhaseG);
 	float phaseRayleighSecunda = Phase::Rayleigh(uSecunda);
+#		endif
 #	endif
-#endif
 
 	float3 curr_pos = pos;
 	[loop] for (uint i = 0; i < nsteps; ++i)
@@ -107,49 +108,49 @@ void rayMarch(
 
 		float3 trSample = exp(-dt * extinction);
 
-#if LUTGEN != 0
+#	if LUTGEN != 0
 		float3 scatterFactor = (1 - trSample) / extinction;
 
 		float3 scatterNoPhase = muSRayleigh + muSAerosol;
-#	if LUTGEN == 1  // multiscatter
+#		if LUTGEN == 1  // multiscatter
 		float3 fScatter = scatterNoPhase * scatterFactor;
 		lumFactor += tr * fScatter;
-#	endif
+#		endif
 
 		float2 lutUvSun = TrLutUvPlanet(curr_pos, sunDir);
 		float3 trSun = TexTrLut.SampleLevel(SampTr, lutUvSun, 0).rgb;
-#	if LUTGEN != 1
+#		if LUTGEN != 1
 		float2 lutUvMasser = TrLutUvPlanet(curr_pos, data.masserDir);
 		float3 trMasser = TexTrLut.SampleLevel(SampTr, lutUvMasser, 0).rgb;
 
 		float2 lutUvSecunda = TrLutUvPlanet(curr_pos, data.secundaDir);
 		float3 trSecunda = TexTrLut.SampleLevel(SampTr, lutUvSecunda, 0).rgb;
-		
+
 		float3 psiMs = TexMsLut.SampleLevel(SampTr, lutUvSun, 0).rgb * data.sunlightColor;
 		psiMs += TexMsLut.SampleLevel(SampTr, lutUvMasser, 0).rgb * data.masserColor;
 		psiMs += TexMsLut.SampleLevel(SampTr, lutUvSecunda, 0).rgb * data.secundaColor;
-#	endif
+#		endif
 
 		float3 inscatter = (muSRayleigh * phaseRayleighSun + muSAerosol * phaseAerosolSun) * trSun;
-#	if LUTGEN != 1
+#		if LUTGEN != 1
 		inscatter *= data.sunlightColor;
 		inscatter += (muSRayleigh * phaseRayleighMasser + muSAerosol * phaseAerosolMasser) * trMasser * data.masserColor;
 		inscatter += (muSRayleigh * phaseRayleighSecunda + muSAerosol * phaseAerosolSecunda) * trSecunda * data.secundaColor;
 		inscatter += scatterNoPhase * psiMs;
-#	endif
+#		endif
 
 		float3 scatterIntegeral = inscatter * scatterFactor;
 
 		lum += scatterIntegeral * tr;
-#endif
+#	endif
 		tr *= trSample;
 
-#if LUTGEN == 3
+#	if LUTGEN == 3
 		RWTexOutput[uint3(tid.xy, i + 1)] = float4(lum, dot(tr, float3(0.2126, 0.7152, 0.0722)));
-#endif
+#	endif
 	}
 
-#if LUTGEN == 1  // multiscatter
+#	if LUTGEN == 1  // multiscatter
 	if (tGround > 0) {
 		// Lambert ground bounce: albedo/pi BRDF times N.L. The old
 		// dot(pos, sunDir) > 0 guard keyed on the ray ORIGIN and is subsumed
@@ -161,11 +162,11 @@ void rayMarch(
 		float2 lutUv = TrLutUvPlanet(hit_pos, sunDir);
 		lum += tr * (data.groundAlbedo / Math::PI) * ndl * TexTrLut.SampleLevel(SampTr, lutUv, 0).rgb;
 	}
-#endif
+#	endif
 }
+#endif
 
-[numthreads(8, 8, 1)] void main(uint3 tid
-								: SV_DispatchThreadID) {
+[numthreads(8, 8, 1)] void main(uint3 tid : SV_DispatchThreadID) {
 	const SharedData::PhysSkyData data = SharedData::physSkyData;
 
 #if LUTGEN == 3
