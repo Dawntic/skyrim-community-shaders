@@ -204,6 +204,10 @@ PS_OUTPUT main(PS_INPUT input)
 	// scalar in PParams.y to RGB; float3 matches output .xyz where skyScale is added.
 	float3 skyScale = Color::Sky(PParams.yyy);
 
+#	if defined(PS_CLOUDS) || defined(CLOUDS)
+	discard;
+#	endif
+
 #	if defined(PS_CLOUDS)
 	float psCloudDist = 1e3f / 1.428e-2;
 	float3 viewDir = normalize(input.WorldPosition.xyz);
