@@ -40,9 +40,9 @@ namespace SphericalHarmonics
 	sh2RGB Zero2RGB()
 	{
 		sh2RGB result;
-		result.r = Zero();
-		result.g = Zero();
-		result.b = Zero();
+		result.r = ZeroSH2();
+		result.g = ZeroSH2();
+		result.b = ZeroSH2();
 		return result;
 	}
 

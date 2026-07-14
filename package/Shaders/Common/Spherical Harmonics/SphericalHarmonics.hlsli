@@ -79,9 +79,22 @@ namespace SphericalHarmonics
 		return float3(r * cos(phi), z, r * sin(phi));
 	}
 
-	sh2 Zero()
+	sh2 ZeroSH2()
 	{
 		return float4(0.0f, 0.0f, 0.0f, 0.0f);
+	}
+
+	sh2 UnitSH2()
+	{
+		return float4(sqrt(4.0 * Math::PI), 0, 0, 0);
+	}
+
+	sh2 HemisphereSH2()
+	{
+		sh2 HemiUp = SphericalHarmonics::ZeroSH2();
+		HemiUp.x = 1.77245385f;  // 0.28209479 * 2PI   (same DC as any hemisphere: half the sphere)
+		HemiUp.z = 1.53499006f;  // -(0.48860251 * PI)  negative z -> lobe points down
+		return HemiUp;
 	}
 
 	// Evaluates spherical harmonics basis for a direction dir.
@@ -164,19 +177,11 @@ namespace SphericalHarmonics
 		return result;
 	}
 
-	// Computes the SH coefficients of a SH function representing the result of the multiplication of two SH functions. (from [4])
-	// If sources have N bands, this product will result in 2N*1 bands as signal multiplication can add frequencies (think about two lobes intersecting).
-	// To avoid that, the result can be truncated to N bands. It will just have a lower frequency, i.e. less details. (from [2], SH Products p.7)
-	// Note: - the code from [4] has been adapted to match the mapping from [2] we use.
-	//		 - !!! Be aware that this code has note yet be tested !!!
-	sh2 Product(sh2 shL, sh2 shR)
+	sh2 Product(sh2 a, sh2 b)
 	{
-		const float factor = 1.0f / (2.0f * sqrt(Math::PI));
-		return factor * sh2(
-							dot(shL, shR),
-							shL.y * shR.w + shL.w * shR.y,
-							shL.z * shR.w + shL.w * shR.z,
-							shL.w * shR.w + shL.w * shR.w);
+		sh2 result = float4(dot(a, b), a.x * b.yzw + b.x * a.yzw);
+		result *= 1.0 / (2.0 * sqrt(Math::PI));
+		return result;
 	}
 
 	// Convolves a SH function using a Hanning filtering. This helps reducing ringing and negative values. (from [2], Windowing p.16)
