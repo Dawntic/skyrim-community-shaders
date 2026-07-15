@@ -10,6 +10,7 @@
 #endif
 
 #include "Common/Game.hlsli"
+#include "Common/SharedData.hlsli"
 
 namespace CloudShadows
 {
