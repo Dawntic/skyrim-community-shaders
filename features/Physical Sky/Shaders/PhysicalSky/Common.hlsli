@@ -104,12 +104,20 @@ Texture2D<unorm float> TexApShadow : register(t64);
 	{
 		const SharedData::PhysSkyData data = SharedData::physSkyData;
 
-		float maxHorizonDist = sqrt(data.rAtmosphere * data.rAtmosphere - data.rPlanet * data.rPlanet);
-		float horizonDist = sqrt(r * r - data.rPlanet * data.rPlanet);
+		// A ray march that reaches the atmosphere boundary can hand us a radius a hair
+		// outside [rPlanet, rAtmosphere] from floating-point error (most often at the
+		// top of an upward ray, where r ~= rAtmosphere). Clamp it, and guard every
+		// sqrt with max(0, ...): an unguarded sqrt of a slightly-negative argument
+		// returns NaN, which then propagates into the upper rows of the sky-view LUT
+		// and flickers when the view points toward the zenith.
+		r = clamp(r, data.rPlanet, data.rAtmosphere);
+
+		float maxHorizonDist = sqrt(max(0.0, data.rAtmosphere * data.rAtmosphere - data.rPlanet * data.rPlanet));
+		float horizonDist = sqrt(max(0.0, r * r - data.rPlanet * data.rPlanet));
 
 		float uv_y = horizonDist / maxHorizonDist;
 
-		float discriminant = r * r * cosSunZenith * cosSunZenith + (maxHorizonDist * maxHorizonDist - horizonDist * horizonDist);
+		float discriminant = max(0.0, r * r * cosSunZenith * cosSunZenith + (maxHorizonDist * maxHorizonDist - horizonDist * horizonDist));
 		float rayLength = max(0.0f, -r * cosSunZenith + sqrt(discriminant));
 
 		float rayLengthMin = data.rAtmosphere - r;
@@ -132,7 +140,7 @@ Texture2D<unorm float> TexApShadow : register(t64);
 		const SharedData::PhysSkyData data = SharedData::physSkyData;
 
 		// Y axis: horizon distance, nonlinear in altitude
-		float maxHorizonDist = sqrt(data.rAtmosphere * data.rAtmosphere - data.rPlanet * data.rPlanet);
+		float maxHorizonDist = sqrt(max(0.0, data.rAtmosphere * data.rAtmosphere - data.rPlanet * data.rPlanet));
 		float horizonDist = maxHorizonDist * uv.y;
 		float worldHeight = sqrt(horizonDist * horizonDist + data.rPlanet * data.rPlanet);
 
@@ -147,6 +155,31 @@ Texture2D<unorm float> TexApShadow : register(t64);
 
 		pos = float3(0.0f, 0.0f, worldHeight);
 		rayDir = float3(0.0f, sqrt(1.0 - zenithCos * zenithCos), zenithCos);
+	}
+
+	// The multiscatter LUT keeps the original linear parameterization from its
+	// generation pass (LutGen.cs.hlsl, LUTGEN == 1): u is the sun-zenith cosine
+	// mapped from the horizon cosine up to 1, v is altitude between the planet and
+	// atmosphere radii. It must NOT be sampled through TrLutUv -- that axis was
+	// reparameterized for the transmittance LUT only, so reusing it here reads the
+	// wrong Ms cells. This mirrors the (altitude, zenithCos) layout in main().
+	float2 MsLutUv(float r, float cosSunZenith)
+	{
+		const SharedData::PhysSkyData data = SharedData::physSkyData;
+
+		const float cosHorZenith = -0.414;
+		float2 uv = float2(
+			(cosSunZenith - cosHorZenith) / (1.0 - cosHorZenith),
+			(r - data.rPlanet) / (data.rAtmosphere - data.rPlanet));
+		uv = saturate(uv);
+		return clamp(uv, float2(0.5 / 32.0, 0.5 / 32.0), float2(1.0 - 0.5 / 32.0, 1.0 - 0.5 / 32.0));
+	}
+
+	float2 MsLutUvPlanet(float3 pos, float3 sunDir)
+	{
+		float r = length(pos);
+		float3 up = pos / r;
+		return MsLutUv(r, dot(sunDir, up));
 	}
 
 	// cylinder map
