@@ -494,7 +494,7 @@ void PhysicalSky::SettingsClouds()
 
 	ImGui::SliderFloat("Coverage 2", &cloudSettings.coverage2, 0.0, 1.0);
 
-	ImGui::DragFloat("Scroll", &cloudSettings.scroll, 0.005f);
+	ImGui::SliderFloat("Scroll", &cloudSettings.scroll, 0.0, 32.0);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", "Offsets the cloud noise pattern (the z slice of the 3D noise). Drag or animate to evolve the clouds.");
 

@@ -1,29 +1,8 @@
-// Copyright 2022-2026 Nikita Fediuchin. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
 #include "PhysicalSky/CloudCommon.hlsli"
-
-#define STEP_SIZE_FACTOR 1.0
-
-// This shader works in planet-center-relative KILOMETERS; the sky LUT code
-// (physSkyData) works in game units. Keep this in sync with
-// Util::Units::GAME_UNIT_TO_KM -- the C++ side asserts the scales agree.
-static const float GAME_UNIT_TO_KM = 1.428e-5;
 
 struct VertexOut
 {
@@ -61,7 +40,6 @@ VertexOut main(uint vertexID : SV_VertexID)
 
 float GetCloudProfile(float3 SamplePos, float Height)
 {
-	// Scroll comes from CloudDataCB (settings-driven noise z offset).
 	float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0);  // Perlin-Worley + 3 octaves of worley
 	float PerlinWorley = NoiseSample.x;
 	float3 Worley = NoiseSample.yzw;
@@ -82,37 +60,6 @@ float GetCloudProfile(float3 SamplePos, float Height)
 	return Density;
 }
 
-// Detail sculpting pass: runs AFTER the base density and carves
-// high-frequency structure into the LOW-DENSITY SHELL of the base shape,
-// producing the billowing tops and wispy fringes of real clouds. Follows the
-// Nubis/Decima technique (Schneider, "Real-Time Volumetric Cloudscapes",
-// GPU Pro 7 / SIGGRAPH 2015):
-//
-//   1. CloudDetailTex (32^3, RGB = 3 octaves of high-frequency Worley) is
-//      composited into an FBM with the same 0.625/0.25/0.125 weights the
-//      base shape uses.
-//   2. The lookup is distorted by 2D curl noise before sampling, faking
-//      turbulent advection; the distortion is strongest at the sheared cloud
-//      BASE and calms toward the top ((1 - Height) falloff).
-//   3. The erosion target transitions with height: near the base the FBM is
-//      used as-is, so dense worley cells get carved OUT of the shape and thin
-//      connective tendrils remain (wisps); above ~10% height it flips to
-//      1 - FBM, so the worley cells themselves survive as rounded bumps
-//      (cauliflower billows). This is Schneider's
-//      lerp(fbm, 1 - fbm, saturate(height * 10)).
-//   4. The erosion is applied through the same edge-biased remap the base
-//      erosion uses -- remap(base, erosion, 1, 0, 1) -- which by construction
-//      cannot touch saturated interiors (base near 1 maps to 1): only the
-//      outer DetailStrength-sized density band is sculpted, so the
-//      established base silhouette survives. DetailStrength ~0.2 is the
-//      reference value; the UI clamps it well below full erosion.
-//
-// The pass fades out over [DetailFadeStart, DetailFadeEnd]: the detail
-// texture has no mip chain, so past that range it is subpixel shimmer, and
-// skipping the two fetches is pure profit. The 5-step sun light march
-// deliberately keeps the un-detailed base density -- detail there is
-// invisible in the lit result (Wrenninge octaves low-pass it anyway) and
-// would double the march's texture cost.
 float ApplyCloudDetail(float BaseDensity, float3 SamplePos, float Height, float ViewDistance)
 {
 	float fade = 1.0 - LerpLinearStepClamped(ViewDistance, DetailFadeStart, DetailFadeEnd, 0.0, 1.0);
@@ -140,39 +87,34 @@ float ApplyCloudDetail(float BaseDensity, float3 SamplePos, float Height, float 
 // the unoccluded case, exactly like exiting through the top. The atmosphere
 // beyond the exit is already accounted for by the windowed sun-transmittance
 // LUT; the two are independent path segments composed by multiplication.
-float SunOpticalDepth(float3 samplePos, float3 sunDir, float extinction)
+float GetOpticalDepth(float3 Pos, float3 Dir, float extinction)
 {
-	float od = 0.0;
+	float OpticalDepth = 0.0;
 	float t = 0.0, dt = 0.05;  // km
-	[unroll] for (int s = 0; s < 5; ++s)
+	[unroll] for (int i = 0; i < 5; ++i)
 	{
 		t += dt;
-		float3 p = samplePos + sunDir * t;
+		float3 SamplePos = Pos + Dir * t;
 		// Unsaturated height: the exit test must see out-of-layer values
-		// (GetEnvelopeRelativeZ saturates and would never trigger it).
-		float h = LinearStep(bottomRadius, topRadius, p.z);
-		if (h < 0.0 || h > 1.0)
-			break;  // exited layer (through base OR top) -> unoccluded beyond
-		od += GetCloudProfile(p, h) * dt * extinction;
+		float Height = LinearStep(bottomRadius, topRadius, SamplePos.z);
+		if (Height < 0.0 || Height > 1.0)
+			break;
+		OpticalDepth += GetCloudProfile(SamplePos, Height) * dt * extinction;
 		dt *= 2.0;
 	}
-	return od;
+	return OpticalDepth;
 }
 
-// Octave energy attenuation is fixed: varying it acted as a flat gain on the
-// sun path (redundant with SunGain), so only the extinction attenuation
-// (OctaveAttenA, which shapes how light penetrates depth) stays tunable.
 static const float OCTAVE_ENERGY_ATTEN = 0.6;
 
-// Wrenninge multi-scatter octaves: fakes deep multiple scattering of the
-// (gray, spectrally neutral) droplet medium.
-float SunVisibilityMS(float od)
+// Wrenninge multi-scatter octaves: fakes deep multiple scattering of spectrally neutral droplet medium.
+float SunVisibilityMS(float SunOpticalDepth)
 {
 	float vis = 0.0;
 	float a = 1.0, b = 1.0;
-	[unroll] for (int o = 0; o < 3; ++o)
+	[unroll] for (int i = 0; i < 3; ++i)
 	{
-		vis += b * exp(-a * od);
+		vis += b * exp(-a * SunOpticalDepth);
 		a *= OctaveAttenA;
 		b *= OCTAVE_ENERGY_ATTEN;
 	}
@@ -180,15 +122,14 @@ float SunVisibilityMS(float od)
 }
 
 #	if CLOUD_SUN_OCTAVE_PHASE
-// Octave sum with per-octave phase folded in:
-// sum_o b^o * exp(-a^o * od) * phase(g * 0.5^o).
-float SunVisibilityMSPhased(float od, float3 phaseOctaves)
+// Octave sum with per-octave phase
+float SunVisibilityMSPhased(float SunOpticalDepth, float3 phaseOctaves)
 {
 	float vis = 0.0;
 	float a = 1.0, b = 1.0;
-	[unroll] for (int o = 0; o < 3; ++o)
+	[unroll] for (int i = 0; i < 3; ++i)
 	{
-		vis += b * exp(-a * od) * phaseOctaves[o];
+		vis += b * exp(-a * SunOpticalDepth) * phaseOctaves[i];
 		a *= OctaveAttenA;
 		b *= OCTAVE_ENERGY_ATTEN;
 	}
@@ -196,29 +137,13 @@ float SunVisibilityMSPhased(float od, float3 phaseOctaves)
 }
 #	endif
 
-static const float3 CLOUD_AMBIENT = float3(0.4, 0.45, 0.5);  // flat skylight fill into the cloud
-static const float CLOUD_MS_GAIN = 1.8;                      // flat multiple-scatter boost
-// Kept for reference; superseded by ComputeLightingV3.
-void ComputeLightingV1(float density, float stepLength, float sunVisibility, CloudParticpatingMedium medium, inout float3 Inscattering, inout float Transmittance)
-{
-	float albedo = medium.scattering / medium.extinction;
-	float Extinction = medium.extinction * density;
-	float Tr = exp(-Extinction * stepLength);
-
-	float3 Radiance = SharedData::DirLightColor.xyz * medium.phase * sunVisibility;
-	Radiance = (Radiance + CLOUD_AMBIENT) * CLOUD_MS_GAIN;
-
-	float3 inscatter = Radiance * albedo * (1.0 - Tr);
-
-	Inscattering += inscatter * Transmittance;
-	Transmittance *= Tr;
-}
-
 // Direct sun transmittance at a raymarch sample, from the per-frame windowed
-// LUT (LUTGEN 4), parameterized by the sample's actual altitude and sun zenith
+// LUT (LUTGEN 4), parameterized by the sample'i actual altitude and sun zenith
 // cosine -- including mu < 0 (afterglow/underlighting). Debug overrides sit
 // AFTER the UV remap decision so remap bugs are excluded from
 // application-side tests.
+static const float REFRACTION_MU_BIAS = 0.009;
+
 float3 SampleCloudSunTr(float3 posPlanetRel)
 {
 	if (DebugSunTrMode == 1)
@@ -226,21 +151,15 @@ float3 SampleCloudSunTr(float3 posPlanetRel)
 	if (DebugSunTrMode == 2)
 		return float3(1.0, 0.35, 0.08);
 	if (DebugSunTrMode == 3) {
-		// A/B: sample the GLOBAL Tr LUT through its real remap instead. The
-		// global LUT works in game units, unlike this shader.
 		float2 uvGlobal = PhysSky::TrLutUvPlanet(posPlanetRel / GAME_UNIT_TO_KM, SharedData::physSkyData.sunDir);
-		return PhysSky::TexTrLut.SampleLevel(LinearSampler, uvGlobal, 0).rgb;
+		return PhysSky::TexTrLut.SampleLevel(LinearSampler, uvGlobal, 0).xyz;
 	}
 	float r = length(posPlanetRel);
 	float mu = dot(posPlanetRel / r, SharedData::physSkyData.sunDir);
-	// Atmospheric refraction lifts the apparent sun ~0.5 deg at the horizon,
-	// extending the underlighting window slightly. Deliberately not enabled
-	// (out of scope per the upgrade plan); if wanted later:
-	// static const float REFRACTION_MU_BIAS = 0.009;
-	// if (mu < 0.0) mu += REFRACTION_MU_BIAS;
-	float2 uv = float2((mu - cloudTrMuMin) / (cloudTrMuMax - cloudTrMuMin),
-		(r - cloudTrRBot) / (cloudTrRTop - cloudTrRBot));
-	return TexCloudSunTr.SampleLevel(LinearSampler, saturate(uv), 0).rgb;
+	// Atmospheric refraction lifts the apparent sun ~0.5 deg at the horizon extending the underlighting window
+	mu += REFRACTION_MU_BIAS * (mu < 0.0);
+	float2 uv = float2(LinearStep(cloudTrMuMin, cloudTrMuMax, mu), LinearStep(cloudTrRBot, cloudTrRTop, r));
+	return TexCloudSunTr.SampleLevel(LinearSampler, saturate(uv), 0).xyz;
 }
 
 // Pre-integrated ambient (LUTGEN 5 endpoints), lerped by in-layer height.
@@ -269,12 +188,8 @@ void ComputeLightingV3(float density, float stepLength, float3 sunPhaseVis, floa
 	float extinction = medium.extinction.x * density;
 	float tr = exp(-extinction * stepLength);
 
-	// physSkyData.sunlightColor is the constant TOA illuminance (white); ALL
-	// time-of-day color enters through sunTr. SharedData::DirLightColor is
-	// artist-tinted at sunset and would double-tint. The sun is never clamped
-	// here -- the Tr LUT decides when light stops arriving.
 	float3 sunRad = SharedData::physSkyData.sunlightColor * sunTr * sunPhaseVis * SunGain;
-	float3 ambRad = EvalCloudAmbient(heightFrac, ambBottom, ambTop) * AmbientGain;  // no phase: pre-integrated
+	float3 ambRad = EvalCloudAmbient(heightFrac, ambBottom, ambTop) * AmbientGain;  // no phase - pre-integrated
 
 	float3 inscatter = (sunRad + ambRad) * albedo * (1.0 - tr);
 
@@ -344,17 +259,12 @@ PixelOut main(VertexOut input)
 
 #	define RAY_SAMPLES 512  //128
 
-	// The sun path is coherent around the real sun (physSkyData.sunDir):
-	// phase, windowed transmittance and (later) the light march all use the
-	// same vector. DirLightDirection may be a moon at night.
 	float cosTheta = dot(ray.direction, SharedData::physSkyData.sunDir);
 	float StepLength = (RayT.y - RayT.x) / RAY_SAMPLES;
 
 	float3 Inscattering = float3(0, 0, 0);
 	float Transmittance = 1.0;
 
-	// Albedo ~0.996 (24.9 / 25): a 0.4 albedo makes cloud interiors charcoal
-	// and kills any twilight glow penetration.
 	CloudParticpatingMedium medium;
 	medium.scattering = CloudScattering;
 	medium.extinction = CloudExtinction;
@@ -368,8 +278,8 @@ PixelOut main(VertexOut input)
 		CloudPhase(cosTheta, 0.25).x);
 #	endif
 
-	float3 ambBottom = TexCloudAmbient.Load(int3(0, 0, 0)).rgb;
-	float3 ambTop = TexCloudAmbient.Load(int3(1, 0, 0)).rgb;
+	float3 ambBottom = TexCloudAmbient.Load(int3(0, 0, 0)).xyz;
+	float3 ambTop = TexCloudAmbient.Load(int3(1, 0, 0)).xyz;
 
 	float TrDepthSum = 0.0;
 	float TrSum = 0.0;
@@ -402,13 +312,14 @@ PixelOut main(VertexOut input)
 		// accumulates for the step).
 		float3 sunPhaseVis = 0;
 		if (Transmittance >= 0.01) {
-			float od = SunOpticalDepth(SamplePos, SharedData::physSkyData.sunDir, medium.extinction.x);
+			float SunOpticalDepth = GetOpticalDepth(SamplePos, SharedData::physSkyData.sunDir, medium.extinction.x);
 #	if CLOUD_SUN_OCTAVE_PHASE
-			sunPhaseVis = SunVisibilityMSPhased(od, phaseOctaves);
+			sunPhaseVis = SunVisibilityMSPhased(SunOpticalDepth, phaseOctaves);
 #	else
-			sunPhaseVis = SunVisibilityMS(od) * medium.phase;
+			sunPhaseVis = SunVisibilityMS(SunOpticalDepth) * medium.phase;
 #	endif
 		}
+
 		ComputeLightingV3(CloudDensity, StepLength, sunPhaseVis, EnvelopeZ, sunTr, ambBottom, ambTop, medium, Inscattering, Transmittance);
 	}
 	/////////////////////////////////////////////
@@ -442,7 +353,7 @@ float4 main(VertexOut input) : SV_TARGET0
 	uint2 dims;
 	BlitTex.GetDimensions(dims.x, dims.y);
 	uint2 coord = min(uint2(input.TexCoord * dims), dims - 1);
-	float3 blitColor = BlitTex.Load(int3(coord, 0)).rgb;
+	float3 blitColor = BlitTex.Load(int3(coord, 0)).xyz;
 	// The main RT holds gamma-encoded values at this point in the frame.
 	return float4(Color::LLLinearToGamma(blitColor), 1.0);
 }
