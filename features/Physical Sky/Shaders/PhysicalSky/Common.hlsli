@@ -103,13 +103,21 @@ Texture2D<unorm float> TexApShadow : register(t64);
 	float2 TrLutUv(float r, float cosSunZenith)
 	{
 		const SharedData::PhysSkyData data = SharedData::physSkyData;
-		// float cosHorZenith = HorizonZenithCos(r);
-		const float cosHorZenith = -0.414;
-		float2 uv = float2(
-			saturate((cosSunZenith - cosHorZenith) / (1 - cosHorZenith)),
-			saturate((r - data.rPlanet) / (data.rAtmosphere - data.rPlanet)));
-		uv = clamp(uv, float2(0.5 / 256.0, 0.5 / 64.0), float2(1.0 - 0.5 / 256.0, 1.0 - 0.5 / 64.0));
-		return uv;
+
+		float maxHorizonDist = sqrt(data.rAtmosphere * data.rAtmosphere - data.rPlanet * data.rPlanet);
+		float horizonDist = sqrt(r * r - data.rPlanet * data.rPlanet);
+
+		float uv_y = horizonDist / maxHorizonDist;
+
+		float discriminant = r * r * cosSunZenith * cosSunZenith + (maxHorizonDist * maxHorizonDist - horizonDist * horizonDist);
+		float rayLength = max(0.0f, -r * cosSunZenith + sqrt(discriminant));
+
+		float rayLengthMin = data.rAtmosphere - r;
+		float rayLengthMax = horizonDist + maxHorizonDist;
+		float uv_x = (rayLength - rayLengthMin) / (rayLengthMax - rayLengthMin);
+
+		float2 uv = saturate(float2(uv_x, uv_y));
+		return clamp(uv, float2(0.5 / 256.0, 0.5 / 64.0), float2(1.0 - 0.5 / 256.0, 1.0 - 0.5 / 64.0));
 	}
 
 	float2 TrLutUvPlanet(float3 pos, float3 sunDir)
@@ -117,6 +125,28 @@ Texture2D<unorm float> TexApShadow : register(t64);
 		float r = length(pos);
 		float3 up = pos / r;
 		return TrLutUv(r, dot(sunDir, up));
+	}
+
+	void InvTrLutUv(float2 uv, out float3 pos, out float3 rayDir)
+	{
+		const SharedData::PhysSkyData data = SharedData::physSkyData;
+
+		// Y axis: horizon distance, nonlinear in altitude
+		float maxHorizonDist = sqrt(data.rAtmosphere * data.rAtmosphere - data.rPlanet * data.rPlanet);
+		float horizonDist = maxHorizonDist * uv.y;
+		float worldHeight = sqrt(horizonDist * horizonDist + data.rPlanet * data.rPlanet);
+
+		// X axis: linear in ray length between shortest and longest
+		float rayLength = lerp(data.rAtmosphere - worldHeight, horizonDist + maxHorizonDist, uv.x);
+
+		// Recover zenith cosine from ray length via law of cosines
+		float sqHorizonDist = horizonDist * horizonDist;
+		float sqMaxHorizonDist = maxHorizonDist * maxHorizonDist;
+		float zenithCos = rayLength == 0.0 ? 1.0 : (sqMaxHorizonDist - sqHorizonDist - rayLength * rayLength) / (2.0 * worldHeight * rayLength);
+		zenithCos = clamp(zenithCos, -1.0, 1.0);
+
+		pos = float3(0.0f, 0.0f, worldHeight);
+		rayDir = float3(0.0f, sqrt(1.0 - zenithCos * zenithCos), zenithCos);
 	}
 
 	// cylinder map
