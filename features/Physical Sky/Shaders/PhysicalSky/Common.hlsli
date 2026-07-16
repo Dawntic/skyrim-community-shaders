@@ -100,16 +100,19 @@ Texture2D<unorm float> TexApShadow : register(t64);
 		return -sqrt(1 - sinZenith * sinZenith);
 	}
 
+	// TR Mapping //
 	float2 TrLutUv(float r, float cosSunZenith)
 	{
 		const SharedData::PhysSkyData data = SharedData::physSkyData;
 
-		float maxHorizonDist = sqrt(data.rAtmosphere * data.rAtmosphere - data.rPlanet * data.rPlanet);
-		float horizonDist = sqrt(r * r - data.rPlanet * data.rPlanet);
+		r = clamp(r, data.rPlanet, data.rAtmosphere);
+
+		float maxHorizonDist = sqrt(max(0.0, data.rAtmosphere * data.rAtmosphere - data.rPlanet * data.rPlanet));
+		float horizonDist = sqrt(max(0.0, r * r - data.rPlanet * data.rPlanet));
 
 		float uv_y = horizonDist / maxHorizonDist;
 
-		float discriminant = r * r * cosSunZenith * cosSunZenith + (maxHorizonDist * maxHorizonDist - horizonDist * horizonDist);
+		float discriminant = max(0.0, r * r * cosSunZenith * cosSunZenith + (maxHorizonDist * maxHorizonDist - horizonDist * horizonDist));
 		float rayLength = max(0.0f, -r * cosSunZenith + sqrt(discriminant));
 
 		float rayLengthMin = data.rAtmosphere - r;
@@ -119,6 +122,20 @@ Texture2D<unorm float> TexApShadow : register(t64);
 		float2 uv = saturate(float2(uv_x, uv_y));
 		return clamp(uv, float2(0.5 / 256.0, 0.5 / 64.0), float2(1.0 - 0.5 / 256.0, 1.0 - 0.5 / 64.0));
 	}
+
+	/*
+	float2 TrLutUv(float r, float cosSunZenith)
+	{
+		const SharedData::PhysSkyData data = SharedData::physSkyData;
+		// float cosHorZenith = HorizonZenithCos(r);
+		const float cosHorZenith = -0.414;
+		float2 uv = float2(
+			saturate((cosSunZenith - cosHorZenith) / (1 - cosHorZenith)),
+			saturate((r - data.rPlanet) / (data.rAtmosphere - data.rPlanet)));
+		uv = clamp(uv, float2(0.5 / 256.0, 0.5 / 64.0), float2(1.0 - 0.5 / 256.0, 1.0 - 0.5 / 64.0));
+		return uv;
+	}
+*/
 
 	float2 TrLutUvPlanet(float3 pos, float3 sunDir)
 	{
@@ -132,7 +149,7 @@ Texture2D<unorm float> TexApShadow : register(t64);
 		const SharedData::PhysSkyData data = SharedData::physSkyData;
 
 		// Y axis: horizon distance, nonlinear in altitude
-		float maxHorizonDist = sqrt(data.rAtmosphere * data.rAtmosphere - data.rPlanet * data.rPlanet);
+		float maxHorizonDist = sqrt(max(0.0, data.rAtmosphere * data.rAtmosphere - data.rPlanet * data.rPlanet));
 		float horizonDist = maxHorizonDist * uv.y;
 		float worldHeight = sqrt(horizonDist * horizonDist + data.rPlanet * data.rPlanet);
 
@@ -148,8 +165,31 @@ Texture2D<unorm float> TexApShadow : register(t64);
 		pos = float3(0.0f, 0.0f, worldHeight);
 		rayDir = float3(0.0f, sqrt(1.0 - zenithCos * zenithCos), zenithCos);
 	}
+	////////////////////////////////////////////////////////////////////
 
-	// cylinder map
+	// MS Mapping //
+	float2 MsLutUv(float r, float cosSunZenith)
+	{
+		const SharedData::PhysSkyData data = SharedData::physSkyData;
+
+		const float cosHorZenith = -0.414;
+		float2 uv = float2(
+			(cosSunZenith - cosHorZenith) / (1.0 - cosHorZenith),
+			(r - data.rPlanet) / (data.rAtmosphere - data.rPlanet));
+		uv = saturate(uv);
+		return clamp(uv, float2(0.5 / 32.0, 0.5 / 32.0), float2(1.0 - 0.5 / 32.0, 1.0 - 0.5 / 32.0));
+	}
+
+	float2 MsLutUvPlanet(float3 pos, float3 sunDir)
+	{
+		float r = length(pos);
+		float3 up = pos / r;
+		return MsLutUv(r, dot(sunDir, up));
+	}
+	////////////////////////////////////////////////////////////////////
+
+	// SV Mapping //
+	// cylinder map //
 	float2 SkyViewLutUv(float3 rayDir)
 	{
 		float azimuth = atan2(rayDir.y, rayDir.x);
@@ -159,6 +199,15 @@ Texture2D<unorm float> TexApShadow : register(t64);
 		v = max(v, 0.01);
 		return frac(float2(u, v));
 	}
+
+	float3 InvSkyViewLutUv(float2 uv)
+	{
+		float azimuth = uv.x * 2 * Math::PI;
+		float vm = 1 - 2 * uv.y;
+		float zenith = Math::PI * .5 * (1 - sign(vm) * vm * vm);
+		return SphericalDir(azimuth, zenith);
+	}
+	////////////////////////////////////////////////////////////////////
 
 	// url: http://www.physics.hmc.edu/faculty/esin/a101/limbdarkening.pdf
 	float3 LimbDarkenHestroffer(float norm_dist)
@@ -180,14 +229,6 @@ Texture2D<unorm float> TexApShadow : register(t64);
 
 		float3 factor = a0 + a1 * mu + a2 * mu2 + a3 * mu3 + a4 * mu4 + a5 * mu5;
 		return factor;
-	}
-
-	float3 InvSkyViewLutUv(float2 uv)
-	{
-		float azimuth = uv.x * 2 * Math::PI;
-		float vm = 1 - 2 * uv.y;
-		float zenith = Math::PI * .5 * (1 - sign(vm) * vm * vm);
-		return SphericalDir(azimuth, zenith);
 	}
 
 	void SampleAtmosphere(

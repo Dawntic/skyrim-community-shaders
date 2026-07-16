@@ -119,9 +119,13 @@ void rayMarch(
 		float2 lutUvSecunda = TrLutUvPlanet(curr_pos, data.secundaDir);
 		float3 trSecunda = TexTrLut.SampleLevel(SampTr, lutUvSecunda, 0).rgb;
 
-		float3 psiMs = TexMsLut.SampleLevel(SampTr, lutUvSun, 0).rgb * data.sunlightColor;
-		psiMs += TexMsLut.SampleLevel(SampTr, lutUvMasser, 0).rgb * data.masserColor;
-		psiMs += TexMsLut.SampleLevel(SampTr, lutUvSecunda, 0).rgb * data.secundaColor;
+		float2 msUvSun = MsLutUvPlanet(curr_pos, sunDir);
+		float2 msUvMasser = MsLutUvPlanet(curr_pos, data.masserDir);
+		float2 msUvSecunda = MsLutUvPlanet(curr_pos, data.secundaDir);
+
+		float3 psiMs = TexMsLut.SampleLevel(SampTr, msUvSun, 0).rgb * data.sunlightColor;
+		psiMs += TexMsLut.SampleLevel(SampTr, msUvMasser, 0).rgb * data.masserColor;
+		psiMs += TexMsLut.SampleLevel(SampTr, msUvSecunda, 0).rgb * data.secundaColor;
 #	endif
 
 		float3 inscatter = (muSRayleigh * phaseRayleighSun + muSAerosol * phaseAerosolSun) * trSun;
