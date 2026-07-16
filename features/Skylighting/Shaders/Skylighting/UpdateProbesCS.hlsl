@@ -38,8 +38,8 @@ SamplerComparisonState comparisonSampler : register(s0);
 		//float Zenith = 90;
 		//float rcpPdf = Math::PI * sin(radians(Zenith)) / max(settings.OcclusionDir.z, 0.05);
 		//sh2 occlusionSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(settings.OcclusionDir.xyz), visibility * rcpPdf);
-		sh2 occlusionSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(settings.OcclusionDir.xyz), visibility * 4 * Math::PI);
-		//occlusionSH = SphericalHarmonics::Add(occlusionSH, SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(-settings.OcclusionDir.xyz), visibility * 2 * Math::PI));
+		sh2 occlusionSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(settings.OcclusionDir.xyz), visibility * 2 * Math::PI);
+		//occlusionSH = SphericalHarmonics::Add(occlusionSH, SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(-settings.OcclusionDir.xyz), 0 * 2 * Math::PI));
 
 		const float Y00 = 0.28209479f;
 		const float Y1 = 0.48860251f;
@@ -51,7 +51,7 @@ SamplerComparisonState comparisonSampler : register(s0);
 		float maxAllowed = min(1.0 - dcVal, dcVal);  // symmetric headroom around dcVal
 		if (amp > maxAllowed && l1 > 1e-6) {
 			float scale = max(maxAllowed, 0) / amp;
-			occlusionSH.yzw = c1 * scale;
+			//occlusionSH.yzw = c1 * scale; // doesnt rly work
 		}
 
 		if (isValid) {
@@ -383,7 +383,7 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 		DeltaR = sqrt(DeltaR * DeltaR + MinSampleDistSq) / WorldUnitsPerTexel;
 
 		float2 EnvOffset = float2(GroundSampleDir.x, -GroundSampleDir.y) * DeltaR * rcp(GroundRadianceTexSize);
-		float3 BounceRadiance = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV + EnvOffset, 0).xyz;  // * 0.6
+		float3 BounceRadiance = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV + EnvOffset, 0).xyz;  // * 4;
 
 		// The issue is if amb normal is pointing to ground then you get stronger ground light so overhangs are brighter...
 		sh2RGB GroundSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(GroundSampleDir), BounceRadiance * GroundWeight);
@@ -479,7 +479,7 @@ float GetDirOcclusion(float2 PxCoords)
 #	define ALBEDO_MULT 1.9  //account for dark tex - can maybe remove later
 
 #	define AO_SCALE 1
-#	define MIN_AMBIENT_LUM 0.1
+#	define MIN_AMBIENT_LUM 0.3  // without this the contrast at dawn and dusk is just too high
 
 // todo: fix Albedo map - wrong scale
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
@@ -505,10 +505,8 @@ float GetDirOcclusion(float2 PxCoords)
 	float3 NormalWS = NormalTex.SampleLevel(LinearSampler, CoordsUV, 0) * 2 - 1;
 	float3 Albedo = AlbedoTex.SampleLevel(LinearSampler, CoordsUV, 0) * ALBEDO_MULT;
 	//Albedo = Color::SkyrimGammaToLinear(Albedo) * Color::VanillaDiffuseColorMult(); // looks weird - surely lod isnt linear tho
-	//Albedo = Color::SrgbToLinear(Albedo);
 	float3 EnvAlbedo = AlbedoTex.SampleLevel(LinearSampler, CoordsUV, 4) * ALBEDO_MULT;
 	//EnvAlbedo = Color::SkyrimGammaToLinear(EnvAlbedo) * Color::VanillaDiffuseColorMult();
-	//EnvAlbedo = Color::SrgbToLinear(EnvAlbedo);
 
 	// Ambient lighting //
 	float NormalWeight = (1.0 + saturate(dot(NormalWS, SkySampleDir))) * 0.5;
@@ -517,7 +515,6 @@ float GetDirOcclusion(float2 PxCoords)
 	float SkyWeight = NormalWeight * SkyAO;
 
 	float3 SkyRadiance = SampleSkyRadiance(SkySampleDir);
-	//float3 SkyRadianceUp = SampleSkyRadiance(float3(0,0,1));
 	float3 CloudRadiance = float3(0.5, 0.5, 0.5);  // no fast src for this yet
 	float CloudShadow = 1;                         //CloudShadows::GetCloudShadowMult(WorldPos, LinearSampler);
 	float3 SkyAmbient = lerp(CloudRadiance, SkyRadiance, CloudShadow);
@@ -525,11 +522,11 @@ float GetDirOcclusion(float2 PxCoords)
 	float3 SkyLight = SkyAmbient * SkyWeight;
 
 	// Ground multi bounce approx
-	float BounceWeight = (1.0 + 1.0 - BentNormalAO);                                  // add unoccluded part of upper hemisphere
-	BounceWeight += 1.0 - NormalWeight;                                               // more bounce when N = ground
+	float BounceWeight = (1.0 + 1.0 - BentNormalAO);
+	BounceWeight += 1.0 - NormalWeight;
 	BounceWeight *= saturate(Color::RGBToLuminance(SkyRadiance * SkyAO * Math::PI));  // approx sky irradiance otherwise ground is always lit
 
-	float3 GroundLight = EnvAlbedo * BounceWeight;  // sky radiance should be from 0,0,1 here
+	float3 GroundLight = EnvAlbedo * BounceWeight;
 
 	float3 AmbientLighting = SKY_MULT * SkyLight + GroundLight;
 	float lum = Color::RGBToLuminance(AmbientLighting);
@@ -543,12 +540,14 @@ float GetDirOcclusion(float2 PxCoords)
 
 	float llDirLightMult = SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear && !SharedData::InInterior ? SharedData::linearLightingSettings.dirLightMult : 1.0;
 	float3 DirLightColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * llDirLightMult;
-	DirLightColor *= SampleTr(normalize(SharedData::DirLightDirection.xyz));
-	//DirLightColor = float3(1,1,1) * 3;
-	// Not const seems inconsisent
-	DirLightColor = clamp(DirLightColor, 0, 1);
+	//DirLightColor *= SampleTr(normalize(SharedData::DirLightDirection.xyz));
+	//DirLightColor = clamp(DirLightColor, 0, 1);
 
-	float3 DirLighting = DIR_LIGHT_MULT * DirLightColor * Shadow * NdotL * BRDF::Diffuse_Lambert();
+	DirLightColor = float3(1, 1, 1) * 3;  // Not const is inconsisent - fix later
+	DirLightColor *= SampleTr(normalize(SharedData::DirLightDirection.xyz));
+	DirLightColor *= DIR_LIGHT_MULT;
+
+	float3 DirLighting = DirLightColor * Shadow * NdotL * BRDF::Diffuse_Lambert();
 
 	float3 Lighting = (AmbientLighting + DirLighting);
 	Lighting *= Albedo;
