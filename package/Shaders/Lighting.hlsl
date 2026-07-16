@@ -1,11 +1,5 @@
 #define LIGHTING
 
-cbuffer LLPerGeometry : register(b8)
-{
-	float emissiveMult;
-	float3 pad0;
-};
-
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
@@ -2654,7 +2648,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
-	float3 diffuseColor = 0.0.xxx;
+	float3 Lighting = 0.0.xxx;
 	float3 specularColor = 0.0.xxx;
 	float3 transmissionColor = 0.0.xxx;
 
@@ -2881,14 +2875,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif
 #	endif
 
-	diffuseColor += lightsDiffuseColor;
+	Lighting += lightsDiffuseColor;
 	specularColor += lightsSpecularColor;
 
 #	if !defined(LANDSCAPE)
 	if (Permutation::PixelShaderDescriptor & Permutation::LightingFlags::CharacterLight) {
 		float charLightMul = saturate(dot(viewDirection, worldNormal.xyz)) * CharacterLightParams.x + CharacterLightParams.y * saturate(dot(float2(0.164398998, -0.986393988), worldNormal.yz));
 		float charLightColor = min(CharacterLightParams.w, max(0, CharacterLightParams.z * TexCharacterLightProjNoiseSampler.Sample(SampCharacterLightProjNoiseSampler, baseShadowUV).x));
-		diffuseColor += (charLightMul * charLightColor).xxx;
+		Lighting += (charLightMul * charLightColor).xxx;
 	}
 #	endif
 
@@ -2934,7 +2928,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if !defined(TRUE_PBR)
-	diffuseColor += emitColor.xyz;
+	Lighting += emitColor.xyz;
 #	endif
 
 	IndirectContext indirectContext = (IndirectContext)0;
@@ -3021,9 +3015,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			//directionalAmbientColor = SphericalHarmonics::FuncProductIntegral(probeSample, SphericalHarmonics::EvaluateCosineLobe(worldNormal.xyz)) / Math::PI;
 			//directionalAmbientColor = SphericalHarmonics::Irradiance(probeSample, worldNormal.xyz); ///////////////////////////////////////////////////////////////////////
 			//skylightingDiffuse = 1;
-
-			directionalAmbientColor = ImageBasedLighting::GetDiffuseIBLOccluded(directionalAmbientColor, -ambientNormal, skylightingDiffuse);
-
 			/*
 			float sin2Cap = sin(radians(90));
 			float cosCap  = sqrt(1.0 - sin2Cap);
@@ -3042,25 +3033,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 			// ground bounce applied to all normals otherwise ground-roof inconsistent
 			//SphericalHarmonics::Product(SphericalHarmonics::EvaluateCosineLobe(float3(0,0,-1)), HemiDown);
-
-			bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
-
-			sh2RGB IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz);
-
-			// skylightingSH comes in using 4PI weight but clamped 0-1 output
-			skylightingSH = lerp(SphericalHarmonics::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(input.WorldPosition.xyz));
-			sh2 SkyAO = SphericalHarmonics::Product(SphericalHarmonics::EvaluateCosineLobe(worldNormal), skylightingSH);
 			//SkyAO = SphericalHarmonics::Product(SkyAO, SphericalHarmonics::HemisphereSH2()); // only consider things in upper hemi
 
-			SkyAO = SphericalHarmonics::EvaluateCosineLobe(worldNormal);
+			// Bounce is included only to lift SL is occluded areas
+			// The more occluded the probe the more bounce we get
 
-			float3 SkyIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, SkyAO);
-			SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
+			//sh2 BouncePower = SphericalHarmonics::Add(SphericalHarmonics::UnitSH2(), SphericalHarmonics::Scale(skylightingSH, -1.0));
+			//sh2 normalSH = SphericalHarmonics::EvaluateCosineLobe(worldNormal);
+			//sh2 downSH = SphericalHarmonics::EvaluateCosineLobe(float3(0,0,-1));
 
-			// we can assume the more occluded the skylight probe is the more we should have bounce lighting
-			sh2 BounceAO = SphericalHarmonics::EvaluateCosineLobe(float3(0, 0, -1));
-			float3 BounceIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, BounceAO);
-			BounceIrradiance = max(BounceIrradiance / Math::PI, 0);
+			//sh2RGB Bounce = SphericalHarmonics::Product(IrradianceProbe, BouncePower);
+			//float3 BounceIrradiance = SphericalHarmonics::FuncProductIntegral(Bounce, normalSH);//SphericalHarmonics::FuncProductIntegral(IrradianceProbe, BounceAO);
+			//float SL_SCALE = 0.5;
+			//BounceIrradiance = max(BounceIrradiance / Math::PI, 0);// * (1.0 - skylightingDiffuse) * SL_SCALE;
 
 			//sh2 MaxBounce = SphericalHarmonics::Scale(SphericalHarmonics::UnitSH2(), 1.0);// instead of unit sh
 			//sh2 MinusSkyAO = MaxBounce - skylightingSH;
@@ -3068,10 +3053,30 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			//BounceIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, BounceAO);
 			//BounceIrradiance = max(BounceIrradiance / Math::PI, 0);
 
+			// Check SL is 1.0 when full sky
+			// Also test using scalar vis * bounce irradiance
+			// Bounce should only be non zero where skylight is < 1
+
+			//float visibility = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(worldNormal)) / Math::PI;
+			//visibility = lerp(1.0, visibility, fadeOutFactor);
+
+			//sh2 BounceAO = SphericalHarmonics::Product(BouncePower, normalSH);
+			//float Test = SphericalHarmonics::Unproject(BounceAO, worldNormal); // this is correct weight - ground black
+
+			directionalAmbientColor = ImageBasedLighting::GetDiffuseIBLOccluded(directionalAmbientColor, -ambientNormal, skylightingDiffuse);
+
+			bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
+
+			sh2RGB IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz);
+
+			skylightingSH = lerp(SphericalHarmonics::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(input.WorldPosition.xyz));
+			sh2 SkyLobe = SphericalHarmonics::Product(SphericalHarmonics::EvaluateCosineLobe(worldNormal), skylightingSH);
+
+			float3 SkyIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, SkyLobe);  //SphericalHarmonics::FuncProductIntegral(IrradianceProbe, SphericalHarmonics::EvaluateCosineLobe(worldNormal));
+			SkyIrradiance = max(SkyIrradiance / Math::PI, 0);                                          // * skylightingDiffuse;
+
 			if (ApplyIrradiance) {
-				directionalAmbientColor = SkyIrradiance;  // + BounceIrradiance;
-														  //directionalAmbientColor = Color::IrradianceToGamma(directionalAmbientColor);
-														  //directionalAmbientColor *= 0.5;
+				directionalAmbientColor = SkyIrradiance;
 			}
 
 			//if(settings.MinSpecularVisibility > 0.2)
@@ -3085,9 +3090,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
-	//diffuseColor = float3(0,0,0); //////////////////////////////////////////////////////////////////////
+	//Lighting = float3(0,0,0); //////////////////////////////////////////////////////////////////////
 
-	float3 reflectionDiffuseColor = diffuseColor + directionalAmbientColor;
+	float3 reflectionDiffuseColor = Lighting + directionalAmbientColor;
 
 #	if defined(TRUE_PBR) && defined(LOD_LAND_BLEND) && !defined(DEFERRED)
 	lodLandDiffuseColor += directionalAmbientColor;
@@ -3143,14 +3148,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(TRUE_PBR)
 	{
-		float3 directLightsDiffuseInput = diffuseColor * material.BaseColor;
+		float3 directLightsDiffuseInput = Lighting * material.BaseColor;
 		[branch] if ((PBRFlags & PBR::Flags::ColoredCoat) != 0)
 		{
 			directLightsDiffuseInput = lerp(directLightsDiffuseInput, material.CoatColor * coatLightsDiffuseColor, material.CoatStrength);
 		}
 
 		color.xyz += directLightsDiffuseInput;
-		DebugColor += directLightsDiffuseInput;
+		//DebugColor += directLightsDiffuseInput;
 	}
 
 	[branch] if ((PBRFlags & PBR::Flags::HasEmissive) != 0)
@@ -3158,12 +3163,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		color.xyz += emitColor.xyz;
 	}
 #	else
-	color.xyz += diffuseColor * material.BaseColor;
+	color.xyz += Lighting * material.BaseColor;
 #	endif  // TRUE_PBR
 
 	color.xyz += indirectLobeWeights.diffuse * directionalAmbientColor;  ///////////////////////////
 
-	DebugColor += indirectLobeWeights.diffuse * directionalAmbientColor;
+	DebugColor += indirectLobeWeights.diffuse * directionalAmbientColor;  //indirectLobeWeights.diffuse *
 
 	color.xyz += transmissionColor;
 	color.xyz *= vertexColor;
@@ -3178,9 +3183,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3 layerColor = TexLayerSampler.Sample(SampLayerSampler, layerUv).xyz;
 	float mlpBlendFactor = saturate(viewNormalAngle) * (1.0 - baseColor.w);
 #		if defined(SKYLIGHTING)
-	color.xyz = lerp(color.xyz, (diffuseColor + directionalAmbientColor * skylightingDiffuse) * vertexColor * layerColor, mlpBlendFactor);
+	color.xyz = lerp(color.xyz, (Lighting + directionalAmbientColor * skylightingDiffuse) * vertexColor * layerColor, mlpBlendFactor);
 #		else
-	color.xyz = lerp(color.xyz, (diffuseColor + directionalAmbientColor) * vertexColor * layerColor, mlpBlendFactor);
+	color.xyz = lerp(color.xyz, (Lighting + directionalAmbientColor) * vertexColor * layerColor, mlpBlendFactor);
 #		endif
 
 	indirectLobeWeights.diffuse *= 1.0 - mlpBlendFactor;
@@ -3191,13 +3196,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		specularColor = 0;
 #	endif
 
-	diffuseColor = reflectionDiffuseColor;
+	Lighting = reflectionDiffuseColor;
 
 #	if (defined(ENVMAP) || defined(MULTI_LAYER_PARALLAX) || defined(EYE))
 #		if defined(DYNAMIC_CUBEMAPS)
 	if (!dynamicCubemap)
 #		endif
-		specularColor += envColor * Color::IrradianceToLinear(diffuseColor);
+		specularColor += envColor * Color::IrradianceToLinear(Lighting);
 	indirectLobeWeights.diffuse += envColor;
 #	endif
 
@@ -3211,7 +3216,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		float3 litLodLandColor = vertexColor * lodLandColor.xyz * lodLandFadeFactor * lodLandDiffuseColor;
 		color.xyz = lerp(color.xyz * Color::PBRLightingScale, litLodLandColor, lodLandBlendFactor);
 
-		DebugColor = lerp(DebugColor * Color::PBRLightingScale, litLodLandColor, lodLandBlendFactor);
+		//DebugColor = lerp(DebugColor * Color::PBRLightingScale, litLodLandColor, lodLandBlendFactor);
 
 		specularColor = lerp(specularColor * Color::PBRLightingScale, 0, lodLandBlendFactor);
 		indirectLobeWeights.diffuse = lerp(indirectLobeWeights.diffuse * Color::PBRLightingScale, vertexColor * lodLandColor.xyz * lodLandFadeFactor, lodLandBlendFactor);
@@ -3320,7 +3325,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	if defined(TESTCUBEMAP) && defined(ENVMAP) && defined(DYNAMIC_CUBEMAPS)
 	baseColor.xyz = 0.0;
 	specularColor = 0.0;
-	diffuseColor = 0.0;
+	Lighting = 0.0;
 	dynamicCubemap = true;
 	envColor = 1.0;
 	material.Roughness = 0.0;
@@ -3509,7 +3514,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 	//directionalAmbientColor = skylightingDiffuse.xxx;
-	//psout.Diffuse.xyz = DebugColor;//directionalAmbientColor;
+	//psout.Diffuse.xyz = directionalAmbientColor;
 
 #	if !defined(HDR_OUTPUT)  // Do not apply gamma correction before we pass to ISHDR.
 	if ((!inWorld && !inReflection) && SharedData::linearLightingSettings.enableLinearLighting && !(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow)) {

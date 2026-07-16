@@ -149,21 +149,19 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		float skylightingDiffuse = Skylighting::EvaluateDiffuse(skylightingSH, normalWS);
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBLOccluded(vanillaDALC, -normalWS, skylightingDiffuse) * albedo;
 
-		sh2RGB IrradianceProbe = Skylighting::SampleIrradianceProbe(positionMS.xyz);
+		bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
 
-		// skylightingSH comes in using 4PI weight but clamped 0-1 output
-		//skylightingSH = lerp(SphericalHarmonics::UnitSH2(), skylightingSH, skylightingFadeOutFactor);
-		sh2 SkyAO = SphericalHarmonics::Product(SphericalHarmonics::EvaluateCosineLobe(normalWS), skylightingSH);
-		SkyAO = SphericalHarmonics::Product(SkyAO, SphericalHarmonics::HemisphereSH2());  // only consider things in upper hemi
+		sh2RGB IrradianceProbe = Skylighting::SampleIrradianceProbe(positionWS.xyz);
 
-		sh2 BounceAO = SphericalHarmonics::EvaluateCosineLobe(float3(0, 0, -1));
-		float3 BounceIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, BounceAO);
-		BounceIrradiance = max(BounceIrradiance / Math::PI, 0);
+		skylightingSH = lerp(SphericalHarmonics::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(positionWS.xyz));
+		sh2 SkyLobe = SphericalHarmonics::Product(SphericalHarmonics::EvaluateCosineLobe(normalWS), skylightingSH);
 
-		float3 SkyIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, SkyAO);
+		float3 SkyIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, SkyLobe);
 		SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
 
-		directionalAmbientColor = SkyIrradiance + BounceIrradiance;
+		if (ApplyIrradiance) {
+			directionalAmbientColor = SkyIrradiance;
+		}
 
 #		else
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(vanillaDALC, -normalWS) * albedo;
