@@ -352,7 +352,7 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 	float2 Extent = abs(settings.GridBounds.xy) + settings.GridBounds.zw;  // pull out later
 	float2 WorldUnitsPerTexel = Extent / 1024;                             // remove 1024 later
 
-	sh2RGB Output = SH::Zero2RGB();
+	sh2vec3 Output = SH::ZeroSH2Vec3();
 	for (int i = 0; i < SAMPLES; ++i) {
 		float3 SkySampleDir = UniformHemisphere(i, SAMPLES, SkyAperture);
 		SkySampleDir = mul(SkySampleDir, BentTBN);
@@ -366,7 +366,7 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 
 		SkyRadiance = SkyRadiance;  // * cloudTr + cloudInscattering;
 
-		sh2RGB SkySH = SH::Scale(SH::Evaluate(SkySampleDir), SkyRadiance * SkyWeight);
+		sh2vec3 SkySH = SH::Scale(SH::Evaluate(SkySampleDir), SkyRadiance * SkyWeight);
 		Output = SH::Add(Output, SkySH);
 
 		float3 GroundSampleDir = UniformHemisphere(i, SAMPLES, GroundAperture);
@@ -386,7 +386,7 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 		float3 BounceRadiance = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV + EnvOffset, 0).xyz;  // * 4;
 
 		// The issue is if amb normal is pointing to ground then you get stronger ground light so overhangs are brighter...
-		sh2RGB GroundSH = SH::Scale(SH::Evaluate(GroundSampleDir), BounceRadiance * GroundWeight);
+		sh2vec3 GroundSH = SH::Scale(SH::Evaluate(GroundSampleDir), BounceRadiance * GroundWeight);
 		Output = SH::Add(Output, GroundSH);
 
 		// debug
@@ -406,7 +406,7 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 	//if(sdf <= 0)
 	//ProbeArray[ThreadID.xyz] = 1.0.xxxx;
 
-	SH::PackSH2RGB(Output, ThreadID.xy, ProbeArray);
+	SH::PackSH2Vec3(Output, ThreadID.xy, ProbeArray);
 }
 #endif
 

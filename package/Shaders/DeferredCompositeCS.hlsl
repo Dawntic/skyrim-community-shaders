@@ -151,7 +151,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 		bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
 
-		sh2RGB IrradianceProbe = Skylighting::SampleIrradianceProbe(positionWS.xyz);
+		sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(positionWS.xyz);
 
 		skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(positionWS.xyz));
 		sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(normalWS), skylightingSH);
@@ -260,7 +260,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 			finalIrradiance = envSpecular + skySpecular;
 
-			//sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, positionWS.xyz, ProbeArrayGrid);
+			//sh2vec3 probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, positionWS.xyz, ProbeArrayGrid);
 			//finalIrradiance = SH::Irradiance(probeSample, R); ///////////////////////////////////////////////////////////////////////
 
 		} else
@@ -326,24 +326,6 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		//color.xyz = color.xyz * apSample.w + apSample.xyz;
 	}
 #endif
-
-	if (depth < 0.99999999) {
-		//float factor = dot(float3(0,0,1), normalWS);
-		//factor = (factor + 1.0) * 0.5;
-		//float3 Normal = reflect(normalize(positionWS.xyz), normalWS); // dont use this for some reason
-
-		//sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, positionWS.xyz, ProbeArrayGrid);
-
-		const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
-		float2 CoordsUV = (positionWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
-		CoordsUV = float2(CoordsUV.x, 1 - CoordsUV.y);
-		int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
-		sh2RGB probeSample = SH::UnpackSH2RGB(Probe, ProbeArrayGrid);
-
-		//color = SH::Irradiance(probeSample, normalWS); ///////////////////////////////////////////////////////////////////////
-
-		//color = ProbeArrayGrid.SampleLevel(LinearSampler, float3(CoordsUV, 0), 0);
-	}
 
 	//color = diffuseColor;
 

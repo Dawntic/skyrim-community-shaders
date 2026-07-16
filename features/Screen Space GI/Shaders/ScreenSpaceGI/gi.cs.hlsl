@@ -30,7 +30,7 @@
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
 #include "Common/Math.hlsli"
-#include "Common/Spherical Harmonics/SH.hlsli"
+#include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
 #include "ScreenSpaceGI/common.hlsli"
 
 Texture2D<float> srcWorkingDepth : register(t0);

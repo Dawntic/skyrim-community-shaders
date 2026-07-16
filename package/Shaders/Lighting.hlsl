@@ -3005,7 +3005,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	if (SharedData::iblSettings.EnableIBL) {
 		if (!(SharedData::iblSettings.UseStaticIBL && !inWorld && !inReflection)) {
 #		if defined(SKYLIGHTING)
-			//sh2RGB probeSampleA = Skylighting::SampleIrradiance(SharedData::skylightingSettings, input.WorldPosition.xyz); ///////////////////////////////////////////////////////////////////////
+			//sh2vec3 probeSampleA = Skylighting::SampleIrradiance(SharedData::skylightingSettings, input.WorldPosition.xyz); ///////////////////////////////////////////////////////////////////////
 			//float factor = dot(float3(0,0,1), worldNormal.xyz);
 			//	  factor = (factor + 1.0) * 0.5;
 			//float3 SkyR = SH::Irradiance(probeSampleA, float3(0,0,1));
@@ -3042,7 +3042,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			//sh2 normalSH = SH::EvaluateCosineLobe(worldNormal);
 			//sh2 downSH = SH::EvaluateCosineLobe(float3(0,0,-1));
 
-			//sh2RGB Bounce = SH::Product(IrradianceProbe, BouncePower);
+			//sh2vec3 Bounce = SH::Product(IrradianceProbe, BouncePower);
 			//float3 BounceIrradiance = SH::FuncProductIntegral(Bounce, normalSH);//SH::FuncProductIntegral(IrradianceProbe, BounceAO);
 			//float SL_SCALE = 0.5;
 			//BounceIrradiance = max(BounceIrradiance / Math::PI, 0);// * (1.0 - skylightingDiffuse) * SL_SCALE;
@@ -3067,7 +3067,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 			bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
 
-			sh2RGB IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz);
+			sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz);
 
 			skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(input.WorldPosition.xyz));
 			sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), skylightingSH);

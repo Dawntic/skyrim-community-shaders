@@ -77,14 +77,14 @@ namespace Skylighting
 	}
 	//#endif
 
-	sh2RGB SampleIrradianceProbe(float3 WorldPosition)
+	sh2vec3 SampleIrradianceProbe(float3 WorldPosition)
 	{
 		const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
 
 		float2 CoordsUV = (WorldPosition.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
 		CoordsUV = float2(CoordsUV.x, 1 - CoordsUV.y);
 		int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
-		sh2RGB probeSample = SH::UnpackSH2RGB(Probe, SparseProbeArray);
+		sh2vec3 probeSample = SH::UnpackSH2Vec3(Probe, SparseProbeArray);
 		return probeSample;
 	}
 

@@ -3,7 +3,7 @@
 //
 // The base library stores one scalar SH function per channel and asks you to
 // duplicate every call three times. These helpers bundle the three channels
-// into a single value (sh2RGB / sh3RGB) and reopen the SphericalHarmonics
+// into a single value (sh2vec3 / sh3vec3) and reopen the SphericalHarmonics
 // namespace so the RGB versions overload the existing names by argument type.
 //
 // Naming follows the base library: order-2 = no suffix, order-3 = "SH3".
@@ -17,230 +17,239 @@
 
 #include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
 
-struct sh2RGB
+struct sh2vec3
 {
-	sh2 r;
-	sh2 g;
-	sh2 b;
+	sh2 x;
+	sh2 y;
+	sh2 z;
 };
 
-struct sh3RGB
+struct sh3vec3
 {
-	sh3 r;
-	sh3 g;
-	sh3 b;
+	sh3 x;
+	sh3 y;
+	sh3 z;
 };
 
 namespace SH
 {
 	// ------------------------------------------------------------------ //
-	// Order 2 (sh2RGB)                                                    //
+	// Order 2 (sh2vec3)                                                    //
 	// ------------------------------------------------------------------ //
 
-	sh2RGB Zero2RGB()
+	sh2vec3 ZeroSH2Vec3()
 	{
-		sh2RGB result;
-		result.r = ZeroSH2();
-		result.g = ZeroSH2();
-		result.b = ZeroSH2();
+		sh2vec3 result;
+		result.x = ZeroSH2();
+		result.y = ZeroSH2();
+		result.z = ZeroSH2();
 		return result;
 	}
 
 	// Project a single (direction, color) radiance sample into RGB SH.
 	// Accumulate these in your integration loop, then Scale by 4*PI/sampleCount.
-	sh2RGB Project(float3 dir, float3 color)
+	sh2vec3 Project(float3 dir, float3 color)
 	{
 		sh2 basis = Evaluate(dir);
-		sh2RGB result;
-		result.r = Scale(basis, color.r);
-		result.g = Scale(basis, color.g);
-		result.b = Scale(basis, color.b);
+		sh2vec3 result;
+		result.x = Scale(basis, color.x);
+		result.y = Scale(basis, color.y);
+		result.z = Scale(basis, color.z);
 		return result;
 	}
 
-	sh2RGB Add(sh2RGB a, sh2RGB b)
+	sh2vec3 Add(sh2vec3 a, sh2vec3 z)
 	{
-		sh2RGB result;
-		result.r = a.r + b.r;
-		result.g = a.g + b.g;
-		result.b = a.b + b.b;
+		sh2vec3 result;
+		result.x = a.x + z.x;
+		result.y = a.y + z.y;
+		result.z = a.z + z.z;
 		return result;
 	}
 
-	sh2RGB Scale(sh2RGB sh, float v)
+	sh2vec3 Scale(sh2vec3 sh, float v)
 	{
-		sh2RGB result;
-		result.r = sh.r * v;
-		result.g = sh.g * v;
-		result.b = sh.b * v;
+		sh2vec3 result;
+		result.x = sh.x * v;
+		result.y = sh.y * v;
+		result.z = sh.z * v;
 		return result;
 	}
 
-	// Per-channel scale (e.g. a color tint).
-	sh2RGB Scale(sh2RGB sh, float3 v)
+	// Per-channel scale (e.y. a color tint).
+	sh2vec3 Scale(sh2vec3 sh, float3 v)
 	{
-		sh2RGB result;
-		result.r = sh.r * v.r;
-		result.g = sh.g * v.g;
-		result.b = sh.b * v.b;
+		sh2vec3 result;
+		result.x = sh.x * v.x;
+		result.y = sh.y * v.y;
+		result.z = sh.z * v.z;
 		return result;
 	}
 
-	sh2RGB Scale(sh2 sh, float3 v)
+	sh2vec3 Scale(sh2 sh, float3 v)
 	{
-		sh2RGB result;
-		result.r = sh * v.r;
-		result.g = sh * v.g;
-		result.b = sh * v.b;
+		sh2vec3 result;
+		result.x = sh * v.x;
+		result.y = sh * v.y;
+		result.z = sh * v.z;
 		return result;
 	}
 
 	// Band-limited radiance in direction dir ("what color is the sky there").
-	float3 Unproject(sh2RGB sh, float3 dir)
+	float3 Unproject(sh2vec3 sh, float3 dir)
 	{
 		sh2 basis = Evaluate(dir);
-		return float3(dot(sh.r, basis), dot(sh.g, basis), dot(sh.b, basis));
+		return float3(dot(sh.x, basis), dot(sh.y, basis), dot(sh.z, basis));
 	}
 
 	// Channel-wise product integral against a single monochrome kernel.
 	// Pass Evaluate(dir) for radiance, EvaluateCosineLobe(N) for irradiance.
-	float3 FuncProductIntegral(sh2RGB sh, sh2 kernel)
+	float3 FuncProductIntegral(sh2vec3 sh, sh2 kernel)
 	{
-		return float3(dot(sh.r, kernel), dot(sh.g, kernel), dot(sh.b, kernel));
+		return float3(dot(sh.x, kernel), dot(sh.y, kernel), dot(sh.z, kernel));
 	}
 
 	// Full RGB-vs-RGB product integral (each channel dotted independently).
-	float3 FuncProductIntegral(sh2RGB a, sh2RGB b)
+	float3 FuncProductIntegral(sh2vec3 a, sh2vec3 z)
 	{
-		return float3(dot(a.r, b.r), dot(a.g, b.g), dot(a.b, b.b));
+		return float3(dot(a.x, z.x), dot(a.y, z.y), dot(a.z, z.z));
 	}
 
-	sh2RGB DiffuseConvolution(sh2RGB sh)
+	sh2vec3 Product(sh2vec3 a, sh2 z)
 	{
-		sh2RGB result;
-		result.r = DiffuseConvolution(sh.r);
-		result.g = DiffuseConvolution(sh.g);
-		result.b = DiffuseConvolution(sh.b);
+		sh2vec3 result;
+		result.x = Product(a.x, z);
+		result.y = Product(a.y, z);
+		result.z = Product(a.z, z);
 		return result;
 	}
 
-	sh2RGB HanningConvolution(sh2RGB sh, float w)
+	sh2vec3 DiffuseConvolution(sh2vec3 sh)
 	{
-		sh2RGB result;
-		result.r = HanningConvolution(sh.r, w);
-		result.g = HanningConvolution(sh.g, w);
-		result.b = HanningConvolution(sh.b, w);
+		sh2vec3 result;
+		result.x = DiffuseConvolution(sh.x);
+		result.y = DiffuseConvolution(sh.y);
+		result.z = DiffuseConvolution(sh.z);
+		return result;
+	}
+
+	sh2vec3 HanningConvolution(sh2vec3 sh, float w)
+	{
+		sh2vec3 result;
+		result.x = HanningConvolution(sh.x, w);
+		result.y = HanningConvolution(sh.y, w);
+		result.z = HanningConvolution(sh.z, w);
 		return result;
 	}
 
 	// Irradiance E arriving at a surface with normal N (cosine-weighted integral).
-	float3 Irradiance(sh2RGB sh, float3 N)
+	float3 Irradiance(sh2vec3 sh, float3 N)
 	{
 		return FuncProductIntegral(sh, EvaluateCosineLobe(N));
 	}
 
 	// Outgoing radiance of a white Lambertian surface (albedo 1) = E / PI.
-	float3 DiffuseRadiance(sh2RGB sh, float3 N)
+	float3 DiffuseRadiance(sh2vec3 sh, float3 N)
 	{
 		return max(0, Irradiance(sh, N) / Math::PI);
 	}
 
 	// ------------------------------------------------------------------ //
-	// Order 3 (sh3RGB)                                                    //
+	// Order 3 (sh3vec3)                                                    //
 	// ------------------------------------------------------------------ //
 
-	sh3RGB Zero3RGB()
+	sh3vec3 ZeroSH3()
 	{
-		sh3RGB result;
+		sh3vec3 result;
 		[unroll] for (int i = 0; i < 9; i++)
 		{
-			result.r.coeff[i] = 0.0;
-			result.g.coeff[i] = 0.0;
-			result.b.coeff[i] = 0.0;
+			result.x.coeff[i] = 0.0;
+			result.y.coeff[i] = 0.0;
+			result.z.coeff[i] = 0.0;
 		}
 		return result;
 	}
 
-	sh3RGB ProjectSH3(float3 dir, float3 color)
+	sh3vec3 ProjectSH3(float3 dir, float3 color)
 	{
 		sh3 basis = EvaluateSH3(dir);
-		sh3RGB result;
-		result.r = ScaleSH3(basis, color.r);
-		result.g = ScaleSH3(basis, color.g);
-		result.b = ScaleSH3(basis, color.b);
+		sh3vec3 result;
+		result.x = ScaleSH3(basis, color.x);
+		result.y = ScaleSH3(basis, color.y);
+		result.z = ScaleSH3(basis, color.z);
 		return result;
 	}
 
-	sh3RGB AddSH3(sh3RGB a, sh3RGB b)
+	sh3vec3 AddSH3(sh3vec3 a, sh3vec3 z)
 	{
-		sh3RGB result;
-		result.r = AddSH3(a.r, b.r);
-		result.g = AddSH3(a.g, b.g);
-		result.b = AddSH3(a.b, b.b);
+		sh3vec3 result;
+		result.x = AddSH3(a.x, z.x);
+		result.y = AddSH3(a.y, z.y);
+		result.z = AddSH3(a.z, z.z);
 		return result;
 	}
 
-	sh3RGB ScaleSH3(sh3RGB sh, float v)
+	sh3vec3 ScaleSH3(sh3vec3 sh, float v)
 	{
-		sh3RGB result;
-		result.r = ScaleSH3(sh.r, v);
-		result.g = ScaleSH3(sh.g, v);
-		result.b = ScaleSH3(sh.b, v);
+		sh3vec3 result;
+		result.x = ScaleSH3(sh.x, v);
+		result.y = ScaleSH3(sh.y, v);
+		result.z = ScaleSH3(sh.z, v);
 		return result;
 	}
 
-	sh3RGB ScaleSH3(sh3RGB sh, float3 v)
+	sh3vec3 ScaleSH3(sh3vec3 sh, float3 v)
 	{
-		sh3RGB result;
-		result.r = ScaleSH3(sh.r, v.r);
-		result.g = ScaleSH3(sh.g, v.g);
-		result.b = ScaleSH3(sh.b, v.b);
+		sh3vec3 result;
+		result.x = ScaleSH3(sh.x, v.x);
+		result.y = ScaleSH3(sh.y, v.y);
+		result.z = ScaleSH3(sh.z, v.z);
 		return result;
 	}
 
-	float3 UnprojectSH3(sh3RGB sh, float3 dir)
+	float3 UnprojectSH3(sh3vec3 sh, float3 dir)
 	{
 		sh3 basis = EvaluateSH3(dir);
 		float3 result = 0.0;
 		[unroll] for (int i = 0; i < 9; i++)
-			result += float3(sh.r.coeff[i], sh.g.coeff[i], sh.b.coeff[i]) * basis.coeff[i];
+			result += float3(sh.x.coeff[i], sh.y.coeff[i], sh.z.coeff[i]) * basis.coeff[i];
 		return result;
 	}
 
 	// Channel-wise product integral against a single monochrome kernel.
-	float3 ProductIntegralSH3(sh3RGB sh, sh3 kernel)
+	float3 ProductIntegralSH3(sh3vec3 sh, sh3 kernel)
 	{
 		float3 result = 0.0;
 		[unroll] for (int i = 0; i < 9; i++)
-			result += float3(sh.r.coeff[i], sh.g.coeff[i], sh.b.coeff[i]) * kernel.coeff[i];
+			result += float3(sh.x.coeff[i], sh.y.coeff[i], sh.z.coeff[i]) * kernel.coeff[i];
 		return result;
 	}
 
-	float3 ProductIntegralSH3(sh3RGB a, sh3RGB b)
+	float3 ProductIntegralSH3(sh3vec3 a, sh3vec3 z)
 	{
 		float3 result = 0.0;
 		[unroll] for (int i = 0; i < 9; i++)
-			result += float3(a.r.coeff[i] * b.r.coeff[i],
-				a.g.coeff[i] * b.g.coeff[i],
-				a.b.coeff[i] * b.b.coeff[i]);
+			result += float3(a.x.coeff[i] * z.x.coeff[i],
+				a.y.coeff[i] * z.y.coeff[i],
+				a.z.coeff[i] * z.z.coeff[i]);
 		return result;
 	}
 
-	sh3RGB LerpSH3(sh3RGB a, sh3RGB b, float t)
+	sh3vec3 LerpSH3(sh3vec3 a, sh3vec3 z, float t)
 	{
-		sh3RGB result;
-		result.r = LerpSH3(a.r, b.r, t);
-		result.g = LerpSH3(a.g, b.g, t);
-		result.b = LerpSH3(a.b, b.b, t);
+		sh3vec3 result;
+		result.x = LerpSH3(a.x, z.x, t);
+		result.y = LerpSH3(a.y, z.y, t);
+		result.z = LerpSH3(a.z, z.z, t);
 		return result;
 	}
 
-	float3 IrradianceSH3(sh3RGB sh, float3 N)
+	float3 IrradianceSH3(sh3vec3 sh, float3 N)
 	{
 		return ProductIntegralSH3(sh, EvaluateCosineLobeSH3(N));
 	}
 
-	float3 DiffuseRadianceSH3(sh3RGB sh, float3 N)
+	float3 DiffuseRadianceSH3(sh3vec3 sh, float3 N)
 	{
 		return max(float3(0, 0, 0), IrradianceSH3(sh, N) / Math::PI);
 	}
@@ -249,42 +258,42 @@ namespace SH
 	// Packing                                                            //
 	// ------------------------------------------------------------------ //
 
-	// sh2RGB -> 3 consecutive RGBA texels (one per channel). Matches the common
+	// sh2vec3 -> 3 consecutive RGBA texels (one per channel). Matches the common
 	// 3-pixel IBL layout: texel base+0 = R coeffs, base+1 = G, base+2 = B.
-	void PackSH2RGB(sh2RGB sh, uint2 probePos, RWTexture2DArray<float4> arr)
+	void PackSH2Vec3(sh2vec3 sh, uint2 probePos, RWTexture2DArray<float4> arr)
 	{
-		arr[uint3(probePos, 0)] = sh.r;
-		arr[uint3(probePos, 1)] = sh.g;
-		arr[uint3(probePos, 2)] = sh.b;
+		arr[uint3(probePos, 0)] = sh.x;
+		arr[uint3(probePos, 1)] = sh.y;
+		arr[uint3(probePos, 2)] = sh.z;
 	}
 
-	sh2RGB UnpackSH2RGB(uint2 probePos, Texture2DArray<float4> arr)
+	sh2vec3 UnpackSH2Vec3(uint2 probePos, Texture2DArray<float4> arr)
 	{
-		sh2RGB sh;
-		sh.r = arr[uint3(probePos, 0)];
-		sh.g = arr[uint3(probePos, 1)];
-		sh.b = arr[uint3(probePos, 2)];
+		sh2vec3 sh;
+		sh.x = arr[uint3(probePos, 0)];
+		sh.y = arr[uint3(probePos, 1)];
+		sh.z = arr[uint3(probePos, 2)];
 		return sh;
 	}
 
-	// sh3RGB -> Texture2DArray with 9 slices, each float4 = (r_i, g_i, b_i, 0).
+	// sh3vec3 -> Texture2DArray with 9 slices, each float4 = (r_i, g_i, b_i, 0).
 	// (Differs from the base PackSH3, which packs ONE channel's 9 coeffs into 3
 	// slices; RGB needs the per-coefficient layout below.)
-	void PackSH3RGB(sh3RGB sh, uint2 probePos, RWTexture2DArray<float4> arr)
+	void PackSH3Vec3(sh3vec3 sh, uint2 probePos, RWTexture2DArray<float4> arr)
 	{
 		[unroll] for (int i = 0; i < 9; i++)
-			arr[uint3(probePos, i)] = float4(sh.r.coeff[i], sh.g.coeff[i], sh.b.coeff[i], 0);
+			arr[uint3(probePos, i)] = float4(sh.x.coeff[i], sh.y.coeff[i], sh.z.coeff[i], 0);
 	}
 
-	sh3RGB UnpackSH3RGB(uint2 probePos, Texture2DArray<float4> arr)
+	sh3vec3 UnpackSH3Vec3(uint2 probePos, Texture2DArray<float4> arr)
 	{
-		sh3RGB sh;
+		sh3vec3 sh;
 		[unroll] for (int i = 0; i < 9; i++)
 		{
 			float4 c = arr[uint3(probePos, i)];
-			sh.r.coeff[i] = c.x;
-			sh.g.coeff[i] = c.y;
-			sh.b.coeff[i] = c.z;
+			sh.x.coeff[i] = c.x;
+			sh.y.coeff[i] = c.y;
+			sh.z.coeff[i] = c.z;
 		}
 		return sh;
 	}
