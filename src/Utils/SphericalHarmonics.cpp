@@ -1,8 +1,8 @@
 #include "SphericalHarmonics.h"
 
-using namespace SphericalHarmonics;
+using namespace SH;
 
-SH2 SphericalHarmonics::Evaluate(float3 dir)
+SH2 SH::Evaluate(float3 dir)
 {
 	SH2 result;
 	result.c0 = 0.28209479177387814347403972578039f;              // L=0 , M= 0
@@ -12,14 +12,14 @@ SH2 SphericalHarmonics::Evaluate(float3 dir)
 	return result;
 }
 
-float SphericalHarmonics::Dot(SH2 a, SH2 b)
+float SH::Dot(SH2 a, SH2 b)
 {
 	float4 aVec = float4(a.c0, a.c1[0], a.c1[1], a.c1[2]);
 	float4 bVec = float4(b.c0, b.c1[0], b.c1[1], b.c1[2]);
 	return aVec.Dot(bVec);
 }
 
-float3 SphericalHarmonics::Dot(SH2Color a, SH2Color b)
+float3 SH::Dot(SH2Color a, SH2Color b)
 {
 	return float3(
 		Dot(a.r, b.r),
@@ -27,13 +27,13 @@ float3 SphericalHarmonics::Dot(SH2Color a, SH2Color b)
 		Dot(a.b, b.b));
 }
 
-float SphericalHarmonics::Unproject(float3 dir, SH2 sh)
+float SH::Unproject(float3 dir, SH2 sh)
 {
 	SH2 basis = Evaluate(dir);
 	return Dot(sh, basis);
 }
 
-float3 SphericalHarmonics::Unproject(float3 dir, SH2Color sh)
+float3 SH::Unproject(float3 dir, SH2Color sh)
 {
 	return float3(
 		Unproject(dir, sh.r),
@@ -41,7 +41,7 @@ float3 SphericalHarmonics::Unproject(float3 dir, SH2Color sh)
 		Unproject(dir, sh.b));
 }
 
-SH2 SphericalHarmonics::EvaluateCosineLobe(float3 dir)
+SH2 SH::EvaluateCosineLobe(float3 dir)
 {
 	SH2 result;
 	result.c0 = 0.8862269254527580137f;              // L=0 , M= 0
@@ -51,7 +51,7 @@ SH2 SphericalHarmonics::EvaluateCosineLobe(float3 dir)
 	return result;
 }
 
-SH2 SphericalHarmonics::EvaluatePhaseHG(float3 dir, float g)
+SH2 SH::EvaluatePhaseHG(float3 dir, float g)
 {
 	SH2 result;
 	const float factor = 0.48860251190291992158638462283836f * g;
@@ -62,7 +62,7 @@ SH2 SphericalHarmonics::EvaluatePhaseHG(float3 dir, float g)
 	return result;
 }
 
-SH2 SphericalHarmonics::Add(SH2 a, SH2 b)
+SH2 SH::Add(SH2 a, SH2 b)
 {
 	SH2 result;
 	result.c0 = a.c0 + b.c0;
@@ -72,7 +72,7 @@ SH2 SphericalHarmonics::Add(SH2 a, SH2 b)
 	return result;
 }
 
-SH2Color SphericalHarmonics::Add(SH2Color a, SH2Color b)
+SH2Color SH::Add(SH2Color a, SH2Color b)
 {
 	SH2Color result;
 	result.r = Add(a.r, b.r);
@@ -81,7 +81,7 @@ SH2Color SphericalHarmonics::Add(SH2Color a, SH2Color b)
 	return result;
 }
 
-SH2 SphericalHarmonics::Scale(SH2 sh, float scale)
+SH2 SH::Scale(SH2 sh, float scale)
 {
 	SH2 result;
 	result.c0 = sh.c0 * scale;
@@ -91,7 +91,7 @@ SH2 SphericalHarmonics::Scale(SH2 sh, float scale)
 	return result;
 }
 
-SH2Color SphericalHarmonics::Scale(SH2Color sh, float scale)
+SH2Color SH::Scale(SH2Color sh, float scale)
 {
 	SH2Color result;
 	result.r = Scale(sh.r, scale);
@@ -100,7 +100,7 @@ SH2Color SphericalHarmonics::Scale(SH2Color sh, float scale)
 	return result;
 }
 
-SH2 SphericalHarmonics::Rotate(SH2 sh, float3x3 rotMatrix)
+SH2 SH::Rotate(SH2 sh, float3x3 rotMatrix)
 {
 	SH2 result;
 	result.c0 = sh.c0;
@@ -116,7 +116,7 @@ SH2 SphericalHarmonics::Rotate(SH2 sh, float3x3 rotMatrix)
 	return result;
 }
 
-SH2Color SphericalHarmonics::Rotate(SH2Color sh, float3x3 rotMatrix)
+SH2Color SH::Rotate(SH2Color sh, float3x3 rotMatrix)
 {
 	SH2Color result;
 	result.r = Rotate(sh.r, rotMatrix);
@@ -125,12 +125,12 @@ SH2Color SphericalHarmonics::Rotate(SH2Color sh, float3x3 rotMatrix)
 	return result;
 }
 
-float SphericalHarmonics::FuncProductIntegral(SH2 shL, SH2 shR)
+float SH::FuncProductIntegral(SH2 shL, SH2 shR)
 {
 	return Dot(shL, shR);
 }
 
-float3 SphericalHarmonics::FuncProductIntegral(SH2Color shL, SH2Color shR)
+float3 SH::FuncProductIntegral(SH2Color shL, SH2Color shR)
 {
 	return float3(
 		FuncProductIntegral(shL.r, shR.r),
@@ -138,7 +138,7 @@ float3 SphericalHarmonics::FuncProductIntegral(SH2Color shL, SH2Color shR)
 		FuncProductIntegral(shL.b, shR.b));
 }
 
-SH2 SphericalHarmonics::Product(SH2 shL, SH2 shR)
+SH2 SH::Product(SH2 shL, SH2 shR)
 {
 	const float factor = 1.0f / (2.0f * sqrt(3.14159265358979323846f));
 	SH2 result;
@@ -149,7 +149,7 @@ SH2 SphericalHarmonics::Product(SH2 shL, SH2 shR)
 	return result;
 }
 
-SH2Color SphericalHarmonics::Product(SH2Color shL, SH2Color shR)
+SH2Color SH::Product(SH2Color shL, SH2Color shR)
 {
 	SH2Color result;
 	result.r = Product(shL.r, shR.r);
@@ -158,7 +158,7 @@ SH2Color SphericalHarmonics::Product(SH2Color shL, SH2Color shR)
 	return result;
 }
 
-SH2 SphericalHarmonics::HanningConvolution(SH2 sh, float w)
+SH2 SH::HanningConvolution(SH2 sh, float w)
 {
 	if (w <= 0)
 		return sh;
@@ -172,7 +172,7 @@ SH2 SphericalHarmonics::HanningConvolution(SH2 sh, float w)
 	return result;
 }
 
-SH2Color SphericalHarmonics::HanningConvolution(SH2Color sh, float w)
+SH2Color SH::HanningConvolution(SH2Color sh, float w)
 {
 	SH2Color result;
 	result.r = HanningConvolution(sh.r, w);
@@ -181,7 +181,7 @@ SH2Color SphericalHarmonics::HanningConvolution(SH2Color sh, float w)
 	return result;
 }
 
-SH2 SphericalHarmonics::DiffuseConvolution(SH2 sh)
+SH2 SH::DiffuseConvolution(SH2 sh)
 {
 	SH2 result = sh;
 	result.c0 *= 3.14159265358979323846f;
@@ -191,7 +191,7 @@ SH2 SphericalHarmonics::DiffuseConvolution(SH2 sh)
 	return result;
 }
 
-SH2Color SphericalHarmonics::DiffuseConvolution(SH2Color sh)
+SH2Color SH::DiffuseConvolution(SH2Color sh)
 {
 	SH2Color result;
 	result.r = DiffuseConvolution(sh.r);
@@ -218,7 +218,7 @@ static T normalize(const T& v)
 
 // Author: ProfJack
 // Constructs the SH of an approximate specular lobe
-SH2 SphericalHarmonics::FauxSpecularLobe(float3 N, float3 V, float roughness)
+SH2 SH::FauxSpecularLobe(float3 N, float3 V, float roughness)
 {
 	// https://www.gdcvault.com/play/1026701/Fast-Denoising-With-Self-Stabilizing
 	// get dominant ggx reflection direction
@@ -238,7 +238,7 @@ SH2 SphericalHarmonics::FauxSpecularLobe(float3 N, float3 V, float roughness)
 	return Add(Scale(directional, lerpFactor), Scale(cosineLobe, 1.0f - lerpFactor));
 }
 
-float SphericalHarmonics::SHHallucinateZH3Irradiance(SH2 sh, float3 direction)
+float SH::SHHallucinateZH3Irradiance(SH2 sh, float3 direction)
 {
 	float3 zonalAxis = normalize(float3(sh.c1[2], sh.c1[0], sh.c1[1]));
 	float ratio = 0.0;
@@ -249,14 +249,14 @@ float SphericalHarmonics::SHHallucinateZH3Irradiance(SH2 sh, float3 direction)
 	float zhDir = sqrt(5.0f / (16.0f * 3.14159265358979323846f)) * (3.0f * fZ * fZ - 1.0f);
 	// Convolve inSH with the normalized cosine kernel (multiply the L1 band by the zonal scale 2/3), then dot with
 	// inSH(direction) for linear inSH (Equation 5).
-	float result = SphericalHarmonics::FuncProductIntegral(sh, SphericalHarmonics::EvaluateCosineLobe(direction));
+	float result = SH::FuncProductIntegral(sh, SH::EvaluateCosineLobe(direction));
 	// Add irradiance from the ZH3 term. zonalL2Coeff is the ZH3 coefficient for a radiance signal, so we need to
 	// multiply by 1/4 (the L2 zonal scale for a normalized clamped cosine kernel) to evaluate irradiance.
 	result += 0.25f * zonalL2Coeff * zhDir;
 	return std::max(0.0f, result);
 }
 
-float3 SphericalHarmonics::SHHallucinateZH3Irradiance(SH2Color sh, float3 direction)
+float3 SH::SHHallucinateZH3Irradiance(SH2Color sh, float3 direction)
 {
 	return float3(
 		SHHallucinateZH3Irradiance(sh.r, direction),
@@ -264,7 +264,7 @@ float3 SphericalHarmonics::SHHallucinateZH3Irradiance(SH2Color sh, float3 direct
 		SHHallucinateZH3Irradiance(sh.b, direction));
 }
 
-SH2Color SphericalHarmonics::DALCToSH(const float3 dalcColors[6])
+SH2Color SH::DALCToSH(const float3 dalcColors[6])
 {
 	SH2Color result;
 

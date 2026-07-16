@@ -467,7 +467,7 @@ namespace SharedData
 
 	float3 GetAmbient(float3 normal)
 	{
-		return SphericalHarmonics::Unproject(AmbientSHR, AmbientSHG, AmbientSHB, normal);
+		return SH::Unproject(AmbientSHR, AmbientSHG, AmbientSHB, normal);
 	}
 
 #endif  // PSHADER

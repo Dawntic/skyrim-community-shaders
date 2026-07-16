@@ -1069,7 +1069,7 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 positionMSSkylight = input.WPosition.xyz;
 
 	sh2 skylightingSH = Skylighting::SampleNoBias(positionMSSkylight);
-	float skylighting = SphericalHarmonics::Unproject(skylightingSH, float3(0, 0, 1));
+	float skylighting = SH::Unproject(skylightingSH, float3(0, 0, 1));
 
 	float skylightingDiffuse = Skylighting::EvaluateDiffuse(skylightingSH, float3(0, 0, 1), Skylighting::GetFadeOutFactor(input.WPosition.xyz));
 
@@ -1085,7 +1085,7 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 normal = waterData.normal;
 
 #			if defined(SKYLIGHTING)
-	sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(normal, -viewDirection, 0.0);
+	sh2 specularLobe = SH::FauxSpecularLobe(normal, -viewDirection, 0.0);
 	float skylightingSpecular = Skylighting::EvaluateSpecular(skylightingSH, specularLobe, Skylighting::GetFadeOutFactor(input.WPosition.xyz));
 #			endif
 

@@ -21,11 +21,11 @@ namespace TestConstants
 /// @tags spherical-harmonics, sampling, unit-sphere
 [numthreads(1, 1, 1)] void TestGetUniformSphereSample() {
 	// Test various parameter combinations
-	float3 s00 = SphericalHarmonics::GetUniformSphereSample(0.0, 0.0);
-	float3 s11 = SphericalHarmonics::GetUniformSphereSample(1.0, 1.0);
-	float3 s55 = SphericalHarmonics::GetUniformSphereSample(0.5, 0.5);
-	float3 s01 = SphericalHarmonics::GetUniformSphereSample(0.0, 1.0);
-	float3 s10 = SphericalHarmonics::GetUniformSphereSample(1.0, 0.0);
+	float3 s00 = SH::GetUniformSphereSample(0.0, 0.0);
+	float3 s11 = SH::GetUniformSphereSample(1.0, 1.0);
+	float3 s55 = SH::GetUniformSphereSample(0.5, 0.5);
+	float3 s01 = SH::GetUniformSphereSample(0.0, 1.0);
+	float3 s10 = SH::GetUniformSphereSample(1.0, 0.0);
 
 	// All samples should be unit vectors (on sphere surface)
 	ASSERT(IsTrue, abs(length(s00) - 1.0) < TestConstants::FLOAT16_EPSILON);
@@ -52,7 +52,7 @@ namespace TestConstants
 	// Sample at a few points
 	for (float az = 0.0; az < 1.0; az += 0.25) {
 		for (float ze = 0.0; ze < 1.0; ze += 0.25) {
-			float3 s = SphericalHarmonics::GetUniformSphereSample(az, ze);
+			float3 s = SH::GetUniformSphereSample(az, ze);
 
 			if (s.y > 0)
 				posY++;
@@ -75,7 +75,7 @@ namespace TestConstants
 
 /// @tags spherical-harmonics, basics, initialization
 [numthreads(1, 1, 1)] void TestSHZero() {
-	sh2 zero = SphericalHarmonics::Zero();
+	sh2 zero = SH::Zero();
 
 	// Should be all zeros
 	ASSERT(IsTrue, all(zero == 0.0));
@@ -93,9 +93,9 @@ namespace TestConstants
 	float3 dirY = float3(0, 1, 0);
 	float3 dirZ = float3(0, 0, 1);
 
-	sh2 shX = SphericalHarmonics::Evaluate(dirX);
-	sh2 shY = SphericalHarmonics::Evaluate(dirY);
-	sh2 shZ = SphericalHarmonics::Evaluate(dirZ);
+	sh2 shX = SH::Evaluate(dirX);
+	sh2 shY = SH::Evaluate(dirY);
+	sh2 shZ = SH::Evaluate(dirZ);
 
 	// Should not be NaN or Inf
 	ASSERT(IsTrue, all(!isnan(shX)));
@@ -106,7 +106,7 @@ namespace TestConstants
 	ASSERT(IsTrue, all(!isinf(shZ)));
 
 	// x component is constant (L=0, M=0) for all directions
-	// Value should be ~0.282095 (see SphericalHarmonics.hlsli)
+	// Value should be ~0.282095 (see SH.hlsli)
 	const float L0M0 = 0.28209479177387814347403972578039f;
 	ASSERT(IsTrue, abs(shX.x - L0M0) < TestConstants::EXACT_TOLERANCE);
 	ASSERT(IsTrue, abs(shY.x - L0M0) < TestConstants::EXACT_TOLERANCE);
@@ -122,7 +122,7 @@ namespace TestConstants
 [numthreads(1, 1, 1)] void TestSHEvaluateNormalized() {
 	// Test with normalized diagonal direction
 	float3 dir = normalize(float3(1, 1, 1));
-	sh2 sh = SphericalHarmonics::Evaluate(dir);
+	sh2 sh = SH::Evaluate(dir);
 
 	// Should produce finite values
 	ASSERT(IsTrue, all(!isnan(sh)));
@@ -141,11 +141,11 @@ namespace TestConstants
 	/// @tags spherical-harmonics, operations, addition
 	[numthreads(1, 1, 1)] void TestSHAdd()
 {
-	sh2 sh1 = SphericalHarmonics::Evaluate(float3(1, 0, 0));
-	sh2 sh2Val = SphericalHarmonics::Evaluate(float3(0, 1, 0));
+	sh2 sh1 = SH::Evaluate(float3(1, 0, 0));
+	sh2 sh2Val = SH::Evaluate(float3(0, 1, 0));
 
 	// Test addition
-	sh2 addResult = SphericalHarmonics::Add(sh1, sh2Val);
+	sh2 addResult = SH::Add(sh1, sh2Val);
 
 	// Should match component-wise addition
 	ASSERT(IsTrue, all(abs(addResult - (sh1 + sh2Val)) < TestConstants::EXACT_TOLERANCE));
@@ -154,29 +154,29 @@ namespace TestConstants
 	ASSERT(IsTrue, all(!isnan(addResult)));
 
 	// Adding zero should return original
-	sh2 zeroSH = SphericalHarmonics::Zero();
-	sh2 sumZero = SphericalHarmonics::Add(sh1, zeroSH);
+	sh2 zeroSH = SH::Zero();
+	sh2 sumZero = SH::Add(sh1, zeroSH);
 	ASSERT(IsTrue, all(abs(sumZero - sh1) < TestConstants::EXACT_TOLERANCE));
 }
 
 /// @tags spherical-harmonics, operations, scaling
 [numthreads(1, 1, 1)] void TestSHScale() {
-	sh2 sh = SphericalHarmonics::Evaluate(float3(1, 0, 0));
+	sh2 sh = SH::Evaluate(float3(1, 0, 0));
 
 	// Test scaling by 2
-	sh2 scaled2 = SphericalHarmonics::Scale(sh, 2.0);
+	sh2 scaled2 = SH::Scale(sh, 2.0);
 	ASSERT(IsTrue, all(abs(scaled2 - sh * 2.0) < TestConstants::EXACT_TOLERANCE));
 
 	// Test scaling by 0.5
-	sh2 scaled05 = SphericalHarmonics::Scale(sh, 0.5);
+	sh2 scaled05 = SH::Scale(sh, 0.5);
 	ASSERT(IsTrue, all(abs(scaled05 - sh * 0.5) < TestConstants::EXACT_TOLERANCE));
 
 	// Test scaling by 0 should give zero
-	sh2 scaledZero = SphericalHarmonics::Scale(sh, 0.0);
+	sh2 scaledZero = SH::Scale(sh, 0.0);
 	ASSERT(IsTrue, all(abs(scaledZero) < TestConstants::EXACT_TOLERANCE));
 
 	// Test negative scaling
-	sh2 scaledNeg = SphericalHarmonics::Scale(sh, -1.0);
+	sh2 scaledNeg = SH::Scale(sh, -1.0);
 	ASSERT(IsTrue, all(abs(scaledNeg + sh) < TestConstants::EXACT_TOLERANCE));
 }
 
@@ -186,11 +186,11 @@ namespace TestConstants
 	float3 dir = normalize(float3(1, 1, 1));
 
 	// Evaluate SH basis at direction
-	sh2 sh = SphericalHarmonics::Evaluate(dir);
+	sh2 sh = SH::Evaluate(dir);
 
 	// Unproject back at same direction
 	// For SH basis, unprojecting at the same point gives norm squared
-	float value = SphericalHarmonics::Unproject(sh, dir);
+	float value = SH::Unproject(sh, dir);
 
 	// Should be finite and positive
 	ASSERT(IsTrue, !isnan(value) && !isinf(value));
@@ -207,21 +207,21 @@ namespace TestConstants
 	float3 dir = normalize(float3(1, 1, 1));
 
 	// Create SH for RGB channels
-	sh2 shR = SphericalHarmonics::Evaluate(float3(1, 0, 0));
-	sh2 shG = SphericalHarmonics::Evaluate(float3(0, 1, 0));
-	sh2 shB = SphericalHarmonics::Evaluate(float3(0, 0, 1));
+	sh2 shR = SH::Evaluate(float3(1, 0, 0));
+	sh2 shG = SH::Evaluate(float3(0, 1, 0));
+	sh2 shB = SH::Evaluate(float3(0, 0, 1));
 
 	// Unproject to get RGB color
-	float3 color = SphericalHarmonics::Unproject(shR, shG, shB, dir);
+	float3 color = SH::Unproject(shR, shG, shB, dir);
 
 	// Should be finite
 	ASSERT(IsTrue, all(!isnan(color)));
 	ASSERT(IsTrue, all(!isinf(color)));
 
 	// Each channel should match individual unproject
-	float r = SphericalHarmonics::Unproject(shR, dir);
-	float g = SphericalHarmonics::Unproject(shG, dir);
-	float b = SphericalHarmonics::Unproject(shB, dir);
+	float r = SH::Unproject(shR, dir);
+	float g = SH::Unproject(shG, dir);
+	float b = SH::Unproject(shB, dir);
 
 	ASSERT(IsTrue, abs(color.r - r) < TestConstants::EXACT_TOLERANCE);
 	ASSERT(IsTrue, abs(color.g - g) < TestConstants::EXACT_TOLERANCE);
@@ -233,7 +233,7 @@ namespace TestConstants
 {
 	float3 dir = normalize(float3(1, 1, 1));
 
-	sh2 cosineLobe = SphericalHarmonics::EvaluateCosineLobe(dir);
+	sh2 cosineLobe = SH::EvaluateCosineLobe(dir);
 
 	// Should not be NaN/Inf
 	ASSERT(IsTrue, all(!isnan(cosineLobe)));
@@ -244,8 +244,8 @@ namespace TestConstants
 	ASSERT(IsTrue, abs(cosineLobe.x - 0.8862269254527580137f) < TestConstants::APPROX_TOLERANCE);
 
 	// Different directions should give different lobes
-	sh2 lobeDirX = SphericalHarmonics::EvaluateCosineLobe(float3(1, 0, 0));
-	sh2 lobeDirY = SphericalHarmonics::EvaluateCosineLobe(float3(0, 1, 0));
+	sh2 lobeDirX = SH::EvaluateCosineLobe(float3(1, 0, 0));
+	sh2 lobeDirY = SH::EvaluateCosineLobe(float3(0, 1, 0));
 
 	ASSERT(IsTrue, any(lobeDirX != lobeDirY));
 }
@@ -259,9 +259,9 @@ namespace TestConstants
 	float g_forward = 0.5;
 	float g_backward = -0.5;
 
-	sh2 phaseIso = SphericalHarmonics::EvaluatePhaseHG(dir, g_isotropic);
-	sh2 phaseFwd = SphericalHarmonics::EvaluatePhaseHG(dir, g_forward);
-	sh2 phaseBwd = SphericalHarmonics::EvaluatePhaseHG(dir, g_backward);
+	sh2 phaseIso = SH::EvaluatePhaseHG(dir, g_isotropic);
+	sh2 phaseFwd = SH::EvaluatePhaseHG(dir, g_forward);
+	sh2 phaseBwd = SH::EvaluatePhaseHG(dir, g_backward);
 
 	// Should not be NaN/Inf
 	ASSERT(IsTrue, all(!isnan(phaseIso)));
@@ -288,18 +288,18 @@ namespace TestConstants
 {
 	// Test with unnormalized direction
 	float3 unnormalized = float3(2, 2, 2);
-	sh2 sh = SphericalHarmonics::Evaluate(unnormalized);
+	sh2 sh = SH::Evaluate(unnormalized);
 	ASSERT(IsTrue, all(!isnan(sh)));
 
 	// Test with zero direction (edge case)
 	float3 zero = float3(0, 0, 0);
-	sh2 shZero = SphericalHarmonics::Evaluate(zero);
+	sh2 shZero = SH::Evaluate(zero);
 	ASSERT(IsTrue, all(!isnan(shZero)));
 
 	// Test unproject with zero SH
-	sh2 shZeroFunc = SphericalHarmonics::Zero();
+	sh2 shZeroFunc = SH::Zero();
 	float3 dir = float3(1, 0, 0);
-	float value = SphericalHarmonics::Unproject(shZeroFunc, dir);
+	float value = SH::Unproject(shZeroFunc, dir);
 	ASSERT(AreEqual, value, 0.0f);
 }
 
@@ -308,17 +308,17 @@ namespace TestConstants
 	// Property test: SH operations are linear
 	// Add(Scale(sh1, a), Scale(sh2, b)) == Scale(Add(sh1, sh2), a) when a==b
 
-	sh2 sh1 = SphericalHarmonics::Evaluate(float3(1, 0, 0));
-	sh2 sh2Val = SphericalHarmonics::Evaluate(float3(0, 1, 0));
+	sh2 sh1 = SH::Evaluate(float3(1, 0, 0));
+	sh2 sh2Val = SH::Evaluate(float3(0, 1, 0));
 	float a = 2.0;
 
 	// Test: a*sh1 + a*sh2 == a*(sh1 + sh2)
-	sh2 leftSide = SphericalHarmonics::Add(
-		SphericalHarmonics::Scale(sh1, a),
-		SphericalHarmonics::Scale(sh2Val, a));
+	sh2 leftSide = SH::Add(
+		SH::Scale(sh1, a),
+		SH::Scale(sh2Val, a));
 
-	sh2 rightSide = SphericalHarmonics::Scale(
-		SphericalHarmonics::Add(sh1, sh2Val),
+	sh2 rightSide = SH::Scale(
+		SH::Add(sh1, sh2Val),
 		a);
 
 	ASSERT(IsTrue, all(abs(leftSide - rightSide) < TestConstants::EXACT_TOLERANCE));
@@ -334,9 +334,9 @@ namespace TestConstants
 	float3 dirY = float3(0, 1, 0);
 	float3 dirZ = float3(0, 0, 1);
 
-	sh2 shX = SphericalHarmonics::Evaluate(dirX);
-	sh2 shY = SphericalHarmonics::Evaluate(dirY);
-	sh2 shZ = SphericalHarmonics::Evaluate(dirZ);
+	sh2 shX = SH::Evaluate(dirX);
+	sh2 shY = SH::Evaluate(dirY);
+	sh2 shZ = SH::Evaluate(dirZ);
 
 	// The SH basis evaluated at different points should be different
 	// (not testing full orthonormality, just distinctness)

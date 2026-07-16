@@ -65,7 +65,7 @@ struct sh3
 	float coeff[9];
 };
 
-namespace SphericalHarmonics
+namespace SH
 {
 	// Generates a uniform distribution of directions over a unit sphere.
 	// Adapted from http://www.pbr-book.org/3ed-2018/Monte_Carlo_Integration/2D_Sampling_with_Multidimensional_Transformations.html#fragment-SamplingFunctionDefinitions-6
@@ -91,7 +91,7 @@ namespace SphericalHarmonics
 
 	sh2 HemisphereSH2()
 	{
-		sh2 HemiUp = SphericalHarmonics::ZeroSH2();
+		sh2 HemiUp = SH::ZeroSH2();
 		HemiUp.x = 1.77245385f;  // 0.28209479 * 2PI   (same DC as any hemisphere: half the sphere)
 		HemiUp.z = 1.53499006f;  // -(0.48860251 * PI)  negative z -> lobe points down
 		return HemiUp;
@@ -224,9 +224,9 @@ namespace SphericalHarmonics
 		float roughness2 = roughness * roughness;
 		float halfAngle = clamp(4.1679 * roughness2 * roughness2 - 9.0127 * roughness2 * roughness + 4.6161 * roughness2 + 1.7048 * roughness + 0.1, 0, Math::HALF_PI);
 		float lerpFactor = halfAngle / Math::HALF_PI;
-		sh2 directional = SphericalHarmonics::Evaluate(dominantDir);
-		sh2 cosineLobe = SphericalHarmonics::EvaluateCosineLobe(dominantDir) / Math::PI;
-		sh2 result = SphericalHarmonics::Add(SphericalHarmonics::Scale(directional, lerpFactor), SphericalHarmonics::Scale(cosineLobe, 1 - lerpFactor));
+		sh2 directional = SH::Evaluate(dominantDir);
+		sh2 cosineLobe = SH::EvaluateCosineLobe(dominantDir) / Math::PI;
+		sh2 result = SH::Add(SH::Scale(directional, lerpFactor), SH::Scale(cosineLobe, 1 - lerpFactor));
 
 		return result;
 	}
@@ -244,7 +244,7 @@ namespace SphericalHarmonics
 		float zhDir = sqrt(5.0f / (16.0f * Math::PI)) * (3.0f * fZ * fZ - 1.0f);
 		// Convolve inSH with the normalized cosine kernel (multiply the L1 band by the zonal scale 2/3), then dot with
 		// inSH(direction) for linear inSH (Equation 5).
-		float result = SphericalHarmonics::FuncProductIntegral(inSH, SphericalHarmonics::EvaluateCosineLobe(direction));
+		float result = SH::FuncProductIntegral(inSH, SH::EvaluateCosineLobe(direction));
 		// Add irradiance from the ZH3 term. zonalL2Coeff is the ZH3 coefficient for a radiance signal, so we need to
 		// multiply by 1/4 (the L2 zonal scale for a normalized clamped cosine kernel) to evaluate irradiance.
 		result += 0.25f * zonalL2Coeff * zhDir;
@@ -395,9 +395,9 @@ namespace SphericalHarmonics
 		float halfAngle = clamp(4.1679 * roughness2 * roughness2 - 9.0127 * roughness2 * roughness + 4.6161 * roughness2 + 1.7048 * roughness + 0.1, 0, Math::HALF_PI);
 		float lerpFactor = halfAngle / Math::HALF_PI;
 
-		sh3 directional = SphericalHarmonics::EvaluateSH3(dominantDir);
-		sh3 cosineLobe = SphericalHarmonics::ScaleSH3(SphericalHarmonics::EvaluateCosineLobeSH3(dominantDir), rcp(Math::PI));
-		sh3 result = SphericalHarmonics::AddSH3(SphericalHarmonics::ScaleSH3(directional, lerpFactor), SphericalHarmonics::ScaleSH3(cosineLobe, 1 - lerpFactor));
+		sh3 directional = SH::EvaluateSH3(dominantDir);
+		sh3 cosineLobe = SH::ScaleSH3(SH::EvaluateCosineLobeSH3(dominantDir), rcp(Math::PI));
+		sh3 result = SH::AddSH3(SH::ScaleSH3(directional, lerpFactor), SH::ScaleSH3(cosineLobe, 1 - lerpFactor));
 
 		return result;
 	}

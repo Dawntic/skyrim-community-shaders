@@ -2452,7 +2452,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float minWetnessValue = SharedData::wetnessEffectsSettings.MinRainWetness;
 	float minWetnessAngle = saturate(max(minWetnessValue, vertexNormal.z));
 #		if defined(SKYLIGHTING)
-	float wetnessOcclusion = inWorld ? saturate(SphericalHarmonics::Unproject(skylightingSH, float3(0, 0, 1))) : 0.0;
+	float wetnessOcclusion = inWorld ? saturate(SH::Unproject(skylightingSH, float3(0, 0, 1))) : 0.0;
 #		else
 	float wetnessOcclusion = inWorld;
 #		endif
@@ -2961,7 +2961,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	if (!SharedData::InInterior) {
 		skylightingFadeOutFactor = Skylighting::GetFadeOutFactor(input.WorldPosition.xyz);
 
-		//float skyAO = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(ambientNormal)) / Math::PI;
+		//float skyAO = SH::FuncProductIntegral(skylightingSH, SH::EvaluateCosineLobe(ambientNormal)) / Math::PI;
 		//skylightingDiffuse = lerp(1.0, skyAO, skylightingFadeOutFactor);
 		//skylightingDiffuse = lerp(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, skylightingDiffuse);
 
@@ -3008,21 +3008,21 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			//sh2RGB probeSampleA = Skylighting::SampleIrradiance(SharedData::skylightingSettings, input.WorldPosition.xyz); ///////////////////////////////////////////////////////////////////////
 			//float factor = dot(float3(0,0,1), worldNormal.xyz);
 			//	  factor = (factor + 1.0) * 0.5;
-			//float3 SkyR = SphericalHarmonics::Irradiance(probeSampleA, float3(0,0,1));
-			//float3 GroundR = SphericalHarmonics::Irradiance(probeSampleA, float3(0,0,-1));
+			//float3 SkyR = SH::Irradiance(probeSampleA, float3(0,0,1));
+			//float3 GroundR = SH::Irradiance(probeSampleA, float3(0,0,-1));
 			//directionalAmbientColor = lerp(GroundR, SkyR * 0, factor);
-			//directionalAmbientColor = SphericalHarmonics::Irradiance(probeSampleA, worldNormal.xyz);
-			//directionalAmbientColor = SphericalHarmonics::FuncProductIntegral(probeSample, SphericalHarmonics::EvaluateCosineLobe(worldNormal.xyz)) / Math::PI;
-			//directionalAmbientColor = SphericalHarmonics::Irradiance(probeSample, worldNormal.xyz); ///////////////////////////////////////////////////////////////////////
+			//directionalAmbientColor = SH::Irradiance(probeSampleA, worldNormal.xyz);
+			//directionalAmbientColor = SH::FuncProductIntegral(probeSample, SH::EvaluateCosineLobe(worldNormal.xyz)) / Math::PI;
+			//directionalAmbientColor = SH::Irradiance(probeSample, worldNormal.xyz); ///////////////////////////////////////////////////////////////////////
 			//skylightingDiffuse = 1;
 			/*
 			float sin2Cap = sin(radians(90));
 			float cosCap  = sqrt(1.0 - sin2Cap);
 
-			sh2 CapSH = SphericalHarmonics::Zero();
+			sh2 CapSH = SH::Zero();
 			CapSH.x = 0.28209479 * 2.0 * Math::PI * (1.0 - cosCap);
 			CapSH.z = 0.48860251 * Math::PI * sin2Cap;
-			skylightingSH = SphericalHarmonics::UnitSH2() + skylightingSH - CapSH;
+			skylightingSH = SH::UnitSH2() + skylightingSH - CapSH;
 			*/
 
 			// Sample where ambient is coming from?
@@ -3032,36 +3032,36 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			// bounce should be lower for N = up
 
 			// ground bounce applied to all normals otherwise ground-roof inconsistent
-			//SphericalHarmonics::Product(SphericalHarmonics::EvaluateCosineLobe(float3(0,0,-1)), HemiDown);
-			//SkyAO = SphericalHarmonics::Product(SkyAO, SphericalHarmonics::HemisphereSH2()); // only consider things in upper hemi
+			//SH::Product(SH::EvaluateCosineLobe(float3(0,0,-1)), HemiDown);
+			//SkyAO = SH::Product(SkyAO, SH::HemisphereSH2()); // only consider things in upper hemi
 
 			// Bounce is included only to lift SL is occluded areas
 			// The more occluded the probe the more bounce we get
 
-			//sh2 BouncePower = SphericalHarmonics::Add(SphericalHarmonics::UnitSH2(), SphericalHarmonics::Scale(skylightingSH, -1.0));
-			//sh2 normalSH = SphericalHarmonics::EvaluateCosineLobe(worldNormal);
-			//sh2 downSH = SphericalHarmonics::EvaluateCosineLobe(float3(0,0,-1));
+			//sh2 BouncePower = SH::Add(SH::UnitSH2(), SH::Scale(skylightingSH, -1.0));
+			//sh2 normalSH = SH::EvaluateCosineLobe(worldNormal);
+			//sh2 downSH = SH::EvaluateCosineLobe(float3(0,0,-1));
 
-			//sh2RGB Bounce = SphericalHarmonics::Product(IrradianceProbe, BouncePower);
-			//float3 BounceIrradiance = SphericalHarmonics::FuncProductIntegral(Bounce, normalSH);//SphericalHarmonics::FuncProductIntegral(IrradianceProbe, BounceAO);
+			//sh2RGB Bounce = SH::Product(IrradianceProbe, BouncePower);
+			//float3 BounceIrradiance = SH::FuncProductIntegral(Bounce, normalSH);//SH::FuncProductIntegral(IrradianceProbe, BounceAO);
 			//float SL_SCALE = 0.5;
 			//BounceIrradiance = max(BounceIrradiance / Math::PI, 0);// * (1.0 - skylightingDiffuse) * SL_SCALE;
 
-			//sh2 MaxBounce = SphericalHarmonics::Scale(SphericalHarmonics::UnitSH2(), 1.0);// instead of unit sh
+			//sh2 MaxBounce = SH::Scale(SH::UnitSH2(), 1.0);// instead of unit sh
 			//sh2 MinusSkyAO = MaxBounce - skylightingSH;
-			//BounceAO = SphericalHarmonics::Product(BounceAO, MinusSkyAO);
-			//BounceIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, BounceAO);
+			//BounceAO = SH::Product(BounceAO, MinusSkyAO);
+			//BounceIrradiance = SH::FuncProductIntegral(IrradianceProbe, BounceAO);
 			//BounceIrradiance = max(BounceIrradiance / Math::PI, 0);
 
 			// Check SL is 1.0 when full sky
 			// Also test using scalar vis * bounce irradiance
 			// Bounce should only be non zero where skylight is < 1
 
-			//float visibility = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(worldNormal)) / Math::PI;
+			//float visibility = SH::FuncProductIntegral(skylightingSH, SH::EvaluateCosineLobe(worldNormal)) / Math::PI;
 			//visibility = lerp(1.0, visibility, fadeOutFactor);
 
-			//sh2 BounceAO = SphericalHarmonics::Product(BouncePower, normalSH);
-			//float Test = SphericalHarmonics::Unproject(BounceAO, worldNormal); // this is correct weight - ground black
+			//sh2 BounceAO = SH::Product(BouncePower, normalSH);
+			//float Test = SH::Unproject(BounceAO, worldNormal); // this is correct weight - ground black
 
 			directionalAmbientColor = ImageBasedLighting::GetDiffuseIBLOccluded(directionalAmbientColor, -ambientNormal, skylightingDiffuse);
 
@@ -3069,18 +3069,18 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 			sh2RGB IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz);
 
-			skylightingSH = lerp(SphericalHarmonics::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(input.WorldPosition.xyz));
-			sh2 SkyLobe = SphericalHarmonics::Product(SphericalHarmonics::EvaluateCosineLobe(worldNormal), skylightingSH);
+			skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(input.WorldPosition.xyz));
+			sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), skylightingSH);
 
-			float3 SkyIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, SkyLobe);  //SphericalHarmonics::FuncProductIntegral(IrradianceProbe, SphericalHarmonics::EvaluateCosineLobe(worldNormal));
-			SkyIrradiance = max(SkyIrradiance / Math::PI, 0);                                          // * skylightingDiffuse;
+			float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);  //SH::FuncProductIntegral(IrradianceProbe, SH::EvaluateCosineLobe(worldNormal));
+			SkyIrradiance = max(SkyIrradiance / Math::PI, 0);                          // * skylightingDiffuse;
 
 			if (ApplyIrradiance) {
 				directionalAmbientColor = SkyIrradiance;
 			}
 
 			//if(settings.MinSpecularVisibility > 0.2)
-			//	skylightingDiffuse = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(ambientNormal)) / Math::PI;
+			//	skylightingDiffuse = SH::FuncProductIntegral(skylightingSH, SH::EvaluateCosineLobe(ambientNormal)) / Math::PI;
 			//	skylightingDiffuse = Skylighting::EvaluateDiffuse(skylightingSH, ambientNormal, skylightingFadeOutFactor);
 
 #		else

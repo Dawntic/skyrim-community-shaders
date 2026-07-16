@@ -43,14 +43,14 @@ namespace Skylighting
 
 	float EvaluateDiffuse(sh2 skylightingSH, float3 normal, float fadeOutFactor = 1.0)
 	{
-		float visibility = SphericalHarmonics::FuncProductIntegral(skylightingSH, SphericalHarmonics::EvaluateCosineLobe(normal)) / Math::PI;
+		float visibility = SH::FuncProductIntegral(skylightingSH, SH::EvaluateCosineLobe(normal)) / Math::PI;
 		visibility = lerp(1.0, saturate(visibility), fadeOutFactor);
 		return MixDiffuse(visibility);
 	}
 
 	float EvaluateSpecular(sh2 skylightingSH, sh2 specularLobe, float fadeOutFactor = 1.0)
 	{
-		float visibility = SphericalHarmonics::FuncProductIntegral(skylightingSH, specularLobe);
+		float visibility = SH::FuncProductIntegral(skylightingSH, specularLobe);
 		visibility = lerp(1.0, saturate(visibility), fadeOutFactor);
 		return MixSpecular(visibility);
 	}
@@ -84,7 +84,7 @@ namespace Skylighting
 		float2 CoordsUV = (WorldPosition.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
 		CoordsUV = float2(CoordsUV.x, 1 - CoordsUV.y);
 		int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
-		sh2RGB probeSample = SphericalHarmonics::UnpackSH2RGB(Probe, SparseProbeArray);
+		sh2RGB probeSample = SH::UnpackSH2RGB(Probe, SparseProbeArray);
 		return probeSample;
 	}
 
@@ -129,13 +129,13 @@ namespace Skylighting
 					float w = trilinearWeights.x * trilinearWeights.y * trilinearWeights.z * tangentWeight;
 
 					uint3 cellTexID = (cellID + SharedData::skylightingSettings.ArrayOrigin.xyz) % ARRAY_DIM;
-					sh2 probe = SphericalHarmonics::Scale(SkylightingProbeArray[cellTexID], w);
+					sh2 probe = SH::Scale(SkylightingProbeArray[cellTexID], w);
 
-					sum = SphericalHarmonics::Add(sum, probe);
+					sum = SH::Add(sum, probe);
 					wsum += w;
 				}
 
-		sh2 result = SphericalHarmonics::Scale(sum, rcp(wsum + EPSILON_WEIGHT_SUM));
+		sh2 result = SH::Scale(sum, rcp(wsum + EPSILON_WEIGHT_SUM));
 
 		return result;
 	}
@@ -196,13 +196,13 @@ namespace Skylighting
 			float w = trilinearWeights.x * trilinearWeights.y * trilinearWeights.z;
 
 			uint3 cellTexID = (cellID + SharedData::skylightingSettings.ArrayOrigin.xyz) % ARRAY_DIM;
-			sh2 probe = SphericalHarmonics::Scale(SkylightingProbeArray[cellTexID], w);
+			sh2 probe = SH::Scale(SkylightingProbeArray[cellTexID], w);
 
-			sum = SphericalHarmonics::Add(sum, probe);
+			sum = SH::Add(sum, probe);
 			wsum += w;
 		}
 
-		return SphericalHarmonics::Scale(sum, rcp(wsum + EPSILON_WEIGHT_SUM));
+		return SH::Scale(sum, rcp(wsum + EPSILON_WEIGHT_SUM));
 	}
 #endif
 

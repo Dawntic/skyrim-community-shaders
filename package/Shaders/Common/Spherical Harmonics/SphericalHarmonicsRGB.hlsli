@@ -31,7 +31,7 @@ struct sh3RGB
 	sh3 b;
 };
 
-namespace SphericalHarmonics
+namespace SH
 {
 	// ------------------------------------------------------------------ //
 	// Order 2 (sh2RGB)                                                    //

@@ -30,7 +30,7 @@
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
 #include "Common/Math.hlsli"
-#include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
+#include "Common/Spherical Harmonics/SH.hlsli"
 #include "ScreenSpaceGI/common.hlsli"
 
 Texture2D<float> srcWorkingDepth : register(t0);
@@ -267,7 +267,7 @@ void CalculateGI(
 						sampleRadiance = max(sampleRadiance, 0);
 						float3 sampleRadianceYCoCg = Color::RGBToYCoCg(sampleRadiance);
 
-						radianceY += sampleRadianceYCoCg.r * SphericalHarmonics::Evaluate(sampleHorizonVecWS);
+						radianceY += sampleRadianceYCoCg.r * SH::Evaluate(sampleHorizonVecWS);
 						radianceCoCg += sampleRadianceYCoCg.gb;
 
 #	ifdef GI_SPECULAR

@@ -31,18 +31,18 @@ groupshared sh2 sharedB[TOTAL_SAMPLES];
 
 	// Compute sample direction (offset by 0.5 for center sampling)
 	float2 sampleCoord = (float2(az, ze) + 0.5) * rcpAxisSampleCount;
-	float3 rayDir = SphericalHarmonics::GetUniformSphereSample(sampleCoord.x, sampleCoord.y);
+	float3 rayDir = SH::GetUniformSphereSample(sampleCoord.x, sampleCoord.y);
 
 	// Sample cubemap with optimized direction
 	float3 color = EnvTexture.SampleLevel(LinearSampler, -rayDir, 0).xyz;
 
 	// Compute spherical harmonics basis for this direction
-	sh2 sh = SphericalHarmonics::Evaluate(rayDir);
+	sh2 sh = SH::Evaluate(rayDir);
 
 	// Scale by integration weight and color contribution
-	sh2 contributionR = SphericalHarmonics::Scale(sh, color.r * shFactor);
-	sh2 contributionG = SphericalHarmonics::Scale(sh, color.g * shFactor);
-	sh2 contributionB = SphericalHarmonics::Scale(sh, color.b * shFactor);
+	sh2 contributionR = SH::Scale(sh, color.r * shFactor);
+	sh2 contributionG = SH::Scale(sh, color.g * shFactor);
+	sh2 contributionB = SH::Scale(sh, color.b * shFactor);
 
 	// Store each thread's contribution in shared memory
 	sharedR[groupIndex] = contributionR;
@@ -56,9 +56,9 @@ groupshared sh2 sharedB[TOTAL_SAMPLES];
 	[unroll] for (uint stride = TOTAL_SAMPLES / 2; stride > 0; stride >>= 1)
 	{
 		if (groupIndex < stride) {
-			sharedR[groupIndex] = SphericalHarmonics::Add(sharedR[groupIndex], sharedR[groupIndex + stride]);
-			sharedG[groupIndex] = SphericalHarmonics::Add(sharedG[groupIndex], sharedG[groupIndex + stride]);
-			sharedB[groupIndex] = SphericalHarmonics::Add(sharedB[groupIndex], sharedB[groupIndex + stride]);
+			sharedR[groupIndex] = SH::Add(sharedR[groupIndex], sharedR[groupIndex + stride]);
+			sharedG[groupIndex] = SH::Add(sharedG[groupIndex], sharedG[groupIndex + stride]);
+			sharedB[groupIndex] = SH::Add(sharedB[groupIndex], sharedB[groupIndex + stride]);
 		}
 		GroupMemoryBarrierWithGroupSync();
 	}

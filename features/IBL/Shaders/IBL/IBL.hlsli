@@ -31,9 +31,9 @@ namespace ImageBasedLighting
 		sh2 shR = EnvIBLTexture.Load(int3(0, 0, 0));
 		sh2 shG = EnvIBLTexture.Load(int3(1, 0, 0));
 		sh2 shB = EnvIBLTexture.Load(int3(2, 0, 0));
-		float colorR = SphericalHarmonics::SHHallucinateZH3Irradiance(shR, rayDir);
-		float colorG = SphericalHarmonics::SHHallucinateZH3Irradiance(shG, rayDir);
-		float colorB = SphericalHarmonics::SHHallucinateZH3Irradiance(shB, rayDir);
+		float colorR = SH::SHHallucinateZH3Irradiance(shR, rayDir);
+		float colorG = SH::SHHallucinateZH3Irradiance(shG, rayDir);
+		float colorB = SH::SHHallucinateZH3Irradiance(shB, rayDir);
 		return float3(colorR, colorG, colorB) / Math::PI;
 	}
 
@@ -43,9 +43,9 @@ namespace ImageBasedLighting
 		sh2 shR = SkyIBLTexture.Load(int3(0, 0, 0));
 		sh2 shG = SkyIBLTexture.Load(int3(1, 0, 0));
 		sh2 shB = SkyIBLTexture.Load(int3(2, 0, 0));
-		float colorR = SphericalHarmonics::FuncProductIntegral(shR, SphericalHarmonics::EvaluateCosineLobe(rayDir));
-		float colorG = SphericalHarmonics::FuncProductIntegral(shG, SphericalHarmonics::EvaluateCosineLobe(rayDir));
-		float colorB = SphericalHarmonics::FuncProductIntegral(shB, SphericalHarmonics::EvaluateCosineLobe(rayDir));
+		float colorR = SH::FuncProductIntegral(shR, SH::EvaluateCosineLobe(rayDir));
+		float colorG = SH::FuncProductIntegral(shG, SH::EvaluateCosineLobe(rayDir));
+		float colorB = SH::FuncProductIntegral(shB, SH::EvaluateCosineLobe(rayDir));
 		return max(0, float3(colorR, colorG, colorB) / Math::PI);
 	}
 
@@ -67,9 +67,9 @@ namespace ImageBasedLighting
 		sh2 iblSHG = EnvIBLTexture.Load(int3(1, 0, 0));
 		sh2 iblSHB = EnvIBLTexture.Load(int3(2, 0, 0));
 
-		float colorR = SphericalHarmonics::SHHallucinateZH3Irradiance(iblSHR, float3(0, 0, 0));
-		float colorG = SphericalHarmonics::SHHallucinateZH3Irradiance(iblSHG, float3(0, 0, 0));
-		float colorB = SphericalHarmonics::SHHallucinateZH3Irradiance(iblSHB, float3(0, 0, 0));
+		float colorR = SH::SHHallucinateZH3Irradiance(iblSHR, float3(0, 0, 0));
+		float colorG = SH::SHHallucinateZH3Irradiance(iblSHG, float3(0, 0, 0));
+		float colorB = SH::SHHallucinateZH3Irradiance(iblSHB, float3(0, 0, 0));
 		float3 ibl0 = max(0, float3(colorR, colorG, colorB) / Math::PI);
 
 		if (SharedData::iblSettings.DALCMode == 1) {

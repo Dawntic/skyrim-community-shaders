@@ -1,7 +1,7 @@
 #pragma once
 using float3x3 = DirectX::XMFLOAT3X3;
 
-namespace SphericalHarmonics
+namespace SH
 {
 	struct SH2
 	{

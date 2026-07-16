@@ -37,9 +37,9 @@ SamplerComparisonState comparisonSampler : register(s0);
 
 		//float Zenith = 90;
 		//float rcpPdf = Math::PI * sin(radians(Zenith)) / max(settings.OcclusionDir.z, 0.05);
-		//sh2 occlusionSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(settings.OcclusionDir.xyz), visibility * rcpPdf);
-		sh2 occlusionSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(settings.OcclusionDir.xyz), visibility * 2 * Math::PI);
-		//occlusionSH = SphericalHarmonics::Add(occlusionSH, SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(-settings.OcclusionDir.xyz), 0 * 2 * Math::PI));
+		//sh2 occlusionSH = SH::Scale(SH::Evaluate(settings.OcclusionDir.xyz), visibility * rcpPdf);
+		sh2 occlusionSH = SH::Scale(SH::Evaluate(settings.OcclusionDir.xyz), visibility * 2 * Math::PI);
+		//occlusionSH = SH::Add(occlusionSH, SH::Scale(SH::Evaluate(-settings.OcclusionDir.xyz), 0 * 2 * Math::PI));
 
 		const float Y00 = 0.28209479f;
 		const float Y1 = 0.48860251f;
@@ -352,7 +352,7 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 	float2 Extent = abs(settings.GridBounds.xy) + settings.GridBounds.zw;  // pull out later
 	float2 WorldUnitsPerTexel = Extent / 1024;                             // remove 1024 later
 
-	sh2RGB Output = SphericalHarmonics::Zero2RGB();
+	sh2RGB Output = SH::Zero2RGB();
 	for (int i = 0; i < SAMPLES; ++i) {
 		float3 SkySampleDir = UniformHemisphere(i, SAMPLES, SkyAperture);
 		SkySampleDir = mul(SkySampleDir, BentTBN);
@@ -366,8 +366,8 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 
 		SkyRadiance = SkyRadiance;  // * cloudTr + cloudInscattering;
 
-		sh2RGB SkySH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(SkySampleDir), SkyRadiance * SkyWeight);
-		Output = SphericalHarmonics::Add(Output, SkySH);
+		sh2RGB SkySH = SH::Scale(SH::Evaluate(SkySampleDir), SkyRadiance * SkyWeight);
+		Output = SH::Add(Output, SkySH);
 
 		float3 GroundSampleDir = UniformHemisphere(i, SAMPLES, GroundAperture);
 		GroundSampleDir.z = -GroundSampleDir.z;
@@ -386,14 +386,14 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 		float3 BounceRadiance = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV + EnvOffset, 0).xyz;  // * 4;
 
 		// The issue is if amb normal is pointing to ground then you get stronger ground light so overhangs are brighter...
-		sh2RGB GroundSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(GroundSampleDir), BounceRadiance * GroundWeight);
-		Output = SphericalHarmonics::Add(Output, GroundSH);
+		sh2RGB GroundSH = SH::Scale(SH::Evaluate(GroundSampleDir), BounceRadiance * GroundWeight);
+		Output = SH::Add(Output, GroundSH);
 
 		// debug
 		//ProbeArray[int3((CoordsUV + EnvOffset) * settings.GridTexSize.xy, 0)] = float4(1.0.xxx * 1, 1);
 	}
 
-	//Output = SphericalHarmonics::Add(Output, DirOcclusionRGB);
+	//Output = SH::Add(Output, DirOcclusionRGB);
 
 	// debug
 	//float3 BounceRadianceA = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV, 0);
@@ -406,7 +406,7 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 	//if(sdf <= 0)
 	//ProbeArray[ThreadID.xyz] = 1.0.xxxx;
 
-	SphericalHarmonics::PackSH2RGB(Output, ThreadID.xy, ProbeArray);
+	SH::PackSH2RGB(Output, ThreadID.xy, ProbeArray);
 }
 #endif
 

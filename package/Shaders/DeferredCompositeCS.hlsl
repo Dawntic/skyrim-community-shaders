@@ -50,8 +50,8 @@ void SampleSSGI(uint2 pixCoord, float3 normalWS, out float ao, out float3 il)
 	ao = 1 - SsgiAoTexture[pixCoord];
 	float4 ssgiIlYSh = SsgiYTexture[pixCoord];
 	// without ZH hallucination
-	// float ssgiIlY = SphericalHarmonics::FuncProductIntegral(ssgiIlYSh, SphericalHarmonics::EvaluateCosineLobe(normalWS));
-	float ssgiIlY = SphericalHarmonics::SHHallucinateZH3Irradiance(ssgiIlYSh, normalWS);
+	// float ssgiIlY = SH::FuncProductIntegral(ssgiIlYSh, SH::EvaluateCosineLobe(normalWS));
+	float ssgiIlY = SH::SHHallucinateZH3Irradiance(ssgiIlYSh, normalWS);
 	float2 ssgiIlCoCg = SsgiCoCgTexture[pixCoord];
 	il = max(0, Color::YCoCgToRGB(float3(ssgiIlY, ssgiIlCoCg)));
 }
@@ -63,7 +63,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 	ao = SpecularOcclusion(saturate(NdotV), alpha, ao);
 
 	float4 ssgiIlYSh = SsgiYTexture[pixCoord];
-	float ssgiIlY = SphericalHarmonics::FuncProductIntegral(ssgiIlYSh, lobe);
+	float ssgiIlY = SH::FuncProductIntegral(ssgiIlYSh, lobe);
 	float2 ssgiIlCoCg = SsgiCoCgTexture[pixCoord].xy;
 
 	// pi to compensate for the /pi in specularLobe
@@ -153,10 +153,10 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 		sh2RGB IrradianceProbe = Skylighting::SampleIrradianceProbe(positionWS.xyz);
 
-		skylightingSH = lerp(SphericalHarmonics::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(positionWS.xyz));
-		sh2 SkyLobe = SphericalHarmonics::Product(SphericalHarmonics::EvaluateCosineLobe(normalWS), skylightingSH);
+		skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(positionWS.xyz));
+		sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(normalWS), skylightingSH);
 
-		float3 SkyIrradiance = SphericalHarmonics::FuncProductIntegral(IrradianceProbe, SkyLobe);
+		float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
 		SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
 
 		if (ApplyIrradiance) {
@@ -217,7 +217,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		float roughness = 1.0 - glossiness;
 		float level = roughness * 7.0;
 
-		sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(normalWS, V, roughness);
+		sh2 specularLobe = SH::FauxSpecularLobe(normalWS, V, roughness);
 
 		float3 finalIrradiance = 0;
 
@@ -261,7 +261,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 			finalIrradiance = envSpecular + skySpecular;
 
 			//sh2RGB probeSample = Skylighting::SampleIrradiance(SharedData::skylightingSettings, positionWS.xyz, ProbeArrayGrid);
-			//finalIrradiance = SphericalHarmonics::Irradiance(probeSample, R); ///////////////////////////////////////////////////////////////////////
+			//finalIrradiance = SH::Irradiance(probeSample, R); ///////////////////////////////////////////////////////////////////////
 
 		} else
 #	endif  // IBL
@@ -338,9 +338,9 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		float2 CoordsUV = (positionWS.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
 		CoordsUV = float2(CoordsUV.x, 1 - CoordsUV.y);
 		int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
-		sh2RGB probeSample = SphericalHarmonics::UnpackSH2RGB(Probe, ProbeArrayGrid);
+		sh2RGB probeSample = SH::UnpackSH2RGB(Probe, ProbeArrayGrid);
 
-		//color = SphericalHarmonics::Irradiance(probeSample, normalWS); ///////////////////////////////////////////////////////////////////////
+		//color = SH::Irradiance(probeSample, normalWS); ///////////////////////////////////////////////////////////////////////
 
 		//color = ProbeArrayGrid.SampleLevel(LinearSampler, float3(CoordsUV, 0), 0);
 	}
