@@ -96,22 +96,79 @@ struct PhysicalSky final : public Feature
 		float coverage;
 		float heightScale;
 		float cloudType;
-		float pad;
+		float scroll;
+
+		float detailFrequency;
+		float detailStrength;
+		float detailCurlScale;
+		float detailCurlStrength;
+
+		float detailFadeStart;
+		float detailFadeEnd;
+		float2 cloudDataPad;
 	};
+	STATIC_ASSERT_ALIGNAS_16(CloudCB);
+
+	// CB struct matching CloudDebugCB in CloudCommon.hlsli
+	struct alignas(16) CloudDebugCB
+	{
+		uint debugSunTrMode;
+		uint debugAmbientMode;
+		float2 debugPad0;
+
+		float3 debugColor;
+		float sunGain;
+
+		float ambientGain;
+		float cloudTrMuMin;
+		float cloudTrMuMax;
+		float cloudTrRBot;
+
+		float cloudTrRTop;
+		float octaveAttenA;
+		float cloudScattering;
+		float cloudExtinction;
+	};
+	STATIC_ASSERT_ALIGNAS_16(CloudDebugCB);
+
+	// Lighting knobs. The tuning subset (gains, octave attenuation, medium
+	// coefficients) is serialized; the debug seams (override modes, debug
+	// color, overlay toggle) are deliberately runtime-only.
+	struct CloudLightingSettings
+	{
+		uint debugSunTrMode = 0;   /**< 0 live | 1 force white | 2 force orange | 3 A/B global Tr LUT. */
+		uint debugAmbientMode = 0; /**< 0 live | 1 DebugColor | 2 literal red | 3 red->blue height gradient. */
+		float3 debugColor = { 1.f, 0.f, 1.f };
+		float sunGain = 3.6f;          /**< Sun path gain (absorbed the old Sun MS Gain: 2.0 * 1.8). 0 while validating ambient. */
+		float ambientGain = 1.2f;      /**< Gain on the ambient term. */
+		float octaveAttenA = .7f;      /**< Wrenninge octave extinction attenuation. Energy attenuation is fixed in-shader. */
+		bool showDebugOverlay = false; /**< Blit the sun-Tr LUT + ambient swatches into a screen corner. */
+		float cloudScattering = 24.9f; /**< km^-1. Spectrally neutral droplets: albedo = scattering / extinction ~ 0.996. */
+		float cloudExtinction = 25.f;  /**< km^-1. */
+	};
+	CloudLightingSettings cloudLighting;
 
 	struct CloudSettings
 	{
 		//bool isEnabled = true;         /**< Is physically based volumetric clouds rendering enabled. */
 		//bool renderShadows = true;     /**< Render cloud shadows to the shadow buffer. */
-		float bottomRadius = 0.0f;  /**< Stratus and cumulus clouds start height. (km) */
-		float topRadius = 1.6f;     /**< Stratus and cumulus clouds end height. (km) */
-		float minDistance = 0.0f;   /**< Clouds volume tracing offset in front of camera. (km) */
-		float maxDistance = 600.0f; /**< Maximum clouds volume tracing distance. (km) */
-		float coverage = 0.6f;      /**< Amount of cumulus clouds. (Clear or cloudy weather) */
-		float heightScale = 0.95f;  /**< Amount of cirrus clouds. (Clear or cloudy weather) */
-		float cloudType = 0.8f;     /**< Temperature difference between layers. (Storm clouds) */
-		float coverage2 = 0.0f;     /**< Custom current time value. (For a multiplayer sync) */
-									//bool noDelay = false;          /**< Make all computation in one frame. (Expensive!) */
+		float bottomRadius = 1.0f; /**< Stratus and cumulus clouds start height. (km) */
+		float topRadius = 2.4f;    /**< Stratus and cumulus clouds end height. (km) */
+		float minDistance = 0.0f;  /**< Clouds volume tracing offset in front of camera. (km) */
+		float maxDistance = 30.0f; /**< Maximum clouds volume tracing distance. (km) */
+		float coverage = 0.6f;     /**< Amount of cumulus clouds. (Clear or cloudy weather) */
+		float heightScale = 0.95f; /**< Amount of cirrus clouds. (Clear or cloudy weather) */
+		float cloudType = 0.8f;    /**< Temperature difference between layers. (Storm clouds) */
+		float coverage2 = 0.0f;    /**< Custom current time value. (For a multiplayer sync) */
+		float scroll = 0.0f;       /**< Noise z offset; drag/animate to evolve the cloud pattern. */
+								   //bool noDelay = false;          /**< Make all computation in one frame. (Expensive!) */
+
+		float detailFrequency = 6.0f;    /**< Detail noise frequency as a multiple of the base noise scale. */
+		float detailStrength = 0.2f;     /**< Max fraction of the density range detail may erode (0 disables). */
+		float detailCurlScale = 1.0f;    /**< Curl lookup frequency as a multiple of the base noise scale. */
+		float detailCurlStrength = 0.2f; /**< km of turbulent lookup distortion at the cloud base. */
+		float detailFadeStart = 12.0f;   /**< km. Detail fades out over [start, end]. */
+		float detailFadeEnd = 32.0f;     /**< km. No mips on the detail noise; it is subpixel past this. */
 	};
 	CloudSettings cloudSettings;
 
@@ -123,8 +180,10 @@ struct PhysicalSky final : public Feature
 	ID3D11PixelShader* cloudShader = nullptr;
 	ID3D11VertexShader* cloudVShader = nullptr;
 	ID3D11PixelShader* cloudBlendShader = nullptr;
+	ID3D11PixelShader* cloudDebugBlitShader = nullptr;
 
 	ConstantBuffer* cloudBuffer = nullptr;
+	ConstantBuffer* cloudDebugBuffer = nullptr;
 
 	winrt::com_ptr<ID3D11ShaderResourceView> dataFieldsSRV;
 	winrt::com_ptr<ID3D11ShaderResourceView> vertProfileSRV;
@@ -148,6 +207,8 @@ struct PhysicalSky final : public Feature
 	constexpr static uint16_t kApLutW = 32;
 	constexpr static uint16_t kApLutH = 32;
 	constexpr static uint16_t kApLutD = 32;
+	constexpr static uint16_t kCloudTrLutW = 64;
+	constexpr static uint16_t kCloudTrLutH = 32;
 
 	struct WorldspaceInfo
 	{
@@ -195,9 +256,9 @@ struct PhysicalSky final : public Feature
 		float planetRadius = 6.36e3f;      // in km
 		float atmosphereRadius = 6.42e3f;  // in km
 
-		float rayleighFalloff = 1 / 8.69645f;                    // in km^-1
-		float3 rayleighScatter = { 6.6049f, 12.345f, 29.413f };  // in megameter^-1
-		float aerosolFalloff = 1 / 1.2f;
+		float rayleighFalloff = 0.05f;                    //1 / 8.69645f;                    // in km^-1
+		float3 rayleighScatter = { 4.0f, 12.0f, 29.0f };  //{ 6.6049f, 12.345f, 29.413f };  // in megameter^-1
+		float aerosolFalloff = 0.7f;                      //1 / 1.2f;
 		float aerosolPhaseG = 0.8f;
 		float3 aerosolScatter = { 39.96f, 39.96f, 39.96f };
 		float3 aerosolAbsorption = { 4.44f, 4.44f, 4.44f };
@@ -268,6 +329,15 @@ struct PhysicalSky final : public Feature
 		uint lightSkyStatics;
 		float skyStaticsBrightness;
 		uint pad0[2];
+
+		// CLOUD LUT WINDOW (LUTGEN 4/5)
+		// mu is dimensionless; radii are planet-center-relative game units to
+		// match rPlanet (the cloud raymarcher samples the same normalized axes
+		// with its km-scale values).
+		float cloudTrMuMin;
+		float cloudTrMuMax;
+		float cloudTrRBot;
+		float cloudTrRTop;
 	} cbData;
 	STATIC_ASSERT_ALIGNAS_16(CbData);
 
@@ -276,6 +346,8 @@ struct PhysicalSky final : public Feature
 	eastl::unique_ptr<Texture2D> texSvLut = nullptr;  // sky view
 	eastl::unique_ptr<Texture3D> texApLut = nullptr;  // aerial perspective
 	eastl::unique_ptr<Texture2D> texApShadow = nullptr;
+	eastl::unique_ptr<Texture2D> texCloudSunTr = nullptr;    // windowed cloud sun transmittance (LUTGEN 4)
+	eastl::unique_ptr<Texture2D> texCloudAmbient = nullptr;  // cloud ambient endpoints, 2x1 (LUTGEN 5)
 
 	winrt::com_ptr<ID3D11SamplerState> sampTr = nullptr;
 	winrt::com_ptr<ID3D11SamplerState> sampSv = nullptr;
@@ -285,6 +357,8 @@ struct PhysicalSky final : public Feature
 	winrt::com_ptr<ID3D11ComputeShader> csMsLutGen = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csSvLutGen = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csApLutGen = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> csCloudTrLutGen = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> csCloudAmbLutGen = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csShadowAccum = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csShadowAccumHalfRes = nullptr;
 

@@ -1,24 +1,8 @@
-// Copyright 2022-2026 Nikita Fediuchin. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
 #include "PhysicalSky/CloudCommon.hlsli"
-
-#define STEP_SIZE_FACTOR 1.0
 
 struct VertexOut
 {
@@ -47,268 +31,15 @@ VertexOut main(uint vertexID : SV_VertexID)
 
 #	include "PhysicalSky/Common.hlsli"
 
-#	define USE_CAMERA_VOLUME
-#	define USE_CLOUDS_DEPTH
-#	define USE_CLOUDS_REPROJECTION
-
-#	define BaseScale 0.001
-#	define DetailScale 0.001
-// TODO:
-// change transmittance/extinction to scalar
-
-// Temp diff does weird things to cumulus
-// Reprojection causes depth bug
-
-//powder_sugar_effect = 1.0 - exp(-light_samples * 2.0);
-//beers_law = exp(-light_samples);
-//light_energy = 2.0 * beers_law * powder_sugar_effect;
-
-//float mipmap_level = log2(1.0 + abs(inRaymarchInfo.mDistance * cVoxelFineDetailMipMapDistanceScale));
-
-float GetCloudLayerDensity(float EnvelopeZ, float cloudType)
-{
-	EnvelopeZ = saturate(EnvelopeZ);
-
-	float cumulus = max(0.0, LerpLinearStep(EnvelopeZ, 0.0, 0.2, 0.0, 1.0) * LerpLinearStep(EnvelopeZ, 0.7, 0.9, 1.0, 0.0));
-	float stratocumulus = max(0.0, LerpLinearStep(EnvelopeZ, 0.0, 0.2, 0.0, 1.0) * LerpLinearStep(EnvelopeZ, 0.2, 0.7, 1.0, 0.0));
-	float stratus = max(0.0, LerpLinearStep(EnvelopeZ, 0.0, 0.1, 0.0, 1.0) * LerpLinearStep(EnvelopeZ, 0.2, 0.3, 1.0, 0.0));
-
-	float d1 = lerp(stratus, stratocumulus, saturate(cloudType * 2.0));
-	float d2 = lerp(stratocumulus, cumulus, saturate((cloudType - 0.5) * 2.0));
-	return lerp(d1, d2, cloudType);
-}
-
-// Base scale increases with roughness using method gpu gems 7
-// alpha pisc method can scale density
-
-// Low freq base cloud shape
-float GetBaseDensity(float3 pos, float Height)
-{
-	// Weather map and type
-	//tileScale = LerpLinearStep(tileScale, 0.0, 1.0, 0.0, 0.001); //
-	float3 cloudInfo = WeatherMapTex.SampleLevel(LinearRepeatSampler, pos.xy * (WeatherScale + 1e-6f), 0).xyz;
-	float cloudCover = cloudInfo.r;
-	float cloudType = cloudInfo.b;  // 0 = stratus, 1 = cumulus, .5 = stratocumulus
-
-	// Sample low res shape
-	//float tileScale2 = 0.001; //0.00002;
-	float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, pos * BaseScale, 0);  // Perlin-Worley + 3 octives of worley
-	float PerlinWorley = NoiseSample.x;
-	float3 Worley = NoiseSample.yzw;
-
-	// FBM from low freq worley noises
-	float Erosion = dot(Worley, float3(0.625, 0.25, 0.125));  //float Erosion = 0.625 * profileNoise.y + 0.25 * profileNoise.z + 0.125 * profileNoise.w;
-
-	// Create base cloud shape by dilating it with the Worley FBM
-	float BaseCloud = LerpLinearStep(PerlinWorley, -(1.0 - Erosion), 1.0, 0.0, 1.0);
-
-	// NEED ACTUAL DENSITY CONTROL LIKE OLD SHADER
-
-	// Method from realtime-volumetric-cloudscapes
-	//BaseCloud = LerpLinearStep(PerlinWorley, (Erosion - 0.9), 1.0, 0.0, 1.0);
-	//float base_cloud_with_coverage = remapClampedBeforeAndAfter ( baseCloud, cloud_coverage, 1.0, 0.0, 1.0);
-	//base_cloud_with_coverage *= cloud_coverage;
-	//return base_cloud_with_coverage;
-
-	//Height = 0.5;
-	// Get the density−Height gradient using the density Height
-	// function explained in Section 4.3.2.
-	//float layerDensity = GetCloudLayerDensity(Height, cloudType);
-	//float layerDensity = GetDensityHeightGradientForPoint(pos, cloudType, Height);
-	//BaseCloud *= layerDensity;
-
-	// Add cloud coverage //
-	// Only one of these is needed?
-
-	// Method from GPU gems 7
-	BaseCloud = LerpLinearStepClamped(BaseCloud, cloudCover, 1.0, 0.0, 1.0);
-	BaseCloud *= cloudCover;  // Mult so smaller clouds are lighter
-	////
-
-	//Method from alpha pisc
-	// Remap coverage so low coverage settings aggressively clear sky, high settings fill it
-	//float baseCoverage = max(BaseCloud - (1.0 - pow2(coverage)) * 0.8, 0.0);
-	//BaseCloud = baseCoverage * (1.0 - pow2(1.0 - coverage));
-	////
-
-	//return BaseCloud;
-
-	// Method from frost nova  - BEST BASE SO FAR
-	//float density = layerDensity * LerpLinearStepClamped(PerlinWorley, 0.3, 1.0, 0.0, 1.0);
-	//float baseCoverageA = pow(cloudCover, LerpLinearStep(Height, 0.7, 0.8, 1.0, 0.8));
-	//baseCoverageA = pow(cloudCover, LerpLinearStep(Height, 0.7, 0.8, 1.0, lerp(1.0, 0.5, 0.9 )));
-	//Erosion = LerpLinearStepClamped(Erosion, baseCoverageA, 1.0, 0.0, 1.0);
-	// density = LerpLinearStepClamped(density, Erosion, 1.0, 0.0, 1.0);
-
-	return BaseCloud;  //density;
-					   ////
-}
-
-/*
-float GetVertProfile(float Height)
-{
-	float top = VertProfileTex.SampleLevel(LinearRepeatSampler, float2(Scattering.x, Height), 0);
-	float bottom = VertProfileTex.SampleLevel(LinearRepeatSampler, float2(Scattering.y, Height), 0);
-	return top * bottom;
-}
-
-// Create base cloud shape by dilating Worley FBM
-float GetBaseDensity(float3 pos, float Height)
-{
-    float3 cloudInfo = WeatherMapTex.SampleLevel(LinearRepeatSampler, pos.xy * (WeatherScale + 1e-6f), 0).xyz;
-    //float cloudCover = cloudInfo.r; // This is dog shit
-    float cloudType = cloudInfo.b; // 0 = stratus, 1 = cumulus, .5 = stratocumulus
-
-	float4 AlphaPi = Base.SampleLevel(LinearRepeatSampler, pos.xy * BaseScale, 0).xxxx;
-
-	//float3 Scale = float3(Scale1, Scale2, Scale3);   //De-coupling coord scaling can give some good art styles
-    float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(pos.xy, 1) * BaseScale, 0);  // Perlin-Worley + 3 octaves of worley
-	float PerlinWorley = lerp(AlphaPi.x, NoiseSample.x, CloudType); // Extrapolating here is very interesting
-	float3 Worley = NoiseSample.yzw;
-
-	float WorleyFBM = dot(Worley, float3(0.625, 0.25, 0.125));
-
-	float layerDensity = GetDensityHeightGradientForPoint(pos, cloudType, Height);
-
-	float Coverage = pow(CloudCoverage, LerpLinearStep(Height, 0.7, 0.8, 1.0, 0.8)); // Anvil bias
-
-	// Anvil top + densified base
-	//float topBias    = LerpLinearStep(Height, 0.7, 0.8, 1.0, 0.8);
-	//float bottomBias = LerpLinearStep(Height, 0.0, 0.15, 0.7, 1.0);  // tighter coverage at base
-	//float Coverage = pow(CloudCoverage, topBias * bottomBias);
-
-	float Erosion = LerpLinearStepClamped(WorleyFBM, Coverage, 1.0, 0.0, 1.0);
-
-	float Prof = GetVertProfile(Height);
-
-	// Main
-	//float Density = layerDensity * LerpLinearStep(PerlinWorley, 0.0, 1.0, 0.0, 1.0); // arg1 = bottom density
-   // Density = LerpLinearStep(Density, Erosion, 1.0, 0.0, 1.0);
-
-	// Intersting
-	//float Density = HeightScale * LerpLinearStep(PerlinWorley, 0.0, 1.0, 0.0, 1.0);
-	//Density = LerpLinearStep(Density, Erosion, 1.0, 0.0, 1.0);
-
-	float Density = Prof * CloudCoverage * LerpLinearStep(PerlinWorley, 0.0, 1.0, 0.0, 1.0); // arg1 = bottom density
-    //Density = LerpLinearStep(Density, Erosion, 1.0, 0.0, 1.0);
-
-
-	// Test
-
-	float TopGradient = pow(1.0 - Height, 1.5);
-	float BottomGradient = pow(Height, 2.0);
-	float EdgeGradient = LerpLinearStep(pos.z, 0.0, 35.0, 1.0, 0.0);
-	float DimProfile = BottomGradient * TopGradient * EdgeGradient;
-	//float DensityTest = LerpLinearStep(PerlinWorley, 0.0, 1.0, 0.0, 1.0); // arg1 = bottom density
-	//DensityTest = LerpLinearStep(PerlinWorley, -(1.0 - WorleyFBM), 1.0, 0.0, 1.0);
-
-
-	return Density;
-}
-
-
-
-float GetBaseDensity(float3 pos, float Height)
-{
-	float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(pos.xy, 10) * BaseScale, 0);  // Perlin-Worley + 3 octaves of worley
-	float PerlinWorley = NoiseSample.x * 2;
-	float3 Worley = NoiseSample.yzw;
-
-	//float Density = LerpLinearStep(PerlinWorley, CloudCoverage, 1.0, 0.0, 1.0) * HeightScale; // higher cirr is softer
-	//float Density = LerpLinearStep(PerlinWorley, CloudCoverage, 1.0, 0.0, 1.0) * HeightScale;
-	float Density = LerpLinearStep(PerlinWorley, 0.0, 1.0, 0.0, 1.0);
-
-	return Density;
-}
-*/
-//PowderedSugar = 1.0 - exp(-light_samples * 2.0);
-//beers_law = exp(-light_samples);
-//light_energy = 2.0 * beers_law * PowderedSugar;
-
-//float PowderedSugar = 1.0 - exp(-lightOpticalDepth * 2.0);
-//LightTransmittance = 2.0 * LightTransmittance * PowderedSugar;
-
-void ComputeLighting(float sampleDensity, float StepLightDensity, float CosTheta, CloudRaymarchStepState stepState, CloudParticpatingMedium medium, inout CloudRaymarchAccumState accumState)
-{
-	float lightOpticalDepth = medium.extinction * StepLightDensity;
-
-	float cosLightZenith = dot(stepState.upVector, SharedData::DirLightDirection.xyz);
-
-	float Scattering = medium.scattering * sampleDensity;
-	float Extinction = medium.extinction * sampleDensity;
-
-	float3 Irradiance = SharedData::DirLightColor.xyz * medium.phase;
-
-	// Trasmittance
-	float SkyTr = 1;  //TrSample; //atmospherics_air_lut_sampleTransmittance(atmosphere, cosLightZenith, stepState.height);
-	float CloudTransmittance = exp(-(Extinction * stepState.rayStep.w));
-	float LightTransmittance = exp(-lightOpticalDepth);
-	float Transmittance = SkyTr * LightTransmittance;
-
-	// Ambient lighting
-	float3 ambientColor = float3(1, 1, 1);  // fake for now
-											//float3 AmbientIrradiance = ambientColor * LightTransmittance;
-
-	float ambLightDesnity = sampleDensity;  //lerp(sampleDensityLod, sampleDensity, 0.4);
-	float3 ambLightOpticalDepth = medium.extinction * ambLightDesnity;
-	float horizonFactor = saturate(pow3(CosTheta));
-	ambLightOpticalDepth = lerp(ambLightOpticalDepth, lightOpticalDepth, horizonFactor);
-	float3 ambientTransmittance = max(exp(-ambLightOpticalDepth), exp(-ambLightOpticalDepth * 0.25) * 0.7);
-	float3 AmbientIrradiance = ambientColor * ambientTransmittance;
-
-	// Multi Scattering Approximation
-	float SETTING_CLOUDS_MS_RADIUS = -2.5;  /////////
-	float D = exp2(SETTING_CLOUDS_MS_RADIUS);
-
-	float UNIFORM_PHASE = 0.1;  ///////////
-	float3 fMS = (Scattering / Extinction) * (1.0 - exp(-D * Extinction));
-	fMS = lerp(fMS, fMS * 0.99, float3(LinearStep(0.9, 1.0, fMS.x), LinearStep(0.9, 1.0, fMS.y), LinearStep(0.9, 1.0, fMS.z)));
-	float3 MultiScatIrradiance = SharedData::DirLightColor.xyz * Transmittance;
-	MultiScatIrradiance *= UNIFORM_PHASE;
-	MultiScatIrradiance += AmbientIrradiance;
-	MultiScatIrradiance *= fMS / (1.0 - fMS);
-
-	Irradiance = Irradiance * Transmittance + AmbientIrradiance + MultiScatIrradiance;
-
-	// Inscattering interal
-	float3 sampleInSctr = Irradiance * Scattering;
-	float3 sampleInSctrInt = (sampleInSctr - sampleInSctr * CloudTransmittance) / Extinction;
-	accumState.totalInscattering += sampleInSctrInt * accumState.totalTransmittance;
-	accumState.totalTransmittance *= CloudTransmittance;
-}
-
-/*
-// Vertical profiling method from Nubis^3: https://d3d3g8mu99pzk9.cloudfront.net/AndrewSchneider/Nubis%20Cubed.pdf
-float GetCloudProfile(float3 SamplePos, float Height)
-{
-	float3 cloudData = DataFieldTex.SampleLevel(LinearRepeatSampler, SamplePos.xy * HeightScale, 0).xyz;
-	float2 TopBottomType = cloudData.zx;
-	float Cover = cloudData.y;
-
-	float topProfile = VertProfileTex.SampleLevel(LinearSampler, float2(min(TopBottomType.x, CloudType), Height), 0).x;
-	float bottomProfile = VertProfileTex.SampleLevel(LinearSampler, float2(TopBottomType.y, Height), 0).y;
-
-	float VertProfile = topProfile * bottomProfile;
-
-	float Coverage = saturate(LerpLinearStep(Cover, CloudCoverage, 1.0f, 0.0f, 1.0f));
-
-	return VertProfile * Coverage;
-}
-*/
-
-//Worley noise if inverted and used in a FBM approximates a nice fractal
-//billowing pattern. It can also be used to add detail to the low-density regions of
-//the low-frequency Perlin noise. (See Figure 4.7, left and center.) We do this by
-//remapping the Perlin noise using the Worley noise FBM as the minimum value
-//from the original range:   LerpLinearStep(Perlin, WorleyFBM, 1.0, 0.0, 1.0);
-
-// Todo in future:
-// Add height density gradient
-// Get high rez detail
+// Per-octave phase eccentricity attenuation for the sun light march
+// (g *= 0.5 per octave, so deeply-scattered light goes isotropic).
+// Default on per the cloud lighting upgrade plan.
+#	ifndef CLOUD_SUN_OCTAVE_PHASE
+#		define CLOUD_SUN_OCTAVE_PHASE 1
+#	endif
 
 float GetCloudProfile(float3 SamplePos, float Height)
 {
-	float Scroll = 0;
 	float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0);  // Perlin-Worley + 3 octaves of worley
 	float PerlinWorley = NoiseSample.x;
 	float3 Worley = NoiseSample.yzw;
@@ -329,21 +60,141 @@ float GetCloudProfile(float3 SamplePos, float Height)
 	return Density;
 }
 
-static const float3 CLOUD_AMBIENT = float3(0.4, 0.45, 0.5);  // flat skylight fill into the cloud
-static const float CLOUD_MS_GAIN = 1.8;                      // flat multiple-scatter boost
-void ComputeLightingV1(float density, float stepLength, float sunVisibility, CloudParticpatingMedium medium, inout float3 Inscattering, inout float Transmittance)
+float ApplyCloudDetail(float BaseDensity, float3 SamplePos, float Height, float ViewDistance)
 {
-	float albedo = medium.scattering / medium.extinction;
-	float Extinction = medium.extinction * density;
-	float Tr = exp(-Extinction * stepLength);
+	float fade = 1.0 - LerpLinearStepClamped(ViewDistance, DetailFadeStart, DetailFadeEnd, 0.0, 1.0);
+	float strength = DetailStrength * fade;
+	if (strength <= 0.0)
+		return BaseDensity;
 
-	float3 Radiance = SharedData::DirLightColor.xyz * medium.phase * sunVisibility;
-	Radiance = (Radiance + CLOUD_AMBIENT) * CLOUD_MS_GAIN;
+	// Turbulent advection: curl-distort the detail lookup (2D field, strongest
+	// at the cloud base where wind shear lives).
+	float2 curl = CurlNoiseTex.SampleLevel(LinearRepeatSampler, SamplePos.xy * (HeightScale * DetailCurlScale), 0).xy * 2.0 - 1.0;
+	float3 detailPos = SamplePos + float3(curl * ((1.0 - Height) * DetailCurlStrength), Scroll);
 
-	float3 inscatter = Radiance * albedo * (1.0 - Tr);
+	float3 worley = CloudDetailTex.SampleLevel(LinearRepeatSampler, detailPos * (HeightScale * DetailFrequency), 0).xyz;
+	float detailFBM = dot(worley, float3(0.625, 0.25, 0.125));
+
+	// Wispy at the base, billowy at the top.
+	float erosion = lerp(detailFBM, 1.0 - detailFBM, saturate(Height * 10.0)) * strength;
+
+	return LerpLinearStepClamped(BaseDensity, erosion, 1.0, 0.0, 1.0);
+}
+
+// Optical depth toward the sun: 5 exponential steps, ~1.5 km total, coarse
+// density only (erosion skipped). sunDir points TOWARD the sun, which at
+// sunset goes DOWNWARD through the layer -- exiting through the layer BASE is
+// the unoccluded case, exactly like exiting through the top. The atmosphere
+// beyond the exit is already accounted for by the windowed sun-transmittance
+// LUT; the two are independent path segments composed by multiplication.
+float GetOpticalDepth(float3 Pos, float3 Dir, float extinction)
+{
+	float OpticalDepth = 0.0;
+	float t = 0.0, dt = 0.05;  // km
+	[unroll] for (int i = 0; i < 5; ++i)
+	{
+		t += dt;
+		float3 SamplePos = Pos + Dir * t;
+		// Unsaturated height: the exit test must see out-of-layer values
+		float Height = LinearStep(bottomRadius, topRadius, SamplePos.z);
+		if (Height < 0.0 || Height > 1.0)
+			break;
+		OpticalDepth += GetCloudProfile(SamplePos, Height) * dt * extinction;
+		dt *= 2.0;
+	}
+	return OpticalDepth;
+}
+
+static const float OCTAVE_ENERGY_ATTEN = 0.6;
+
+// Wrenninge multi-scatter octaves: fakes deep multiple scattering of spectrally neutral droplet medium.
+float SunVisibilityMS(float SunOpticalDepth)
+{
+	float vis = 0.0;
+	float a = 1.0, b = 1.0;
+	[unroll] for (int i = 0; i < 3; ++i)
+	{
+		vis += b * exp(-a * SunOpticalDepth);
+		a *= OctaveAttenA;
+		b *= OCTAVE_ENERGY_ATTEN;
+	}
+	return vis;
+}
+
+#	if CLOUD_SUN_OCTAVE_PHASE
+// Octave sum with per-octave phase
+float SunVisibilityMSPhased(float SunOpticalDepth, float3 phaseOctaves)
+{
+	float vis = 0.0;
+	float a = 1.0, b = 1.0;
+	[unroll] for (int i = 0; i < 3; ++i)
+	{
+		vis += b * exp(-a * SunOpticalDepth) * phaseOctaves[i];
+		a *= OctaveAttenA;
+		b *= OCTAVE_ENERGY_ATTEN;
+	}
+	return vis;
+}
+#	endif
+
+// Direct sun transmittance at a raymarch sample, from the per-frame windowed
+// LUT (LUTGEN 4), parameterized by the sample'i actual altitude and sun zenith
+// cosine -- including mu < 0 (afterglow/underlighting). Debug overrides sit
+// AFTER the UV remap decision so remap bugs are excluded from
+// application-side tests.
+static const float REFRACTION_MU_BIAS = 0.009;
+
+float3 SampleCloudSunTr(float3 posPlanetRel)
+{
+	if (DebugSunTrMode == 1)
+		return 1.0;
+	if (DebugSunTrMode == 2)
+		return float3(1.0, 0.35, 0.08);
+	if (DebugSunTrMode == 3) {
+		float2 uvGlobal = PhysSky::TrLutUvPlanet(posPlanetRel / GAME_UNIT_TO_KM, SharedData::physSkyData.sunDir);
+		return PhysSky::TexTrLut.SampleLevel(LinearSampler, uvGlobal, 0).xyz;
+	}
+	float r = length(posPlanetRel);
+	float mu = dot(posPlanetRel / r, SharedData::physSkyData.sunDir);
+	// Atmospheric refraction lifts the apparent sun ~0.5 deg at the horizon extending the underlighting window
+	mu += REFRACTION_MU_BIAS * (mu < 0.0);
+	float2 uv = float2(LinearStep(cloudTrMuMin, cloudTrMuMax, mu), LinearStep(cloudTrRBot, cloudTrRTop, r));
+	return TexCloudSunTr.SampleLevel(LinearSampler, saturate(uv), 0).xyz;
+}
+
+// Pre-integrated ambient (LUTGEN 5 endpoints), lerped by in-layer height.
+float3 EvalCloudAmbient(float heightFrac, float3 ambBottom, float3 ambTop)
+{
+	switch (DebugAmbientMode) {
+	case 1:
+		return DebugColor;
+	case 2:
+		return float3(1, 0, 0);
+	case 3:
+		return lerp(float3(1, 0, 0), float3(0, 0, 1), heightFrac);
+	}
+	return lerp(ambBottom, ambTop, heightFrac);
+}
+
+// sunPhaseVis is the phase-weighted sun visibility from the in-cloud light
+// march (Wrenninge octave sum, with the phase folded in per octave when
+// CLOUD_SUN_OCTAVE_PHASE is on).
+void ComputeLightingV3(float density, float stepLength, float3 sunPhaseVis, float heightFrac,
+	float3 sunTr, float3 ambBottom, float3 ambTop,
+	CloudParticpatingMedium medium,
+	inout float3 Inscattering, inout float Transmittance)
+{
+	float3 albedo = medium.scattering / medium.extinction;
+	float extinction = medium.extinction.x * density;
+	float tr = exp(-extinction * stepLength);
+
+	float3 sunRad = SharedData::physSkyData.sunlightColor * sunTr * sunPhaseVis * SunGain;
+	float3 ambRad = EvalCloudAmbient(heightFrac, ambBottom, ambTop) * AmbientGain;  // no phase - pre-integrated
+
+	float3 inscatter = (sunRad + ambRad) * albedo * (1.0 - tr);
 
 	Inscattering += inscatter * Transmittance;
-	Transmittance *= Tr;
+	Transmittance *= tr;
 }
 
 PixelOut main(VertexOut input)
@@ -353,7 +204,6 @@ PixelOut main(VertexOut input)
 	output.color = float4(0, 0, 0, 0);
 	output.depth = 1.0;
 
-	float GAME_UNIT_TO_KM = 1.428e-5;
 	float3 cameraPos = cameraPosIN.xyz * GAME_UNIT_TO_KM;
 	cameraPos.z += groundRadius;
 	//cameraPos = float3(0,0, groundRadius);
@@ -409,16 +259,27 @@ PixelOut main(VertexOut input)
 
 #	define RAY_SAMPLES 512  //128
 
-	float cosTheta = dot(ray.direction, SharedData::DirLightDirection.xyz);
+	float cosTheta = dot(ray.direction, SharedData::physSkyData.sunDir);
 	float StepLength = (RayT.y - RayT.x) / RAY_SAMPLES;
 
 	float3 Inscattering = float3(0, 0, 0);
 	float Transmittance = 1.0;
 
 	CloudParticpatingMedium medium;
-	medium.scattering = 10;
-	medium.extinction = 25;
+	medium.scattering = CloudScattering;
+	medium.extinction = CloudExtinction;
 	medium.phase = CloudPhase(cosTheta);
+
+#	if CLOUD_SUN_OCTAVE_PHASE
+	// View-constant per-octave phases, eccentricity halved each octave.
+	float3 phaseOctaves = float3(
+		CloudPhase(cosTheta, 1.0).x,
+		CloudPhase(cosTheta, 0.5).x,
+		CloudPhase(cosTheta, 0.25).x);
+#	endif
+
+	float3 ambBottom = TexCloudAmbient.Load(int3(0, 0, 0)).xyz;
+	float3 ambTop = TexCloudAmbient.Load(int3(1, 0, 0)).xyz;
 
 	float TrDepthSum = 0.0;
 	float TrSum = 0.0;
@@ -431,7 +292,12 @@ PixelOut main(VertexOut input)
 		if (CloudDensity <= 0.0)
 			continue;
 
-		TrDepthSum += Transmittance * RayT.x;
+		// Sculpt billows/wisps into the base shape (view march only).
+		CloudDensity = ApplyCloudDetail(CloudDensity, SamplePos, EnvelopeZ, RayT.x + i * StepLength);
+		if (CloudDensity <= 0.0)
+			continue;
+
+		TrDepthSum += Transmittance * (RayT.x + i * StepLength);
 		TrSum += Transmittance;
 
 		CloudRaymarchStepState state;
@@ -439,11 +305,29 @@ PixelOut main(VertexOut input)
 		state.rayStep = float4(0, 0, 0, StepLength);
 		state.upVector = normalize(SamplePos);
 
-		float sunVis = EnvelopeZ;
-		ComputeLightingV1(CloudDensity, StepLength, sunVis, medium, Inscattering, Transmittance);
+		float3 sunTr = SampleCloudSunTr(SamplePos);
+
+		// In-cloud sun light march + multi-scatter octaves. Skipped once the
+		// view transmittance no longer matters (the ambient term still
+		// accumulates for the step).
+		float3 sunPhaseVis = 0;
+		if (Transmittance >= 0.01) {
+			float SunOpticalDepth = GetOpticalDepth(SamplePos, SharedData::physSkyData.sunDir, medium.extinction.x);
+#	if CLOUD_SUN_OCTAVE_PHASE
+			sunPhaseVis = SunVisibilityMSPhased(SunOpticalDepth, phaseOctaves);
+#	else
+			sunPhaseVis = SunVisibilityMS(SunOpticalDepth) * medium.phase;
+#	endif
+		}
+
+		ComputeLightingV3(CloudDensity, StepLength, sunPhaseVis, EnvelopeZ, sunTr, ambBottom, ambTop, medium, Inscattering, Transmittance);
 	}
 	/////////////////////////////////////////////
 
+	// TODO: gamma placement. Encoding here is only valid if the composite
+	// consumes gamma; if clouds ever blend with the linear-HDR sky
+	// pre-tonemap, this shifts hues exactly at twilight, where the
+	// channel ratios are extreme. Revisit when the compose path is settled.
 	output.color = float4(Color::LLLinearToGamma(Inscattering), max(1.0 - Transmittance, 1e-6));
 
 	//float cloudDistance = (TrSum > 0.0) ? TrDepthSum / TrSum : RayT.y;
@@ -452,6 +336,26 @@ PixelOut main(VertexOut input)
 	//output.depth = saturate(clipPos.z / clipPos.w);
 
 	return output;
+}
+#endif
+/////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////
+#ifdef CLOUD_DEBUG_BLIT_PS
+
+Texture2D<float4> BlitTex : register(t0);
+
+// Debug overlay blit: nearest-fetches the bound LUT into a screen-corner
+// viewport rect (the windowed sun-Tr LUT scaled up, and the 2x1 ambient
+// endpoints as two swatches).
+float4 main(VertexOut input) : SV_TARGET0
+{
+	uint2 dims;
+	BlitTex.GetDimensions(dims.x, dims.y);
+	uint2 coord = min(uint2(input.TexCoord * dims), dims - 1);
+	float3 blitColor = BlitTex.Load(int3(coord, 0)).xyz;
+	// The main RT holds gamma-encoded values at this point in the frame.
+	return float4(Color::LLLinearToGamma(blitColor), 1.0);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////
