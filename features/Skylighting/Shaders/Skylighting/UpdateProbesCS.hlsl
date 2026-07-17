@@ -96,13 +96,8 @@ RWTexture2DArray<float4> ProbeArray : register(u0);
 
 static const float GOLDEN_ANGLE = 2.39996322972865332;  // PI * (3 - sqrt(5))
 
-#	define SAMPLES 256     //256
-#	define RAY_SAMPLES 16  //128
-
-float2 LinearStep(float2 edge0, float2 edge1, float2 x)
-{
-	return saturate((x - edge0) / (edge1 - edge0));
-}
+#	define SAMPLES 256      //256
+#	define RAY_SAMPLES 128  //128
 
 float3 SampleSkyRadiance(float3 rayDir)
 {
@@ -164,9 +159,30 @@ float3x3 BuildTBN(float3 dir)
 	return float3x3(T, B, dir);
 }
 
+struct HorizonData
+{
+	float4 SinC, SinD;    // CardinalOcclusionTex / DiagTex at probe UV
+	float4 WallC, WallD;  // MeanHitDist bake, same layout
+};
+
+// azDir = normalize(SampleDir.xy + 1e-5)
+void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDist)
+{
+	// cosine-power hat weights against the 8 baked azimuths
+	// CARD: E(+x) S(+y) W(-x) N(-y)   DIAG: (+ +)(- +)(- -)(+ -)
+	float4 cC = azDir.xyxy * float2(1.0, -1.0).xxyy;  //float4(azDir.x, azDir.y, -azDir.x, -azDir.y);
+	float4 cD = float4(azDir.x + azDir.y, -azDir.x + azDir.y, -azDir.x - azDir.y, azDir.x - azDir.y) * 0.70710678;
+
+	float4 wC = pow(saturate(cC), 8);  // = saturate(cC); wC *= wC; wC *= wC; wC *= wC;   // cos^8
+	float4 wD = pow(saturate(cD), 8);  // = saturate(wD); wD *= wD; wD *= wD; wD *= wD;
+
+	float invSum = rcp(dot(wC, (float4)1.0) + dot(wD, (float4)1.0) + 1e-6);
+	sinH = (dot(H.SinC, wC) + dot(H.SinD, wD)) * invSum;
+	OcclDist = (dot(H.WallC, wC) + dot(H.WallD, wD)) * invSum;
+}
+
 float GetCloudProfile(float3 SamplePos, float Height)
 {
-	float Scroll = 0;
 	float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0);  // Perlin-Worley + 3 octaves of worley
 	float PerlinWorley = NoiseSample.x;
 	float3 Worley = NoiseSample.yzw;
@@ -188,7 +204,7 @@ float GetCloudProfile(float3 SamplePos, float Height)
 }
 
 static const float3 CLOUD_AMBIENT = float3(0.4, 0.45, 0.5);  // flat skylight fill into the cloud
-static const float CLOUD_MS_GAIN = 1.8;                      // flat multiple-scatter boost
+static const float CLOUD_MS_GAIN = 1.8;
 void ComputeLightingV1(float density, float stepLength, float sunVisibility, CloudParticpatingMedium medium, inout float3 Inscattering, inout float Transmittance)
 {
 	float albedo = medium.scattering / medium.extinction;
@@ -206,7 +222,6 @@ void ComputeLightingV1(float density, float stepLength, float sunVisibility, Clo
 
 void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering, inout float Transmittance)
 {
-	float GAME_UNIT_TO_KM = 1.428e-5;
 	float3 cameraPos = cameraPosA.xyz * GAME_UNIT_TO_KM;
 	cameraPos.z += groundRadius;
 
@@ -230,75 +245,37 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 	float cosTheta = dot(ray.direction, SharedData::DirLightDirection.xyz);
 	float StepLength = (RayT.y - RayT.x) / RAY_SAMPLES;
 
-	//float3 Inscattering = float3(0,0,0);
-	//float Transmittance = 1.0;
-
+	float CloudScatteringA = 3.0;  //24.9;  // km^-1 (default 24.9)
+	float CloudExtinctionA = 26;   //25.0;  // km^-1 (default 25)
 	CloudParticpatingMedium medium;
-	medium.scattering = 10;
-	medium.extinction = 25;
+	medium.scattering = CloudScatteringA;
+	medium.extinction = CloudExtinctionA;
 	medium.phase = CloudPhase(cosTheta);
 
-	float TrDepthSum = 0.0;  // numerator   of Eq. 21
-	float TrSum = 0.0;       // denominator of Eq. 21
-
-	for (int i = 0; i < RAY_SAMPLES; i++) {
+	for (int i = 0; i < RAY_SAMPLES; i++) {  // 128 samples
 		float3 SamplePos = ray.direction * (RayT.x + i * StepLength) + cameraPos;
 		float EnvelopeZ = GetEnvelopeRelativeZ(SamplePos, float2(bottomRadius, topRadius));
 
-		float CloudDensity = GetCloudProfile(SamplePos, EnvelopeZ);  // + 1; // Tmp to make Optical depth low
+		float CloudDensity = GetCloudProfile(SamplePos, EnvelopeZ);  // + 1;
 		if (CloudDensity <= 0.0)
 			continue;
-
-		TrDepthSum += Transmittance * RayT.x;
-		TrSum += Transmittance;
 
 		CloudRaymarchStepState state;
 		state.height = EnvelopeZ;
 		state.rayStep = float4(0, 0, 0, StepLength);
 		state.upVector = normalize(SamplePos);
 
-		float sunVis = EnvelopeZ;
+		float sunVis = 0;  //EnvelopeZ;
 		ComputeLightingV1(CloudDensity, StepLength, sunVis, medium, Inscattering, Transmittance);
 	}
-
-	//float cloudDistance = (weightSum > 0.0) ? depthWeightedSum / weightSum : RayT.y;
-	//float3 cloudCamPos  = ray.direction * cloudDistance;   // camera-relative; drop distanceSum entirely
 
 	// ONLY works inside view frustum
 	//float4 AP = PhysSky::SampleAp(normalize(cloudCamPos), length(cloudCamPos), 0.0, LinearSampler);
 	//accum.totalInscattering = lerp(accum.totalInscattering, AP.xyz, AP.w);
-
-	//InscattAccum = accum.totalInscattering;
-	//TransAccum = accum.totalTransmittance;
 }
-
-struct HorizonData
-{
-	float4 SinC, SinD;    // CardinalOcclusionTex / DiagTex at probe UV
-	float4 WallC, WallD;  // MeanHitDist bake, same layout
-};
-
-// azDir = normalize(SampleDir.xy + 1e-5)
-void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDist)
-{
-	// cosine-power hat weights against the 8 baked azimuths
-	// CARD: E(+x) S(+y) W(-x) N(-y)   DIAG: (+ +)(- +)(- -)(+ -)
-	float4 cC = azDir.xyxy * float2(1.0, -1.0).xxyy;  //float4(azDir.x, azDir.y, -azDir.x, -azDir.y);
-	float4 cD = float4(azDir.x + azDir.y, -azDir.x + azDir.y, -azDir.x - azDir.y, azDir.x - azDir.y) * 0.70710678;
-
-	float4 wC = pow(saturate(cC), 8);  // = saturate(cC); wC *= wC; wC *= wC; wC *= wC;   // cos^8
-	float4 wD = pow(saturate(cD), 8);  // = saturate(wD); wD *= wD; wD *= wD; wD *= wD;
-
-	float invSum = rcp(dot(wC, (float4)1.0) + dot(wD, (float4)1.0) + 1e-6);
-	sinH = (dot(H.SinC, wC) + dot(H.SinD, wD)) * invSum;
-	OcclDist = (dot(H.WallC, wC) + dot(H.WallD, wD)) * invSum;
-}
-
-#	define MIN_SAMPLE_RADIUS 10  // in texels
 
 // Fix albedo and normal texture shape/size
 // Some sections maybe picking up way more snow than others? - comes from GroundLight - probably too few sampling in SH
-
 // Add volumetric effects to probe grid
 // Add AO control
 
@@ -324,7 +301,7 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 
 	float4 BNSample = BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);
 	float3 BentNormalDir = BNSample.xyz * 2.0 - 1.0;  // - add bn back later
-	float SkyAperture = BNSample.w;                   // AO
+	float SkyAperture = 1;                            //BNSample.w;                   // AO
 
 	// Cone Tracing
 	float SkySolidAngle = 2.0 * Math::PI * SkyAperture;
@@ -353,7 +330,7 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 	sh2vec3 Output = SH::ZeroSH2Vec3();
 	for (int i = 0; i < SAMPLES; ++i) {
 		float3 SkySampleDir = UniformHemisphere(i, SAMPLES, SkyAperture);
-		SkySampleDir = mul(SkySampleDir, BentTBN);
+		//SkySampleDir = mul(SkySampleDir, BentTBN);
 
 		float3 SkyRadiance = SampleSkyRadiance(SkySampleDir) * settings.SkyInfluence;  // Why does this mult need to be like 4.0? should work at 1.0
 
@@ -362,7 +339,7 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 		RaymarchCloud(SkySampleDir, WorldPos, cloudInscattering, cloudTr);
 		//cloudInscattering *= 0.1;
 
-		SkyRadiance = SkyRadiance;  // * cloudTr + cloudInscattering;
+		SkyRadiance = SkyRadiance * cloudTr + cloudInscattering;
 
 		sh2vec3 SkySH = SH::Scale(SH::Evaluate(SkySampleDir), SkyRadiance * SkyWeight);
 		Output = SH::Add(Output, SkySH);
@@ -381,11 +358,11 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 		DeltaR = sqrt(DeltaR * DeltaR + MinSampleDistSq) / WorldUnitsPerTexel;
 
 		// Sample should have to be x units above probe
-		float2 EnvOffset = float2(GroundSampleDir.x, -GroundSampleDir.y) * DeltaR * settings.InvEnvRadianceTexSize;
+		float2 EnvOffset = float2(GroundSampleDir.x, -GroundSampleDir.y) * DeltaR * settings.EnvRadianceTexSize;
 		float3 BounceRadiance = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV + EnvOffset, 0).xyz * settings.EnvInfluence;
 
 		sh2vec3 GroundSH = SH::Scale(SH::Evaluate(GroundSampleDir), BounceRadiance * GroundWeight);
-		Output = SH::Add(Output, GroundSH);
+		//Output = SH::Add(Output, GroundSH);
 
 		// debug
 		//ProbeArray[int3((CoordsUV + EnvOffset) * settings.GridTexSize.xy, 0)] = float4(1.0.xxx * 1, 1);
@@ -449,12 +426,14 @@ float3 SampleTr(float3 sunDir)
 	return tr;
 }
 
-float GetDirOcclusion(float2 PxCoords)
+float GetDirOcclusion(float2 CoordsUV)
 {
 	float Visibility;
 
-	float4 Card = CardinalOcclusionTex[PxCoords];
-	float4 Diag = CardinalOcclusionDiagTex[PxCoords];
+	//float4 Card = CardinalOcclusionTex[PxCoords];
+	//float4 Diag = CardinalOcclusionDiagTex[PxCoords];
+	float4 Card = CardinalOcclusionTex.SampleLevel(LinearSampler, CoordsUV, 0);
+	float4 Diag = CardinalOcclusionDiagTex.SampleLevel(LinearSampler, CoordsUV, 0);
 
 	// Horizon height in sun direction
 	float4 basis0 = SharedData::skylightingSettings.Basis0;
@@ -481,13 +460,13 @@ float GetDirOcclusion(float2 PxCoords)
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
 
-	float2 TexSize = 1024;  // Fix me later
-	float2 InvTexSize = 1 / TexSize;
+	//float2 settings.EnvRadianceTexSize = 1024;  // Fix me later
+	//float2 InvEnvRadianceTexSize = 1 / settings.EnvRadianceTexSize;
 
-	if (ThreadID.x >= TexSize.x || ThreadID.y >= TexSize.y)
+	if (ThreadID.x >= settings.EnvRadianceTexSize.x || ThreadID.y >= settings.EnvRadianceTexSize.y)
 		return;
 
-	float2 CoordsUV = (ThreadID.xy + 0.5) * InvTexSize;
+	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvEnvRadianceTexSize;
 
 	float WorldHeight = HeightTex.SampleLevel(LinearSampler, float2(CoordsUV.x, 1.0 - CoordsUV.y), 0);
 	float3 WorldPos = float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, float2(CoordsUV.x, 1.0 - CoordsUV.y)), WorldHeight);
@@ -530,7 +509,7 @@ float GetDirOcclusion(float2 PxCoords)
 	AmbientLighting *= max(1, mult);
 
 	// Direct lighting //
-	float SunShadow = GetDirOcclusion(ThreadID.xy);
+	float SunShadow = GetDirOcclusion(CoordsUV.xy);
 	float Shadow = SunShadow * max(CloudShadow, 0.5);  // 0.5 lim so cloud doesn't stomp dir light
 	float NdotL = saturate(dot(NormalWS, SharedData::DirLightDirection));
 
