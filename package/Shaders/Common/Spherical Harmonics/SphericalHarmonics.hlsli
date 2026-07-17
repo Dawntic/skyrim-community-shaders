@@ -160,6 +160,11 @@ namespace SH
 		return sh * v;
 	}
 
+	sh2 LerpSH2(float a, float b, sh2 t)
+	{
+		return Add(Scale(UnitSH2(), a), Scale(t, b - a));
+	}
+
 	// Integrates the product of two SH functions over the unit sphere.
 	float FuncProductIntegral(sh2 shL, sh2 shR)
 	{
