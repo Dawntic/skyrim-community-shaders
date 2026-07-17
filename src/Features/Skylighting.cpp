@@ -12,6 +12,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MaxZenith,
 	MinDiffuseVisibility,
 	MinSpecularVisibility,
+	SkyInfluence,
+	EnvInfluence,
 	cacheProgressX,
 	cacheProgressY)
 
@@ -43,36 +45,29 @@ void Skylighting::DrawSettings()
 	if (ImGui::Button("Reload Shaders"))
 		ClearShaderCache();
 
-	ImGui::Checkbox("Run Sparse", &runSparse);
 	ImGui::SliderFloat("Diffuse Min Visibility", &settings.MinDiffuseVisibility, 0.01f, 1.f, "%.2f");
 	ImGui::SliderFloat("Specular Min Visibility", &settings.MinSpecularVisibility, 0.01f, 1.f, "%.2f");
+
+	ImGui::SliderFloat("Sky Influence", &settings.SkyInfluence, 0.01f, 5.0f);
+	ImGui::SliderFloat("Environment Influence", &settings.EnvInfluence, 0.01f, 5.0f);
 
 	static float debugRescale = 1.0f;
 	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
 
-	BUFFER_VIEWER_NODE_BULLETA(terrainLightingTex->srv.get(), debugRescale)
+	BUFFER_VIEWER_NODE_BULLETA(terrainLightingTex->srv.get(), debugRescale);
 
-	//if(!HMapSRV){
-	//auto path = cachePath / "Tamriel_H.dds";
-	//DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &tmpTex));
-	//}
-	//if (HMapSRV) {
-	//	BUFFER_VIEWER_NODE_BULLETA(HMapSRV, debugRescale)
-	//}
-
-	//ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
 	if (texSparseProbeArray) {
 		ImGui::BulletText("View");
-		BUFFER_VIEWER_NODE_BULLET(texSparseProbeArray, debugRescale)
+		BUFFER_VIEWER_NODE_BULLET(texSparseProbeArray, debugRescale);
 	}
 
-	//ImGui::Text("Minimum visibility values. Diffuse darkens objects. Specular removes the sky from reflections.");
 	if (ImGui::Button("Generate albedo and norm")) {
 		auto outputPath = cachePath / "Tamriel_A.dds";
-		auto outputPath2 = cachePath / "Tamriel_N.dds";
+		//auto outputPath2 = cachePath / "Tamriel_N.dds";
 		BuildAtlas(outputPath, "");
-		BuildAtlas(outputPath2, "_n");
+		//BuildAtlas(outputPath2, "_n");
 	}
+
 	if (ImGui::Button("Generate card Occl")) {
 		GenerateCardinalOcclusionMap();
 	}
@@ -81,30 +76,9 @@ void Skylighting::DrawSettings()
 		GenerateBentNormalMap();
 	}
 
-	static bool out = false;
-	ImGui::Checkbox("Generate normal step", &out);
-	if (out) {
-		GenerateNormalStepMap();
-	}
-
-	if (ImGui::Button("Generate step")) {
-		GenerateNormalStepMap();
-	}
-
 	if (ImGui::Button("Generate Normal")) {
 		GenerateNormalMap();
 	}
-
-	//auto pos = RE::PlayerCharacter::GetSingleton()->GetPosition();
-	//float h = SampleHeightMap(float2(pos.x, pos.y));
-	//ImGui::Text("Height: %f", h);
-
-	//ImGui::Checkbox("Generate height map", &MapGen);
-	//ImGui::Checkbox("disable raycast", &test);
-	//ImGui::Checkbox("disable loop", &test2);
-	//ImGui::Checkbox("disable save", &test3);
-
-	//ImGui::Text("Cells Done: %d", cellsDone);
 
 	ImGui::Separator();
 
@@ -363,13 +337,13 @@ bool Skylighting::LoadWorldspaceCache()
 		}
 	}
 
-	{
-		auto path = cachePath / (newWorldspaceID + "_NS.dds");
-		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &NSMapSRV);
-		if (FAILED(result)) {
-			GenerateNormalStepMap();
-		}
-	}
+	//{
+	//	auto path = cachePath / (newWorldspaceID + "_NS.dds");
+	//	auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &NSMapSRV);
+	//	if (FAILED(result)) {
+	//		GenerateNormalStepMap();
+	//	}
+	//}
 
 	{
 		auto path = cachePath / (newWorldspaceID + "_H.dds");
@@ -440,6 +414,7 @@ void Skylighting::GenerateNormalMap()
 	NComputeShader.release();
 }
 
+/*
 // change BNMapSize, BNComputeShader
 void Skylighting::GenerateNormalStepMap()
 {
@@ -499,14 +474,14 @@ void Skylighting::GenerateNormalStepMap()
 
 	{
 		auto path = cachePath / (cacheWorldspaceID + "_NS.dds");
-		NSMapSRV->Release();
+		//NSMapSRV->Release();
 		NSMapSRV = nullptr;
 		DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &NSMapSRV));
 	}
 
 	BNComputeShader.release();
 }
-
+*/
 void Skylighting::GenerateBentNormalMap()
 {
 	// Setup resources
@@ -812,7 +787,7 @@ void Skylighting::UpdateSparseProbeGrid()
 		AMapSRV,
 		NMapSRV,
 		terrainLightingTex->srv.get(),
-		NSMapSRV,
+		nullptr,  //NSMapSRV,
 		DOMapSRV,
 		DO2MapSRV,
 		DOMapSRVB,
@@ -874,19 +849,23 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 	float4 Basis1;
 	BuildOcclusionBasis(lightDir, Basis0, Basis1, 1.0);
 
+	float3 pos = cellOrigin - eyePos;
+
 	return {
 		.OcclusionViewProj = OcclusionTransform,
 		.OcclusionDir = OcclusionDir,
-		.PosOffset = cellOrigin - eyePos,
+		.PosOffset = float4(pos.x, pos.y, pos.z, 1.0),
 		.ArrayOrigin = {
 			((int)cellID.x - probeArrayDims[0] / 2) % probeArrayDims[0],
 			((int)cellID.y - probeArrayDims[1] / 2) % probeArrayDims[1],
-			((int)cellID.z - probeArrayDims[2] / 2) % probeArrayDims[2] },
+			((int)cellID.z - probeArrayDims[2] / 2) % probeArrayDims[2], 0 },
 		.ValidMargin = { (int)cellIDDiff.x, (int)cellIDDiff.y, (int)cellIDDiff.z },
 
 		.GridTexSize = sparseGridSize,
+		.EnvRadianceTexSize = terrainMapSize,
 		.GridBounds = float4(worldspace->minimumCoords.x, worldspace->minimumCoords.y, worldspace->maximumCoords.x, worldspace->maximumCoords.y),
 		.InvGridTexSize = 1.0f / float2((float)sparseGridSize.x, (float)sparseGridSize.y),
+		.InvEnvRadianceTexSize = 1.0f / float2((float)terrainMapSize.x, (float)terrainMapSize.y),
 		.GridMinWorldCorner = worldspace->minimumCoords - float2(eyePos.x, eyePos.y),
 
 		.InvGridSpan = 1.0 / gridSpan,
@@ -899,6 +878,8 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 
 		.MinDiffuseVisibility = settings.MinDiffuseVisibility,
 		.MinSpecularVisibility = settings.MinSpecularVisibility,
+		.SkyInfluence = settings.SkyInfluence,
+		.EnvInfluence = settings.EnvInfluence,
 		.Basis0 = Basis0,
 		.Basis1 = Basis1,
 	};

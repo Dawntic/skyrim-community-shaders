@@ -140,12 +140,15 @@ namespace SharedData
 		uint4 ArrayOrigin;  // xyz: array origin
 		int4 ValidMargin;
 
-		int4 GridTexSize;
+		int2 GridTexSize;
+		int2 EnvRadianceTexSize;
+
 		float4 GridBounds;
 		float2 InvGridTexSize;
+		float2 InvEnvRadianceTexSize;
 		float2 GridMinCornerWS;
 		float2 InvGridSpan;
-		float2 padA;
+
 		uint WorldHasCache;
 		uint toggleLighting;  //tmp
 		uint toggleTrees;
@@ -156,7 +159,8 @@ namespace SharedData
 
 		float MinDiffuseVisibility;
 		float MinSpecularVisibility;
-		uint2 pad0;
+		float SkyInfluence;
+		float EnvInfluence;
 		float4 Basis0;
 		float4 Basis1;
 	};

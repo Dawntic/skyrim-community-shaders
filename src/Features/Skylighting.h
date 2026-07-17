@@ -58,6 +58,8 @@ public:
 		float MaxZenith = 3.1415926f / 2.f;  // 90 deg
 		float MinDiffuseVisibility = 0.1f;
 		float MinSpecularVisibility = 0.1f;
+		float SkyInfluence = 4.0f;
+		float EnvInfluence = 1.0f;
 
 		uint toggleLighting = true;
 		uint toggleTrees = true;
@@ -74,21 +76,18 @@ public:
 		REX::W32::XMFLOAT4X4 OcclusionViewProj;
 		float4 OcclusionDir;
 
-		float3 PosOffset;  // cell origin in camera model space
-		uint _pad0;
-		uint ArrayOrigin[3];  // xyz: array origin, w: max accum frames
-		uint _pad1;
+		float4 PosOffset;     // cell origin in camera model space
+		uint ArrayOrigin[4];  // xyz: array origin, w: max accum frames
 		int ValidMargin[4];
 
 		int2 GridTexSize;
-		int2 _pad3;
+		int2 EnvRadianceTexSize;
 
 		float4 GridBounds;
 		float2 InvGridTexSize;
+		float2 InvEnvRadianceTexSize;
 		float2 GridMinWorldCorner;
-
 		float2 InvGridSpan;
-		float _pad4[2];
 
 		uint HasCache;
 		uint toggleLighting;
@@ -101,7 +100,8 @@ public:
 
 		float MinDiffuseVisibility;
 		float MinSpecularVisibility;
-		uint _pad2[2];
+		float SkyInfluence;
+		float EnvInfluence;
 
 		float4 Basis0;
 		float4 Basis1;
@@ -156,7 +156,7 @@ public:
 	ID3D11ShaderResourceView* DO2MapSRV = nullptr;
 	ID3D11ShaderResourceView* AMapSRV = nullptr;
 	ID3D11ShaderResourceView* NMapSRV = nullptr;
-	ID3D11ShaderResourceView* NSMapSRV = nullptr;
+	//ID3D11ShaderResourceView* NSMapSRV = nullptr;
 	ID3D11ShaderResourceView* HMapSRV = nullptr;
 	ID3D11ShaderResourceView* DOMapSRVB = nullptr;
 	ID3D11ShaderResourceView* DO2MapSRVB = nullptr;
@@ -171,7 +171,7 @@ public:
 	void BuildAtlas(const std::filesystem::path& outputDir, std::string mapTag);
 	void GenerateBentNormalMap();
 	void GenerateCardinalOcclusionMap();
-	void GenerateNormalStepMap();
+	//void GenerateNormalStepMap();
 	void GenerateNormalMap();
 	bool MapGen = false;
 	int cellsDone = 0;

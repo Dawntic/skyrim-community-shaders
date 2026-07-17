@@ -305,8 +305,6 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
 
-	float GroundRadianceTexSize = 1024.0;  // remove hardcoded size later
-
 	if (ThreadID.x >= settings.GridTexSize.x || ThreadID.y >= settings.GridTexSize.y)
 		return;
 
@@ -350,14 +348,14 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 	static const float MinSampleDistSq = 5000;
 
 	float2 Extent = abs(settings.GridBounds.xy) + settings.GridBounds.zw;  // pull out later
-	float2 WorldUnitsPerTexel = Extent / 1024;                             // remove 1024 later
+	float2 WorldUnitsPerTexel = Extent / settings.EnvRadianceTexSize;      // remove 1024 later
 
 	sh2vec3 Output = SH::ZeroSH2Vec3();
 	for (int i = 0; i < SAMPLES; ++i) {
 		float3 SkySampleDir = UniformHemisphere(i, SAMPLES, SkyAperture);
 		SkySampleDir = mul(SkySampleDir, BentTBN);
 
-		float3 SkyRadiance = SampleSkyRadiance(SkySampleDir) * 4.0;  // CHANGED
+		float3 SkyRadiance = SampleSkyRadiance(SkySampleDir) * settings.SkyInfluence;  // Why does this mult need to be like 4.0? should work at 1.0
 
 		float cloudTr = 1;
 		float3 cloudInscattering = 0;
@@ -382,18 +380,16 @@ void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDi
 		float DeltaR = (GrSin > 0.0) ? OcclDist : RayDist;
 		DeltaR = sqrt(DeltaR * DeltaR + MinSampleDistSq) / WorldUnitsPerTexel;
 
-		float2 EnvOffset = float2(GroundSampleDir.x, -GroundSampleDir.y) * DeltaR * rcp(GroundRadianceTexSize);
-		float3 BounceRadiance = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV + EnvOffset, 0).xyz;  // * 4;
+		// Sample should have to be x units above probe
+		float2 EnvOffset = float2(GroundSampleDir.x, -GroundSampleDir.y) * DeltaR * settings.InvEnvRadianceTexSize;
+		float3 BounceRadiance = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV + EnvOffset, 0).xyz * settings.EnvInfluence;
 
-		// The issue is if amb normal is pointing to ground then you get stronger ground light so overhangs are brighter...
 		sh2vec3 GroundSH = SH::Scale(SH::Evaluate(GroundSampleDir), BounceRadiance * GroundWeight);
 		Output = SH::Add(Output, GroundSH);
 
 		// debug
 		//ProbeArray[int3((CoordsUV + EnvOffset) * settings.GridTexSize.xy, 0)] = float4(1.0.xxx * 1, 1);
 	}
-
-	//Output = SH::Add(Output, DirOcclusionRGB);
 
 	// debug
 	//float3 BounceRadianceA = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV, 0);
