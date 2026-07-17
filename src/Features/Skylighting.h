@@ -129,11 +129,11 @@ public:
 	uint frameCount = 0;
 
 	// Sparse grid
-	static constexpr int2 sparseGridSize = int2(1024, 1024);  //int2(119 * 4, 94 * 4);
+	static constexpr int2 sparseGridSize = int2(256, 256);  //int2(119 * 4, 94 * 4);
 	eastl::unique_ptr<Texture2D> texSparseProbeArray = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> updateSparseGridCS = nullptr;
 
-	static constexpr int2 terrainMapSize = int2(1024, 1024);
+	static constexpr int2 terrainMapSize = int2(256, 256);
 	eastl::unique_ptr<Texture2D> terrainLightingTex = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> terrainRelightCS = nullptr;
 
