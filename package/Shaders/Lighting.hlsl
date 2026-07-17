@@ -3005,88 +3005,29 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	if (SharedData::iblSettings.EnableIBL) {
 		if (!(SharedData::iblSettings.UseStaticIBL && !inWorld && !inReflection)) {
 #		if defined(SKYLIGHTING)
-			//sh2vec3 probeSampleA = Skylighting::SampleIrradiance(SharedData::skylightingSettings, input.WorldPosition.xyz); ///////////////////////////////////////////////////////////////////////
-			//float factor = dot(float3(0,0,1), worldNormal.xyz);
-			//	  factor = (factor + 1.0) * 0.5;
-			//float3 SkyR = SH::Irradiance(probeSampleA, float3(0,0,1));
-			//float3 GroundR = SH::Irradiance(probeSampleA, float3(0,0,-1));
-			//directionalAmbientColor = lerp(GroundR, SkyR * 0, factor);
-			//directionalAmbientColor = SH::Irradiance(probeSampleA, worldNormal.xyz);
-			//directionalAmbientColor = SH::FuncProductIntegral(probeSample, SH::EvaluateCosineLobe(worldNormal.xyz)) / Math::PI;
-			//directionalAmbientColor = SH::Irradiance(probeSample, worldNormal.xyz); ///////////////////////////////////////////////////////////////////////
-			//skylightingDiffuse = 1;
-			/*
-			float sin2Cap = sin(radians(90));
-			float cosCap  = sqrt(1.0 - sin2Cap);
-
-			sh2 CapSH = SH::Zero();
-			CapSH.x = 0.28209479 * 2.0 * Math::PI * (1.0 - cosCap);
-			CapSH.z = 0.48860251 * Math::PI * sin2Cap;
-			skylightingSH = SH::UnitSH2() + skylightingSH - CapSH;
-			*/
-
-			// Sample where ambient is coming from?
-			// Use skySH for least occluded dir - sample irradiance probe using that normal?
-
-			// bounce should be higher when occlusion higher
-			// bounce should be lower for N = up
-
-			// ground bounce applied to all normals otherwise ground-roof inconsistent
-			//SH::Product(SH::EvaluateCosineLobe(float3(0,0,-1)), HemiDown);
-			//SkyAO = SH::Product(SkyAO, SH::HemisphereSH2()); // only consider things in upper hemi
-
-			// Bounce is included only to lift SL is occluded areas
-			// The more occluded the probe the more bounce we get
-
-			//sh2 BouncePower = SH::Add(SH::UnitSH2(), SH::Scale(skylightingSH, -1.0));
-			//sh2 normalSH = SH::EvaluateCosineLobe(worldNormal);
-			//sh2 downSH = SH::EvaluateCosineLobe(float3(0,0,-1));
-
-			//sh2vec3 Bounce = SH::Product(IrradianceProbe, BouncePower);
-			//float3 BounceIrradiance = SH::FuncProductIntegral(Bounce, normalSH);//SH::FuncProductIntegral(IrradianceProbe, BounceAO);
-			//float SL_SCALE = 0.5;
-			//BounceIrradiance = max(BounceIrradiance / Math::PI, 0);// * (1.0 - skylightingDiffuse) * SL_SCALE;
-
-			//sh2 MaxBounce = SH::Scale(SH::UnitSH2(), 1.0);// instead of unit sh
-			//sh2 MinusSkyAO = MaxBounce - skylightingSH;
-			//BounceAO = SH::Product(BounceAO, MinusSkyAO);
-			//BounceIrradiance = SH::FuncProductIntegral(IrradianceProbe, BounceAO);
-			//BounceIrradiance = max(BounceIrradiance / Math::PI, 0);
-
-			// Check SL is 1.0 when full sky
-			// Also test using scalar vis * bounce irradiance
-			// Bounce should only be non zero where skylight is < 1
-
-			//float visibility = SH::FuncProductIntegral(skylightingSH, SH::EvaluateCosineLobe(worldNormal)) / Math::PI;
-			//visibility = lerp(1.0, visibility, fadeOutFactor);
-
-			//sh2 BounceAO = SH::Product(BouncePower, normalSH);
-			//float Test = SH::Unproject(BounceAO, worldNormal); // this is correct weight - ground black
-
 			directionalAmbientColor = ImageBasedLighting::GetDiffuseIBLOccluded(directionalAmbientColor, -ambientNormal, skylightingDiffuse);
-
-			bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
-
-			sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz);
-
-			skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(input.WorldPosition.xyz));
-			sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), skylightingSH);
-
-			float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);  //SH::FuncProductIntegral(IrradianceProbe, SH::EvaluateCosineLobe(worldNormal));
-			SkyIrradiance = max(SkyIrradiance / Math::PI, 0);                          // * skylightingDiffuse;
-
-			if (ApplyIrradiance) {
-				directionalAmbientColor = SkyIrradiance;
-			}
-
-			//if(settings.MinSpecularVisibility > 0.2)
-			//	skylightingDiffuse = SH::FuncProductIntegral(skylightingSH, SH::EvaluateCosineLobe(ambientNormal)) / Math::PI;
-			//	skylightingDiffuse = Skylighting::EvaluateDiffuse(skylightingSH, ambientNormal, skylightingFadeOutFactor);
-
 #		else
 			directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -ambientNormal);
-#		endif
+#		endif  // SKYLIGHTING
 		}
+	}
+#	endif  // IBL
+
+#	if defined(SKYLIGHTING)
+	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
+
+	sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz);
+
+	skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(input.WorldPosition.xyz));
+	skylightingSH = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, skylightingSH);
+
+	sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), skylightingSH);
+
+	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);  //SH::FuncProductIntegral(IrradianceProbe, SH::EvaluateCosineLobe(worldNormal));
+	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);                          // * skylightingDiffuse;
+
+	if (ApplyIrradiance) {
+		directionalAmbientColor = SkyIrradiance;
 	}
 #	endif
 

@@ -139,30 +139,18 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 	float3 directionalAmbientColor = 0;
 
+#	if defined(SKYLIGHTING)
+	float3 positionMS = positionWS.xyz;
+	sh2 skylightingSH = Skylighting::Sample(positionMS.xyz, normalWS);
+	float skylightingDiffuse = Skylighting::EvaluateDiffuse(skylightingSH, normalWS);
+#	endif
+
 #	if defined(IBL)
 	if (SharedData::iblSettings.EnableIBL) {
 		float3 vanillaDALC = Color::Ambient(max(0, SharedData::GetAmbient(normalWS)));
 
 #		if defined(SKYLIGHTING)
-		float3 positionMS = positionWS.xyz;
-		sh2 skylightingSH = Skylighting::Sample(positionMS.xyz, normalWS);
-		float skylightingDiffuse = Skylighting::EvaluateDiffuse(skylightingSH, normalWS);
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBLOccluded(vanillaDALC, -normalWS, skylightingDiffuse) * albedo;
-
-		bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
-
-		sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(positionWS.xyz);
-
-		skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(positionWS.xyz));
-		sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(normalWS), skylightingSH);
-
-		float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
-		SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
-
-		if (ApplyIrradiance) {
-			directionalAmbientColor = SkyIrradiance;
-		}
-
 #		else
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(vanillaDALC, -normalWS) * albedo;
 #		endif  // SKYLIGHTING
@@ -182,6 +170,22 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		directionalAmbientColor = Color::YCoCgToRGB(directionalAmbientColor);
 		directionalAmbientColor = max(0, directionalAmbientColor);
 	}
+
+#	if defined(SKYLIGHTING)  // TODO: add to prev if statement
+	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
+
+	sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(positionWS.xyz);
+	skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(positionWS.xyz));
+	skylightingSH = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, skylightingSH);
+	sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(normalWS), skylightingSH);
+
+	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
+	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
+
+	if (ApplyIrradiance) {
+		directionalAmbientColor = SkyIrradiance;
+	}
+#	endif
 
 	{
 		float maxScale = 1.0;
