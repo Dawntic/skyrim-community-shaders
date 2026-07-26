@@ -233,9 +233,14 @@ public:
 	// One bent normal tile per height tile, matching their dimensions, format and naming, built
 	// from the stitched height atlas so rays still see terrain beyond the tile they belong to.
 
-	/// @brief Run the bent normal compute shader over a UV region of the height atlas.
+	/// @brief Run the per texel bent normal march over a UV region of the height atlas.
 	/// @param regionOffsetScale xy uv offset, zw uv scale. (0, 0, 1, 1) covers the whole atlas.
 	bool DispatchBentNormals(ID3D11ComputeShader* computeShader, Texture2D* outputTex, const float4& regionOffsetScale);
+	/// @brief Line sweep bent normals for one tile: one dispatch per azimuth, then a resolve pass.
+	/// @param tileOriginAtlasPx North west corner of the tile in atlas texels.
+	bool DispatchBentNormalSweep(Texture2D* accumTex, const int2& tileOriginAtlasPx);
+	static constexpr int bentNormalAzimuths = 64;  // must match NUM_AZIMUTH in the shader
+	static constexpr int bentNormalHullCapacity = 1024;
 	/// @brief Queue a bent normal tile for every height tile on disk. Tiles are processed one per frame.
 	bool StartBentNormalTiles();
 	/// @brief Process the next queued bent normal tile, if any.
@@ -249,7 +254,10 @@ public:
 	std::vector<int2> bentNormalTileQueue;
 	int2 bentNormalAtlasSize = int2(0, 0);
 	eastl::unique_ptr<Texture2D> bentNormalTileTex = nullptr;
-	winrt::com_ptr<ID3D11ComputeShader> bentNormalTileCS = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> bentNormalSweepCS = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> bentNormalFinalizeCS = nullptr;
+	winrt::com_ptr<ID3D11Buffer> bentNormalHullBuffer = nullptr;
+	winrt::com_ptr<ID3D11UnorderedAccessView> bentNormalHullUAV = nullptr;
 
 	eastl::unique_ptr<Texture2D> heightPreviewTex = nullptr;
 	int2 heightPreviewOrigin = int2(0, 0);
@@ -267,6 +275,9 @@ public:
 		float4 TexParams;
 		float4 RegionOffsetScale = float4(0.0f, 0.0f, 1.0f, 1.0f);  // height map sub rect to process
 		float4 GridBounds;                                          // world xy min/max of the height map
+		float4 SweepDir;                                            // xy: world dir, z: slope, w: major step
+		float4 SweepParams;                                         // x: first line, y: line count, z: transpose, w: units per step
+		float4 SweepRect;                                           // xy: tile origin in atlas texels, z: tile size
 	};
 	ConstantBuffer* cacheGenBuffer = nullptr;
 

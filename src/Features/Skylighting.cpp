@@ -2037,6 +2037,93 @@ bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceR
 	return true;
 }
 
+bool Skylighting::DispatchBentNormalSweep(Texture2D* accumTex, const int2& tileOriginAtlasPx)
+{
+	if (!accumTex || !bentNormalSweepCS || !bentNormalFinalizeCS || !bentNormalHullUAV || !HMapSRV)
+		return false;
+
+	if (!cacheGenBuffer)
+		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
+
+	auto context = globals::d3d::context;
+	const int tileSize = (int)accumTex->desc.Width;
+
+	const float4 bounds = GetHeightMapBounds();
+	const float2 worldPerTexel = float2(
+		(bounds.z - bounds.x) / (float)bentNormalAtlasSize.x,
+		(bounds.w - bounds.y) / (float)bentNormalAtlasSize.y);
+
+	// Each azimuth adds its wedge to the accumulator, so it starts empty.
+	const float clearValue[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	context->ClearUnorderedAccessViewFloat(accumTex->uav.get(), clearValue);
+
+	ID3D11ShaderResourceView* heightSRV = HMapSRV;
+	context->CSSetShaderResources(0, 1, &heightSRV);
+	context->CSSetShader(bentNormalSweepCS.get(), nullptr, 0);
+
+	ID3D11UnorderedAccessView* uavs[2] = { accumTex->uav.get(), bentNormalHullUAV.get() };
+	context->CSSetUnorderedAccessViews(0, 2, uavs, nullptr);
+
+	auto buffer = cacheGenBuffer->CB();
+	context->CSSetConstantBuffers(0, 1, &buffer);
+
+	for (int azimuth = 0; azimuth < bentNormalAzimuths; ++azimuth) {
+		const float phi = ((float)azimuth + 0.5f) * (2.0f * std::numbers::pi_v<float> / (float)bentNormalAzimuths);
+
+		// The direction the per texel march walks, in the shader's y up world space.
+		const float2 worldDir = float2(std::cos(phi), std::sin(phi));
+		// Atlas rows run north to south, so the texel space direction has y negated.
+		const float2 atlasDir = float2(worldDir.x, -worldDir.y);
+
+		// Step along the dominant axis so the minor axis moves at most one texel per step; every
+		// tile texel then lands on exactly one line, with no gaps and no double writes.
+		const bool transpose = std::abs(atlasDir.y) > std::abs(atlasDir.x);
+		const float majorComponent = transpose ? atlasDir.y : atlasDir.x;
+		const float minorComponent = transpose ? atlasDir.x : atlasDir.y;
+		const float slope = minorComponent / majorComponent;
+		const float majorStep = majorComponent > 0.0f ? 1.0f : -1.0f;
+
+		const int2 tileMin = transpose ? int2(tileOriginAtlasPx.y, tileOriginAtlasPx.x) : tileOriginAtlasPx;
+
+		// A line is minor = offset + round(slope * major); the offsets that cross the tile span
+		// its minor extent plus however far the line drifts across the tile's major extent.
+		const float driftA = std::round(slope * (float)tileMin.x);
+		const float driftB = std::round(slope * (float)(tileMin.x + tileSize - 1));
+		const int driftMin = (int)std::min(driftA, driftB);
+		const int driftMax = (int)std::max(driftA, driftB);
+		const int firstLine = tileMin.y - driftMax;
+		const int lineCount = tileSize + (driftMax - driftMin);
+
+		const float worldPerMajor = transpose ? worldPerTexel.y : worldPerTexel.x;
+		const float worldPerMinor = transpose ? worldPerTexel.x : worldPerTexel.y;
+		const float stepWorldDist = std::sqrt(worldPerMajor * worldPerMajor + (slope * worldPerMinor) * (slope * worldPerMinor));
+
+		auto data = MakeCacheGenCB(float2((float)tileSize, (float)tileSize));
+		data.SweepDir = float4(worldDir.x, worldDir.y, slope, majorStep);
+		data.SweepParams = float4((float)firstLine, (float)lineCount, transpose ? 1.0f : 0.0f, stepWorldDist);
+		data.SweepRect = float4((float)tileOriginAtlasPx.x, (float)tileOriginAtlasPx.y, (float)tileSize, 0.0f);
+		cacheGenBuffer->Update(data);
+
+		context->Dispatch((lineCount + 63) / 64, 1, 1);
+	}
+
+	// Resolve the accumulated integral in place
+	auto data = MakeCacheGenCB(float2((float)tileSize, (float)tileSize));
+	cacheGenBuffer->Update(data);
+
+	ID3D11UnorderedAccessView* resolveUAVs[2] = { accumTex->uav.get(), nullptr };
+	context->CSSetShader(bentNormalFinalizeCS.get(), nullptr, 0);
+	context->CSSetUnorderedAccessViews(0, 2, resolveUAVs, nullptr);
+	context->Dispatch((tileSize + 7) / 8, (tileSize + 7) / 8, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[2] = { nullptr, nullptr };
+	context->CSSetUnorderedAccessViews(0, 2, nullUAVs, nullptr);
+	ID3D11ShaderResourceView* nullSRVs[1] = { nullptr };
+	context->CSSetShaderResources(0, 1, nullSRVs);
+
+	return true;
+}
+
 bool Skylighting::StartBentNormalTiles()
 {
 	if (bentNormalTileGen)
@@ -2106,12 +2193,47 @@ bool Skylighting::StartBentNormalTiles()
 		return false;
 	}
 
-	bentNormalTileCS = nullptr;
-	bentNormalTileCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Skylighting\\GenerateCacheMaps.hlsl", { { "CSHADER", "" }, { "BENT_NORMALS", "" } }, "cs_5_0")));
-	if (!bentNormalTileCS) {
-		logger::error("[Skylighting] Failed to compile the bent normal shader");
-		bentNormalTileTex = nullptr;
+	bentNormalSweepCS = nullptr;
+	bentNormalFinalizeCS = nullptr;
+	bentNormalSweepCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Skylighting\\GenerateCacheMaps.hlsl", { { "SWEEP", "" } }, "cs_5_0")));
+	bentNormalFinalizeCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Skylighting\\GenerateCacheMaps.hlsl", { { "SWEEP_FINALIZE", "" } }, "cs_5_0")));
+	if (!bentNormalSweepCS || !bentNormalFinalizeCS) {
+		logger::error("[Skylighting] Failed to compile the bent normal sweep shaders");
+		StopBentNormalTiles();
 		return false;
+	}
+
+	// Hull scratch, one slot per line of the widest azimuth. A line drifts at most one minor texel
+	// per major step, so a tile is never covered by more than twice its edge in lines.
+	{
+		const uint maxLines = (uint)tileSize * 2 + 2;
+
+		D3D11_BUFFER_DESC bufferDesc = {
+			.ByteWidth = maxLines * bentNormalHullCapacity * (uint)sizeof(float) * 2,
+			.Usage = D3D11_USAGE_DEFAULT,
+			.BindFlags = D3D11_BIND_UNORDERED_ACCESS,
+			.CPUAccessFlags = 0,
+			.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED,
+			.StructureByteStride = (uint)sizeof(float) * 2
+		};
+
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavBufferDesc = {
+			.Format = DXGI_FORMAT_UNKNOWN,
+			.ViewDimension = D3D11_UAV_DIMENSION_BUFFER,
+			.Buffer = { .FirstElement = 0, .NumElements = maxLines * bentNormalHullCapacity, .Flags = 0 }
+		};
+
+		bentNormalHullBuffer = nullptr;
+		bentNormalHullUAV = nullptr;
+		if (FAILED(globals::d3d::device->CreateBuffer(&bufferDesc, nullptr, bentNormalHullBuffer.put())) ||
+			FAILED(globals::d3d::device->CreateUnorderedAccessView(bentNormalHullBuffer.get(), &uavBufferDesc, bentNormalHullUAV.put()))) {
+			logger::error("[Skylighting] Failed to create the bent normal hull scratch buffer");
+			StopBentNormalTiles();
+			return false;
+		}
+
+		Util::SetResourceName(bentNormalHullBuffer.get(), "Skylighting::BentNormalHullStack");
+		Util::SetResourceName(bentNormalHullUAV.get(), "Skylighting::BentNormalHullStack UAV");
 	}
 
 	bentNormalTileIndex = 0;
@@ -2129,7 +2251,10 @@ void Skylighting::StopBentNormalTiles()
 	bentNormalTileQueue.clear();
 	bentNormalTileIndex = 0;
 	bentNormalTileTex = nullptr;
-	bentNormalTileCS = nullptr;
+	bentNormalSweepCS = nullptr;
+	bentNormalFinalizeCS = nullptr;
+	bentNormalHullUAV = nullptr;
+	bentNormalHullBuffer = nullptr;
 }
 
 void Skylighting::UpdateBentNormalTiles()
@@ -2151,7 +2276,7 @@ void Skylighting::UpdateBentNormalTiles()
 
 bool Skylighting::GenerateBentNormalTile(const int2& tileOriginCell)
 {
-	if (!bentNormalTileTex || !bentNormalTileCS)
+	if (!bentNormalTileTex)
 		return false;
 
 	const int tileSize = settings.cacheAtlasTileSize;
@@ -2159,14 +2284,12 @@ bool Skylighting::GenerateBentNormalTile(const int2& tileOriginCell)
 	if (tileSize <= 0 || cellsPerTile <= 0 || bentNormalAtlasSize.x <= 0 || bentNormalAtlasSize.y <= 0)
 		return false;
 
-	// The shader's uv space is y up, so the region is simply the tile's offset from the atlas'
-	// minimum cell in both axes; the flip the atlas was stitched with cancels out.
-	float2 regionScale = float2((float)tileSize / (float)bentNormalAtlasSize.x, (float)tileSize / (float)bentNormalAtlasSize.y);
-	float2 regionOffset = float2(
-		(float)((tileOriginCell.x - settings.cacheAtlasMinCellX) / cellsPerTile) * regionScale.x,
-		(float)((tileOriginCell.y - settings.cacheAtlasMinCellY) / cellsPerTile) * regionScale.y);
+	// The tile's north west corner in atlas texels; atlas rows run north first, hence the flip.
+	const int tileColumn = (tileOriginCell.x - settings.cacheAtlasMinCellX) / cellsPerTile;
+	const int maxOriginCellY = settings.cacheAtlasMinCellY + (settings.cacheAtlasTilesY - 1) * cellsPerTile;
+	const int tileRow = (maxOriginCellY - tileOriginCell.y) / cellsPerTile;
 
-	if (!DispatchBentNormals(bentNormalTileCS.get(), bentNormalTileTex.get(), float4(regionOffset.x, regionOffset.y, regionScale.x, regionScale.y)))
+	if (!DispatchBentNormalSweep(bentNormalTileTex.get(), int2(tileColumn * tileSize, tileRow * tileSize)))
 		return false;
 
 	DirectX::ScratchImage captured;

@@ -7,6 +7,9 @@ cbuffer CacheGenBuffer : register(b0)
 	float2 HeightMapOffsetScale;
 	float4 RegionOffsetScale;  // xy: uv offset, zw: uv scale of the height map region to process
 	float4 GridBounds;         // world xy min/max of the cells the height map covers
+	float4 SweepDir;           // xy: world direction, z: minor per major slope, w: major step
+	float4 SweepParams;        // x: first line offset, y: line count, z: transpose, w: world units per step
+	float4 SweepRect;          // xy: tile origin in atlas texels, z: tile size
 };
 
 //// Bent Normal and Cardinal AO Map ////////////////////////////////////////////////////
@@ -155,6 +158,134 @@ float MarchHorizon(float2 CoordsUV, uint3 ThreadID, float SampleHeight, uint2 He
 
 	OutputBentNormal[ThreadID.xy] = float4(BentNormal * 0.5 + 0.5, AO);
 #	endif
+}
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
+
+//// Bent Normal Line Sweep /////////////////////////////////////////////////////////////
+// Same horizon as the per texel march above, computed once per line instead of once per
+// texel. Walking a line from its far end inward while keeping an upper convex hull of the
+// points already passed gives every texel on that line its horizon in O(1) amortised: the
+// steepest slope from a point to anything ahead of it is always a tangent to that hull, and
+// a point that loses to its neighbour can never win for anything further back either.
+//
+// Maximising sin(elevation) and maximising slope pick the same point, since sin is strictly
+// increasing in slope, so the hull result matches the march exactly for the same samples.
+//
+// The lines run along the dominant axis of the azimuth so each output texel is touched once
+// and only once. One dispatch per azimuth accumulates into the target; SWEEP_FINALIZE then
+// resolves the accumulated integral into the bent normal and AO.
+#ifdef SWEEP
+
+Texture2D<float> HeightTex : register(t0);
+RWTexture2D<float4> OutputAccum : register(u0);
+RWStructuredBuffer<float2> HullStack : register(u1);  // (t, height) pairs, HULL_CAPACITY per line
+
+#	define HULL_CAPACITY 1024
+#	define NUM_AZIMUTH 64
+
+[numthreads(64, 1, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	const uint LineIndex = ThreadID.x;
+	if (LineIndex >= (uint)SweepParams.y)
+		return;
+
+	const float2 WorldDir = SweepDir.xy;
+	const float Slope = SweepDir.z;  // minor axis texels per major axis texel, |Slope| <= 1
+	const int MajorStep = (int)SweepDir.w;
+	const bool Transpose = SweepParams.z > 0.5;
+	const float StepWorldDist = SweepParams.w;
+	const int LineOffset = (int)SweepParams.x + (int)LineIndex;
+
+	uint2 AtlasSize;
+	HeightTex.GetDimensions(AtlasSize.x, AtlasSize.y);
+
+	// Everything below works in (major, minor) axis order so one code path covers both halves.
+	const int2 Dim = Transpose ? int2(AtlasSize.y, AtlasSize.x) : int2(AtlasSize.x, AtlasSize.y);
+	const int TileSize = (int)SweepRect.z;
+	const int2 TileMin = Transpose ? (int2)SweepRect.yx : (int2)SweepRect.xy;
+
+	// Walk backwards along the ray: start at the atlas edge the rays point towards and end at
+	// the near edge of the tile, the last texel that still needs a horizon.
+	const int MajorStart = MajorStep > 0 ? Dim.x - 1 : 0;
+	const int MajorEnd = MajorStep > 0 ? TileMin.x : TileMin.x + TileSize - 1;
+	const int StepCount = abs(MajorStart - MajorEnd) + 1;
+
+	const uint StackBase = LineIndex * HULL_CAPACITY;
+	int StackSize = 0;
+
+	const float AzStep = 2.0 * Math::PI / NUM_AZIMUTH;
+	const float RadialWeight = 2.0 * sin(0.5 * AzStep);  // exact ∫ cos/sin over the wedge
+
+	[loop] for (int i = 0; i < StepCount; ++i)
+	{
+		const int Major = MajorStart - i * MajorStep;
+		const int Minor = LineOffset + (int)round(Slope * Major);
+		if (Minor < 0 || Minor >= Dim.y)
+			continue;  // this line is off the map here, no sample and no hull point
+
+		const int2 Px = Transpose ? int2(Minor, Major) : int2(Major, Minor);
+		const float t = (float)(Major * MajorStep);  // grows along the ray direction
+		const float H = (HeightTex[Px] - HeightMapOffsetScale.x) * HeightMapOffsetScale.y;
+
+		// Peel back the hull until its top is the tangent point seen from here.
+		while (StackSize >= 2) {
+			const float2 HullNear = HullStack[StackBase + StackSize - 1];
+			const float2 HullFar = HullStack[StackBase + StackSize - 2];
+			// slope(H, HullNear) <= slope(H, HullFar), cross multiplied; both gaps are positive
+			if ((HullNear.y - H) * (HullFar.x - t) <= (HullFar.y - H) * (HullNear.x - t))
+				StackSize--;
+			else
+				break;
+		}
+
+		float SinH = 0.0;
+		if (StackSize >= 1) {
+			const float2 Tangent = HullStack[StackBase + StackSize - 1];
+			const float s = (Tangent.y - H) / ((Tangent.x - t) * StepWorldDist);
+			SinH = s > 0.0 ? s * rsqrt(1.0 + s * s) : 0.0;  // sin(atan(s)), flat when nothing rises
+		}
+
+		const int2 Rel = int2(Major, Minor) - TileMin;
+		if (all(Rel >= 0) && all(Rel < TileSize)) {
+			const float SinH2 = SinH * SinH;
+			const float CosH = sqrt(max(0.0, 1.0 - SinH2));
+			const float AngleRad = asin(saturate(SinH));
+
+			const float Zenith = AzStep * 0.5 * (1.0 - SinH2);                                          // z of ∫ω dω
+			const float Radial = RadialWeight * ((Math::PI / 4) - 0.5 * AngleRad - 0.5 * SinH * CosH);  // radial of (π/4 - θ/2 - sc/2)
+			const float Vis = AzStep * (1.0 - SinH);                                                    // ∫sinθ dθ over the wedge, no cosine
+
+			// Atlas rows run north to south, the tiles run south to north.
+			const int2 RelPx = Transpose ? Rel.yx : Rel;
+			const int2 OutPx = int2(RelPx.x, TileSize - 1 - RelPx.y);
+
+			OutputAccum[OutPx] += float4(Radial * WorldDir, Zenith, Vis);
+		}
+
+		// Capacity is far beyond the hull size real terrain produces; dropping the newest
+		// candidate is only a safety net against a pathologically convex line.
+		if (StackSize < HULL_CAPACITY) {
+			HullStack[StackBase + StackSize] = float2(t, H);
+			StackSize++;
+		}
+	}
+}
+#endif
+
+#ifdef SWEEP_FINALIZE
+RWTexture2D<float4> OutputAccum : register(u0);
+
+[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	if (any(ThreadID.xy >= (uint2)OutputTexSize))
+		return;
+
+	const float4 Accum = OutputAccum[ThreadID.xy];  // xyz: ∫_visible ω dω, w: ∫sinθ dθ
+
+	const float AO = saturate(Accum.w * rcp(2.0 * Math::PI));
+	const float LenSq = dot(Accum.xyz, Accum.xyz);
+	const float3 BentNormal = LenSq > 1e-12 ? Accum.xyz * rsqrt(LenSq) : float3(0, 0, 1);
+
+	OutputAccum[ThreadID.xy] = float4(BentNormal * 0.5 + 0.5, AO);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
