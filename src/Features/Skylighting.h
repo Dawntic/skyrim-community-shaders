@@ -80,6 +80,7 @@ public:
 		int cacheAtlasMinCellY = 0;
 		int cacheAtlasTileSize = 0;   // texels per tile edge, 0 if no atlas has been built
 		int cacheAtlasTileCells = 0;  // cells per tile edge
+		int cacheAtlasTilesX = 0;     // tile columns
 		int cacheAtlasTilesY = 0;     // tile rows, needed to flip texel Y into cell space
 	} settings;
 
@@ -228,6 +229,28 @@ public:
 	/// @return False if no atlas has been built, leaving o_cell untouched.
 	bool AtlasTexelToCell(const int2& texel, int2& o_cell) const;
 
+	//// LOD bent normal tiles ////
+	// One bent normal tile per height tile, matching their dimensions, format and naming, built
+	// from the stitched height atlas so rays still see terrain beyond the tile they belong to.
+
+	/// @brief Run the bent normal compute shader over a UV region of the height atlas.
+	/// @param regionOffsetScale xy uv offset, zw uv scale. (0, 0, 1, 1) covers the whole atlas.
+	bool DispatchBentNormals(ID3D11ComputeShader* computeShader, Texture2D* outputTex, const float4& regionOffsetScale);
+	/// @brief Queue a bent normal tile for every height tile on disk. Tiles are processed one per frame.
+	bool StartBentNormalTiles();
+	/// @brief Process the next queued bent normal tile, if any.
+	void UpdateBentNormalTiles();
+	/// @brief Generate and save the bent normal tile whose grid starts at the given cell.
+	bool GenerateBentNormalTile(const int2& tileOriginCell);
+	void StopBentNormalTiles();
+
+	bool bentNormalTileGen = false;
+	size_t bentNormalTileIndex = 0;
+	std::vector<int2> bentNormalTileQueue;
+	int2 bentNormalAtlasSize = int2(0, 0);
+	eastl::unique_ptr<Texture2D> bentNormalTileTex = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> bentNormalTileCS = nullptr;
+
 	eastl::unique_ptr<Texture2D> heightPreviewTex = nullptr;
 	int2 heightPreviewOrigin = int2(0, 0);
 	bool heightPreviewValid = false;
@@ -242,8 +265,15 @@ public:
 	struct alignas(16) CacheGenCBStruct
 	{
 		float4 TexParams;
+		float4 RegionOffsetScale = float4(0.0f, 0.0f, 1.0f, 1.0f);  // height map sub rect to process
+		float4 GridBounds;                                          // world xy min/max of the height map
 	};
 	ConstantBuffer* cacheGenBuffer = nullptr;
+
+	/// @brief World bounds (minX, minY, maxX, maxY) of the cells the height map covers.
+	float4 GetHeightMapBounds() const;
+	/// @brief Fill the cache gen constants shared by every generator.
+	CacheGenCBStruct MakeCacheGenCB(const float2& outputSize, const float4& regionOffsetScale = float4(0.0f, 0.0f, 1.0f, 1.0f)) const;
 
 	void ResetSkylighting();
 	std::chrono::time_point<std::chrono::system_clock> lastUpdateTimer = std::chrono::system_clock::now();

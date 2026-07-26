@@ -25,6 +25,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	cacheAtlasMinCellY,
 	cacheAtlasTileSize,
 	cacheAtlasTileCells,
+	cacheAtlasTilesX,
 	cacheAtlasTilesY)
 
 // Floor division; the tile grid is anchored to the worldspace cell grid, so negative cell
@@ -185,6 +186,20 @@ void Skylighting::DrawSettings()
 			ImGui::Text("Stitches every height tile for %s into %s_H.dds, overwriting it.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
 				cacheWorldspaceID.empty() ? "the current worldspace" : cacheWorldspaceID.c_str(),
 				cacheWorldspaceID.empty() ? "<Worldspace>" : cacheWorldspaceID.c_str());
+
+		ImGui::BeginDisabled(MapGen || (!bentNormalTileGen && (cacheWorldspaceID.empty() || !HMapSRV)));
+		if (ImGui::Button(bentNormalTileGen ? "Stop Bent Normal Tiles" : "Generate Bent Normal Tiles")) {
+			if (bentNormalTileGen)
+				StopBentNormalTiles();
+			else
+				StartBentNormalTiles();
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Generates one bent normal tile per height tile from the atlas, matching their\nsize, format and naming. One tile per frame; expect a long, unresponsive run.");
+
+		if (bentNormalTileGen)
+			ImGui::Text("Bent normal tiles: %zu / %zu", bentNormalTileIndex, bentNormalTileQueue.size());
 
 		if (MapGen) {
 			if (heightGenSingleTile)
@@ -570,8 +585,7 @@ void Skylighting::GenerateNormalMap()
 	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
 	context->CSSetSamplers(0, 1, &linSampler);
 
-	CacheGenCBStruct data;
-	data.TexParams = float4((float)BNMapSize.x, (float)BNMapSize.y, HeightMapOffset, HeightMapScale);
+	auto data = MakeCacheGenCB(float2((float)BNMapSize.x, (float)BNMapSize.y));
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
@@ -638,8 +652,7 @@ void Skylighting::GenerateNormalStepMap()
 	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
 	context->CSSetSamplers(0, 1, &linSampler);
 
-	CacheGenCBStruct data;
-	data.TexParams = float4((float)BNMapSize.x, (float)BNMapSize.y, HeightMapOffset, HeightMapScale);
+	auto data = MakeCacheGenCB(float2((float)BNMapSize.x, (float)BNMapSize.y));
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
@@ -667,6 +680,71 @@ void Skylighting::GenerateNormalStepMap()
 	BNComputeShader.release();
 }
 */
+float4 Skylighting::GetHeightMapBounds() const
+{
+	// Bounds of the tiled atlas, derived from the cell grid it was stitched from.
+	if (settings.cacheAtlasTileCells > 0 && settings.cacheAtlasTilesX > 0 && settings.cacheAtlasTilesY > 0) {
+		float minX = (float)settings.cacheAtlasMinCellX * worldCellSize;
+		float minY = (float)settings.cacheAtlasMinCellY * worldCellSize;
+		return float4(minX, minY,
+			minX + (float)(settings.cacheAtlasTilesX * settings.cacheAtlasTileCells) * worldCellSize,
+			minY + (float)(settings.cacheAtlasTilesY * settings.cacheAtlasTileCells) * worldCellSize);
+	}
+
+	// Legacy full worldspace map: cells -57,-43 to 62,51, the range the old generator covered.
+	return float4(-233472.0f, -176128.0f, 253952.0f, 208896.0f);
+}
+
+Skylighting::CacheGenCBStruct Skylighting::MakeCacheGenCB(const float2& outputSize, const float4& regionOffsetScale) const
+{
+	CacheGenCBStruct data;
+	data.TexParams = float4(outputSize.x, outputSize.y, HeightMapOffset, HeightMapScale);
+	data.RegionOffsetScale = regionOffsetScale;
+	data.GridBounds = GetHeightMapBounds();
+	return data;
+}
+
+bool Skylighting::DispatchBentNormals(ID3D11ComputeShader* computeShader, Texture2D* outputTex, const float4& regionOffsetScale)
+{
+	if (!computeShader || !outputTex)
+		return false;
+
+	if (!HMapSRV) {
+		logger::error("[Skylighting] No height map loaded, cannot generate bent normals");
+		return false;
+	}
+
+	if (!cacheGenBuffer)
+		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
+
+	auto context = globals::d3d::context;
+
+	ID3D11UnorderedAccessView* uav = outputTex->uav.get();
+	context->CSSetShader(computeShader, nullptr, 0);
+	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+
+	auto heightSRV = HMapSRV;  //globals::features::terrainShadows.texHeightMap->srv.get();
+	context->CSSetShaderResources(0, 1, &heightSRV);
+
+	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
+	context->CSSetSamplers(0, 1, &linSampler);
+
+	auto data = MakeCacheGenCB(float2((float)outputTex->desc.Width, (float)outputTex->desc.Height), regionOffsetScale);
+	cacheGenBuffer->Update(data);
+
+	auto buffer = cacheGenBuffer->CB();
+	context->CSSetConstantBuffers(0, 1, &buffer);
+
+	context->Dispatch((outputTex->desc.Width + 7) / 8, (outputTex->desc.Height + 7) / 8, 1);
+
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
+	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	ID3D11ShaderResourceView* nullSRVs[1] = { nullptr };
+	context->CSSetShaderResources(0, 1, nullSRVs);
+
+	return true;
+}
+
 void Skylighting::GenerateBentNormalMap()
 {
 	// Setup resources
@@ -682,34 +760,8 @@ void Skylighting::GenerateBentNormalMap()
 
 	BNComputeShader.reset(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Skylighting\\GenerateCacheMaps.hlsl", { { "CSHADER", "" }, { "BENT_NORMALS", "" } }, "cs_5_0")));
 
-	if (!cacheGenBuffer)
-		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
-
-	// Generate map
-	auto context = globals::d3d::context;
-
-	ID3D11UnorderedAccessView* uav = cacheOutputTexBN->uav.get();
-	context->CSSetShader(BNComputeShader.get(), nullptr, 0);
-	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
-
-	auto heightSRV = HMapSRV;  //globals::features::terrainShadows.texHeightMap->srv.get();
-	context->CSSetShaderResources(0, 1, &heightSRV);
-
-	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
-	context->CSSetSamplers(0, 1, &linSampler);
-
-	CacheGenCBStruct data;
-	data.TexParams = float4((float)BNMapSize.x, (float)BNMapSize.y, HeightMapOffset, HeightMapScale);
-	cacheGenBuffer->Update(data);
-
-	auto buffer = cacheGenBuffer->CB();
-	context->CSSetConstantBuffers(0, 1, &buffer);
-
-	auto groups = (BNMapSize.x + 7) / 8;
-	context->Dispatch(groups, (BNMapSize.y + 7) / 8, 1);
-
-	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
-	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	// Generate map over the whole height map
+	DispatchBentNormals(BNComputeShader.get(), cacheOutputTexBN.get(), float4(0.0f, 0.0f, 1.0f, 1.0f));
 
 	// Save output
 	auto outputPath = cachePath / (cacheWorldspaceID + "_BN.dds");
@@ -783,8 +835,7 @@ void Skylighting::GenerateCardinalOcclusionMap()
 	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
 	context->CSSetSamplers(0, 1, &linSampler);
 
-	CacheGenCBStruct data;
-	data.TexParams = float4(COMapSize, COMapSize, HeightMapOffset, HeightMapScale);
+	auto data = MakeCacheGenCB(float2((float)COMapSize, (float)COMapSize));
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
@@ -1400,6 +1451,8 @@ void Skylighting::Main_Precipitation_RenderOcclusion::thunk()
 
 	if (skylighting.MapGen)
 		skylighting.GenerateHeightMap();
+
+	skylighting.UpdateBentNormalTiles();
 }
 
 RE::BSEventNotifyControl Skylighting::MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
@@ -1923,6 +1976,7 @@ bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceR
 	settings.cacheAtlasMinCellY = minOrigin.y;
 	settings.cacheAtlasTileSize = (int)tileSize;
 	settings.cacheAtlasTileCells = cellsPerTile;
+	settings.cacheAtlasTilesX = (int)tilesX;
 	settings.cacheAtlasTilesY = (int)tilesY;
 
 	// Optionally bias the whole atlas so its lowest point becomes 0.0. The scan covers the gap fill
@@ -1980,6 +2034,169 @@ bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceR
 		atlasPath.string(), atlasImage->width, atlasImage->height, blitted,
 		minOrigin.x, minOrigin.y, maxOrigin.x + cellsPerTile - 1, maxOrigin.y + cellsPerTile - 1);
 
+	return true;
+}
+
+bool Skylighting::StartBentNormalTiles()
+{
+	if (bentNormalTileGen)
+		return false;
+
+	if (cacheWorldspaceID.empty()) {
+		logger::error("[Skylighting] No worldspace cache loaded, cannot generate bent normal tiles");
+		return false;
+	}
+
+	if (!HMapSRV) {
+		logger::error("[Skylighting] No height atlas loaded, build it before generating bent normal tiles");
+		return false;
+	}
+
+	const int tileSize = settings.cacheAtlasTileSize;
+	const int cellsPerTile = settings.cacheAtlasTileCells;
+	if (tileSize <= 0 || cellsPerTile <= 0) {
+		logger::error("[Skylighting] No atlas layout recorded, rebuild the height atlas first");
+		return false;
+	}
+
+	// The atlas dimensions the height tiles were stitched into; the regions are relative to these.
+	auto atlasPath = cachePath / (cacheWorldspaceID + "_H.dds");
+	DirectX::TexMetadata metadata;
+	if (FAILED(DirectX::GetMetadataFromDDSFile(atlasPath.c_str(), DirectX::DDS_FLAGS_NONE, metadata))) {
+		logger::error("[Skylighting] Failed to read the height atlas, cannot generate bent normal tiles");
+		return false;
+	}
+	bentNormalAtlasSize = int2((int)metadata.width, (int)metadata.height);
+
+	// Mirror the set of height tiles exactly, so every height tile gets a bent normal partner.
+	bentNormalTileQueue.clear();
+	std::error_code ec;
+	for (const auto& entry : std::filesystem::directory_iterator(cachePath, ec)) {
+		const auto& path = entry.path();
+		if (!path.has_extension() || _stricmp(path.extension().string().c_str(), ".dds") != 0)
+			continue;
+
+		HeightTileFile tile;
+		if (ParseHeightTileName(path, cacheWorldspaceID, tile) && tile.tileSize == (uint)tileSize && tile.cellsPerTile == cellsPerTile)
+			bentNormalTileQueue.push_back(tile.originCell);
+	}
+
+	if (bentNormalTileQueue.empty()) {
+		logger::error("[Skylighting] No height tiles matching the atlas layout, nothing to generate");
+		return false;
+	}
+
+	std::ranges::sort(bentNormalTileQueue, [](const int2& a, const int2& b) {
+		return a.y != b.y ? a.y < b.y : a.x < b.x;
+	});
+
+	// One output tile, reused for the whole run. The compute shader writes normalised values, so
+	// the float target converts cleanly to the 16 bit storage format on save.
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)tileSize, (uint)tileSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
+
+	bentNormalTileTex = nullptr;
+	try {
+		bentNormalTileTex = eastl::make_unique<Texture2D>(desc, "Skylighting::BentNormalTile");
+		bentNormalTileTex->CreateSRV(nullptr);
+		bentNormalTileTex->CreateUAV(uavDesc);
+	} catch (const std::exception& e) {
+		logger::error("[Skylighting] Failed to create bent normal tile target: {}", e.what());
+		bentNormalTileTex = nullptr;
+		return false;
+	}
+
+	bentNormalTileCS = nullptr;
+	bentNormalTileCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Skylighting\\GenerateCacheMaps.hlsl", { { "CSHADER", "" }, { "BENT_NORMALS", "" } }, "cs_5_0")));
+	if (!bentNormalTileCS) {
+		logger::error("[Skylighting] Failed to compile the bent normal shader");
+		bentNormalTileTex = nullptr;
+		return false;
+	}
+
+	bentNormalTileIndex = 0;
+	bentNormalTileGen = true;
+
+	logger::info("[Skylighting] Generating {0} bent normal tiles at {1}x{1} from a {2}x{3} atlas",
+		bentNormalTileQueue.size(), tileSize, bentNormalAtlasSize.x, bentNormalAtlasSize.y);
+
+	return true;
+}
+
+void Skylighting::StopBentNormalTiles()
+{
+	bentNormalTileGen = false;
+	bentNormalTileQueue.clear();
+	bentNormalTileIndex = 0;
+	bentNormalTileTex = nullptr;
+	bentNormalTileCS = nullptr;
+}
+
+void Skylighting::UpdateBentNormalTiles()
+{
+	if (!bentNormalTileGen)
+		return;
+
+	// One tile per frame; a whole set in a single call would sit far past the driver timeout.
+	if (bentNormalTileIndex < bentNormalTileQueue.size()) {
+		GenerateBentNormalTile(bentNormalTileQueue[bentNormalTileIndex]);
+		bentNormalTileIndex++;
+	}
+
+	if (bentNormalTileIndex >= bentNormalTileQueue.size()) {
+		logger::info("[Skylighting] Bent normal tiles complete: {} tiles", bentNormalTileQueue.size());
+		StopBentNormalTiles();
+	}
+}
+
+bool Skylighting::GenerateBentNormalTile(const int2& tileOriginCell)
+{
+	if (!bentNormalTileTex || !bentNormalTileCS)
+		return false;
+
+	const int tileSize = settings.cacheAtlasTileSize;
+	const int cellsPerTile = settings.cacheAtlasTileCells;
+	if (tileSize <= 0 || cellsPerTile <= 0 || bentNormalAtlasSize.x <= 0 || bentNormalAtlasSize.y <= 0)
+		return false;
+
+	// The shader's uv space is y up, so the region is simply the tile's offset from the atlas'
+	// minimum cell in both axes; the flip the atlas was stitched with cancels out.
+	float2 regionScale = float2((float)tileSize / (float)bentNormalAtlasSize.x, (float)tileSize / (float)bentNormalAtlasSize.y);
+	float2 regionOffset = float2(
+		(float)((tileOriginCell.x - settings.cacheAtlasMinCellX) / cellsPerTile) * regionScale.x,
+		(float)((tileOriginCell.y - settings.cacheAtlasMinCellY) / cellsPerTile) * regionScale.y);
+
+	if (!DispatchBentNormals(bentNormalTileCS.get(), bentNormalTileTex.get(), float4(regionOffset.x, regionOffset.y, regionScale.x, regionScale.y)))
+		return false;
+
+	DirectX::ScratchImage captured;
+	HRESULT hr = DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, bentNormalTileTex->resource.get(), captured);
+	if (FAILED(hr)) {
+		logger::error("[Skylighting] Failed to capture bent normal tile {}, {}: {:X}", tileOriginCell.x, tileOriginCell.y, (uint32_t)hr);
+		return false;
+	}
+
+	// Same storage convention as the height tiles: 16 bit unsigned, or raw float when that is off.
+	// The shader already writes normal * 0.5 + 0.5 and AO, so everything is in range for UNORM.
+	DirectX::ScratchImage converted;
+	if (settings.cacheExport16Bit) {
+		hr = DirectX::Convert(*captured.GetImages(), DXGI_FORMAT_R16G16B16A16_UNORM, DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+		if (FAILED(hr)) {
+			logger::error("[Skylighting] Failed to convert bent normal tile {}, {}: {:X}", tileOriginCell.x, tileOriginCell.y, (uint32_t)hr);
+			return false;
+		}
+	}
+
+	const DirectX::Image* image = settings.cacheExport16Bit ? converted.GetImages() : captured.GetImages();
+	auto path = cachePath / fmt::format("{}_BN{}.{}.{}.{}.dds", cacheWorldspaceID, tileSize, cellsPerTile, tileOriginCell.x, tileOriginCell.y);
+
+	hr = DirectX::SaveToDDSFile(*image, DirectX::DDS_FLAGS_NONE, path.c_str());
+	if (FAILED(hr)) {
+		logger::error("[Skylighting] Failed to save bent normal tile {}: {:X}", path.string(), (uint32_t)hr);
+		return false;
+	}
+
+	logger::info("[Skylighting] Saved bent normal tile {}", path.string());
 	return true;
 }
 

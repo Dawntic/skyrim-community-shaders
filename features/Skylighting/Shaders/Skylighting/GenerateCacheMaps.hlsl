@@ -5,6 +5,8 @@ cbuffer CacheGenBuffer : register(b0)
 {
 	float2 OutputTexSize;
 	float2 HeightMapOffsetScale;
+	float4 RegionOffsetScale;  // xy: uv offset, zw: uv scale of the height map region to process
+	float4 GridBounds;         // world xy min/max of the cells the height map covers
 };
 
 //// Bent Normal and Cardinal AO Map ////////////////////////////////////////////////////
@@ -51,9 +53,6 @@ float MarchHorizon(float2 CoordsUV, uint3 ThreadID, float SampleHeight, uint2 He
 
 	float StepCount = TexelsToEdge(CoordsUV, Dir, HeightMapPxSize);
 
-	//const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
-	float4 GridBounds = float4(-233472.00, -176128.00, 253952.00, 208896.00);  // pull from settings later
-
 	float2 TexelWorldSize = (GridBounds.zw - GridBounds.xy) / (float2)HeightMapPxSize;
 
 	float StepDist = length(Dir * TexelWorldSize);
@@ -95,7 +94,11 @@ float MarchHorizon(float2 CoordsUV, uint3 ThreadID, float SampleHeight, uint2 He
 	if (any(ThreadID.xy >= OutputTexSize))
 		return;
 
+	// Map the output texel onto the height map. The full map is RegionOffsetScale = (0, 0, 1, 1);
+	// a tiled run passes the sub rect it covers, so rays still march across the whole map and
+	// occlusion from outside the tile is accounted for.
 	float2 CoordsUV = (ThreadID.xy + 0.5) / OutputTexSize;
+	CoordsUV = RegionOffsetScale.xy + CoordsUV * RegionOffsetScale.zw;
 
 	float2 SampCoords = CoordsUV;
 	SampCoords.y = 1.0 - SampCoords.y;
@@ -134,23 +137,7 @@ float MarchHorizon(float2 CoordsUV, uint3 ThreadID, float SampleHeight, uint2 He
 		float2 Dir;
 		sincos(phi, Dir.x, Dir.y);
 
-		// blur to smoothen result
-		float SinH = 0.0;
-		float wSum = 0.0;
-		[unroll] for (int ky = -2; ky <= 2; ++ky)
-		{
-			[unroll] for (int kx = -2; kx <= 2; ++kx)
-			{
-				float2 nUV = CoordsUV + float2(kx, ky) / HeightMapPxSize;
-
-				float nH = HeightTex.SampleLevel(LinearSampler, float2(nUV.x, 1.0 - nUV.y), 0);  // * 65535;
-																								 //nH = (nH - HeightMapOffsetScale.x) * HeightMapOffsetScale.y;
-				float w = exp(-(kx * kx + ky * ky) * 0.5);
-				SinH += MarchHorizon(nUV, ThreadID, nH, HeightMapPxSize, Dir.yx) * w;
-				wSum += w;
-			}
-		}
-		SinH /= wSum;
+		float SinH = MarchHorizon(CoordsUV, ThreadID, HeightSample, HeightMapPxSize, Dir.yx);
 
 		float SinH2 = SinH * SinH;
 		float CosH = sqrt(max(0.0, 1.0 - SinH2));
@@ -210,7 +197,6 @@ float LoadHeight(int2 CoordsPx, int2 HeightMapPxSize)
 	float dHdx = (hR + hUR + hDR) - (hL + hUL + hDL);
 	float dHdy = (hU + hUL + hUR) - (hD + hDL + hDR);
 
-	float4 GridBounds = float4(-233472.00, -176128.00, 253952.00, 208896.00);  // pull out later
 	float2 TexelWorldSize = (GridBounds.zw - GridBounds.xy) / (float2)HeightMapPxSize;
 
 	dHdx /= (6.0 * TexelWorldSize.x);
