@@ -198,6 +198,22 @@ void Skylighting::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Generates one bent normal tile per height tile from the atlas, matching their\nsize, format and naming. One tile per frame; expect a long, unresponsive run.");
 
+		ImGui::BeginDisabled(MapGen || bentNormalTileGen || cacheWorldspaceID.empty());
+		if (ImGui::Button("Rebuild Bent Normal Atlas")) {
+			if (EnsureBentNormalAtlas(cacheWorldspaceID, true)) {
+				auto path = cachePath / (cacheWorldspaceID + "_BN.dds");
+				if (BNMapSRV) {
+					BNMapSRV->Release();
+					BNMapSRV = nullptr;
+				}
+				DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV);
+			}
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Stitches every bent normal tile into %s_BN.dds, overwriting it.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
+				cacheWorldspaceID.empty() ? "<Worldspace>" : cacheWorldspaceID.c_str());
+
 		if (bentNormalTileGen)
 			ImGui::Text("Bent normal tiles: %zu / %zu", bentNormalTileIndex, bentNormalTileQueue.size());
 
@@ -473,7 +489,11 @@ bool Skylighting::LoadWorldspaceCache()
 		auto path = cachePath / (newWorldspaceID + "_BN.dds");
 		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV);
 		if (FAILED(result)) {
-			GenerateBentNormalMap();
+			// Prefer stitching generated tiles; fall back to the full map pass when there are none.
+			if (EnsureBentNormalAtlas(newWorldspaceID))
+				result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV);
+			if (FAILED(result))
+				GenerateBentNormalMap();
 		}
 	}
 
@@ -1636,6 +1656,12 @@ static DXGI_FORMAT HeightStorageFormat(bool export16Bit)
 	return export16Bit ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R32_FLOAT;
 }
 
+// "<Worldspace><mapTag><tileSize>.<cellsPerTile>.<originX>.<originY>.dds", e.g. Tamriel_H1024.8.-64.-40.dds
+static std::filesystem::path MakeTilePath(const std::filesystem::path& dir, const std::string& worldspaceID, const std::string& mapTag, uint tileSize, int cellsPerTile, const int2& originCell)
+{
+	return dir / fmt::format("{}{}{}.{}.{}.{}.dds", worldspaceID, mapTag, tileSize, cellsPerTile, originCell.x, originCell.y);
+}
+
 bool Skylighting::EnsureHeightTileTexture(uint tileSize)
 {
 	if (cacheOutputTexH && cacheOutputTexH->desc.Width == tileSize && cacheOutputTexH->desc.Height == tileSize)
@@ -1687,7 +1713,7 @@ bool Skylighting::SaveHeightTile(const int2& tileOriginCell, int cellsPerTile)
 	const bool export16Bit = settings.cacheExport16Bit;
 
 	auto worldspaceID = cacheWorldspaceID.empty() ? std::string("Unknown") : cacheWorldspaceID;
-	auto path = cachePath / fmt::format("{}_H{}.{}.{}.{}.dds", worldspaceID, tileSize, cellsPerTile, tileOriginCell.x, tileOriginCell.y);
+	auto path = MakeTilePath(cachePath, worldspaceID, "_H", tileSize, cellsPerTile, tileOriginCell);
 
 	DirectX::ScratchImage outputImage;
 	HRESULT hr = outputImage.Initialize2D(HeightStorageFormat(export16Bit), tileSize, tileSize, 1, 1);
@@ -1783,8 +1809,8 @@ struct HeightTileFile
 	uint tileSize;
 };
 
-// Matches the names SaveHeightTile writes: "<Worldspace>_H<tileSize>.<cellsPerTile>.<originX>.<originY>".
-static bool ParseHeightTileName(const std::filesystem::path& path, const std::string& worldspaceID, HeightTileFile& o_tile)
+// Matches the names MakeTilePath writes: "<Worldspace><mapTag><tileSize>.<cellsPerTile>.<originX>.<originY>".
+static bool ParseTileName(const std::filesystem::path& path, const std::string& worldspaceID, const std::string& mapTag, HeightTileFile& o_tile)
 {
 	std::vector<std::string> parts;
 	std::string current;
@@ -1800,7 +1826,7 @@ static bool ParseHeightTileName(const std::filesystem::path& path, const std::st
 	if (parts.size() != 4)
 		return false;
 
-	auto prefix = worldspaceID + "_H";
+	auto prefix = worldspaceID + mapTag;
 	if (!parts[0].starts_with(prefix))
 		return false;
 
@@ -1844,16 +1870,48 @@ static bool WriteAtlasTileList(const std::filesystem::path& path, std::vector<st
 	return file.good();
 }
 
-bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceRebuild)
+// Fill an image with a constant, expressed normalised for UNORM formats and raw for float ones.
+static void FillImage(const DirectX::Image& image, const float4& unormFill, const float4& floatFill)
+{
+	const float unorm[4] = { unormFill.x, unormFill.y, unormFill.z, unormFill.w };
+	const float raw[4] = { floatFill.x, floatFill.y, floatFill.z, floatFill.w };
+
+	size_t channels = 0;
+	switch (image.format) {
+	case DXGI_FORMAT_R16_UNORM:
+	case DXGI_FORMAT_R32_FLOAT:
+		channels = 1;
+		break;
+	case DXGI_FORMAT_R16G16B16A16_UNORM:
+	case DXGI_FORMAT_R32G32B32A32_FLOAT:
+		channels = 4;
+		break;
+	default:
+		memset(image.pixels, 0, image.slicePitch);
+		return;
+	}
+
+	const bool isUnorm = image.format == DXGI_FORMAT_R16_UNORM || image.format == DXGI_FORMAT_R16G16B16A16_UNORM;
+
+	for (size_t y = 0; y < image.height; ++y) {
+		auto row = image.pixels + y * image.rowPitch;
+		for (size_t x = 0; x < image.width; ++x) {
+			for (size_t c = 0; c < channels; ++c) {
+				if (isUnorm)
+					((uint16_t*)row)[x * channels + c] = (uint16_t)std::clamp(unorm[c] * 65535.0f, 0.0f, 65535.0f);
+				else
+					((float*)row)[x * channels + c] = raw[c];
+			}
+		}
+	}
+}
+
+bool Skylighting::StitchTileAtlas(const std::string& worldspaceID, const std::string& mapTag, const float4& unormFill, const float4& floatFill, TileAtlasResult& o_result)
 {
 	using namespace DirectX;
 
 	if (worldspaceID.empty())
 		return false;
-
-	auto atlasPath = cachePath / (worldspaceID + "_H.dds");
-	if (!forceRebuild && std::filesystem::exists(atlasPath))
-		return true;
 
 	std::error_code ec;
 	if (!std::filesystem::exists(cachePath, ec))
@@ -1866,12 +1924,12 @@ bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceR
 			continue;
 
 		HeightTileFile tile;
-		if (ParseHeightTileName(path, worldspaceID, tile))
+		if (ParseTileName(path, worldspaceID, mapTag, tile))
 			tiles.push_back(std::move(tile));
 	}
 
 	if (tiles.empty()) {
-		logger::warn("[Skylighting] No height tiles found for {}, cannot build atlas", worldspaceID);
+		logger::warn("[Skylighting] No {}{} tiles found, cannot build atlas", worldspaceID, mapTag);
 		return false;
 	}
 
@@ -1901,38 +1959,34 @@ bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceR
 	const size_t tilesX = (size_t)((maxOrigin.x - minOrigin.x) / cellsPerTile) + 1;
 	const size_t tilesY = (size_t)((maxOrigin.y - minOrigin.y) / cellsPerTile) + 1;
 
-	if (tilesX * tileSize > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || tilesY * tileSize > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
-		logger::warn("[Skylighting] Height atlas is {}x{}, larger than the {} texel D3D11 limit; the file will be written but cannot be loaded as a texture",
-			tilesX * tileSize, tilesY * tileSize, (uint)D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION);
-
 	TexMetadata metadata;
 	HRESULT hr = GetMetadataFromDDSFile(tiles[0].path.c_str(), DDS_FLAGS_NONE, metadata);
 	if (FAILED(hr)) {
-		logger::error("[Skylighting] Failed to read height tile metadata: {:X}", (uint32_t)hr);
+		logger::error("[Skylighting] Failed to read {} tile metadata: {:X}", mapTag, (uint32_t)hr);
 		return false;
 	}
 
 	const DXGI_FORMAT format = metadata.format;
 	const size_t bytesPerTexel = BitsPerPixel(format) / 8;
+	const size_t atlasWidth = tilesX * tileSize;
+	const size_t atlasHeight = tilesY * tileSize;
+
+	if (atlasWidth > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || atlasHeight > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+		logger::warn("[Skylighting] {} atlas is {}x{}, larger than the {} texel D3D11 limit; the file will be written but cannot be loaded as a texture",
+			mapTag, atlasWidth, atlasHeight, (uint)D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION);
+
+	logger::info("[Skylighting] Stitching {0} atlas: {1}x{2} texels, {3} MB", mapTag, atlasWidth, atlasHeight,
+		(atlasWidth * atlasHeight * bytesPerTexel) / (1024 * 1024));
 
 	ScratchImage atlas;
-	hr = atlas.Initialize2D(format, tilesX * tileSize, tilesY * tileSize, 1, 1);
+	hr = atlas.Initialize2D(format, atlasWidth, atlasHeight, 1, 1);
 	if (FAILED(hr)) {
-		logger::error("[Skylighting] Failed to allocate {}x{} height atlas: {:X}", tilesX * tileSize, tilesY * tileSize, (uint32_t)hr);
+		logger::error("[Skylighting] Failed to allocate {}x{} atlas: {:X}", atlasWidth, atlasHeight, (uint32_t)hr);
 		return false;
 	}
 
-	// Gaps between tiles read as zero height, matching how the tiles themselves clear unsampled texels.
 	const Image* atlasImage = atlas.GetImages();
-	if (format == DXGI_FORMAT_R16_UNORM) {
-		auto fill = (uint16_t)heightExportOffset;
-		for (size_t y = 0; y < atlasImage->height; ++y) {
-			auto row = (uint16_t*)(atlasImage->pixels + y * atlasImage->rowPitch);
-			std::fill_n(row, atlasImage->width, fill);
-		}
-	} else {
-		memset(atlasImage->pixels, 0, atlasImage->slicePitch);
-	}
+	FillImage(*atlasImage, unormFill, floatFill);
 
 	// The atlas is north up with a top left origin, so both the tile order and each tile's rows are
 	// mirrored on the way in: the tiles themselves are stored south to north.
@@ -1942,13 +1996,13 @@ bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceR
 		ScratchImage tileImage;
 		hr = LoadFromDDSFile(tile.path.c_str(), DDS_FLAGS_NONE, nullptr, tileImage);
 		if (FAILED(hr)) {
-			logger::warn("[Skylighting] Skipping unreadable height tile {}: {:X}", tile.path.string(), (uint32_t)hr);
+			logger::warn("[Skylighting] Skipping unreadable tile {}: {:X}", tile.path.string(), (uint32_t)hr);
 			continue;
 		}
 
 		const Image* src = tileImage.GetImages();
 		if (!src || src->width != tileSize || src->height != tileSize || src->format != format) {
-			logger::warn("[Skylighting] Skipping height tile {}, does not match the atlas layout", tile.path.string());
+			logger::warn("[Skylighting] Skipping tile {}, does not match the atlas layout", tile.path.string());
 			continue;
 		}
 
@@ -1967,17 +2021,51 @@ bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceR
 	}
 
 	if (blitted == 0) {
-		logger::error("[Skylighting] No usable height tiles for {}, atlas not written", worldspaceID);
+		logger::error("[Skylighting] No usable {}{} tiles, atlas not written", worldspaceID, mapTag);
 		return false;
 	}
+
+	o_result.image = std::move(atlas);
+	o_result.placements = std::move(placements);
+	o_result.minOriginCell = minOrigin;
+	o_result.maxOriginCell = maxOrigin;
+	o_result.tileCounts = int2((int)tilesX, (int)tilesY);
+	o_result.tileSize = tileSize;
+	o_result.cellsPerTile = cellsPerTile;
+
+	return true;
+}
+
+bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceRebuild)
+{
+	using namespace DirectX;
+
+	if (worldspaceID.empty())
+		return false;
+
+	auto atlasPath = cachePath / (worldspaceID + "_H.dds");
+	if (!forceRebuild && std::filesystem::exists(atlasPath))
+		return true;
+
+	// Gaps between tiles read as zero height, matching how the tiles clear unsampled texels.
+	TileAtlasResult result;
+	if (!StitchTileAtlas(worldspaceID, "_H", float4(heightExportOffset / 65535.0f, 0.0f, 0.0f, 0.0f), float4(0.0f, 0.0f, 0.0f, 0.0f), result))
+		return false;
+
+	const Image* atlasImage = result.image.GetImages();
+	const DXGI_FORMAT format = atlasImage->format;
+	const int2 minOrigin = result.minOriginCell;
+	const int2 maxOrigin = result.maxOriginCell;
+	const uint tileSize = result.tileSize;
+	const int cellsPerTile = result.cellsPerTile;
 
 	// Record the layout so atlas texels can be mapped back to cells later.
 	settings.cacheAtlasMinCellX = minOrigin.x;
 	settings.cacheAtlasMinCellY = minOrigin.y;
 	settings.cacheAtlasTileSize = (int)tileSize;
 	settings.cacheAtlasTileCells = cellsPerTile;
-	settings.cacheAtlasTilesX = (int)tilesX;
-	settings.cacheAtlasTilesY = (int)tilesY;
+	settings.cacheAtlasTilesX = result.tileCounts.x;
+	settings.cacheAtlasTilesY = result.tileCounts.y;
 
 	// Optionally bias the whole atlas so its lowest point becomes 0.0. The scan covers the gap fill
 	// too, so the result is the lowest value the atlas actually stores. Applied uniformly, so terrain
@@ -2021,18 +2109,53 @@ bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceR
 	}
 	globals::state->Save();
 
-	hr = SaveToDDSFile(*atlasImage, DDS_FLAGS_NONE, atlasPath.c_str());
+	HRESULT hr = SaveToDDSFile(*atlasImage, DDS_FLAGS_NONE, atlasPath.c_str());
 	if (FAILED(hr)) {
 		logger::error("[Skylighting] Failed to save height atlas {}: {:X}", atlasPath.string(), (uint32_t)hr);
 		return false;
 	}
 
 	auto listPath = std::filesystem::path(atlasPath).replace_extension(".txt");
-	WriteAtlasTileList(listPath, placements, atlasImage->width, atlasImage->height, tileSize);
+	WriteAtlasTileList(listPath, result.placements, atlasImage->width, atlasImage->height, tileSize);
 
 	logger::info("[Skylighting] Built height atlas {}: {}x{} from {} tiles, cells {},{} to {},{}",
-		atlasPath.string(), atlasImage->width, atlasImage->height, blitted,
+		atlasPath.string(), atlasImage->width, atlasImage->height, result.placements.size(),
 		minOrigin.x, minOrigin.y, maxOrigin.x + cellsPerTile - 1, maxOrigin.y + cellsPerTile - 1);
+
+	return true;
+}
+
+bool Skylighting::EnsureBentNormalAtlas(const std::string& worldspaceID, bool forceRebuild)
+{
+	using namespace DirectX;
+
+	if (worldspaceID.empty())
+		return false;
+
+	auto atlasPath = cachePath / (worldspaceID + "_BN.dds");
+	if (!forceRebuild && std::filesystem::exists(atlasPath))
+		return true;
+
+	// Gaps read as an unoccluded surface: normal straight up, encoded, and full visibility.
+	TileAtlasResult result;
+	if (!StitchTileAtlas(worldspaceID, "_BN", float4(0.5f, 0.5f, 1.0f, 1.0f), float4(0.5f, 0.5f, 1.0f, 1.0f), result))
+		return false;
+
+	const Image* atlasImage = result.image.GetImages();
+
+	HRESULT hr = SaveToDDSFile(*atlasImage, DDS_FLAGS_NONE, atlasPath.c_str());
+	if (FAILED(hr)) {
+		logger::error("[Skylighting] Failed to save bent normal atlas {}: {:X}", atlasPath.string(), (uint32_t)hr);
+		return false;
+	}
+
+	auto listPath = std::filesystem::path(atlasPath).replace_extension(".txt");
+	WriteAtlasTileList(listPath, result.placements, atlasImage->width, atlasImage->height, result.tileSize);
+
+	logger::info("[Skylighting] Built bent normal atlas {}: {}x{} from {} tiles, cells {},{} to {},{}",
+		atlasPath.string(), atlasImage->width, atlasImage->height, result.placements.size(),
+		result.minOriginCell.x, result.minOriginCell.y,
+		result.maxOriginCell.x + result.cellsPerTile - 1, result.maxOriginCell.y + result.cellsPerTile - 1);
 
 	return true;
 }
@@ -2164,7 +2287,7 @@ bool Skylighting::StartBentNormalTiles()
 			continue;
 
 		HeightTileFile tile;
-		if (ParseHeightTileName(path, cacheWorldspaceID, tile) && tile.tileSize == (uint)tileSize && tile.cellsPerTile == cellsPerTile)
+		if (ParseTileName(path, cacheWorldspaceID, "_H", tile) && tile.tileSize == (uint)tileSize && tile.cellsPerTile == cellsPerTile)
 			bentNormalTileQueue.push_back(tile.originCell);
 	}
 
@@ -2311,7 +2434,7 @@ bool Skylighting::GenerateBentNormalTile(const int2& tileOriginCell)
 	}
 
 	const DirectX::Image* image = settings.cacheExport16Bit ? converted.GetImages() : captured.GetImages();
-	auto path = cachePath / fmt::format("{}_BN{}.{}.{}.{}.dds", cacheWorldspaceID, tileSize, cellsPerTile, tileOriginCell.x, tileOriginCell.y);
+	auto path = MakeTilePath(cachePath, cacheWorldspaceID, "_BN", (uint)tileSize, cellsPerTile, tileOriginCell);
 
 	hr = DirectX::SaveToDDSFile(*image, DirectX::DDS_FLAGS_NONE, path.c_str());
 	if (FAILED(hr)) {

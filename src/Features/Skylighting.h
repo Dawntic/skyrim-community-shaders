@@ -221,10 +221,29 @@ public:
 	bool SaveHeightTile(const int2& tileOriginCell, int cellsPerTile);
 	/// @brief Copy the staging tile into a viewable texture holding exactly what gets written to disk.
 	void UpdateHeightPreview(const int2& tileOriginCell);
+	/// @brief A set of tiles stitched into one north up image, with where each tile landed.
+	struct TileAtlasResult
+	{
+		DirectX::ScratchImage image;
+		std::vector<std::pair<int2, std::string>> placements;  // atlas texel origin -> source file
+		int2 minOriginCell = int2(0, 0);
+		int2 maxOriginCell = int2(0, 0);
+		int2 tileCounts = int2(0, 0);
+		uint tileSize = 0;
+		int cellsPerTile = 0;
+	};
+
+	/// @brief Stitch "<Worldspace><mapTag><tileSize>.<cells>.<x>.<y>.dds" tiles into one image.
+	/// @param unormFill Value gaps between tiles take in a UNORM format, normalised to [0, 1].
+	/// @param floatFill Value gaps between tiles take in a float format.
+	bool StitchTileAtlas(const std::string& worldspaceID, const std::string& mapTag, const float4& unormFill, const float4& floatFill, TileAtlasResult& o_result);
+
 	/// @brief Ensure "<Worldspace>_H.dds" exists, stitching it from the generated height tiles if not.
 	/// @param forceRebuild Rebuild even when the atlas is already on disk.
 	/// @return True if the atlas exists once the call returns.
 	bool EnsureHeightAtlas(const std::string& worldspaceID, bool forceRebuild = false);
+	/// @brief Ensure "<Worldspace>_BN.dds" exists, stitching it from the generated bent normal tiles.
+	bool EnsureBentNormalAtlas(const std::string& worldspaceID, bool forceRebuild = false);
 	/// @brief Map an atlas texel to the worldspace cell it covers, using the last built atlas layout.
 	/// @return False if no atlas has been built, leaving o_cell untouched.
 	bool AtlasTexelToCell(const int2& texel, int2& o_cell) const;
