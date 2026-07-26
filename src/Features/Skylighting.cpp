@@ -15,7 +15,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SkyInfluence,
 	EnvInfluence,
 	cacheProgressX,
-	cacheProgressY)
+	cacheProgressY,
+	cacheTileCells,
+	cacheTileSize,
+	cacheExport16Bit)
 
 void Skylighting::LoadSettings(json& o_json)
 {
@@ -78,6 +81,76 @@ void Skylighting::DrawSettings()
 
 	if (ImGui::Button("Generate Normal")) {
 		GenerateNormalMap();
+	}
+
+	{
+		ImGui::BeginDisabled(MapGen);  // the tile layout is latched for the duration of a run
+
+		int cellsIndex = settings.cacheTileCells == 4 ? 0 : 1;
+		if (ImGui::Combo("Height Tile Cells", &cellsIndex,
+				"4x4 cells\0"
+				"8x8 cells\0"))
+			settings.cacheTileCells = cellsIndex == 0 ? 4 : 8;
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Worldspace cells covered by each height tile.");
+
+		int sizeIndex = settings.cacheTileSize == 512 ? 0 : 1;
+		if (ImGui::Combo("Height Tile Resolution", &sizeIndex,
+				"512\0"
+				"1024\0"))
+			settings.cacheTileSize = sizeIndex == 0 ? 512 : 1024;
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Texels per height tile edge. Higher resolutions take proportionally longer to generate.");
+
+		ImGui::Checkbox("Export 16 Bit Height", &settings.cacheExport16Bit);
+		ImGui::SliderInt("Wait frames", &heightSettleFrames, 1, 100);
+
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"On: xLODGen format, 16 bit unsigned with zero height at %d and 8 game units per step\n"
+				"(height = (value - %d) * %g).\n"
+				"Off: raw 32 bit float game units.",
+				(int)heightExportOffset, (int)heightExportOffset, heightExportScale);
+
+		ImGui::EndDisabled();
+
+		const int texelsPerCell = (int)GetHeightTileSize() / GetHeightTileCells();
+		ImGui::Text("%u^2 tile, %d texels per cell, %.0f units per texel, %s",
+			GetHeightTileSize(), texelsPerCell, 4096.0f / (float)texelsPerCell,
+			settings.cacheExport16Bit ? "16 bit unsigned" : "32 bit float");
+
+		if (ImGui::Button(MapGen ? "Stop Height Generation" : "Generate Height Map")) {
+			MapGen = !MapGen;
+			heightGenSingleTile = false;
+			heightGenInit = true;  // stopping discards the in-flight tile; restart on its boundary
+		}
+
+		ImGui::SameLine();
+
+		ImGui::BeginDisabled(MapGen);
+		if (ImGui::Button("Generate Tile At Player")) {
+			heightGenSingleTile = true;
+			heightGenInit = true;
+			MapGen = true;
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Generates only the tile covering the player's current cell, then stops.\nDoes not touch the progress of a full run.");
+
+		if (MapGen) {
+			if (heightGenSingleTile)
+				ImGui::Text("Generating single tile - %d cells done", cellsDone);
+			else
+				ImGui::Text("Generating from cell %d, %d - %d tiles / %d cells done", settings.cacheProgressX, settings.cacheProgressY, tilesDone, cellsDone);
+		}
+
+		if (heightPreviewValid && heightPreviewTex) {
+			static float heightPreviewScale = 0.25f;
+			ImGui::SliderFloat("Preview Scale", &heightPreviewScale, 0.1f, 1.0f, "%.2f");
+
+			ImGui::Text("Last tile: origin cell %d, %d", heightPreviewOrigin.x, heightPreviewOrigin.y);
+			BUFFER_VIEWER_NODE_BULLET(heightPreviewTex, heightPreviewScale);
+		}
 	}
 
 	ImGui::Separator();
@@ -206,20 +279,7 @@ void Skylighting::SetupResources()
 
 	CompileComputeShaders();
 
-	auto TexSize = int2(9666, 7618);
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32_FLOAT, (uint)TexSize.x, (uint)TexSize.y, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
-	cacheOutputTexH = eastl::make_unique<Texture2D>(desc);
-
-	auto path = cachePath / "Tamriel_H.dds";
-	ID3D11Resource* rsrc = nullptr;
-	auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), &rsrc, nullptr);
-	if (!FAILED(result)) {
-		globals::d3d::context->CopyResource(cacheOutputTexH->resource.get(), rsrc);
-		rsrc->Release();
-		logger::error("[Skylighting] LOADED TRUE");
-	} else {
-		logger::error("[Skylighting] FAILED TO LOAD");
-	}
+	// The height cache staging tile is created on demand, since its size depends on the settings.
 }
 
 void Skylighting::GetCachedWorldspaces()
@@ -228,6 +288,8 @@ void Skylighting::GetCachedWorldspaces()
 		auto& path = entry.path();
 		if (path.extension() == ".dds") {
 			auto name = path.stem().string();
+			if (name.contains('.'))  // height tiles are "<Worldspace>_H<size>.<cells>.<x>.<y>", not worldspace maps
+				continue;
 			logger::debug("[Skylighting] Found cache: {}", name);
 			if (worldSpaceCachedMapList.contains(name))
 				logger::warn("[Skylighting] Error: {} has multiple maps with same name", name);
@@ -1210,7 +1272,8 @@ void Skylighting::Main_Precipitation_RenderOcclusion::thunk()
 {
 	auto& skylighting = globals::features::skylighting;
 
-	skylighting.RenderOcclusion();
+	if (!skylighting.MapGen)
+		skylighting.RenderOcclusion();
 
 	if (skylighting.MapGen)
 		skylighting.GenerateHeightMap();
@@ -1370,144 +1433,414 @@ void Skylighting::BuildAtlas(const std::filesystem::path& outputPath, std::strin
 	DirectX::SaveToDDSFile(*atlasImg, DDS_FLAGS_NONE, outputPath.c_str());
 }
 
-// move one cell at a time
-// each cell we cast rays every x dist
+// Floor division; the tile grid is anchored to the worldspace cell grid, so negative cell
+// coordinates must round towards -inf rather than towards zero.
+static int FloorDiv(int a, int b)
+{
+	int q = a / b;
+	if ((a % b != 0) && ((a < 0) != (b < 0)))
+		--q;
+	return q;
+}
 
-// texture and cell progress needs to not update unless position and updated correctly
+// Encode a height in game units into the xLODGen 16 bit unsigned representation:
+// zero height is 32767, one step is 8 game units, so height = (encoded - 32767) * 8.
+static uint16_t EncodeHeight16(float height)
+{
+	float encoded = std::round(height / Skylighting::heightExportScale) + Skylighting::heightExportOffset;
+	return (uint16_t)std::clamp(encoded, 0.0f, 65535.0f);
+}
+
+// Convert one row of sampled heights into the stored representation: either the 16 bit encoding
+// above or the raw game units. Shared by the DDS writer and the UI preview so both hold the
+// exact same data.
+static void ConvertHeightRow(const float* src, uint8_t* dst, uint count, bool export16Bit)
+{
+	if (export16Bit) {
+		auto encoded = (uint16_t*)dst;
+		for (uint x = 0; x < count; ++x)
+			encoded[x] = EncodeHeight16(src[x]);
+	} else {
+		memcpy(dst, src, count * sizeof(float));
+	}
+}
+
+static DXGI_FORMAT HeightStorageFormat(bool export16Bit)
+{
+	return export16Bit ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R32_FLOAT;
+}
+
+bool Skylighting::EnsureHeightTileTexture(uint tileSize)
+{
+	if (cacheOutputTexH && cacheOutputTexH->desc.Width == tileSize && cacheOutputTexH->desc.Height == tileSize)
+		return true;
+
+	// Sampling keeps full float precision; the encode to 16 bit happens on save.
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32_FLOAT, tileSize, tileSize, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
+
+	cacheOutputTexH = nullptr;
+	try {
+		cacheOutputTexH = eastl::make_unique<Texture2D>(desc, "Skylighting::HeightCacheTile");
+	} catch (const std::exception& e) {
+		logger::error("[Skylighting] Failed to create {0}x{0} height tile: {1}", tileSize, e.what());
+		return false;
+	}
+
+	return cacheOutputTexH != nullptr;
+}
+
+void Skylighting::ClearHeightTile()
+{
+	if (!cacheOutputTexH)
+		return;
+
+	auto context = globals::d3d::context;
+	const uint tileSize = cacheOutputTexH->desc.Width;
+
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	HRESULT hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_WRITE, 0, &mapped);
+	if (FAILED(hr) || !mapped.pData) {
+		logger::error("[Skylighting] Height tile clear failed to map: {:X}", (uint32_t)hr);
+		return;
+	}
+
+	// Texels belonging to cells outside the worldspace are never sampled and stay at zero height.
+	for (uint y = 0; y < tileSize; ++y)
+		memset((uint8_t*)mapped.pData + y * mapped.RowPitch, 0, tileSize * sizeof(float));
+
+	context->Unmap(cacheOutputTexH->resource.get(), 0);
+}
+
+bool Skylighting::SaveHeightTile(const int2& tileOriginCell, int cellsPerTile)
+{
+	if (!cacheOutputTexH)
+		return false;
+
+	auto context = globals::d3d::context;
+	const uint tileSize = cacheOutputTexH->desc.Width;
+	const bool export16Bit = settings.cacheExport16Bit;
+
+	auto worldspaceID = cacheWorldspaceID.empty() ? std::string("Unknown") : cacheWorldspaceID;
+	auto path = cachePath / fmt::format("{}_H{}.{}.{}.{}.dds", worldspaceID, tileSize, cellsPerTile, tileOriginCell.x, tileOriginCell.y);
+
+	DirectX::ScratchImage outputImage;
+	HRESULT hr = outputImage.Initialize2D(HeightStorageFormat(export16Bit), tileSize, tileSize, 1, 1);
+	if (FAILED(hr)) {
+		logger::error("[Skylighting] Failed to allocate height tile image: {:X}", (uint32_t)hr);
+		return false;
+	}
+
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &mapped);
+	if (FAILED(hr) || !mapped.pData) {
+		logger::error("[Skylighting] Failed to map height tile for save: {:X}", (uint32_t)hr);
+		return false;
+	}
+
+	const DirectX::Image* image = outputImage.GetImages();
+	for (uint y = 0; y < tileSize; ++y) {
+		auto src = (const float*)((const uint8_t*)mapped.pData + y * mapped.RowPitch);
+		ConvertHeightRow(src, image->pixels + y * image->rowPitch, tileSize, export16Bit);
+	}
+
+	context->Unmap(cacheOutputTexH->resource.get(), 0);
+
+	hr = DirectX::SaveToDDSFile(*image, DirectX::DDS_FLAGS_NONE, path.c_str());
+	if (FAILED(hr)) {
+		logger::error("[Skylighting] Failed to save height tile {}: {:X}", path.string(), (uint32_t)hr);
+		return false;
+	}
+
+	logger::info("[Skylighting] Saved height tile {}", path.string());
+	return true;
+}
+
+void Skylighting::UpdateHeightPreview(const int2& tileOriginCell)
+{
+	if (!cacheOutputTexH)
+		return;
+
+	auto context = globals::d3d::context;
+	const uint tileSize = cacheOutputTexH->desc.Width;
+	const bool export16Bit = settings.cacheExport16Bit;
+	const DXGI_FORMAT format = HeightStorageFormat(export16Bit);
+
+	// The preview holds exactly what the DDS holds, in the same format, unmodified.
+	if (!heightPreviewTex || heightPreviewTex->desc.Width != tileSize || heightPreviewTex->desc.Format != format) {
+		CD3D11_TEXTURE2D_DESC desc(format, tileSize, tileSize, 1, 1, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
+		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, format, 0, 1);
+
+		heightPreviewValid = false;
+		heightPreviewTex = nullptr;
+		try {
+			heightPreviewTex = eastl::make_unique<Texture2D>(desc, "Skylighting::HeightTilePreview");
+			heightPreviewTex->CreateSRV(srvDesc);
+		} catch (const std::exception& e) {
+			logger::error("[Skylighting] Failed to create height tile preview: {}", e.what());
+			heightPreviewTex = nullptr;
+			return;
+		}
+	}
+
+	D3D11_MAPPED_SUBRESOURCE src;
+	HRESULT hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &src);
+	if (FAILED(hr) || !src.pData) {
+		logger::error("[Skylighting] Failed to map height tile for preview: {:X}", (uint32_t)hr);
+		return;
+	}
+
+	D3D11_MAPPED_SUBRESOURCE dst;
+	hr = context->Map(heightPreviewTex->resource.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &dst);
+	if (FAILED(hr) || !dst.pData) {
+		logger::error("[Skylighting] Failed to map height preview: {:X}", (uint32_t)hr);
+		context->Unmap(cacheOutputTexH->resource.get(), 0);
+		return;
+	}
+
+	for (uint y = 0; y < tileSize; ++y) {
+		auto srcRow = (const float*)((const uint8_t*)src.pData + y * src.RowPitch);
+		ConvertHeightRow(srcRow, (uint8_t*)dst.pData + y * dst.RowPitch, tileSize, export16Bit);
+	}
+
+	context->Unmap(heightPreviewTex->resource.get(), 0);
+	context->Unmap(cacheOutputTexH->resource.get(), 0);
+
+	heightPreviewOrigin = tileOriginCell;
+	heightPreviewValid = true;
+}
+
+// Move one cell at a time, casting a ray every worldRes units within the cell.
+//
+// The worldspace is covered by a grid of tileSize^2 tiles, each holding cellsPerTile^2 worldspace
+// cells (1024 tile with 8x8 cells -> 128 texels/cell at 32 units per texel; 512 tile with 8x8 cells
+// -> 64 texels/cell at 64 units per texel). Cells are visited tile by tile and the tile is saved the
+// moment its last cell has been sampled, so an interrupted run only ever loses the tile in flight.
+//
+// Texture and cell progress must not update unless the position was updated correctly.
 void Skylighting::GenerateHeightMap()
 {
 	static constexpr float CELL = 4096.0f;
-	static constexpr int worldRes = 50;  // world units per texel in output tex
-	auto path = cachePath / (cacheWorldspaceID + "_H.dds");
+	static constexpr int2 startCell = int2(-57, -43);  // same as dyndolod
+	static constexpr int2 endCell = int2(61, 50);      // same as dyndolod, exclusive
 
 	auto context = globals::d3d::context;
 	auto tes = RE::TES::GetSingleton();
 	auto player = RE::PlayerCharacter::GetSingleton();
 	auto worldSpace = player ? player->GetWorldspace() : nullptr;
 
-	if (tes && worldSpace) {
-		static constexpr int2 startCell = int2(-57, -43);  // same as dyndolod
-		static constexpr int2 endCell = int2(61, 50);      // same as dyndolod
-
-		static auto currentCellXY = startCell;
-		static auto worldPositionSet = RE::NiPoint3((float)currentCellXY.x * CELL, (float)currentCellXY.y * CELL, 0);
-
-		int2 cellTotal = int2(std::abs(startCell.x), std::abs(startCell.y)) + endCell;
-		int2 worldSizeTotal = cellTotal * (int)CELL;
-
-		int2 TexSize = worldSizeTotal / worldRes;
-
-		static bool init = true;
-		if (init) {
-			RE::GetINISetting("iFPSClamp:General")->data.i = 0;
-			RE::GetINISetting("bLockFramerate:Display")->data.b = false;
-			RE::GetINISetting("iVSyncPresentInterval:Display")->data.b = false;
-			RE::GetINISetting("bBorderRegionsEnabled:General")->data.b = false;
-			RE::GetINISetting("fMaxTime:HAVOK")->data.f = 0.001f;
-
-			currentCellXY = int2(settings.cacheProgressX, settings.cacheProgressY);
-
-			SetWorldPosition(currentCellXY, worldPositionSet);
-			init = false;
-			return;
-		}
-
-		bool valid = IsPositionValid(worldPositionSet);
-		static int failedCount = 0;
-		failedCount = valid ? 0 : ++failedCount;
-		if (!valid) {
-			if (failedCount >= 10) {  // This should never happen but since its possible for the game to refuse an update we should handle it anyway.
-				logger::error("[Skylighting] Sample position was unable to be updated");
-				failedCount = 0;
-			} else {
-				//player->SetPosition(worldPositionSet, false);
-				SetWorldPosition(currentCellXY, worldPositionSet);
-			}
-			return;
-		}
-
-		if (!cacheOutputTexH) {
-			logger::error("[Skylighting] cacheOutputTexH INVALID");
-			return;
-		}
-
-		static int settleFrames = 0;
-		if (settleFrames > 0) {
-			settleFrames--;
-			return;
-		}
-
-		if (!test2) {
-			// write heightmap
-
-			D3D11_MAPPED_SUBRESOURCE mapped;
-			HRESULT hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped);
-			if (FAILED(hr) || !mapped.pData) {
-				logger::error("[Skylighting] Map failed: {:x}", (uint32_t)hr);
-				return;  // skip this frame, don't deref null
-			}
-
-			logger::trace("[Skylighting] Test");
-			int stepsPerCell = (int)CELL / worldRes;
-			for (int x = 0; x < stepsPerCell; ++x) {
-				for (int y = 0; y < stepsPerCell; ++y) {
-					float2 worldXY = float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
-					worldXY = worldXY + float2((float)x, (float)y) * (float)worldRes;
-
-					float landHeight;
-					tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
-					float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
-
-					float groundHeight = 1000;
-					if (!test)
-						groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight), 5000);
-
-					groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
-
-					int2 texCoord = (currentCellXY - startCell) * stepsPerCell + int2(x, y);
-					//texCoord.y = (TexSize.y - 1) - texCoord.y;
-					float* tex = (float*)((uint8_t*)mapped.pData + texCoord.y * mapped.RowPitch);
-					tex[texCoord.x] = groundHeight;  // write to tex
-				}
-			}
-			context->Unmap(cacheOutputTexH->resource.get(), 0);
-		}
-
-		if (!test3) {
-			static int c = 0;
-			if (++c == 10) {
-				c = 0;
-				// Save output
-				DirectX::ScratchImage ouputImage;
-				auto result = DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexH->resource.get(), ouputImage);
-				if (!FAILED(result)) {
-					logger::info("failed to capture");
-					auto resultA = DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, path.c_str());
-					if (FAILED(resultA)) {
-						logger::info("failed to save");
-					} else {
-						settings.cacheProgressX = currentCellXY.x;
-						settings.cacheProgressY = currentCellXY.y;
-						globals::state->Save();
-					}
-				}
-			}
-		}
-
-		if (++currentCellXY.x >= endCell.x) {
-			currentCellXY.x = startCell.x;
-			if (++currentCellXY.y >= endCell.y) {
-				currentCellXY.y = startCell.y;
-				MapGen = false;
-				return;
-			}
-		}
-
-		cellsDone += 1;
-		SetWorldPosition(currentCellXY, worldPositionSet);
-		// after SetWorldPosition:
-		settleFrames = 5;  // let terrain settle
+	if (!tes || !worldSpace) {
+		logger::error("[Skylighting] tes or worldspace INVALID");
+		return;
 	}
+
+	RE::PlayerCamera::GetSingleton()->GetRuntimeData2().idleTimer = 0;
+
+	// Latched at the start of a run so changing the settings mid-run can't desync the tile layout.
+	static int cellsPerTile = 8;
+	static uint tileSize = 1024;
+	static int2 currentTile = int2(0, 0);
+	static int2 currentCellXY = startCell;
+	static int cellIndexInTile = 0;
+	static RE::NiPoint3 worldPositionSet = RE::NiPoint3();
+	static int settleFrames = 0;
+	static int failedCount = 0;
+
+	if (heightGenInit) {  // latch the layout before anything derives from it
+		cellsPerTile = GetHeightTileCells();
+		tileSize = GetHeightTileSize();
+	}
+
+	const int texelsPerCell = (int)tileSize / cellsPerTile;
+	const float worldRes = CELL / (float)texelsPerCell;  // world units per texel
+
+	// Tile grid bounds, inclusive, anchored to the worldspace cell grid.
+	const int2 startTile = int2(FloorDiv(startCell.x, cellsPerTile), FloorDiv(startCell.y, cellsPerTile));
+	const int2 endTile = int2(FloorDiv(endCell.x - 1, cellsPerTile), FloorDiv(endCell.y - 1, cellsPerTile));
+
+	auto inWorldRange = [&](const int2& cell) {
+		if (heightGenSingleTile)  // the player's tile is generated whole, wherever it sits
+			return true;
+		return cell.x >= startCell.x && cell.x < endCell.x && cell.y >= startCell.y && cell.y < endCell.y;
+	};
+
+	// Walk to the next cell of the current tile that actually lies inside the worldspace.
+	auto advanceToNextCell = [&]() {
+		const int cellsInTile = cellsPerTile * cellsPerTile;
+		while (++cellIndexInTile < cellsInTile) {
+			int2 candidate = currentTile * cellsPerTile + int2(cellIndexInTile % cellsPerTile, cellIndexInTile / cellsPerTile);
+			if (inWorldRange(candidate)) {
+				currentCellXY = candidate;
+				return true;
+			}
+		}
+		return false;
+	};
+
+	auto advanceToNextTile = [&]() {
+		if (++currentTile.x > endTile.x) {
+			currentTile.x = startTile.x;
+			if (++currentTile.y > endTile.y)
+				return false;
+		}
+		return true;
+	};
+
+	// Start the current tile, skipping tiles that are entirely outside the worldspace.
+	auto beginTile = [&]() {
+		while (true) {
+			cellIndexInTile = -1;
+			if (advanceToNextCell()) {
+				ClearHeightTile();
+				return true;
+			}
+			if (!advanceToNextTile())
+				return false;
+		}
+	};
+
+	if (heightGenInit) {
+		RE::GetINISetting("iFPSClamp:General")->data.i = 0;
+		RE::GetINISetting("bLockFramerate:Display")->data.b = false;
+		RE::GetINISetting("iVSyncPresentInterval:Display")->data.b = false;
+		RE::GetINISetting("bBorderRegionsEnabled:General")->data.b = false;
+		RE::GetINISetting("fMaxTime:HAVOK")->data.f = 0.001f;
+
+		cellsDone = 0;
+		tilesDone = 0;
+		failedCount = 0;
+		settleFrames = 0;
+
+		if (!EnsureHeightTileTexture(tileSize)) {
+			MapGen = false;
+			return;  // heightGenInit stays set so a retry re-runs the whole setup
+		}
+
+		if (heightGenSingleTile) {
+			// Whichever tile the player is standing in, clamped to nothing so it also works
+			// outside the range a full run covers.
+			auto playerPos = player->GetPosition();
+			int2 playerCell = int2((int)std::floor(playerPos.x / CELL), (int)std::floor(playerPos.y / CELL));
+			currentTile = int2(FloorDiv(playerCell.x, cellsPerTile), FloorDiv(playerCell.y, cellsPerTile));
+		} else {
+			// Resume on a tile boundary; a partially generated tile is regenerated from scratch.
+			currentTile = int2(FloorDiv(settings.cacheProgressX, cellsPerTile), FloorDiv(settings.cacheProgressY, cellsPerTile));
+			currentTile.x = std::clamp(currentTile.x, startTile.x, endTile.x);
+			currentTile.y = std::clamp(currentTile.y, startTile.y, endTile.y);
+		}
+
+		if (!beginTile()) {
+			logger::error("[Skylighting] No height tiles to generate");
+			MapGen = false;
+			heightGenInit = true;
+			return;
+		}
+
+		logger::info("[Skylighting] Generating {0} height cache: {1}x{1} tiles of {2}x{2} cells, {3} texels per cell, {4} units per texel, {5}",
+			heightGenSingleTile ? "single tile" : "full", tileSize, cellsPerTile, texelsPerCell, worldRes,
+			settings.cacheExport16Bit ? "16 bit unsigned" : "32 bit float");
+
+		SetWorldPosition(currentCellXY, worldPositionSet);
+		settleFrames = heightSettleFrames;
+		heightGenInit = false;
+		return;
+	}
+
+	if (!cacheOutputTexH) {
+		logger::error("[Skylighting] cacheOutputTexH INVALID");
+		MapGen = false;
+		heightGenInit = true;
+		return;
+	}
+
+	bool valid = IsPositionValid(worldPositionSet);
+	failedCount = valid ? 0 : ++failedCount;
+	if (!valid) {
+		if (failedCount >= 10) {  // This should never happen but since its possible for the game to refuse an update we should handle it anyway.
+			logger::error("[Skylighting] Sample position was unable to be updated");
+			failedCount = 0;
+		} else {
+			//player->SetPosition(worldPositionSet, false);
+			SetWorldPosition(currentCellXY, worldPositionSet);
+		}
+		return;
+	}
+
+	if (settleFrames > 0) {
+		settleFrames--;
+		return;
+	}
+
+	if (!test2) {
+		// write heightmap
+
+		D3D11_MAPPED_SUBRESOURCE mapped;
+		HRESULT hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped);
+		if (FAILED(hr) || !mapped.pData) {
+			logger::error("[Skylighting] Map failed: {:x}", (uint32_t)hr);
+			return;  // skip this frame, don't deref null
+		}
+
+		const int2 localCell = currentCellXY - currentTile * cellsPerTile;
+		const float2 cellOrigin = float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
+		const float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
+
+		for (int x = 0; x < texelsPerCell; ++x) {
+			for (int y = 0; y < texelsPerCell; ++y) {
+				float2 worldXY = cellOrigin + float2((float)x, (float)y) * worldRes;
+
+				float landHeight;
+				tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
+
+				float groundHeight = 1000;
+				if (!test)
+					groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight), 5000);
+
+				groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
+
+				int2 texCoord = localCell * texelsPerCell + int2(x, y);
+				//texCoord.y = ((int)tileSize - 1) - texCoord.y;
+				float* tex = (float*)((uint8_t*)mapped.pData + texCoord.y * mapped.RowPitch);
+				tex[texCoord.x] = groundHeight;  // write to tex
+			}
+		}
+		context->Unmap(cacheOutputTexH->resource.get(), 0);
+	}
+
+	cellsDone += 1;
+
+	if (!advanceToNextCell()) {
+		// Tile complete: flush it to disk before moving on.
+		if (!test3)
+			SaveHeightTile(currentTile * cellsPerTile, cellsPerTile);
+		UpdateHeightPreview(currentTile * cellsPerTile);
+		tilesDone += 1;
+
+		if (heightGenSingleTile) {  // one-off, leaves the full run's progress alone
+			logger::info("[Skylighting] Single height tile complete: {} cells", cellsDone);
+			MapGen = false;
+			heightGenInit = true;
+			return;
+		}
+
+		if (!advanceToNextTile() || !beginTile()) {
+			logger::info("[Skylighting] Height cache complete: {} tiles, {} cells", tilesDone, cellsDone);
+			settings.cacheProgressX = startCell.x;
+			settings.cacheProgressY = startCell.y;
+			globals::state->Save();
+			MapGen = false;
+			heightGenInit = true;
+			return;
+		}
+
+		// Progress is stored as the origin cell of the tile now in flight.
+		settings.cacheProgressX = currentTile.x * cellsPerTile;
+		settings.cacheProgressY = currentTile.y * cellsPerTile;
+		globals::state->Save();
+	}
+
+	SetWorldPosition(currentCellXY, worldPositionSet);
+	// after SetWorldPosition:
+	settleFrames = heightSettleFrames;  // let terrain settle
 }
 
 bool Skylighting::IsPositionValid(RE::NiPoint3 inputPosition)

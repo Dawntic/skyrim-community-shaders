@@ -69,6 +69,9 @@ public:
 
 		int cacheProgressX = -57;
 		int cacheProgressY = -43;
+		int cacheTileCells = 8;        // worldspace cells per height tile edge (4 or 8)
+		int cacheTileSize = 1024;      // texels per height tile edge (512 or 1024)
+		bool cacheExport16Bit = true;  // export tiles as xLODGen-style 16 bit unsigned instead of raw float
 	} settings;
 
 	struct SkylightingCB
@@ -174,11 +177,42 @@ public:
 	//void GenerateNormalStepMap();
 	void GenerateNormalMap();
 	bool MapGen = false;
+	bool heightGenInit = true;         // set to restart the height run from the stored tile boundary
+	bool heightGenSingleTile = false;  // generate only the tile covering the player, then stop
 	int cellsDone = 0;
+	int tilesDone = 0;
 	bool test = false;
 	bool test2 = false;
 	bool test3 = false;
+
+	//// Height cache tiles ////
+	// The height cache is written out as a grid of fixed-size tiles instead of one huge
+	// worldspace-sized texture. Each tile covers cacheTileCells x cacheTileCells worldspace
+	// cells and is saved to disk as soon as its last cell has been sampled.
+	static inline int heightSettleFrames = 20;  // 60 // frames to let terrain stream in after a teleport
 	static inline eastl::unique_ptr<Texture2D> cacheOutputTexH = nullptr;
+
+	// xLODGen-compatible export encoding: 16 bit unsigned, zero height stored as 32767, one step
+	// per 8 game units. Decode with height = (encoded - heightExportOffset) * heightExportScale.
+	static constexpr float heightExportOffset = 32767.0f;
+	static constexpr float heightExportScale = 8.0f;
+
+	/// @brief Cells per tile edge, sanitised to a value the tile size divides evenly (4 or 8).
+	int GetHeightTileCells() const { return settings.cacheTileCells == 4 ? 4 : 8; }
+	/// @brief Texels per tile edge, sanitised to a supported size (512 or 1024).
+	uint GetHeightTileSize() const { return settings.cacheTileSize == 512 ? 512u : 1024u; }
+	/// @brief (Re)create the staging tile at the given edge size. Returns false on failure.
+	bool EnsureHeightTileTexture(uint tileSize);
+	/// @brief Zero the staging tile so cells that fall outside the worldspace stay at zero height.
+	void ClearHeightTile();
+	/// @brief Write the staging tile to "<Worldspace>_H<tileSize>.<cellsPerTile>.<originX>.<originY>.dds".
+	bool SaveHeightTile(const int2& tileOriginCell, int cellsPerTile);
+	/// @brief Copy the staging tile into a viewable texture holding exactly what gets written to disk.
+	void UpdateHeightPreview(const int2& tileOriginCell);
+
+	eastl::unique_ptr<Texture2D> heightPreviewTex = nullptr;
+	int2 heightPreviewOrigin = int2(0, 0);
+	bool heightPreviewValid = false;
 
 	float GetRayIntersectionHeight(float3 position, float f);
 	void SetWorldPosition(const int2& currentCellXY, RE::NiPoint3& worldPos);
