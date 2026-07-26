@@ -69,9 +69,18 @@ public:
 
 		int cacheProgressX = -57;
 		int cacheProgressY = -43;
-		int cacheTileCells = 8;        // worldspace cells per height tile edge (4 or 8)
-		int cacheTileSize = 1024;      // texels per height tile edge (512 or 1024)
-		bool cacheExport16Bit = true;  // export tiles as xLODGen-style 16 bit unsigned instead of raw float
+		int cacheTileCells = 8;            // worldspace cells per height tile edge (4 or 8)
+		int cacheTileSize = 1024;          // texels per height tile edge (512 or 1024)
+		bool cacheExport16Bit = true;      // export tiles as xLODGen-style 16 bit unsigned instead of raw float
+		bool cacheAtlasZeroBase = false;   // bias the atlas so its lowest point sits at 0.0
+		float cacheAtlasMinHeight = 0.0f;  // game unit height the last biased atlas stores as 0.0
+
+		// Layout of the last built atlas, so texel coordinates can be mapped back to cells.
+		int cacheAtlasMinCellX = 0;  // origin cell of the atlas' lower left tile
+		int cacheAtlasMinCellY = 0;
+		int cacheAtlasTileSize = 0;   // texels per tile edge, 0 if no atlas has been built
+		int cacheAtlasTileCells = 0;  // cells per tile edge
+		int cacheAtlasTilesY = 0;     // tile rows, needed to flip texel Y into cell space
 	} settings;
 
 	struct SkylightingCB
@@ -177,8 +186,9 @@ public:
 	//void GenerateNormalStepMap();
 	void GenerateNormalMap();
 	bool MapGen = false;
-	bool heightGenInit = true;         // set to restart the height run from the stored tile boundary
-	bool heightGenSingleTile = false;  // generate only the tile covering the player, then stop
+	bool heightGenInit = true;              // set to restart the height run from the stored tile boundary
+	bool heightGenSingleTile = false;       // generate only the tile covering heightGenTargetCell, then stop
+	int2 heightGenTargetCell = int2(0, 0);  // cell whose tile a single tile run generates
 	int cellsDone = 0;
 	int tilesDone = 0;
 	bool test = false;
@@ -189,7 +199,8 @@ public:
 	// The height cache is written out as a grid of fixed-size tiles instead of one huge
 	// worldspace-sized texture. Each tile covers cacheTileCells x cacheTileCells worldspace
 	// cells and is saved to disk as soon as its last cell has been sampled.
-	static inline int heightSettleFrames = 20;  // 60 // frames to let terrain stream in after a teleport
+	static constexpr float worldCellSize = 4096.0f;  // world units per worldspace cell edge
+	static inline int heightSettleFrames = 20;       // 60 // frames to let terrain stream in after a teleport
 	static inline eastl::unique_ptr<Texture2D> cacheOutputTexH = nullptr;
 
 	// xLODGen-compatible export encoding: 16 bit unsigned, zero height stored as 32767, one step
@@ -209,6 +220,13 @@ public:
 	bool SaveHeightTile(const int2& tileOriginCell, int cellsPerTile);
 	/// @brief Copy the staging tile into a viewable texture holding exactly what gets written to disk.
 	void UpdateHeightPreview(const int2& tileOriginCell);
+	/// @brief Ensure "<Worldspace>_H.dds" exists, stitching it from the generated height tiles if not.
+	/// @param forceRebuild Rebuild even when the atlas is already on disk.
+	/// @return True if the atlas exists once the call returns.
+	bool EnsureHeightAtlas(const std::string& worldspaceID, bool forceRebuild = false);
+	/// @brief Map an atlas texel to the worldspace cell it covers, using the last built atlas layout.
+	/// @return False if no atlas has been built, leaving o_cell untouched.
+	bool AtlasTexelToCell(const int2& texel, int2& o_cell) const;
 
 	eastl::unique_ptr<Texture2D> heightPreviewTex = nullptr;
 	int2 heightPreviewOrigin = int2(0, 0);

@@ -18,7 +18,24 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	cacheProgressY,
 	cacheTileCells,
 	cacheTileSize,
-	cacheExport16Bit)
+	cacheExport16Bit,
+	cacheAtlasZeroBase,
+	cacheAtlasMinHeight,
+	cacheAtlasMinCellX,
+	cacheAtlasMinCellY,
+	cacheAtlasTileSize,
+	cacheAtlasTileCells,
+	cacheAtlasTilesY)
+
+// Floor division; the tile grid is anchored to the worldspace cell grid, so negative cell
+// coordinates must round towards -inf rather than towards zero.
+static int FloorDiv(int a, int b)
+{
+	int q = a / b;
+	if ((a % b != 0) && ((a < 0) != (b < 0)))
+		--q;
+	return q;
+}
 
 void Skylighting::LoadSettings(json& o_json)
 {
@@ -129,17 +146,49 @@ void Skylighting::DrawSettings()
 
 		ImGui::BeginDisabled(MapGen);
 		if (ImGui::Button("Generate Tile At Player")) {
-			heightGenSingleTile = true;
-			heightGenInit = true;
-			MapGen = true;
+			if (auto player = RE::PlayerCharacter::GetSingleton()) {
+				auto playerPos = player->GetPosition();
+				heightGenTargetCell = int2((int)std::floor(playerPos.x / worldCellSize), (int)std::floor(playerPos.y / worldCellSize));
+				heightGenSingleTile = true;
+				heightGenInit = true;
+				MapGen = true;
+			}
 		}
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Generates only the tile covering the player's current cell, then stops.\nDoes not touch the progress of a full run.");
 
+		ImGui::Checkbox("Zero Base Atlas", &settings.cacheAtlasZeroBase);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Bias the atlas so its lowest point is 0.0 instead of storing absolute heights.\nTakes effect on the next atlas build.");
+
+		if (settings.cacheAtlasZeroBase && settings.cacheAtlasMinHeight != 0.0f)
+			ImGui::Text("Last atlas: 0.0 is %.0f game units", settings.cacheAtlasMinHeight);
+
+		ImGui::BeginDisabled(MapGen || cacheWorldspaceID.empty());
+		if (ImGui::Button("Rebuild Height Atlas")) {
+			EnsureHeightAtlas(cacheWorldspaceID, true);
+			{
+				auto path = cachePath / (cacheWorldspaceID + "_H.dds");
+				DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &HMapSRV);
+				DirectX::TexMetadata metadata;
+				if (SUCCEEDED(DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, metadata))) {
+					bool is16Bit = metadata.format == DXGI_FORMAT_R16_UNORM;
+					HeightMapOffset = (is16Bit && !settings.cacheAtlasZeroBase) ? heightExportOffset / 65535.0f : 0.0f;
+					HeightMapScale = is16Bit ? heightExportScale * 65535.0f : 1.0f;
+				}
+			}
+		}
+
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Stitches every height tile for %s into %s_H.dds, overwriting it.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
+				cacheWorldspaceID.empty() ? "the current worldspace" : cacheWorldspaceID.c_str(),
+				cacheWorldspaceID.empty() ? "<Worldspace>" : cacheWorldspaceID.c_str());
+
 		if (MapGen) {
 			if (heightGenSingleTile)
-				ImGui::Text("Generating single tile - %d cells done", cellsDone);
+				ImGui::Text("Generating single tile at cell %d, %d - %d cells done", heightGenTargetCell.x, heightGenTargetCell.y, cellsDone);
 			else
 				ImGui::Text("Generating from cell %d, %d - %d tiles / %d cells done", settings.cacheProgressX, settings.cacheProgressY, tilesDone, cellsDone);
 		}
@@ -150,6 +199,68 @@ void Skylighting::DrawSettings()
 
 			ImGui::Text("Last tile: origin cell %d, %d", heightPreviewOrigin.x, heightPreviewOrigin.y);
 			BUFFER_VIEWER_NODE_BULLET(heightPreviewTex, heightPreviewScale);
+		}
+
+		// Cell to world position converter
+		static int cellCoords[2] = { 0, 0 };
+		ImGui::InputInt2("Cell", cellCoords);
+
+		ImGui::SameLine();
+		if (ImGui::Button("From Player")) {
+			if (auto player = RE::PlayerCharacter::GetSingleton()) {
+				auto playerPos = player->GetPosition();
+				cellCoords[0] = (int)std::floor(playerPos.x / worldCellSize);
+				cellCoords[1] = (int)std::floor(playerPos.y / worldCellSize);
+			}
+		}
+
+		const float2 cellOrigin = float2((float)cellCoords[0], (float)cellCoords[1]) * worldCellSize;
+		ImGui::BulletText("SW corner: %.0f, %.0f", cellOrigin.x, cellOrigin.y);
+		ImGui::BulletText("Centre:    %.0f, %.0f", cellOrigin.x + worldCellSize * 0.5f, cellOrigin.y + worldCellSize * 0.5f);
+		ImGui::BulletText("NE corner: %.0f, %.0f", cellOrigin.x + worldCellSize, cellOrigin.y + worldCellSize);
+
+		const int cellsPerTile = GetHeightTileCells();
+		int2 targetTileOrigin = int2(FloorDiv(cellCoords[0], cellsPerTile), FloorDiv(cellCoords[1], cellsPerTile)) * cellsPerTile;
+		ImGui::BulletText("Tile origin cell: %d, %d", targetTileOrigin.x, targetTileOrigin.y);
+
+		ImGui::BeginDisabled(MapGen);
+		if (ImGui::Button("Generate Tile At Cell")) {
+			heightGenTargetCell = int2(cellCoords[0], cellCoords[1]);
+			heightGenSingleTile = true;
+			heightGenInit = true;
+			MapGen = true;
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Generates the tile containing this cell, teleporting the player through it.\nDoes not touch the progress of a full run.");
+
+		// Atlas texel to cell, using the layout the last atlas build recorded
+		static int texelCoords[2] = { 0, 0 };
+		ImGui::InputInt2("Atlas Texel", texelCoords);
+
+		int2 texelCell;
+		if (!AtlasTexelToCell(int2(texelCoords[0], texelCoords[1]), texelCell)) {
+			ImGui::BulletText("Build the atlas to map texels to cells");
+		} else {
+			ImGui::BulletText("Cell: %d, %d", texelCell.x, texelCell.y);
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Copy To Cell")) {
+				cellCoords[0] = texelCell.x;
+				cellCoords[1] = texelCell.y;
+			}
+
+			ImGui::BeginDisabled(MapGen);
+			if (ImGui::Button("Generate Tile At Texel")) {
+				heightGenTargetCell = texelCell;
+				heightGenSingleTile = true;
+				heightGenInit = true;
+				MapGen = true;
+			}
+			ImGui::EndDisabled();
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("Generates the tile containing this atlas texel.\nTexel 0,0 is the top left corner of %s_H.dds, %d texels per cell.",
+					cacheWorldspaceID.empty() ? "<Worldspace>" : cacheWorldspaceID.c_str(),
+					settings.cacheAtlasTileSize / std::max(1, settings.cacheAtlasTileCells));
 		}
 	}
 
@@ -409,7 +520,19 @@ bool Skylighting::LoadWorldspaceCache()
 
 	{
 		auto path = cachePath / (newWorldspaceID + "_H.dds");
+		EnsureHeightAtlas(newWorldspaceID);  // stitch the generated tiles together if it is missing
 		DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &HMapSRV);
+
+		// The decode the cache gen shaders would need: a 16 bit atlas samples as UNORM, so undo the
+		// normalisation as well as the xLODGen offset/scale. A raw float atlas is already in game
+		// units. A zero based atlas has had its offset folded out already, and reads relative to
+		// settings.cacheAtlasMinHeight rather than absolute world Z.
+		DirectX::TexMetadata metadata;
+		if (SUCCEEDED(DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, metadata))) {
+			bool is16Bit = metadata.format == DXGI_FORMAT_R16_UNORM;
+			HeightMapOffset = (is16Bit && !settings.cacheAtlasZeroBase) ? heightExportOffset / 65535.0f : 0.0f;
+			HeightMapScale = is16Bit ? heightExportScale * 65535.0f : 1.0f;
+		}
 	}
 
 	return true;
@@ -1433,16 +1556,6 @@ void Skylighting::BuildAtlas(const std::filesystem::path& outputPath, std::strin
 	DirectX::SaveToDDSFile(*atlasImg, DDS_FLAGS_NONE, outputPath.c_str());
 }
 
-// Floor division; the tile grid is anchored to the worldspace cell grid, so negative cell
-// coordinates must round towards -inf rather than towards zero.
-static int FloorDiv(int a, int b)
-{
-	int q = a / b;
-	if ((a % b != 0) && ((a < 0) != (b < 0)))
-		--q;
-	return q;
-}
-
 // Encode a height in game units into the xLODGen 16 bit unsigned representation:
 // zero height is 32767, one step is 8 game units, so height = (encoded - 32767) * 8.
 static uint16_t EncodeHeight16(float height)
@@ -1609,6 +1722,285 @@ void Skylighting::UpdateHeightPreview(const int2& tileOriginCell)
 	heightPreviewValid = true;
 }
 
+struct HeightTileFile
+{
+	std::filesystem::path path;
+	int2 originCell;
+	int cellsPerTile;
+	uint tileSize;
+};
+
+// Matches the names SaveHeightTile writes: "<Worldspace>_H<tileSize>.<cellsPerTile>.<originX>.<originY>".
+static bool ParseHeightTileName(const std::filesystem::path& path, const std::string& worldspaceID, HeightTileFile& o_tile)
+{
+	std::vector<std::string> parts;
+	std::string current;
+	for (char c : path.stem().string()) {
+		if (c == '.') {
+			parts.push_back(current);
+			current.clear();
+		} else
+			current += c;
+	}
+	parts.push_back(current);
+
+	if (parts.size() != 4)
+		return false;
+
+	auto prefix = worldspaceID + "_H";
+	if (!parts[0].starts_with(prefix))
+		return false;
+
+	auto tileSizeText = parts[0].substr(prefix.size());
+	if (tileSizeText.empty() || !std::ranges::all_of(tileSizeText, [](char c) { return std::isdigit((unsigned char)c) != 0; }))
+		return false;
+
+	try {
+		o_tile.tileSize = (uint)std::stoul(tileSizeText);
+		o_tile.cellsPerTile = std::stoi(parts[1]);
+		o_tile.originCell = int2(std::stoi(parts[2]), std::stoi(parts[3]));
+	} catch (...) {
+		return false;
+	}
+
+	if (o_tile.tileSize == 0 || o_tile.cellsPerTile <= 0)
+		return false;
+
+	o_tile.path = path;
+	return true;
+}
+
+// Companion to the atlas: which texel each tile starts at, and which file it came from.
+static bool WriteAtlasTileList(const std::filesystem::path& path, std::vector<std::pair<int2, std::string>>& placements, size_t atlasWidth, size_t atlasHeight, uint tileSize)
+{
+	std::ranges::sort(placements, [](const auto& a, const auto& b) {
+		return a.first.y != b.first.y ? a.first.y < b.first.y : a.first.x < b.first.x;
+	});
+
+	std::ofstream file(path);
+	if (!file) {
+		logger::error("[Skylighting] Failed to open height atlas tile list {}", path.string());
+		return false;
+	}
+
+	file << fmt::format("# {} atlas, {}x{}, {} texel tiles, north up with a top left origin\n", path.stem().string(), atlasWidth, atlasHeight, tileSize);
+	file << fmt::format("{:<20}{}\n", "# TexelX,TexelY", "Tile");
+	for (const auto& [texel, name] : placements)
+		file << fmt::format("{:<20}{}\n", fmt::format("{},{}", texel.x, texel.y), name);
+
+	return file.good();
+}
+
+bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceRebuild)
+{
+	using namespace DirectX;
+
+	if (worldspaceID.empty())
+		return false;
+
+	auto atlasPath = cachePath / (worldspaceID + "_H.dds");
+	if (!forceRebuild && std::filesystem::exists(atlasPath))
+		return true;
+
+	std::error_code ec;
+	if (!std::filesystem::exists(cachePath, ec))
+		return false;
+
+	std::vector<HeightTileFile> tiles;
+	for (const auto& entry : std::filesystem::directory_iterator(cachePath, ec)) {
+		const auto& path = entry.path();
+		if (!path.has_extension() || _stricmp(path.extension().string().c_str(), ".dds") != 0)
+			continue;
+
+		HeightTileFile tile;
+		if (ParseHeightTileName(path, worldspaceID, tile))
+			tiles.push_back(std::move(tile));
+	}
+
+	if (tiles.empty()) {
+		logger::warn("[Skylighting] No height tiles found for {}, cannot build atlas", worldspaceID);
+		return false;
+	}
+
+	// Tiles from several runs may be present; keep the highest resolution layout and drop the rest,
+	// since tiles of different sizes cannot share one grid.
+	const HeightTileFile* best = &tiles[0];
+	for (const auto& tile : tiles) {
+		int tileTexelsPerCell = (int)tile.tileSize / tile.cellsPerTile;
+		int bestTexelsPerCell = (int)best->tileSize / best->cellsPerTile;
+		if (tileTexelsPerCell > bestTexelsPerCell || (tileTexelsPerCell == bestTexelsPerCell && tile.tileSize > best->tileSize))
+			best = &tile;
+	}
+
+	const uint tileSize = best->tileSize;
+	const int cellsPerTile = best->cellsPerTile;
+	std::erase_if(tiles, [&](const HeightTileFile& tile) { return tile.tileSize != tileSize || tile.cellsPerTile != cellsPerTile; });
+
+	int2 minOrigin = tiles[0].originCell;
+	int2 maxOrigin = tiles[0].originCell;
+	for (const auto& tile : tiles) {
+		minOrigin.x = std::min(minOrigin.x, tile.originCell.x);
+		minOrigin.y = std::min(minOrigin.y, tile.originCell.y);
+		maxOrigin.x = std::max(maxOrigin.x, tile.originCell.x);
+		maxOrigin.y = std::max(maxOrigin.y, tile.originCell.y);
+	}
+
+	const size_t tilesX = (size_t)((maxOrigin.x - minOrigin.x) / cellsPerTile) + 1;
+	const size_t tilesY = (size_t)((maxOrigin.y - minOrigin.y) / cellsPerTile) + 1;
+
+	if (tilesX * tileSize > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || tilesY * tileSize > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+		logger::warn("[Skylighting] Height atlas is {}x{}, larger than the {} texel D3D11 limit; the file will be written but cannot be loaded as a texture",
+			tilesX * tileSize, tilesY * tileSize, (uint)D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION);
+
+	TexMetadata metadata;
+	HRESULT hr = GetMetadataFromDDSFile(tiles[0].path.c_str(), DDS_FLAGS_NONE, metadata);
+	if (FAILED(hr)) {
+		logger::error("[Skylighting] Failed to read height tile metadata: {:X}", (uint32_t)hr);
+		return false;
+	}
+
+	const DXGI_FORMAT format = metadata.format;
+	const size_t bytesPerTexel = BitsPerPixel(format) / 8;
+
+	ScratchImage atlas;
+	hr = atlas.Initialize2D(format, tilesX * tileSize, tilesY * tileSize, 1, 1);
+	if (FAILED(hr)) {
+		logger::error("[Skylighting] Failed to allocate {}x{} height atlas: {:X}", tilesX * tileSize, tilesY * tileSize, (uint32_t)hr);
+		return false;
+	}
+
+	// Gaps between tiles read as zero height, matching how the tiles themselves clear unsampled texels.
+	const Image* atlasImage = atlas.GetImages();
+	if (format == DXGI_FORMAT_R16_UNORM) {
+		auto fill = (uint16_t)heightExportOffset;
+		for (size_t y = 0; y < atlasImage->height; ++y) {
+			auto row = (uint16_t*)(atlasImage->pixels + y * atlasImage->rowPitch);
+			std::fill_n(row, atlasImage->width, fill);
+		}
+	} else {
+		memset(atlasImage->pixels, 0, atlasImage->slicePitch);
+	}
+
+	// The atlas is north up with a top left origin, so both the tile order and each tile's rows are
+	// mirrored on the way in: the tiles themselves are stored south to north.
+	std::vector<std::pair<int2, std::string>> placements;  // atlas texel origin -> source tile file
+	size_t blitted = 0;
+	for (const auto& tile : tiles) {
+		ScratchImage tileImage;
+		hr = LoadFromDDSFile(tile.path.c_str(), DDS_FLAGS_NONE, nullptr, tileImage);
+		if (FAILED(hr)) {
+			logger::warn("[Skylighting] Skipping unreadable height tile {}: {:X}", tile.path.string(), (uint32_t)hr);
+			continue;
+		}
+
+		const Image* src = tileImage.GetImages();
+		if (!src || src->width != tileSize || src->height != tileSize || src->format != format) {
+			logger::warn("[Skylighting] Skipping height tile {}, does not match the atlas layout", tile.path.string());
+			continue;
+		}
+
+		size_t tileColumn = (size_t)((tile.originCell.x - minOrigin.x) / cellsPerTile);
+		size_t tileRow = (size_t)((maxOrigin.y - tile.originCell.y) / cellsPerTile);  // north first
+		size_t dstX = tileColumn * tileSize;
+		size_t dstY = tileRow * tileSize;
+
+		for (uint y = 0; y < tileSize; ++y) {
+			auto dst = atlasImage->pixels + (dstY + y) * atlasImage->rowPitch + dstX * bytesPerTexel;
+			memcpy(dst, src->pixels + (tileSize - 1 - y) * src->rowPitch, tileSize * bytesPerTexel);
+		}
+
+		placements.emplace_back(int2((int)dstX, (int)dstY), tile.path.filename().string());
+		blitted++;
+	}
+
+	if (blitted == 0) {
+		logger::error("[Skylighting] No usable height tiles for {}, atlas not written", worldspaceID);
+		return false;
+	}
+
+	// Record the layout so atlas texels can be mapped back to cells later.
+	settings.cacheAtlasMinCellX = minOrigin.x;
+	settings.cacheAtlasMinCellY = minOrigin.y;
+	settings.cacheAtlasTileSize = (int)tileSize;
+	settings.cacheAtlasTileCells = cellsPerTile;
+	settings.cacheAtlasTilesY = (int)tilesY;
+
+	// Optionally bias the whole atlas so its lowest point becomes 0.0. The scan covers the gap fill
+	// too, so the result is the lowest value the atlas actually stores. Applied uniformly, so terrain
+	// stays continuous across tile seams; for 16 bit this also reclaims the unused negative half of
+	// the range. settings.cacheAtlasMinHeight records what 0.0 means in game units.
+	settings.cacheAtlasMinHeight = 0.0f;
+	if (settings.cacheAtlasZeroBase) {
+		if (format == DXGI_FORMAT_R16_UNORM) {
+			uint16_t minEncoded = UINT16_MAX;
+			for (size_t y = 0; y < atlasImage->height; ++y) {
+				auto row = (const uint16_t*)(atlasImage->pixels + y * atlasImage->rowPitch);
+				for (size_t x = 0; x < atlasImage->width; ++x)
+					minEncoded = std::min(minEncoded, row[x]);
+			}
+
+			for (size_t y = 0; y < atlasImage->height; ++y) {
+				auto row = (uint16_t*)(atlasImage->pixels + y * atlasImage->rowPitch);
+				for (size_t x = 0; x < atlasImage->width; ++x)
+					row[x] = (uint16_t)(row[x] - minEncoded);
+			}
+
+			settings.cacheAtlasMinHeight = ((float)minEncoded - heightExportOffset) * heightExportScale;
+		} else {
+			float minHeight = FLT_MAX;
+			for (size_t y = 0; y < atlasImage->height; ++y) {
+				auto row = (const float*)(atlasImage->pixels + y * atlasImage->rowPitch);
+				for (size_t x = 0; x < atlasImage->width; ++x)
+					minHeight = std::min(minHeight, row[x]);
+			}
+
+			for (size_t y = 0; y < atlasImage->height; ++y) {
+				auto row = (float*)(atlasImage->pixels + y * atlasImage->rowPitch);
+				for (size_t x = 0; x < atlasImage->width; ++x)
+					row[x] -= minHeight;
+			}
+
+			settings.cacheAtlasMinHeight = minHeight;
+		}
+
+		logger::info("[Skylighting] Height atlas biased to zero base, 0.0 is {} game units", settings.cacheAtlasMinHeight);
+	}
+	globals::state->Save();
+
+	hr = SaveToDDSFile(*atlasImage, DDS_FLAGS_NONE, atlasPath.c_str());
+	if (FAILED(hr)) {
+		logger::error("[Skylighting] Failed to save height atlas {}: {:X}", atlasPath.string(), (uint32_t)hr);
+		return false;
+	}
+
+	auto listPath = std::filesystem::path(atlasPath).replace_extension(".txt");
+	WriteAtlasTileList(listPath, placements, atlasImage->width, atlasImage->height, tileSize);
+
+	logger::info("[Skylighting] Built height atlas {}: {}x{} from {} tiles, cells {},{} to {},{}",
+		atlasPath.string(), atlasImage->width, atlasImage->height, blitted,
+		minOrigin.x, minOrigin.y, maxOrigin.x + cellsPerTile - 1, maxOrigin.y + cellsPerTile - 1);
+
+	return true;
+}
+
+bool Skylighting::AtlasTexelToCell(const int2& texel, int2& o_cell) const
+{
+	if (settings.cacheAtlasTileSize <= 0 || settings.cacheAtlasTileCells <= 0 || settings.cacheAtlasTilesY <= 0)
+		return false;
+
+	// The atlas is a uniform grid of cells, so the tile boundaries do not need to be walked.
+	const int texelsPerCell = settings.cacheAtlasTileSize / settings.cacheAtlasTileCells;
+	if (texelsPerCell <= 0)
+		return false;
+
+	// Top left origin: texel Y grows southwards, so it counts down from the northernmost cell.
+	const int maxCellY = settings.cacheAtlasMinCellY + settings.cacheAtlasTilesY * settings.cacheAtlasTileCells - 1;
+
+	o_cell = int2(settings.cacheAtlasMinCellX + FloorDiv(texel.x, texelsPerCell),
+		maxCellY - FloorDiv(texel.y, texelsPerCell));
+	return true;
+}
+
 // Move one cell at a time, casting a ray every worldRes units within the cell.
 //
 // The worldspace is covered by a grid of tileSize^2 tiles, each holding cellsPerTile^2 worldspace
@@ -1619,7 +2011,7 @@ void Skylighting::UpdateHeightPreview(const int2& tileOriginCell)
 // Texture and cell progress must not update unless the position was updated correctly.
 void Skylighting::GenerateHeightMap()
 {
-	static constexpr float CELL = 4096.0f;
+	static constexpr float CELL = worldCellSize;
 	static constexpr int2 startCell = int2(-57, -43);  // same as dyndolod
 	static constexpr int2 endCell = int2(61, 50);      // same as dyndolod, exclusive
 
@@ -1716,11 +2108,9 @@ void Skylighting::GenerateHeightMap()
 		}
 
 		if (heightGenSingleTile) {
-			// Whichever tile the player is standing in, clamped to nothing so it also works
-			// outside the range a full run covers.
-			auto playerPos = player->GetPosition();
-			int2 playerCell = int2((int)std::floor(playerPos.x / CELL), (int)std::floor(playerPos.y / CELL));
-			currentTile = int2(FloorDiv(playerCell.x, cellsPerTile), FloorDiv(playerCell.y, cellsPerTile));
+			// Whichever tile holds the requested cell, unclamped so it also works outside the
+			// range a full run covers.
+			currentTile = int2(FloorDiv(heightGenTargetCell.x, cellsPerTile), FloorDiv(heightGenTargetCell.y, cellsPerTile));
 		} else {
 			// Resume on a tile boundary; a partially generated tile is regenerated from scratch.
 			currentTile = int2(FloorDiv(settings.cacheProgressX, cellsPerTile), FloorDiv(settings.cacheProgressY, cellsPerTile));
@@ -1846,7 +2236,7 @@ void Skylighting::GenerateHeightMap()
 bool Skylighting::IsPositionValid(RE::NiPoint3 inputPosition)
 {
 	static constexpr float HALF_CELL = 2048.0f;
-	static constexpr float CELL = 4096.0f;
+	static constexpr float CELL = worldCellSize;
 
 	bool valid = false;
 	if (auto player = RE::PlayerCharacter::GetSingleton()) {
@@ -1861,7 +2251,7 @@ bool Skylighting::IsPositionValid(RE::NiPoint3 inputPosition)
 
 void Skylighting::SetWorldPosition(const int2& currentCellXY, RE::NiPoint3& worldPos)
 {
-	static constexpr float CELL = 4096.0f;
+	static constexpr float CELL = worldCellSize;
 
 	auto tes = RE::TES::GetSingleton();
 	auto player = RE::PlayerCharacter::GetSingleton();
