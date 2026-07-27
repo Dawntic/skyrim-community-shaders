@@ -82,6 +82,8 @@ public:
 		int cacheAtlasTileCells = 0;  // cells per tile edge
 		int cacheAtlasTilesX = 0;     // tile columns
 		int cacheAtlasTilesY = 0;     // tile rows, needed to flip texel Y into cell space
+
+		float cacheBentNormalAtlasScale = 1.0f;  // downscale factor applied when stitching the BN atlas
 	} settings;
 
 	struct SkylightingCB
@@ -236,7 +238,8 @@ public:
 	/// @brief Stitch "<Worldspace><mapTag><tileSize>.<cells>.<x>.<y>.dds" tiles into one image.
 	/// @param unormFill Value gaps between tiles take in a UNORM format, normalised to [0, 1].
 	/// @param floatFill Value gaps between tiles take in a float format.
-	bool StitchTileAtlas(const std::string& worldspaceID, const std::string& mapTag, const float4& unormFill, const float4& floatFill, TileAtlasResult& o_result);
+	/// @param scale Downscale applied per tile, 0 to 1. Rounded so tiles stay texel aligned.
+	bool StitchTileAtlas(const std::string& worldspaceID, const std::string& mapTag, const float4& unormFill, const float4& floatFill, TileAtlasResult& o_result, float scale = 1.0f);
 
 	/// @brief Ensure "<Worldspace>_H.dds" exists, stitching it from the generated height tiles if not.
 	/// @param forceRebuild Rebuild even when the atlas is already on disk.
@@ -267,6 +270,21 @@ public:
 	/// @brief Generate and save the bent normal tile whose grid starts at the given cell.
 	bool GenerateBentNormalTile(const int2& tileOriginCell);
 	void StopBentNormalTiles();
+
+	//// Bent normal tile streaming ////
+	// Exactly one bent normal tile is resident at a time: the one covering the player. Coverage
+	// therefore ends at the tile edge rather than at a fixed radius, which is a deliberate trade
+	// for keeping a single texture in memory.
+
+	ID3D11ShaderResourceView* BNTileSRV = nullptr;  // streamed tile, separate from the BN atlas
+	int2 bnTileOriginCell = int2(0, 0);             // origin cell of the tile last attempted
+	bool bnTileOriginValid = false;                 // whether bnTileOriginCell has been set
+	float4 bnTileWorldBounds = float4(0, 0, 0, 0);  // minX, minY, maxX, maxY the loaded tile covers
+
+	/// @brief Keep the tile under the player resident, swapping it when a tile boundary is crossed.
+	void UpdateBentNormalTileStream();
+	/// @brief Drop the resident tile and forget which one it was.
+	void ReleaseBentNormalTileStream();
 
 	bool bentNormalTileGen = false;
 	size_t bentNormalTileIndex = 0;

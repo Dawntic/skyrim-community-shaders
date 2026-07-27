@@ -26,7 +26,31 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	cacheAtlasTileSize,
 	cacheAtlasTileCells,
 	cacheAtlasTilesX,
-	cacheAtlasTilesY)
+	cacheAtlasTilesY,
+	cacheBentNormalAtlasScale)
+
+// Every generated LOD map is a single surface: one mip level, one array slice, no cube faces.
+// Written through explicit metadata so the property is enforced at the call rather than being an
+// accident of which SaveToDDSFile overload was picked.
+static bool SaveMapDDS(const DirectX::Image& image, const std::filesystem::path& path)
+{
+	DirectX::TexMetadata metadata = {};
+	metadata.width = image.width;
+	metadata.height = image.height;
+	metadata.depth = 1;
+	metadata.arraySize = 1;
+	metadata.mipLevels = 1;
+	metadata.format = image.format;
+	metadata.dimension = DirectX::TEX_DIMENSION_TEXTURE2D;
+
+	HRESULT hr = DirectX::SaveToDDSFile(&image, 1, metadata, DirectX::DDS_FLAGS_NONE, path.c_str());
+	if (FAILED(hr)) {
+		logger::error("[Skylighting] Failed to save {}: {:X}", path.string(), (uint32_t)hr);
+		return false;
+	}
+
+	return true;
+}
 
 // Floor division; the tile grid is anchored to the worldspace cell grid, so negative cell
 // coordinates must round towards -inf rather than towards zero.
@@ -198,6 +222,17 @@ void Skylighting::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Generates one bent normal tile per height tile from the atlas, matching their\nsize, format and naming. One tile per frame; expect a long, unresponsive run.");
 
+		ImGui::SliderFloat("BN Atlas Scale", &settings.cacheBentNormalAtlasScale, 0.05f, 1.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Downscales every tile as the bent normal atlas is stitched.\n0.85 makes it 15%% smaller per edge, so roughly 28%% of the memory saved.");
+
+		if (settings.cacheAtlasTileSize > 0) {
+			const int scaledTile = std::clamp((int)std::lround((float)settings.cacheAtlasTileSize * settings.cacheBentNormalAtlasScale), 1, settings.cacheAtlasTileSize);
+			const size_t atlasBytes = (size_t)scaledTile * settings.cacheAtlasTilesX * (size_t)scaledTile * settings.cacheAtlasTilesY * 8;
+			ImGui::BulletText("BN atlas: %d texel tiles, %dx%d, %zu MB",
+				scaledTile, scaledTile * settings.cacheAtlasTilesX, scaledTile * settings.cacheAtlasTilesY, atlasBytes / (1024 * 1024));
+		}
+
 		ImGui::BeginDisabled(MapGen || bentNormalTileGen || cacheWorldspaceID.empty());
 		if (ImGui::Button("Rebuild Bent Normal Atlas")) {
 			if (EnsureBentNormalAtlas(cacheWorldspaceID, true)) {
@@ -216,6 +251,13 @@ void Skylighting::DrawSettings()
 
 		if (bentNormalTileGen)
 			ImGui::Text("Bent normal tiles: %zu / %zu", bentNormalTileIndex, bentNormalTileQueue.size());
+
+		if (BNTileSRV)
+			ImGui::BulletText("Streamed BN tile: cell %d, %d (%.0f, %.0f to %.0f, %.0f)",
+				bnTileOriginCell.x, bnTileOriginCell.y,
+				bnTileWorldBounds.x, bnTileWorldBounds.y, bnTileWorldBounds.z, bnTileWorldBounds.w);
+		else if (bnTileOriginValid)
+			ImGui::BulletText("Streamed BN tile: none for cell %d, %d", bnTileOriginCell.x, bnTileOriginCell.y);
 
 		if (MapGen) {
 			if (heightGenSingleTile)
@@ -458,6 +500,9 @@ bool Skylighting::LoadWorldspaceCache()
 
 	cacheWorldspaceID = newWorldspaceID;
 
+	// The streamed tile belongs to the old worldspace
+	ReleaseBentNormalTileStream();
+
 	// need to test again texture suffix ig
 	//if (!worldSpaceCachedMapList.contains(newWorldspaceID)) {
 	//	logger::info("[Skylighting] No cache found for current worldspace");  //tmp otherwise flooding log
@@ -468,11 +513,33 @@ bool Skylighting::LoadWorldspaceCache()
 
 	// TODO: Check if xlodgen Lod exists first before trying to generate
 	// Should package all these prebuilt
+
+	// The height map has to come first: every generator below reads it, and generating against a
+	// null height map would write out empty maps.
+	{
+		auto path = cachePath / (newWorldspaceID + "_H.dds");
+		EnsureHeightAtlas(newWorldspaceID);  // stitch the generated tiles together if it is missing
+		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &HMapSRV);
+		if (FAILED(result))
+			logger::error("[Skylighting] Failed to load height map {}: {:X}", path.string(), (uint32_t)result);
+
+		// The decode the cache gen shaders would need: a 16 bit atlas samples as UNORM, so undo the
+		// normalisation as well as the xLODGen offset/scale. A raw float atlas is already in game
+		// units. A zero based atlas has had its offset folded out already, and reads relative to
+		// settings.cacheAtlasMinHeight rather than absolute world Z.
+		DirectX::TexMetadata metadata;
+		if (SUCCEEDED(DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, metadata))) {
+			bool is16Bit = metadata.format == DXGI_FORMAT_R16_UNORM;
+			HeightMapOffset = (is16Bit && !settings.cacheAtlasZeroBase) ? heightExportOffset / 65535.0f : 0.0f;
+			HeightMapScale = is16Bit ? heightExportScale * 65535.0f : 1.0f;
+		}
+	}
+
 	{
 		auto path = cachePath / (newWorldspaceID + "_A.dds");
 		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &AMapSRV);
 		if (FAILED(result)) {
-			BuildAtlas(path.stem(), "");
+			BuildAtlas(path, "");
 		}
 	}
 
@@ -489,11 +556,15 @@ bool Skylighting::LoadWorldspaceCache()
 		auto path = cachePath / (newWorldspaceID + "_BN.dds");
 		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV);
 		if (FAILED(result)) {
-			// Prefer stitching generated tiles; fall back to the full map pass when there are none.
 			if (EnsureBentNormalAtlas(newWorldspaceID))
 				result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV);
-			if (FAILED(result))
-				GenerateBentNormalMap();
+
+			if (FAILED(result)) {
+				if (std::filesystem::exists(path))
+					logger::error("[Skylighting] {} exists but failed to load ({:X}); leaving it untouched", path.string(), (uint32_t)result);
+				else
+					GenerateBentNormalMap();
+			}
 		}
 	}
 
@@ -553,29 +624,17 @@ bool Skylighting::LoadWorldspaceCache()
 	//	}
 	//}
 
-	{
-		auto path = cachePath / (newWorldspaceID + "_H.dds");
-		EnsureHeightAtlas(newWorldspaceID);  // stitch the generated tiles together if it is missing
-		DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &HMapSRV);
-
-		// The decode the cache gen shaders would need: a 16 bit atlas samples as UNORM, so undo the
-		// normalisation as well as the xLODGen offset/scale. A raw float atlas is already in game
-		// units. A zero based atlas has had its offset folded out already, and reads relative to
-		// settings.cacheAtlasMinHeight rather than absolute world Z.
-		DirectX::TexMetadata metadata;
-		if (SUCCEEDED(DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, metadata))) {
-			bool is16Bit = metadata.format == DXGI_FORMAT_R16_UNORM;
-			HeightMapOffset = (is16Bit && !settings.cacheAtlasZeroBase) ? heightExportOffset / 65535.0f : 0.0f;
-			HeightMapScale = is16Bit ? heightExportScale * 65535.0f : 1.0f;
-		}
-	}
-
 	return true;
 }
 
 // stop using BN tex size var
 void Skylighting::GenerateNormalMap()
 {
+	if (!HMapSRV) {
+		logger::error("[Skylighting] No height map loaded, skipping normal map generation");
+		return;
+	}
+
 	// Setup resources
 	eastl::unique_ptr<Texture2D> cacheOutputTexN = nullptr;
 	eastl::unique_ptr<ID3D11ComputeShader> NComputeShader = nullptr;
@@ -621,11 +680,12 @@ void Skylighting::GenerateNormalMap()
 	auto outputPath = cachePath / (cacheWorldspaceID + "_N.dds");
 	DirectX::ScratchImage ouputImage;
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexN->resource.get(), ouputImage));
-	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
 	{
 		auto path = cachePath / (cacheWorldspaceID + "_N.dds");
-		NMapSRV->Release();
+		if (NMapSRV)
+			NMapSRV->Release();
 		NMapSRV = nullptr;
 		DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &NMapSRV));
 	}
@@ -688,7 +748,7 @@ void Skylighting::GenerateNormalStepMap()
 	auto outputPath = cachePath / (cacheWorldspaceID + "_NS.dds");
 	DirectX::ScratchImage ouputImage;
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTex->resource.get(), ouputImage));
-	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
 	{
 		auto path = cachePath / (cacheWorldspaceID + "_NS.dds");
@@ -780,18 +840,24 @@ void Skylighting::GenerateBentNormalMap()
 
 	BNComputeShader.reset(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Skylighting\\GenerateCacheMaps.hlsl", { { "CSHADER", "" }, { "BENT_NORMALS", "" } }, "cs_5_0")));
 
-	// Generate map over the whole height map
-	DispatchBentNormals(BNComputeShader.get(), cacheOutputTexBN.get(), float4(0.0f, 0.0f, 1.0f, 1.0f));
+	// Generate map over the whole height map. Never save an output the dispatch did not write:
+	// that would overwrite a good map on disk with the uninitialised target.
+	if (!DispatchBentNormals(BNComputeShader.get(), cacheOutputTexBN.get(), float4(0.0f, 0.0f, 1.0f, 1.0f))) {
+		logger::error("[Skylighting] Bent normal generation did not run, nothing written");
+		BNComputeShader.release();
+		return;
+	}
 
 	// Save output
 	auto outputPath = cachePath / (cacheWorldspaceID + "_BN.dds");
 	DirectX::ScratchImage ouputImage;
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexBN->resource.get(), ouputImage));
-	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
 	{
 		auto path = cachePath / (cacheWorldspaceID + "_BN.dds");
-		BNMapSRV->Release();
+		if (BNMapSRV)
+			BNMapSRV->Release();
 		BNMapSRV = nullptr;
 		DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV));
 	}
@@ -801,6 +867,11 @@ void Skylighting::GenerateBentNormalMap()
 
 void Skylighting::GenerateCardinalOcclusionMap()
 {
+	if (!HMapSRV) {
+		logger::error("[Skylighting] No height map loaded, skipping cardinal occlusion generation");
+		return;
+	}
+
 	// Setup resources
 	eastl::unique_ptr<Texture2D> cacheOutputTexCO = nullptr;
 	eastl::unique_ptr<Texture2D> cacheOutputTexCO2 = nullptr;
@@ -871,27 +942,27 @@ void Skylighting::GenerateCardinalOcclusionMap()
 	auto outputPath = cachePath / (cacheWorldspaceID + "_CO.dds");
 	DirectX::ScratchImage ouputImage;
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexCO->resource.get(), ouputImage));
-	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
 	outputPath = cachePath / (cacheWorldspaceID + "_CO2.dds");
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexCO2->resource.get(), ouputImage));
-	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
 	outputPath = cachePath / (cacheWorldspaceID + "_DO.dds");
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexDO->resource.get(), ouputImage));
-	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
 	outputPath = cachePath / (cacheWorldspaceID + "_DO2.dds");
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexDO2->resource.get(), ouputImage));
-	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
 	outputPath = cachePath / (cacheWorldspaceID + "_DOB.dds");
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexDOB->resource.get(), ouputImage));
-	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
 	outputPath = cachePath / (cacheWorldspaceID + "_DO2B.dds");
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexDO2B->resource.get(), ouputImage));
-	DX::ThrowIfFailed(DirectX::SaveToDDSFile(*ouputImage.GetImages(), DirectX::DDS_FLAGS_NONE, outputPath.c_str()));
+	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
 	COComputeShader.release();
 }
@@ -1155,6 +1226,8 @@ void Skylighting::Prepass()
 		return;
 
 	worldHasCache = LoadWorldspaceCache();
+
+	UpdateBentNormalTileStream();
 
 	UpdateDenseProbeGrid();
 
@@ -1625,8 +1698,7 @@ void Skylighting::BuildAtlas(const std::filesystem::path& outputPath, std::strin
 
 	logger::info("Finished Atlas");
 
-	//auto savePath =
-	DirectX::SaveToDDSFile(*atlasImg, DDS_FLAGS_NONE, outputPath.c_str());
+	SaveMapDDS(*atlasImg, outputPath);
 }
 
 // Encode a height in game units into the xLODGen 16 bit unsigned representation:
@@ -1737,11 +1809,8 @@ bool Skylighting::SaveHeightTile(const int2& tileOriginCell, int cellsPerTile)
 
 	context->Unmap(cacheOutputTexH->resource.get(), 0);
 
-	hr = DirectX::SaveToDDSFile(*image, DirectX::DDS_FLAGS_NONE, path.c_str());
-	if (FAILED(hr)) {
-		logger::error("[Skylighting] Failed to save height tile {}: {:X}", path.string(), (uint32_t)hr);
+	if (!SaveMapDDS(*image, path))
 		return false;
-	}
 
 	logger::info("[Skylighting] Saved height tile {}", path.string());
 	return true;
@@ -1849,27 +1918,6 @@ static bool ParseTileName(const std::filesystem::path& path, const std::string& 
 	return true;
 }
 
-// Companion to the atlas: which texel each tile starts at, and which file it came from.
-static bool WriteAtlasTileList(const std::filesystem::path& path, std::vector<std::pair<int2, std::string>>& placements, size_t atlasWidth, size_t atlasHeight, uint tileSize)
-{
-	std::ranges::sort(placements, [](const auto& a, const auto& b) {
-		return a.first.y != b.first.y ? a.first.y < b.first.y : a.first.x < b.first.x;
-	});
-
-	std::ofstream file(path);
-	if (!file) {
-		logger::error("[Skylighting] Failed to open height atlas tile list {}", path.string());
-		return false;
-	}
-
-	file << fmt::format("# {} atlas, {}x{}, {} texel tiles, north up with a top left origin\n", path.stem().string(), atlasWidth, atlasHeight, tileSize);
-	file << fmt::format("{:<20}{}\n", "# TexelX,TexelY", "Tile");
-	for (const auto& [texel, name] : placements)
-		file << fmt::format("{:<20}{}\n", fmt::format("{},{}", texel.x, texel.y), name);
-
-	return file.good();
-}
-
 // Fill an image with a constant, expressed normalised for UNORM formats and raw for float ones.
 static void FillImage(const DirectX::Image& image, const float4& unormFill, const float4& floatFill)
 {
@@ -1906,7 +1954,7 @@ static void FillImage(const DirectX::Image& image, const float4& unormFill, cons
 	}
 }
 
-bool Skylighting::StitchTileAtlas(const std::string& worldspaceID, const std::string& mapTag, const float4& unormFill, const float4& floatFill, TileAtlasResult& o_result)
+bool Skylighting::StitchTileAtlas(const std::string& worldspaceID, const std::string& mapTag, const float4& unormFill, const float4& floatFill, TileAtlasResult& o_result, float scale)
 {
 	using namespace DirectX;
 
@@ -1968,8 +2016,15 @@ bool Skylighting::StitchTileAtlas(const std::string& worldspaceID, const std::st
 
 	const DXGI_FORMAT format = metadata.format;
 	const size_t bytesPerTexel = BitsPerPixel(format) / 8;
-	const size_t atlasWidth = tilesX * tileSize;
-	const size_t atlasHeight = tilesY * tileSize;
+
+	// Scaling happens per tile so the intermediate never exceeds one tile, and the scaled size is
+	// rounded to a whole number of texels so tiles stay aligned and cannot leave seams.
+	const uint outTileSize = (uint)std::clamp((int)std::lround((float)tileSize * std::clamp(scale, 0.0f, 1.0f)), 1, (int)tileSize);
+	const size_t atlasWidth = tilesX * outTileSize;
+	const size_t atlasHeight = tilesY * outTileSize;
+
+	if (outTileSize != tileSize)
+		logger::info("[Skylighting] Scaling {} tiles {} -> {} texels ({:.4f} of original)", mapTag, tileSize, outTileSize, (float)outTileSize / (float)tileSize);
 
 	if (atlasWidth > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || atlasHeight > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
 		logger::warn("[Skylighting] {} atlas is {}x{}, larger than the {} texel D3D11 limit; the file will be written but cannot be loaded as a texture",
@@ -2006,14 +2061,24 @@ bool Skylighting::StitchTileAtlas(const std::string& worldspaceID, const std::st
 			continue;
 		}
 
+		ScratchImage scaledImage;
+		if (outTileSize != tileSize) {
+			hr = Resize(*src, outTileSize, outTileSize, TEX_FILTER_DEFAULT, scaledImage);
+			if (FAILED(hr)) {
+				logger::error("[Skylighting] Failed to scale tile {}: {:X}", tile.path.string(), (uint32_t)hr);
+				return false;
+			}
+			src = scaledImage.GetImages();
+		}
+
 		size_t tileColumn = (size_t)((tile.originCell.x - minOrigin.x) / cellsPerTile);
 		size_t tileRow = (size_t)((maxOrigin.y - tile.originCell.y) / cellsPerTile);  // north first
-		size_t dstX = tileColumn * tileSize;
-		size_t dstY = tileRow * tileSize;
+		size_t dstX = tileColumn * outTileSize;
+		size_t dstY = tileRow * outTileSize;
 
-		for (uint y = 0; y < tileSize; ++y) {
+		for (uint y = 0; y < outTileSize; ++y) {
 			auto dst = atlasImage->pixels + (dstY + y) * atlasImage->rowPitch + dstX * bytesPerTexel;
-			memcpy(dst, src->pixels + (tileSize - 1 - y) * src->rowPitch, tileSize * bytesPerTexel);
+			memcpy(dst, src->pixels + (outTileSize - 1 - y) * src->rowPitch, outTileSize * bytesPerTexel);
 		}
 
 		placements.emplace_back(int2((int)dstX, (int)dstY), tile.path.filename().string());
@@ -2030,7 +2095,7 @@ bool Skylighting::StitchTileAtlas(const std::string& worldspaceID, const std::st
 	o_result.minOriginCell = minOrigin;
 	o_result.maxOriginCell = maxOrigin;
 	o_result.tileCounts = int2((int)tilesX, (int)tilesY);
-	o_result.tileSize = tileSize;
+	o_result.tileSize = outTileSize;
 	o_result.cellsPerTile = cellsPerTile;
 
 	return true;
@@ -2109,18 +2174,8 @@ bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceR
 	}
 	globals::state->Save();
 
-	HRESULT hr = SaveToDDSFile(*atlasImage, DDS_FLAGS_NONE, atlasPath.c_str());
-	if (FAILED(hr)) {
-		logger::error("[Skylighting] Failed to save height atlas {}: {:X}", atlasPath.string(), (uint32_t)hr);
+	if (!SaveMapDDS(*atlasImage, atlasPath))
 		return false;
-	}
-
-	auto listPath = std::filesystem::path(atlasPath).replace_extension(".txt");
-	WriteAtlasTileList(listPath, result.placements, atlasImage->width, atlasImage->height, tileSize);
-
-	logger::info("[Skylighting] Built height atlas {}: {}x{} from {} tiles, cells {},{} to {},{}",
-		atlasPath.string(), atlasImage->width, atlasImage->height, result.placements.size(),
-		minOrigin.x, minOrigin.y, maxOrigin.x + cellsPerTile - 1, maxOrigin.y + cellsPerTile - 1);
 
 	return true;
 }
@@ -2138,26 +2193,78 @@ bool Skylighting::EnsureBentNormalAtlas(const std::string& worldspaceID, bool fo
 
 	// Gaps read as an unoccluded surface: normal straight up, encoded, and full visibility.
 	TileAtlasResult result;
-	if (!StitchTileAtlas(worldspaceID, "_BN", float4(0.5f, 0.5f, 1.0f, 1.0f), float4(0.5f, 0.5f, 1.0f, 1.0f), result))
+	if (!StitchTileAtlas(worldspaceID, "_BN", float4(0.5f, 0.5f, 1.0f, 1.0f), float4(0.5f, 0.5f, 1.0f, 1.0f), result, settings.cacheBentNormalAtlasScale))
 		return false;
 
 	const Image* atlasImage = result.image.GetImages();
 
-	HRESULT hr = SaveToDDSFile(*atlasImage, DDS_FLAGS_NONE, atlasPath.c_str());
-	if (FAILED(hr)) {
-		logger::error("[Skylighting] Failed to save bent normal atlas {}: {:X}", atlasPath.string(), (uint32_t)hr);
+	if (!SaveMapDDS(*atlasImage, atlasPath))
 		return false;
-	}
-
-	auto listPath = std::filesystem::path(atlasPath).replace_extension(".txt");
-	WriteAtlasTileList(listPath, result.placements, atlasImage->width, atlasImage->height, result.tileSize);
-
-	logger::info("[Skylighting] Built bent normal atlas {}: {}x{} from {} tiles, cells {},{} to {},{}",
-		atlasPath.string(), atlasImage->width, atlasImage->height, result.placements.size(),
-		result.minOriginCell.x, result.minOriginCell.y,
-		result.maxOriginCell.x + result.cellsPerTile - 1, result.maxOriginCell.y + result.cellsPerTile - 1);
 
 	return true;
+}
+
+void Skylighting::ReleaseBentNormalTileStream()
+{
+	if (BNTileSRV) {
+		BNTileSRV->Release();
+		BNTileSRV = nullptr;
+	}
+
+	bnTileOriginValid = false;
+	bnTileWorldBounds = float4(0, 0, 0, 0);
+}
+
+void Skylighting::UpdateBentNormalTileStream()
+{
+	// Baking teleports the player across the worldspace, which would thrash the stream.
+	if (MapGen || bentNormalTileGen)
+		return;
+
+	const int cellsPerTile = settings.cacheAtlasTileCells;
+	const int tileSize = settings.cacheAtlasTileSize;
+	if (cellsPerTile <= 0 || tileSize <= 0 || cacheWorldspaceID.empty())
+		return;
+
+	auto player = RE::PlayerCharacter::GetSingleton();
+	if (!player)
+		return;
+
+	auto playerPos = player->GetPosition();
+	const int2 playerCell = int2((int)std::floor(playerPos.x / worldCellSize), (int)std::floor(playerPos.y / worldCellSize));
+	const int2 originCell = int2(FloorDiv(playerCell.x, cellsPerTile), FloorDiv(playerCell.y, cellsPerTile)) * cellsPerTile;
+
+	// Still inside the resident tile. Tracked even when the load failed, so a missing tile is not
+	// retried every frame.
+	if (bnTileOriginValid && originCell.x == bnTileOriginCell.x && originCell.y == bnTileOriginCell.y)
+		return;
+
+	// Unload before loading so only one tile is ever resident.
+	ReleaseBentNormalTileStream();
+
+	bnTileOriginCell = originCell;
+	bnTileOriginValid = true;
+
+	auto path = MakeTilePath(cachePath, cacheWorldspaceID, "_BN", (uint)tileSize, cellsPerTile, originCell);
+	if (!std::filesystem::exists(path)) {
+		logger::debug("[Skylighting] No bent normal tile for cell {}, {}", originCell.x, originCell.y);
+		return;
+	}
+
+	auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNTileSRV);
+	if (FAILED(result)) {
+		logger::error("[Skylighting] Failed to stream bent normal tile {}: {:X}", path.string(), (uint32_t)result);
+		BNTileSRV = nullptr;
+		return;
+	}
+
+	bnTileWorldBounds = float4(
+		(float)originCell.x * worldCellSize,
+		(float)originCell.y * worldCellSize,
+		(float)(originCell.x + cellsPerTile) * worldCellSize,
+		(float)(originCell.y + cellsPerTile) * worldCellSize);
+
+	logger::debug("[Skylighting] Streamed bent normal tile at cell {}, {}", originCell.x, originCell.y);
 }
 
 bool Skylighting::DispatchBentNormalSweep(Texture2D* accumTex, const int2& tileOriginAtlasPx)
@@ -2436,11 +2543,8 @@ bool Skylighting::GenerateBentNormalTile(const int2& tileOriginCell)
 	const DirectX::Image* image = settings.cacheExport16Bit ? converted.GetImages() : captured.GetImages();
 	auto path = MakeTilePath(cachePath, cacheWorldspaceID, "_BN", (uint)tileSize, cellsPerTile, tileOriginCell);
 
-	hr = DirectX::SaveToDDSFile(*image, DirectX::DDS_FLAGS_NONE, path.c_str());
-	if (FAILED(hr)) {
-		logger::error("[Skylighting] Failed to save bent normal tile {}: {:X}", path.string(), (uint32_t)hr);
+	if (!SaveMapDDS(*image, path))
 		return false;
-	}
 
 	logger::info("[Skylighting] Saved bent normal tile {}", path.string());
 	return true;
