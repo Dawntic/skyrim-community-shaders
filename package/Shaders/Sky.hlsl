@@ -186,6 +186,16 @@ float GetPhysSkyCloudShadow(float3 viewDir, uint2 pxCoord)
 {
 	if ((Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InReflection) != 0) {
 #		if defined(CLOUD_SHADOWS)
+		// The AP shadow texture is screen-space, so the reflection cubemap has to
+		// approximate it: shadow the ray by whatever the cloud layer holds where the
+		// ray crosses it.
+		[branch] if (SharedData::cloudShadowsSettings.VolumetricEnabled)
+		{
+			float cloudDist = CloudShadows::IntersectCloudDist(float3(0, 0, 0), viewDir);
+			if (cloudDist < 0.0)
+				return 0.0;
+			return 1.0 - CloudShadows::GetVolumetricCloudShadowMult(viewDir * cloudDist, SampBaseSampler);
+		}
 		float cloudCubeSample = CloudShadows::CloudShadowsTexture.SampleLevel(SampBaseSampler, viewDir, 0).x;
 		return saturate(cloudCubeSample * SharedData::cloudShadowsSettings.Opacity);
 #		else

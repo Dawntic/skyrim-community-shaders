@@ -38,27 +38,8 @@ VertexOut main(uint vertexID : SV_VertexID)
 #		define CLOUD_SUN_OCTAVE_PHASE 1
 #	endif
 
-float GetCloudProfile(float3 SamplePos, float Height)
-{
-	float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0);  // Perlin-Worley + 3 octaves of worley
-	float PerlinWorley = NoiseSample.x;
-	float3 Worley = NoiseSample.yzw;
-
-	float WorleyFBM = dot(Worley, float3(0.625, 0.25, 0.125));
-	float cloudCover = Coverage2;
-
-	// Method used in frost nova
-	float layerDensity = GetDensityHeightGradientForPoint(SamplePos, CloudType, Height);
-	float Density = layerDensity * LerpLinearStepClamped(PerlinWorley, 0.3, 1.0, 0.0, 1.0);
-	float Coverage = pow(CloudCoverage, LerpLinearStep(Height, 0.7, 0.8, 1.0, 0.8));
-
-	float Erosion = LerpLinearStepClamped(WorleyFBM, Coverage, 1.0, 0.0, 1.0);
-	Erosion = LerpLinearStepClamped(Erosion, cloudCover, 1.0, 0.0, 1.0);
-
-	Density = LerpLinearStepClamped(Density, Erosion, 1.0, 0.0, 1.0);
-
-	return Density;
-}
+// GetCloudProfile lives in PhysicalSky/CloudCommon.hlsli so the cloud shadow map
+// compute shader can march the exact same density field.
 
 float ApplyCloudDetail(float BaseDensity, float3 SamplePos, float Height, float ViewDistance)
 {

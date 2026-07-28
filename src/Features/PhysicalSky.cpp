@@ -968,6 +968,7 @@ void PhysicalSky::Reset()
 void PhysicalSky::EarlyPrepass()
 {
 	if (cbData.enabled) {
+		UpdateCloudBuffers();
 		GenerateLuts();
 	}
 }
@@ -1217,10 +1218,12 @@ void PhysicalSky::RenderClouds()
 	if (!cbData.enabled)
 		return;
 
+	// The cloud shadow map runs in EarlyPrepass and needs the same constants, so
+	// they are filled there; this is a no-op unless EarlyPrepass was skipped.
+	UpdateCloudBuffers();
+
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
-
-	static int frameCount = 0;
 
 	par = !par;
 
@@ -1269,6 +1272,50 @@ void PhysicalSky::RenderClouds()
 	context->PSSetShaderResources(18, 2, lutSrvs);
 	ID3D11ShaderResourceView* trLutSrv = texTrLut->srv.get();
 	context->PSSetShaderResources(61, 1, &trLutSrv);
+
+	ID3D11Buffer* buffers[2] = { cloudBuffer->CB(), cloudDebugBuffer->CB() };
+	context->PSSetConstantBuffers(0, 2, buffers);
+
+	ID3D11SamplerState* samplers[2] = { sampTr.get(), sampNoise.get() };
+	context->PSSetSamplers(0, 2, samplers);
+
+	context->Draw(3, 0);
+
+	ID3D11ShaderResourceView* nullSrvs[] = {
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+	};
+	context->PSSetShaderResources(0, 12, nullSrvs);
+	context->PSSetShaderResources(18, 2, nullSrvs);
+	context->PSSetShaderResources(61, 1, nullSrvs);
+
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET, RE::BSGraphics::DIRTY_VIEWPORT);
+}
+
+// Fills the two cloud cbuffers for this frame. Guarded so it can be driven from
+// whichever pass gets there first: the cloud shadow map (EarlyPrepass) needs the
+// same constants as the cloud draw (RenderSky), and a stale buffer would put the
+// shadows one frame behind the clouds casting them.
+void PhysicalSky::UpdateCloudBuffers()
+{
+	static Util::FrameChecker frameChecker;
+	if (!frameChecker.IsNewFrame())
+		return;
+
+	if (!cbData.enabled || !cloudBuffer || !cloudDebugBuffer)
+		return;
+
+	static int frameCount = 0;
 
 	auto bayerIndex = bayerIndices4x4[frameCount % 16];
 	auto playerPos = RE::PlayerCharacter::GetSingleton()->GetPosition();
@@ -1341,33 +1388,10 @@ void PhysicalSky::RenderClouds()
 	debugCb.cloudScattering = std::clamp(cloudLighting.cloudScattering, 0.f, debugCb.cloudExtinction);
 	cloudDebugBuffer->Update(debugCb);
 
-	ID3D11Buffer* buffers[2] = { cloudBuffer->CB(), cloudDebugBuffer->CB() };
-	context->PSSetConstantBuffers(0, 2, buffers);
-
-	ID3D11SamplerState* samplers[2] = { sampTr.get(), sampNoise.get() };
-	context->PSSetSamplers(0, 2, samplers);
-
-	context->Draw(3, 0);
-
-	ID3D11ShaderResourceView* nullSrvs[] = {
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-	};
-	context->PSSetShaderResources(0, 12, nullSrvs);
-	context->PSSetShaderResources(18, 2, nullSrvs);
-	context->PSSetShaderResources(61, 1, nullSrvs);
-
-	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET, RE::BSGraphics::DIRTY_VIEWPORT);
+	// Cached for the cloud shadow map, which works in the same km-scale,
+	// planet-centre-relative space as the cloud raymarcher.
+	cloudLayerBottomRadiusKm = cb.bottomRadius;
+	cloudLayerTopRadiusKm = cb.topRadius;
 
 	++frameCount;
 }
