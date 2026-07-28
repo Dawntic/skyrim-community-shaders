@@ -164,7 +164,21 @@ namespace SharedData
 	struct CloudShadowsSettings
 	{
 		float Opacity;
-		float3 pad0;
+		uint VolumetricEnabled;  // Physical Sky volumetric cloud shadow map is live
+		float2 VolCenter;        // world XY of the shadow map centre (game units)
+
+		float2 VolLightDirXY;  // directional light direction XY (points toward the light)
+		float VolRcpLightZ;    // 1 / lightDir.z
+		float VolRcpExtent;    // 1 / half-extent of the mapped square (game units)
+
+		float VolLayerBottomZ;  // world Z of the cloud layer base (game units)
+		float VolLayerTopZ;     // world Z of the cloud layer top (game units)
+		float VolMipScale;      // shadow texels covered per screen pixel, per unit distance
+		float VolMaxMip;        // highest mip in the chain
+
+		float VolMipBias;
+		float VolRcpBorderFade;  // 1 / border fade width, in uv
+		float2 pad0;
 	};
 
 	struct LODBlendingSettings

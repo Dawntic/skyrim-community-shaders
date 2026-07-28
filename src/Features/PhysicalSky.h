@@ -61,12 +61,19 @@ struct PhysicalSky final : public Feature
 	inline void PostPostLoad() override { Hooks::Install(); }
 
 	void CreateCloudResources();
+	void UpdateCloudBuffers();
 	void RenderClouds();
 	void CloudCompose();
 
 	// Clouds
 
 	bool par = false;
+
+	/** Cloud layer radii (km, planet-centre-relative) as last uploaded to the cloud
+	 *  cbuffer. The cloud shadow map marches the same field and reads them rather
+	 *  than re-deriving them from the UI settings. */
+	float cloudLayerBottomRadiusKm = 0.f;
+	float cloudLayerTopRadiusKm = 0.f;
 
 	float2 CLOUD_TEX_SIZE = float2(2560, 1440) * 0.5;
 	ID3D11RasterizerState* rasterState = nullptr;
