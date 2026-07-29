@@ -675,6 +675,8 @@ PS_OUTPUT main(PS_INPUT input)
 {
 	PS_OUTPUT psout = (PS_OUTPUT)0;
 
+	discard;
+
 	float4 fogMul = 1;
 #	if !defined(MULTBLEND)
 	fogMul.xyz = input.FogAlpha;
