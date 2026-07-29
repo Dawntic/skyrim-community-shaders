@@ -256,9 +256,9 @@ struct PhysicalSky final : public Feature
 		float planetRadius = 6.36e3f;      // in km
 		float atmosphereRadius = 6.42e3f;  // in km
 
-		float rayleighFalloff = 0.05f;                    //1 / 8.69645f;                    // in km^-1
+		float rayleighFalloff = 0.12f;                    // sunset: 0.05f;                    //1 / 8.69645f;                    // in km^-1
 		float3 rayleighScatter = { 4.0f, 12.0f, 29.0f };  //{ 6.6049f, 12.345f, 29.413f };  // in megameter^-1
-		float aerosolFalloff = 0.7f;                      //1 / 1.2f;
+		float aerosolFalloff = 0.8f;                      //0.7f;                      //1 / 1.2f;
 		float aerosolPhaseG = 0.8f;
 		float3 aerosolScatter = { 39.96f, 39.96f, 39.96f };
 		float3 aerosolAbsorption = { 4.44f, 4.44f, 4.44f };
