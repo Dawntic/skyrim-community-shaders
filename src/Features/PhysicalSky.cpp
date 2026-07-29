@@ -782,7 +782,7 @@ void PhysicalSky::SetupResources()
 
 void PhysicalSky::ClearShaderCache()
 {
-	CompileShaders();
+	//CompileShaders();
 }
 
 void PhysicalSky::CompileShaders()
