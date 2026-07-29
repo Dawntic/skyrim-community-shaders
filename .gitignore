@@ -17,3 +17,4 @@ tests/shaders/*.exe
 tests/shaders/*.pdb
 tests/shaders/Shaders/
 tools/__pycache__/
+/AGENTS.md

@@ -3013,21 +3013,42 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif  // IBL
 
+	indirectContext = CreateIndirectLightingContext(ambientNormal, vertexNormal.xyz, viewDirection);
+
+	GetIndirectLobeWeights(indirectLobeWeights, indirectContext, material, uvOriginal);
+
 #	if defined(SKYLIGHTING)
 	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
 
 	sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz);
 
 	skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(input.WorldPosition.xyz));
-	skylightingSH = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, skylightingSH);
 
-	sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), skylightingSH);
+	sh2 bentNormalSH = Skylighting::SampleBentNormalSH(input.WorldPosition.xyz, SampColorSampler, 0);
 
-	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);  //SH::FuncProductIntegral(IrradianceProbe, SH::EvaluateCosineLobe(worldNormal));
-	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);                          // * skylightingDiffuse;
+	float SkyAO = SH::Unproject(skylightingSH, worldNormal);
+	float BentAO = SH::Unproject(bentNormalSH, worldNormal);
+
+	sh2 SkyLobe = SkyAO < BentAO ? skylightingSH : bentNormalSH;  //min(SkyAO, BentAO);
+	SkyLobe = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, SkyLobe);
+	SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), SkyLobe);
+
+	SkyLobe = SH::EvaluateCosineLobe(worldNormal);
+
+	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
+	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
+
+	SkyIrradiance *= indirectLobeWeights.diffuse;
+	//SkyIrradiance *= material.BaseColor; // use only this or lobe weights - lobe weights are correct
+
+#		if defined(TRUE_PBR)
+	SkyIrradiance *= Color::PBRLightingScale;
+#		endif
+
+	//SkyIrradiance = Skylighting::TestMap(input.WorldPosition.xyz);
 
 	if (ApplyIrradiance) {
-		directionalAmbientColor = SkyIrradiance;
+		//directionalAmbientColor = SkyIrradiance;
 	}
 #	endif
 
@@ -3064,10 +3085,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	//// OUTPUT /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	float4 color = 0;
-
-	indirectContext = CreateIndirectLightingContext(ambientNormal, vertexNormal.xyz, viewDirection);
-
-	GetIndirectLobeWeights(indirectLobeWeights, indirectContext, material, uvOriginal);
 
 #	if defined(WETNESS_EFFECTS)
 #		if defined(DYNAMIC_CUBEMAPS)
@@ -3174,7 +3191,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float3 outputAlbedo = indirectLobeWeights.diffuse * vertexColor.xyz;
 
-	// done for take of non ibl skylighting and specular
+	// done for sake of non ibl skylighting and specular
 	directionalAmbientColor *= outputAlbedo;
 
 #	if defined(SKYLIGHTING)
@@ -3461,6 +3478,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	if ((!inWorld && !inReflection) && SharedData::linearLightingSettings.enableLinearLighting && !(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow)) {
 		psout.Diffuse.xyz = Color::LinearToSrgb(psout.Diffuse.xyz);
 	}
+#	endif
+
+#	if defined(SKYLIGHTING)
+	psout.Diffuse.xyz = SkyIrradiance;
+#	else
+	psout.Diffuse.xyz = (float3)0;
 #	endif
 
 	return psout;

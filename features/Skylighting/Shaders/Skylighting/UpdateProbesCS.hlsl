@@ -268,12 +268,21 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 	if (ThreadID.x >= settings.GridTexSize.x || ThreadID.y >= settings.GridTexSize.y)
 		return;
 
-	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvGridTexSize.xy;
+	float2 CoordsUV = (ThreadID.xy + 0.5) * rcp(settings.GridTexSize);  //settings.InvGridTexSize.xy;
 
-	float WorldHeight = HeightTex.SampleLevel(LinearSampler, float2(CoordsUV.x, 1.0 - CoordsUV.y), 0);  // * 65535;
-																										//WorldHeight = (WorldHeight - 32767) * 8.0;
+	//float WorldHeight;// = HeightTex.SampleLevel(LinearSampler, float2(CoordsUV.x, CoordsUV.y), 0);  // * 65535;
+	//WorldHeight = (WorldHeight - 32767) * 8.0;
+	// gives correct height values
+	const float2 atlasMin = settings.BentNormalAtlasBounds.xy;
+	const float2 atlasMax = settings.BentNormalAtlasBounds.zw;
+	float3 WorldPos = float3(lerp(atlasMin, atlasMax, float2(CoordsUV.x, 1 - CoordsUV.y)), 0);  //float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, float2(CoordsUV.x, 1 - CoordsUV.y)), 0);
 
-	float3 WorldPos = float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, float2(CoordsUV.x, 1 - CoordsUV.y)), WorldHeight);
+	float2 AtlasUV = LinearStep(atlasMin, atlasMax, WorldPos.xy);
+	AtlasUV.y = 1.0 - AtlasUV.y;
+
+	float WorldHeight = HeightTex.SampleLevel(LinearSampler, AtlasUV, 0);
+	WorldHeight -= 14000;
+	WorldPos.z = WorldHeight;
 
 	//debug
 	//ProbeArray[ThreadID.xyz] = NormalTex.SampleLevel(LinearSampler, CoordsUV, 0);//float4(GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV, 0).xyz, 1) * 6;//
@@ -287,15 +296,15 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 	float SkyAperture = 1;                            //BNSample.w;                   // AO
 
 	// Cone Tracing
-	float SkySolidAngle = 2.0 * Math::PI * SkyAperture;
+	float SkySolidAngle = 2.0 * Math::PI;  // * SkyAperture;
 	const float SkyWeight = SkySolidAngle / SAMPLES;
 
+	/*
 	float GroundAperture = 1.0 + (1.0 - SkyAperture);
-	float GroundSolidAngle = 2.0 * Math::PI * GroundAperture;  // add the part of upper hemisphere thats occluded
+	float GroundSolidAngle = 2.0 * Math::PI;// * GroundAperture;  // add the part of upper hemisphere thats occluded
 	const float GroundWeight = GroundSolidAngle / SAMPLES;
 
 	float3x3 BentTBN = BuildTBN(BentNormalDir);
-
 	HorizonData HData;
 	HData.SinC = Card1.SampleLevel(LinearSampler, CoordsUV, 0);
 	HData.SinD = Diag1.SampleLevel(LinearSampler, CoordsUV, 0);
@@ -307,8 +316,10 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 	float MaxSampleDist = 25000;
 	static const float MinSampleDistSq = 5000;
 
+	// WRONG Extent
 	float2 Extent = abs(settings.GridBounds.xy) + settings.GridBounds.zw;  // pull out later
 	float2 WorldUnitsPerTexel = Extent / settings.EnvRadianceTexSize;      // remove 1024 later
+	*/
 
 	sh2vec3 Output = SH::ZeroSH2Vec3();
 	for (int i = 0; i < SAMPLES; ++i) {
@@ -317,16 +328,21 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 
 		float3 SkyRadiance = SampleSkyRadiance(SkySampleDir) * settings.SkyInfluence;  // Why does this mult need to be like 4.0? should work at 1.0
 
+		// can we make it to only raymarch cloud in bent cone?
 		float cloudTr = 1;
 		float3 cloudInscattering = 0;
-		RaymarchCloud(SkySampleDir, WorldPos, cloudInscattering, cloudTr);
-		//cloudInscattering *= 0.1;
+		//RaymarchCloud(SkySampleDir, WorldPos, cloudInscattering, cloudTr);
+		//cloudInscattering *= 0.5;
+
+		//float Mult = 1.0 - LinearStep(10000, 25000, WorldHeight);
+		//cloudInscattering *= Mult;
 
 		SkyRadiance = SkyRadiance * cloudTr + cloudInscattering;
 
 		sh2vec3 SkySH = SH::Scale(SH::Evaluate(SkySampleDir), SkyRadiance * SkyWeight);
 		Output = SH::Add(Output, SkySH);
 
+		/*
 		float3 GroundSampleDir = UniformHemisphere(i, SAMPLES, GroundAperture);
 		GroundSampleDir.z = -GroundSampleDir.z;
 
@@ -345,7 +361,8 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 		float3 BounceRadiance = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV + EnvOffset, 0).xyz * settings.EnvInfluence;
 
 		sh2vec3 GroundSH = SH::Scale(SH::Evaluate(GroundSampleDir), BounceRadiance * GroundWeight);
-		//Output = SH::Add(Output, GroundSH);
+		Output = SH::Add(Output, GroundSH);
+		*/
 
 		// debug
 		//ProbeArray[int3((CoordsUV + EnvOffset) * settings.GridTexSize.xy, 0)] = float4(1.0.xxx * 1, 1);
@@ -360,7 +377,7 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 	//float sdf = length(CoordsUV - PlayerUV) - 0.008;
 	//float sdf = length(WorldPos.xy - FrameBuffer::CameraPosAdjust.xy) - 2000;
 	//if(sdf <= 0)
-	//ProbeArray[ThreadID.xyz] = 1.0.xxxx;
+	//ProbeArray[ThreadID.xyz] = WorldHeight.xxxx;//1.0.xxxx;
 
 	SH::PackSH2Vec3(Output, ThreadID.xy, ProbeArray);
 }

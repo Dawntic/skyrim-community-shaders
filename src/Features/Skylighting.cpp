@@ -62,6 +62,72 @@ static int FloorDiv(int a, int b)
 	return q;
 }
 
+// Split a file stem on '.', the separator both the tile and atlas names use.
+static std::vector<std::string> SplitStem(const std::filesystem::path& path)
+{
+	std::vector<std::string> parts;
+	std::string current;
+	for (char c : path.stem().string()) {
+		if (c == '.') {
+			parts.push_back(current);
+			current.clear();
+		} else
+			current += c;
+	}
+	parts.push_back(current);
+
+	return parts;
+}
+
+// "<Worldspace><mapTag>.<minCellX>.<minCellY>.<maxCellX>.<maxCellY>.dds", e.g. Tamriel_H.-64.-48.63.55.dds.
+// The cell range is inclusive at both ends, so the extent an atlas covers is readable from the file
+// itself instead of from settings that may since have moved on.
+static std::filesystem::path MakeAtlasPath(const std::filesystem::path& dir, const std::string& worldspaceID, const std::string& mapTag, const int2& minCell, const int2& maxCell)
+{
+	return dir / fmt::format("{}{}.{}.{}.{}.{}.dds", worldspaceID, mapTag, minCell.x, minCell.y, maxCell.x, maxCell.y);
+}
+
+static bool ParseAtlasName(const std::filesystem::path& path, const std::string& worldspaceID, const std::string& mapTag, Skylighting::AtlasCellRange& o_range)
+{
+	auto parts = SplitStem(path);
+
+	// Five parts, and the first is the bare tag: a tile name carries its texel size there instead.
+	if (parts.size() != 5 || parts[0] != worldspaceID + mapTag)
+		return false;
+
+	try {
+		o_range.minCell = int2(std::stoi(parts[1]), std::stoi(parts[2]));
+		o_range.maxCell = int2(std::stoi(parts[3]), std::stoi(parts[4]));
+	} catch (...) {
+		return false;
+	}
+
+	if (o_range.maxCell.x < o_range.minCell.x || o_range.maxCell.y < o_range.minCell.y)
+		return false;
+
+	o_range.valid = true;
+	return true;
+}
+
+// A rebuild writes a new name whenever the cell range changed, so the previous atlas has to go or
+// the lookup would find two. Only files matching this map's atlas pattern are touched.
+static void RemoveExistingAtlases(const std::filesystem::path& dir, const std::string& worldspaceID, const std::string& mapTag)
+{
+	std::error_code ec;
+	for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+		const auto& path = entry.path();
+		if (!path.has_extension() || _stricmp(path.extension().string().c_str(), ".dds") != 0)
+			continue;
+
+		Skylighting::AtlasCellRange range;
+		if (!ParseAtlasName(path, worldspaceID, mapTag, range))
+			continue;
+
+		if (std::filesystem::remove(path, ec))
+			logger::info("[Skylighting] Replaced previous atlas {}", path.string());
+	}
+}
+
 void Skylighting::LoadSettings(json& o_json)
 {
 	settings = o_json;
@@ -99,12 +165,11 @@ void Skylighting::DrawSettings()
 	static float debugRescale = 1.0f;
 	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
 
-	BUFFER_VIEWER_NODE_BULLETA(terrainLightingTex->srv.get(), debugRescale);
+	//BUFFER_VIEWER_NODE_BULLETA(terrainLightingTex->srv.get(), debugRescale);
 
-	if (texSparseProbeArray) {
-		ImGui::BulletText("View");
-		BUFFER_VIEWER_NODE_BULLET(texSparseProbeArray, debugRescale);
-	}
+	ImGui::BulletText("Probe View");
+	if (texSparseProbeArray.get())
+		BUFFER_VIEWER_NODE_BULLETA(texSparseProbeArray->srv.get(), debugRescale);
 
 	if (ImGui::Button("Generate albedo and norm")) {
 		auto outputPath = cachePath / "Tamriel_A.dds";
@@ -192,24 +257,32 @@ void Skylighting::DrawSettings()
 
 		ImGui::BeginDisabled(MapGen || cacheWorldspaceID.empty());
 		if (ImGui::Button("Rebuild Height Atlas")) {
-			EnsureHeightAtlas(cacheWorldspaceID, true);
-			{
-				auto path = cachePath / (cacheWorldspaceID + "_H.dds");
-				DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &HMapSRV);
-				DirectX::TexMetadata metadata;
-				if (SUCCEEDED(DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, metadata))) {
-					bool is16Bit = metadata.format == DXGI_FORMAT_R16_UNORM;
-					HeightMapOffset = (is16Bit && !settings.cacheAtlasZeroBase) ? heightExportOffset / 65535.0f : 0.0f;
-					HeightMapScale = is16Bit ? heightExportScale * 65535.0f : 1.0f;
+			if (EnsureHeightAtlas(cacheWorldspaceID, true)) {
+				std::filesystem::path path;
+				if (FindAtlas(cacheWorldspaceID, "_H", path, heightAtlasRange)) {
+					if (HMapSRV) {
+						HMapSRV->Release();
+						HMapSRV = nullptr;
+					}
+					DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &HMapSRV);
+					DirectX::TexMetadata metadata;
+					if (SUCCEEDED(DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, metadata))) {
+						bool is16Bit = metadata.format == DXGI_FORMAT_R16_UNORM;
+						HeightMapOffset = (is16Bit && !settings.cacheAtlasZeroBase) ? heightExportOffset / 65535.0f : 0.0f;
+						HeightMapScale = is16Bit ? heightExportScale * 65535.0f : 1.0f;
+					}
 				}
 			}
 		}
 
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("Stitches every height tile for %s into %s_H.dds, overwriting it.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
+			ImGui::Text("Stitches every height tile for %s into %s_H.<minX>.<minY>.<maxX>.<maxY>.dds, replacing any earlier one.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
 				cacheWorldspaceID.empty() ? "the current worldspace" : cacheWorldspaceID.c_str(),
 				cacheWorldspaceID.empty() ? "<Worldspace>" : cacheWorldspaceID.c_str());
+
+		if (heightAtlasRange.valid)
+			ImGui::BulletText("Height atlas cells %d,%d to %d,%d", heightAtlasRange.minCell.x, heightAtlasRange.minCell.y, heightAtlasRange.maxCell.x, heightAtlasRange.maxCell.y);
 
 		ImGui::BeginDisabled(MapGen || (!bentNormalTileGen && (cacheWorldspaceID.empty() || !HMapSRV)));
 		if (ImGui::Button(bentNormalTileGen ? "Stop Bent Normal Tiles" : "Generate Bent Normal Tiles")) {
@@ -236,18 +309,23 @@ void Skylighting::DrawSettings()
 		ImGui::BeginDisabled(MapGen || bentNormalTileGen || cacheWorldspaceID.empty());
 		if (ImGui::Button("Rebuild Bent Normal Atlas")) {
 			if (EnsureBentNormalAtlas(cacheWorldspaceID, true)) {
-				auto path = cachePath / (cacheWorldspaceID + "_BN.dds");
-				if (BNMapSRV) {
-					BNMapSRV->Release();
-					BNMapSRV = nullptr;
+				std::filesystem::path path;
+				if (FindAtlas(cacheWorldspaceID, "_BN", path, bentNormalAtlasRange)) {
+					if (BNMapSRV) {
+						BNMapSRV->Release();
+						BNMapSRV = nullptr;
+					}
+					DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV);
 				}
-				DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV);
 			}
 		}
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("Stitches every bent normal tile into %s_BN.dds, overwriting it.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
+			ImGui::Text("Stitches every bent normal tile into %s_BN.<minX>.<minY>.<maxX>.<maxY>.dds, replacing any earlier one.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
 				cacheWorldspaceID.empty() ? "<Worldspace>" : cacheWorldspaceID.c_str());
+
+		if (bentNormalAtlasRange.valid)
+			ImGui::BulletText("BN atlas cells %d,%d to %d,%d", bentNormalAtlasRange.minCell.x, bentNormalAtlasRange.minCell.y, bentNormalAtlasRange.maxCell.x, bentNormalAtlasRange.maxCell.y);
 
 		if (bentNormalTileGen)
 			ImGui::Text("Bent normal tiles: %zu / %zu", bentNormalTileIndex, bentNormalTileQueue.size());
@@ -517,11 +595,18 @@ bool Skylighting::LoadWorldspaceCache()
 	// The height map has to come first: every generator below reads it, and generating against a
 	// null height map would write out empty maps.
 	{
-		auto path = cachePath / (newWorldspaceID + "_H.dds");
+		heightAtlasRange = {};
 		EnsureHeightAtlas(newWorldspaceID);  // stitch the generated tiles together if it is missing
-		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &HMapSRV);
-		if (FAILED(result))
-			logger::error("[Skylighting] Failed to load height map {}: {:X}", path.string(), (uint32_t)result);
+
+		std::filesystem::path path;
+		auto result = E_FAIL;
+		if (FindAtlas(newWorldspaceID, "_H", path, heightAtlasRange)) {
+			result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &HMapSRV);
+			if (FAILED(result))
+				logger::error("[Skylighting] Failed to load height map {}: {:X}", path.string(), (uint32_t)result);
+		} else {
+			logger::error("[Skylighting] No height atlas found for {}", newWorldspaceID);
+		}
 
 		// The decode the cache gen shaders would need: a 16 bit atlas samples as UNORM, so undo the
 		// normalisation as well as the xLODGen offset/scale. A raw float atlas is already in game
@@ -553,18 +638,21 @@ bool Skylighting::LoadWorldspaceCache()
 	}
 
 	{
-		auto path = cachePath / (newWorldspaceID + "_BN.dds");
-		auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV);
-		if (FAILED(result)) {
-			if (EnsureBentNormalAtlas(newWorldspaceID))
-				result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV);
+		bentNormalAtlasRange = {};
+		EnsureBentNormalAtlas(newWorldspaceID);  // stitch the generated tiles together if it is missing
 
-			if (FAILED(result)) {
-				if (std::filesystem::exists(path))
-					logger::error("[Skylighting] {} exists but failed to load ({:X}); leaving it untouched", path.string(), (uint32_t)result);
-				else
-					GenerateBentNormalMap();
-			}
+		std::filesystem::path path;
+		auto result = E_FAIL;
+		if (FindAtlas(newWorldspaceID, "_BN", path, bentNormalAtlasRange)) {
+			result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV);
+
+			// A map that exists but will not load is never regenerated over: it is far more likely
+			// to be too large for D3D11 than to be corrupt, and overwriting it would throw away a
+			// bake that took hours.
+			if (FAILED(result))
+				logger::error("[Skylighting] {} exists but failed to load ({:X}); leaving it untouched", path.string(), (uint32_t)result);
+		} else {
+			GenerateBentNormalMap();  // no tiles to stitch, fall back to the full map pass
 		}
 	}
 
@@ -760,19 +848,52 @@ void Skylighting::GenerateNormalStepMap()
 	BNComputeShader.release();
 }
 */
+bool Skylighting::FindAtlas(const std::string& worldspaceID, const std::string& mapTag, std::filesystem::path& o_path, AtlasCellRange& o_range) const
+{
+	if (worldspaceID.empty())
+		return false;
+
+	std::error_code ec;
+	if (!std::filesystem::exists(cachePath, ec))
+		return false;
+
+	bool found = false;
+	for (const auto& entry : std::filesystem::directory_iterator(cachePath, ec)) {
+		const auto& path = entry.path();
+		if (!path.has_extension() || _stricmp(path.extension().string().c_str(), ".dds") != 0)
+			continue;
+
+		AtlasCellRange range;
+		if (!ParseAtlasName(path, worldspaceID, mapTag, range))
+			continue;
+
+		if (found)  // a rebuild removes the old one, so more than one means the folder was edited by hand
+			logger::warn("[Skylighting] Multiple {}{} atlases present, using {}", worldspaceID, mapTag, path.string());
+
+		o_path = path;
+		o_range = range;
+		found = true;
+	}
+
+	return found;
+}
+
 float4 Skylighting::GetHeightMapBounds() const
 {
-	// Bounds of the tiled atlas, derived from the cell grid it was stitched from.
-	if (settings.cacheAtlasTileCells > 0 && settings.cacheAtlasTilesX > 0 && settings.cacheAtlasTilesY > 0) {
-		float minX = (float)settings.cacheAtlasMinCellX * worldCellSize;
-		float minY = (float)settings.cacheAtlasMinCellY * worldCellSize;
-		return float4(minX, minY,
-			minX + (float)(settings.cacheAtlasTilesX * settings.cacheAtlasTileCells) * worldCellSize,
-			minY + (float)(settings.cacheAtlasTilesY * settings.cacheAtlasTileCells) * worldCellSize);
-	}
+	// The cell range the atlas on disk actually covers, read from its file name.
+	if (heightAtlasRange.valid)
+		return heightAtlasRange.WorldBounds();
 
 	// Legacy full worldspace map: cells -57,-43 to 62,51, the range the old generator covered.
 	return float4(-233472.0f, -176128.0f, 253952.0f, 208896.0f);
+}
+
+float4 Skylighting::GetBentNormalAtlasBounds() const
+{
+	if (bentNormalAtlasRange.valid)
+		return bentNormalAtlasRange.WorldBounds();
+
+	return GetHeightMapBounds();  // the bent normal tiles mirror the height tiles
 }
 
 Skylighting::CacheGenCBStruct Skylighting::MakeCacheGenCB(const float2& outputSize, const float4& regionOffsetScale) const
@@ -848,18 +969,28 @@ void Skylighting::GenerateBentNormalMap()
 		return;
 	}
 
-	// Save output
-	auto outputPath = cachePath / (cacheWorldspaceID + "_BN.dds");
+	// Save output. This pass covers whatever the height map covers, so it is named with that range
+	// and is found by the same lookup as a stitched atlas.
+	const float4 bounds = GetHeightMapBounds();
+	const int2 minCell = int2((int)std::floor(bounds.x / worldCellSize), (int)std::floor(bounds.y / worldCellSize));
+	const int2 maxCell = int2((int)std::floor(bounds.z / worldCellSize) - 1, (int)std::floor(bounds.w / worldCellSize) - 1);
+	auto outputPath = MakeAtlasPath(cachePath, cacheWorldspaceID, "_BN", minCell, maxCell);
+
 	DirectX::ScratchImage ouputImage;
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexBN->resource.get(), ouputImage));
+
+	RemoveExistingAtlases(cachePath, cacheWorldspaceID, "_BN");
 	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
+	bentNormalAtlasRange.minCell = minCell;
+	bentNormalAtlasRange.maxCell = maxCell;
+	bentNormalAtlasRange.valid = true;
+
 	{
-		auto path = cachePath / (cacheWorldspaceID + "_BN.dds");
 		if (BNMapSRV)
 			BNMapSRV->Release();
 		BNMapSRV = nullptr;
-		DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, path.c_str(), nullptr, &BNMapSRV));
+		DX::ThrowIfFailed(DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, outputPath.c_str(), nullptr, &BNMapSRV));
 	}
 
 	BNComputeShader.release();
@@ -1084,10 +1215,10 @@ void Skylighting::UpdateSparseProbeGrid()
 	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 
 	ID3D11SamplerState* sampArray[3] = { globals::deferred->linearSampler, globals::features::physicalSky.sampNoise.get(), globals::features::physicalSky.sampSv.get() };
-	context->CSSetSamplers(0, 1, sampArray);
+	context->CSSetSamplers(0, 3, sampArray);
 
-	auto buffer = globals::features::physicalSky.cloudBuffer->CB();
-	context->CSSetConstantBuffers(0, 1, &buffer);
+	ID3D11Buffer* buffer[2] = { globals::features::physicalSky.cloudBuffer->CB(), globals::features::physicalSky.cloudDebugBuffer->CB() };
+	context->CSSetConstantBuffers(0, 2, buffer);
 
 	auto& physSky = globals::features::physicalSky;
 	auto& depthTexture = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
@@ -1209,6 +1340,11 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 		.EnvInfluence = settings.EnvInfluence,
 		.Basis0 = Basis0,
 		.Basis1 = Basis1,
+
+		.BentNormalTileBounds = bnTileWorldBounds,
+		.BentNormalAtlasBounds = GetBentNormalAtlasBounds(),
+		.HasBentNormalTile = BNTileSRV != nullptr,
+		.HasBentNormalAtlas = BNMapSRV != nullptr,
 	};
 }
 
@@ -1237,9 +1373,10 @@ void Skylighting::Prepass()
 		UpdateSparseProbeGrid();
 
 	auto context = globals::d3d::context;
-	ID3D11ShaderResourceView* srvs[2] = { texProbeArray->srv.get(), texSparseProbeArray->srv.get() };
-	context->PSSetShaderResources(50, 2, srvs);
-	context->CSSetShaderResources(50, 2, srvs);
+	// t50: dense probes, t51: sparse probes, t52: bent normal atlas, t53: streamed bent normal tile
+	ID3D11ShaderResourceView* srvs[4] = { texProbeArray->srv.get(), texSparseProbeArray->srv.get(), BNMapSRV, BNTileSRV };
+	context->PSSetShaderResources(50, 4, srvs);
+	context->CSSetShaderResources(50, 4, srvs);
 }
 
 void Skylighting::PostPostLoad()
@@ -1881,16 +2018,7 @@ struct HeightTileFile
 // Matches the names MakeTilePath writes: "<Worldspace><mapTag><tileSize>.<cellsPerTile>.<originX>.<originY>".
 static bool ParseTileName(const std::filesystem::path& path, const std::string& worldspaceID, const std::string& mapTag, HeightTileFile& o_tile)
 {
-	std::vector<std::string> parts;
-	std::string current;
-	for (char c : path.stem().string()) {
-		if (c == '.') {
-			parts.push_back(current);
-			current.clear();
-		} else
-			current += c;
-	}
-	parts.push_back(current);
+	auto parts = SplitStem(path);
 
 	if (parts.size() != 4)
 		return false;
@@ -2108,8 +2236,8 @@ bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceR
 	if (worldspaceID.empty())
 		return false;
 
-	auto atlasPath = cachePath / (worldspaceID + "_H.dds");
-	if (!forceRebuild && std::filesystem::exists(atlasPath))
+	std::filesystem::path existingPath;
+	if (!forceRebuild && FindAtlas(worldspaceID, "_H", existingPath, heightAtlasRange))
 		return true;
 
 	// Gaps between tiles read as zero height, matching how the tiles clear unsampled texels.
@@ -2174,8 +2302,23 @@ bool Skylighting::EnsureHeightAtlas(const std::string& worldspaceID, bool forceR
 	}
 	globals::state->Save();
 
+	// The name carries the inclusive cell range the atlas covers, so its extent is always readable
+	// from the file itself rather than from whatever the settings happen to hold.
+	const int2 maxCell = maxOrigin + int2(cellsPerTile - 1, cellsPerTile - 1);
+	auto atlasPath = MakeAtlasPath(cachePath, worldspaceID, "_H", minOrigin, maxCell);
+
+	RemoveExistingAtlases(cachePath, worldspaceID, "_H");
+
 	if (!SaveMapDDS(*atlasImage, atlasPath))
 		return false;
+
+	heightAtlasRange.minCell = minOrigin;
+	heightAtlasRange.maxCell = maxCell;
+	heightAtlasRange.valid = true;
+
+	logger::info("[Skylighting] Built height atlas {}: {}x{}, cells {},{} to {},{}",
+		atlasPath.string(), atlasImage->width, atlasImage->height,
+		minOrigin.x, minOrigin.y, maxCell.x, maxCell.y);
 
 	return true;
 }
@@ -2187,8 +2330,8 @@ bool Skylighting::EnsureBentNormalAtlas(const std::string& worldspaceID, bool fo
 	if (worldspaceID.empty())
 		return false;
 
-	auto atlasPath = cachePath / (worldspaceID + "_BN.dds");
-	if (!forceRebuild && std::filesystem::exists(atlasPath))
+	std::filesystem::path existingPath;
+	if (!forceRebuild && FindAtlas(worldspaceID, "_BN", existingPath, bentNormalAtlasRange))
 		return true;
 
 	// Gaps read as an unoccluded surface: normal straight up, encoded, and full visibility.
@@ -2198,8 +2341,22 @@ bool Skylighting::EnsureBentNormalAtlas(const std::string& worldspaceID, bool fo
 
 	const Image* atlasImage = result.image.GetImages();
 
+	const int2 minCell = result.minOriginCell;
+	const int2 maxCell = result.maxOriginCell + int2(result.cellsPerTile - 1, result.cellsPerTile - 1);
+	auto atlasPath = MakeAtlasPath(cachePath, worldspaceID, "_BN", minCell, maxCell);
+
+	RemoveExistingAtlases(cachePath, worldspaceID, "_BN");
+
 	if (!SaveMapDDS(*atlasImage, atlasPath))
 		return false;
+
+	bentNormalAtlasRange.minCell = minCell;
+	bentNormalAtlasRange.maxCell = maxCell;
+	bentNormalAtlasRange.valid = true;
+
+	logger::info("[Skylighting] Built bent normal atlas {}: {}x{}, cells {},{} to {},{}",
+		atlasPath.string(), atlasImage->width, atlasImage->height,
+		minCell.x, minCell.y, maxCell.x, maxCell.y);
 
 	return true;
 }
@@ -2377,7 +2534,13 @@ bool Skylighting::StartBentNormalTiles()
 	}
 
 	// The atlas dimensions the height tiles were stitched into; the regions are relative to these.
-	auto atlasPath = cachePath / (cacheWorldspaceID + "_H.dds");
+	std::filesystem::path atlasPath;
+	AtlasCellRange atlasRange;
+	if (!FindAtlas(cacheWorldspaceID, "_H", atlasPath, atlasRange)) {
+		logger::error("[Skylighting] No height atlas found, cannot generate bent normal tiles");
+		return false;
+	}
+
 	DirectX::TexMetadata metadata;
 	if (FAILED(DirectX::GetMetadataFromDDSFile(atlasPath.c_str(), DirectX::DDS_FLAGS_NONE, metadata))) {
 		logger::error("[Skylighting] Failed to read the height atlas, cannot generate bent normal tiles");
@@ -2908,12 +3071,13 @@ float Skylighting::GetRayIntersectionHeight(float3 position, float RAY_OFFSET)
 
 float Skylighting::SampleHeightMap(float2 coords)
 {
-	auto outputPath = cachePath / "Tamriel_H.dds";
-
 	static DirectX::ScratchImage image;
 	static bool init = true;
 	if (init) {
-		DirectX::LoadFromDDSFile(outputPath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image);
+		std::filesystem::path atlasPath;
+		AtlasCellRange atlasRange;
+		if (FindAtlas(cacheWorldspaceID, "_H", atlasPath, atlasRange))
+			DirectX::LoadFromDDSFile(atlasPath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image);
 		init = false;
 	}
 

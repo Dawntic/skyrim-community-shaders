@@ -120,6 +120,12 @@ public:
 
 		float4 Basis0;
 		float4 Basis1;
+
+		float4 BentNormalTileBounds;   // xy: min, zw: max world XY the streamed tile covers
+		float4 BentNormalAtlasBounds;  // xy: min, zw: max world XY the atlas covers
+		uint HasBentNormalTile;
+		uint HasBentNormalAtlas;
+		uint _pad1[2];
 	};
 	static_assert(sizeof(SkylightingCB) % 16 == 0);
 
@@ -144,11 +150,11 @@ public:
 	uint frameCount = 0;
 
 	// Sparse grid
-	static constexpr int2 sparseGridSize = int2(256, 256);  //int2(119 * 4, 94 * 4);
+	static constexpr int2 sparseGridSize = int2(1024, 1024);  //int2(256, 256);  //int2(119 * 4, 94 * 4);
 	eastl::unique_ptr<Texture2D> texSparseProbeArray = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> updateSparseGridCS = nullptr;
 
-	static constexpr int2 terrainMapSize = int2(256, 256);
+	static constexpr int2 terrainMapSize = int2(1024, 1024);  //int2(256, 256);
 	eastl::unique_ptr<Texture2D> terrainLightingTex = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> terrainRelightCS = nullptr;
 
@@ -223,6 +229,32 @@ public:
 	bool SaveHeightTile(const int2& tileOriginCell, int cellsPerTile);
 	/// @brief Copy the staging tile into a viewable texture holding exactly what gets written to disk.
 	void UpdateHeightPreview(const int2& tileOriginCell);
+	/// @brief The worldspace cell range a stitched atlas covers, carried in its file name so the
+	/// extent always describes the file on disk rather than whatever the settings last recorded.
+	struct AtlasCellRange
+	{
+		int2 minCell = int2(0, 0);  // south west cell, inclusive
+		int2 maxCell = int2(0, 0);  // north east cell, inclusive
+		bool valid = false;
+
+		float4 WorldBounds() const
+		{
+			return float4(
+				(float)minCell.x * worldCellSize,
+				(float)minCell.y * worldCellSize,
+				(float)(maxCell.x + 1) * worldCellSize,
+				(float)(maxCell.y + 1) * worldCellSize);
+		}
+	};
+
+	AtlasCellRange heightAtlasRange;
+	AtlasCellRange bentNormalAtlasRange;
+
+	/// @brief Locate "<Worldspace><mapTag>.<minX>.<minY>.<maxX>.<maxY>.dds" and read its cell range.
+	bool FindAtlas(const std::string& worldspaceID, const std::string& mapTag, std::filesystem::path& o_path, AtlasCellRange& o_range) const;
+	/// @brief World bounds of the bent normal atlas, which may cover a different range to the height map.
+	float4 GetBentNormalAtlasBounds() const;
+
 	/// @brief A set of tiles stitched into one north up image, with where each tile landed.
 	struct TileAtlasResult
 	{
