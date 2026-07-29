@@ -3018,26 +3018,30 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	GetIndirectLobeWeights(indirectLobeWeights, indirectContext, material, uvOriginal);
 
 #	if defined(SKYLIGHTING)
-	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
+	//bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
 
 	sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz);
 
+	sh2 SkyLobe;
+	/*
 	skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(input.WorldPosition.xyz));
-
 	sh2 bentNormalSH = Skylighting::SampleBentNormalSH(input.WorldPosition.xyz, SampColorSampler, 0);
 
 	float SkyAO = SH::Unproject(skylightingSH, worldNormal);
 	float BentAO = SH::Unproject(bentNormalSH, worldNormal);
 
-	sh2 SkyLobe = SkyAO < BentAO ? skylightingSH : bentNormalSH;  //min(SkyAO, BentAO);
+	SkyLobe = SkyAO < BentAO ? skylightingSH : bentNormalSH; //min(SkyAO, BentAO);
 	SkyLobe = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, SkyLobe);
 	SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), SkyLobe);
+	*/
 
+	// debugging
 	SkyLobe = SH::EvaluateCosineLobe(worldNormal);
 
 	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
 	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
 
+	// Output ambient light only for sake of debugging.
 	SkyIrradiance *= indirectLobeWeights.diffuse;
 	//SkyIrradiance *= material.BaseColor; // use only this or lobe weights - lobe weights are correct
 
@@ -3047,9 +3051,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	//SkyIrradiance = Skylighting::TestMap(input.WorldPosition.xyz);
 
-	if (ApplyIrradiance) {
-		//directionalAmbientColor = SkyIrradiance;
-	}
+	//if (ApplyIrradiance) {
+	//directionalAmbientColor = SkyIrradiance;
+	//}
 #	endif
 
 	//Lighting = float3(0,0,0); //////////////////////////////////////////////////////////////////////
