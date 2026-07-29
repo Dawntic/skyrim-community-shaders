@@ -77,11 +77,36 @@ Texture2D Diag2 : register(t24);
 
 RWTexture2DArray<float4> ProbeArray : register(u0);
 
-static const float GOLDEN_ANGLE = 2.39996322972865332;  // PI * (3 - sqrt(5))
-
 #	define SAMPLES 64      //256
 #	define RAY_SAMPLES 64  //128
 
+// These matches physical sky
+float2 SkyViewLutUv(float3 rayDir)
+{
+	float azimuth = atan2(rayDir.y, rayDir.x);
+	float u = azimuth * .5 * rcp(Math::PI);  // sampler wraps around so ok
+	float zenith = asin(rayDir.z);
+	float v = 0.5 - 0.5 * sign(zenith) * sqrt(abs(zenith) * 2 * rcp(Math::PI));
+	v = max(v, 0.01);
+	return frac(float2(u, v));
+}
+
+float3 SampleSky(float3 viewDir, SamplerState sampSv)
+{
+	SharedData::PhysSkyData data = SharedData::physSkyData;
+
+	const float2 skyLutUv = SkyViewLutUv(viewDir);
+	float3 skyColor = SkyViewLUTTex.SampleLevel(sampSv, skyLutUv, 0).rgb;
+
+	if (data.tonemapper == 1)
+		skyColor = Color::LLLinearToGamma(skyColor);
+	else if (data.tonemapper == 2)
+		skyColor = skyColor / (1 + skyColor);
+
+	return skyColor;
+}
+
+// Alt method without tonemap
 float3 SampleSkyRadiance(float3 rayDir)
 {
 	float azimuth = atan2(rayDir.y, rayDir.x);
@@ -91,77 +116,6 @@ float3 SampleSkyRadiance(float3 rayDir)
 	v = max(v, 0.01);
 
 	return SkyViewLUTTex.SampleLevel(LinearWrapSampler, frac(float2(u, v)), 0).rgb;
-}
-
-// Fibonacci sample direction over hemisphere
-// gives solid angle 2PI at input ap == 1
-// domain: xy[-1, 1] z[1-ap, 1]
-float3 FibonacciHemisphere(float i, float n, float ap)
-{
-	float cosT = lerp(1.0, 1 - ap, (i + 0.5) / n);  // ap == 2 gives full sphere
-	float3 Out = float3(0, 0, cosT);
-	sincos(i * GOLDEN_ANGLE, Out.y, Out.x);
-	Out.xy *= sqrt(saturate(1.0 - cosT * cosT));
-	return Out;
-}
-
-// Uniform (area-weighted) hemisphere/sphere sampler, stratified via Hammersley.
-// ap == 1 -> hemisphere, solid angle 2PI.  ap == 2 -> full sphere.
-// domain: xy[-1,1], z[1-ap, 1].
-float3 UniformHemisphere(float i, float n, float ap)
-{
-	// radical inverse base 2 (van der Corput) for the second dimension
-	uint bits = uint(i);
-	bits = (bits << 16) | (bits >> 16);
-	bits = ((bits & 0x55555555u) << 1) | ((bits & 0xAAAAAAAAu) >> 1);
-	bits = ((bits & 0x33333333u) << 2) | ((bits & 0xCCCCCCCCu) >> 2);
-	bits = ((bits & 0x0F0F0F0Fu) << 4) | ((bits & 0xF0F0F0F0u) >> 4);
-	bits = ((bits & 0x00FF00FFu) << 8) | ((bits & 0xFF00FF00u) >> 8);
-	float u2 = float(bits) * 2.3283064365386963e-10;  // / 2^32
-
-	float u1 = (i + 0.5) / n;  // stratified first dim
-
-	float cosT = lerp(1.0, 1.0 - ap, u2);  // uniform in z -> area-uniform
-	float phi = u1 * Math::PI * 2;
-
-	float3 Out;
-	sincos(phi, Out.y, Out.x);
-	Out.xy *= sqrt(saturate(1.0 - cosT * cosT));
-	Out.z = cosT;
-	return Out;
-}
-
-//  orthonormal basis (Frisvad, branchless)
-float3x3 BuildTBN(float3 dir)
-{
-	float sign = dir.z >= 0.0 ? 1.0 : -1.0;
-	float a = -1.0 / (sign + dir.z);
-	float bb = dir.x * dir.y * a;
-	float3 T = float3(1.0 + sign * dir.x * dir.x * a, sign * bb, -sign * dir.x);
-	float3 B = float3(bb, sign + dir.y * dir.y * a, -dir.y);
-	return float3x3(T, B, dir);
-}
-
-struct HorizonData
-{
-	float4 SinC, SinD;    // CardinalOcclusionTex / DiagTex at probe UV
-	float4 WallC, WallD;  // MeanHitDist bake, same layout
-};
-
-// azDir = normalize(SampleDir.xy + 1e-5)
-void InterpAzimuth(float2 azDir, HorizonData H, out float sinH, out float OcclDist)
-{
-	// cosine-power hat weights against the 8 baked azimuths
-	// CARD: E(+x) S(+y) W(-x) N(-y)   DIAG: (+ +)(- +)(- -)(+ -)
-	float4 cC = azDir.xyxy * float2(1.0, -1.0).xxyy;  //float4(azDir.x, azDir.y, -azDir.x, -azDir.y);
-	float4 cD = float4(azDir.x + azDir.y, -azDir.x + azDir.y, -azDir.x - azDir.y, azDir.x - azDir.y) * 0.70710678;
-
-	float4 wC = pow(saturate(cC), 8);  // = saturate(cC); wC *= wC; wC *= wC; wC *= wC;   // cos^8
-	float4 wD = pow(saturate(cD), 8);  // = saturate(wD); wD *= wD; wD *= wD; wD *= wD;
-
-	float invSum = rcp(dot(wC, (float4)1.0) + dot(wD, (float4)1.0) + 1e-6);
-	sinH = (dot(H.SinC, wC) + dot(H.SinD, wD)) * invSum;
-	OcclDist = (dot(H.WallC, wC) + dot(H.WallD, wD)) * invSum;
 }
 
 float GetCloudProfile(float3 SamplePos, float Height)
@@ -257,127 +211,55 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 	//accum.totalInscattering = lerp(accum.totalInscattering, AP.xyz, AP.w);
 }
 
-// Fix albedo and normal texture shape/size
-// Some sections maybe picking up way more snow than others? - comes from GroundLight - probably too few sampling in SH
-// Add volumetric effects to probe grid
-// Add AO control
-
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
 
 	if (ThreadID.x >= settings.GridTexSize.x || ThreadID.y >= settings.GridTexSize.y)
 		return;
 
-	float2 CoordsUV = (ThreadID.xy + 0.5) * rcp(settings.GridTexSize);  //settings.InvGridTexSize.xy;
+	float2 CoordsUV = (ThreadID.xy + 0.5) * rcp(settings.GridTexSize);
 
-	//float WorldHeight;// = HeightTex.SampleLevel(LinearSampler, float2(CoordsUV.x, CoordsUV.y), 0);  // * 65535;
-	//WorldHeight = (WorldHeight - 32767) * 8.0;
 	// gives correct height values
 	const float2 atlasMin = settings.BentNormalAtlasBounds.xy;
 	const float2 atlasMax = settings.BentNormalAtlasBounds.zw;
-	float3 WorldPos = float3(lerp(atlasMin, atlasMax, float2(CoordsUV.x, 1 - CoordsUV.y)), 0);  //float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, float2(CoordsUV.x, 1 - CoordsUV.y)), 0);
+	float3 WorldPos = float3(lerp(atlasMin, atlasMax, float2(CoordsUV.x, 1 - CoordsUV.y)), 0);
 
 	float2 AtlasUV = LinearStep(atlasMin, atlasMax, WorldPos.xy);
 	AtlasUV.y = 1.0 - AtlasUV.y;
 
 	float WorldHeight = HeightTex.SampleLevel(LinearSampler, AtlasUV, 0);
-	WorldHeight -= 14000;
+	WorldHeight -= 14000;  // since map is offset
 	WorldPos.z = WorldHeight;
 
-	//debug
-	//ProbeArray[ThreadID.xyz] = NormalTex.SampleLevel(LinearSampler, CoordsUV, 0);//float4(GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV, 0).xyz, 1) * 6;//
-	//float2 PlayerUV = LinearStep(settings.GridBounds.xy, settings.GridBounds.zw, FrameBuffer::CameraPosAdjust.xy);
-	//	   PlayerUV.y = 1.0 - PlayerUV.y;
-	//CoordsUV = PlayerUV;
-	//WorldHeight = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0);
-
-	float4 BNSample = BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);
-	float3 BentNormalDir = BNSample.xyz * 2.0 - 1.0;  // - add bn back later
-	float SkyAperture = 1;                            //BNSample.w;                   // AO
-
 	// Cone Tracing
-	float SkySolidAngle = 2.0 * Math::PI;  // * SkyAperture;
+	float SkySolidAngle = 2.0 * Math::PI;
 	const float SkyWeight = SkySolidAngle / SAMPLES;
 
-	/*
-	float GroundAperture = 1.0 + (1.0 - SkyAperture);
-	float GroundSolidAngle = 2.0 * Math::PI;// * GroundAperture;  // add the part of upper hemisphere thats occluded
-	const float GroundWeight = GroundSolidAngle / SAMPLES;
-
-	float3x3 BentTBN = BuildTBN(BentNormalDir);
-	HorizonData HData;
-	HData.SinC = Card1.SampleLevel(LinearSampler, CoordsUV, 0);
-	HData.SinD = Diag1.SampleLevel(LinearSampler, CoordsUV, 0);
-	HData.WallC = Card2.SampleLevel(LinearSampler, CoordsUV, 0);
-	HData.WallD = Diag2.SampleLevel(LinearSampler, CoordsUV, 0);
-
-	static const float ProbeHeightOffset = 100;  // world units
-	float ProbeHeight = WorldHeight + ProbeHeightOffset;
-	float MaxSampleDist = 25000;
-	static const float MinSampleDistSq = 5000;
-
-	// WRONG Extent
-	float2 Extent = abs(settings.GridBounds.xy) + settings.GridBounds.zw;  // pull out later
-	float2 WorldUnitsPerTexel = Extent / settings.EnvRadianceTexSize;      // remove 1024 later
-	*/
-
 	sh2vec3 Output = SH::ZeroSH2Vec3();
+
+	//float3 SkyRadianceTest = SampleSkyRadiance(float3(0,0,1));
+	//Output = SH::Scale(SH::HemisphereSH2(), SkyRadianceTest);
+
 	for (int i = 0; i < SAMPLES; ++i) {
-		float3 SkySampleDir = UniformHemisphere(i, SAMPLES, SkyAperture);
-		//SkySampleDir = mul(SkySampleDir, BentTBN);
+		float3 SkySampleDir = Math::UniformHemisphere(i, SAMPLES);
 
-		float3 SkyRadiance = SampleSkyRadiance(SkySampleDir) * settings.SkyInfluence;  // Why does this mult need to be like 4.0? should work at 1.0
+		//float3 SkyRadiance = SampleSkyRadiance(SkySampleDir) * settings.SkyInfluence;  // Why does this mult need to be like 4.0? should work at 1.0
+		float3 SkyRadiance = SampleSky(SkySampleDir, LinearWrapSampler) * settings.SkyInfluence;
 
-		// can we make it to only raymarch cloud in bent cone?
 		float cloudTr = 1;
 		float3 cloudInscattering = 0;
-		//RaymarchCloud(SkySampleDir, WorldPos, cloudInscattering, cloudTr);
-		//cloudInscattering *= 0.5;
+		RaymarchCloud(SkySampleDir, WorldPos, cloudInscattering, cloudTr);
 
-		//float Mult = 1.0 - LinearStep(10000, 25000, WorldHeight);
+		//float Mult = 1.0 - LinearStep(10000, 25000, WorldHeight); // playing with contact hardening effect
 		//cloudInscattering *= Mult;
 
 		SkyRadiance = SkyRadiance * cloudTr + cloudInscattering;
 
 		sh2vec3 SkySH = SH::Scale(SH::Evaluate(SkySampleDir), SkyRadiance * SkyWeight);
 		Output = SH::Add(Output, SkySH);
-
-		/*
-		float3 GroundSampleDir = UniformHemisphere(i, SAMPLES, GroundAperture);
-		GroundSampleDir.z = -GroundSampleDir.z;
-
-		float sinH, OcclDist;
-		InterpAzimuth(GroundSampleDir.xy, HData, sinH, OcclDist);  //only needed for OcclDist eh
-
-		float GrSin = GroundSampleDir.z;
-		float GrCos = sqrt(1 - GrSin * GrSin);
-
-		float RayDist = min(ProbeHeight * GrCos / max(-GrSin, 1e-6), MaxSampleDist);
-		float DeltaR = (GrSin > 0.0) ? OcclDist : RayDist;
-		DeltaR = sqrt(DeltaR * DeltaR + MinSampleDistSq) / WorldUnitsPerTexel;
-
-		// Sample should have to be x units above probe
-		float2 EnvOffset = float2(GroundSampleDir.x, -GroundSampleDir.y) * DeltaR * settings.EnvRadianceTexSize;
-		float3 BounceRadiance = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV + EnvOffset, 0).xyz * settings.EnvInfluence;
-
-		sh2vec3 GroundSH = SH::Scale(SH::Evaluate(GroundSampleDir), BounceRadiance * GroundWeight);
-		Output = SH::Add(Output, GroundSH);
-		*/
-
-		// debug
-		//ProbeArray[int3((CoordsUV + EnvOffset) * settings.GridTexSize.xy, 0)] = float4(1.0.xxx * 1, 1);
 	}
 
-	// debug
-	//float3 BounceRadianceA = GroundRadianceTex.SampleLevel(LinearSampler, CoordsUV, 0);
-	//ProbeArray[ThreadID.xyz] = float4(BounceRadianceA.xyz, 1);
-	//ProbeArray[int3(PlayerUV * settings.GridTexSize.xy, 0)] = 1.0.xxxx;
-	//float2 PlayerUV = LinearStep(settings.GridBounds.xy, settings.GridBounds.zw, FrameBuffer::CameraPosAdjust.xy);
-	////PlayerUV.y = 1.0 - PlayerUV.y;
-	//float sdf = length(CoordsUV - PlayerUV) - 0.008;
-	//float sdf = length(WorldPos.xy - FrameBuffer::CameraPosAdjust.xy) - 2000;
-	//if(sdf <= 0)
-	//ProbeArray[ThreadID.xyz] = WorldHeight.xxxx;//1.0.xxxx;
+	//ProbeArray[ThreadID.xyz] = SkyRadianceTest.xyzz;
 
 	SH::PackSH2Vec3(Output, ThreadID.xy, ProbeArray);
 }

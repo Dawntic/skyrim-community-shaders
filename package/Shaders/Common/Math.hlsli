@@ -29,6 +29,81 @@ namespace Math
 	static const float HALF_PI = PI * 0.5f;                      // PI / 2
 	static const float TAU = PI * 2.0f;                          // PI * 2
 	static const float INV_PI = 1.0f / PI;                       // 1 / PI
+
+	static const float GOLDEN_ANGLE = 2.39996322972865332;  // PI * (3 - sqrt(5))
+
+	// Uniform (area-weighted) hemisphere/sphere sampler, stratified via Hammersley.
+	// ap == 1 -> hemisphere, solid angle 2PI.  ap == 2 -> full sphere.
+	// domain: xy[-1,1], z[1-ap, 1].
+	float3 UniformHemisphere(float i, float n, float ap)
+	{
+		// radical inverse base 2 (van der Corput) for the second dimension
+		uint bits = uint(i);
+		bits = (bits << 16) | (bits >> 16);
+		bits = ((bits & 0x55555555u) << 1) | ((bits & 0xAAAAAAAAu) >> 1);
+		bits = ((bits & 0x33333333u) << 2) | ((bits & 0xCCCCCCCCu) >> 2);
+		bits = ((bits & 0x0F0F0F0Fu) << 4) | ((bits & 0xF0F0F0F0u) >> 4);
+		bits = ((bits & 0x00FF00FFu) << 8) | ((bits & 0xFF00FF00u) >> 8);
+		float u2 = float(bits) * 2.3283064365386963e-10;  // / 2^32
+
+		float u1 = (i + 0.5) / n;  // stratified first dim
+
+		float cosT = lerp(1.0, 1.0 - ap, u2);  // uniform in z -> area-uniform
+		float phi = u1 * Math::PI * 2;
+
+		float3 Out;
+		sincos(phi, Out.y, Out.x);
+		Out.xy *= sqrt(saturate(1.0 - cosT * cosT));
+		Out.z = cosT;
+		return Out;
+	}
+
+	float3 UniformHemisphere(float i, float n)
+	{
+		// radical inverse base 2 (van der Corput) for the second dimension
+		uint bits = uint(i);
+		bits = (bits << 16) | (bits >> 16);
+		bits = ((bits & 0x55555555u) << 1) | ((bits & 0xAAAAAAAAu) >> 1);
+		bits = ((bits & 0x33333333u) << 2) | ((bits & 0xCCCCCCCCu) >> 2);
+		bits = ((bits & 0x0F0F0F0Fu) << 4) | ((bits & 0xF0F0F0F0u) >> 4);
+		bits = ((bits & 0x00FF00FFu) << 8) | ((bits & 0xFF00FF00u) >> 8);
+		float u2 = float(bits) * 2.3283064365386963e-10;  // / 2^32
+
+		float u1 = (i + 0.5) / n;  // stratified first dim
+
+		float cosT = u2;  // uniform in z over [0,1] -> area-uniform hemisphere
+		float phi = u1 * Math::PI * 2;
+
+		float3 Out;
+		sincos(phi, Out.y, Out.x);
+		Out.xy *= sqrt(saturate(1.0 - cosT * cosT));
+		Out.z = cosT;
+		return Out;
+	}
+
+	// Fibonacci sample direction over hemisphere
+	// gives solid angle 2PI at input ap == 1
+	// domain: xy[-1, 1] z[1-ap, 1]
+	float3 FibonacciHemisphere(float i, float n, float ap)
+	{
+		float cosT = lerp(1.0, 1 - ap, (i + 0.5) / n);  // ap == 2 gives full sphere
+		float3 Out = float3(0, 0, cosT);
+		sincos(i * GOLDEN_ANGLE, Out.y, Out.x);
+		Out.xy *= sqrt(saturate(1.0 - cosT * cosT));
+		return Out;
+	}
+
+	//  orthonormal basis (Frisvad, branchless)
+	float3x3 BuildTBN(float3 dir)
+	{
+		float sign = dir.z >= 0.0 ? 1.0 : -1.0;
+		float a = -1.0 / (sign + dir.z);
+		float bb = dir.x * dir.y * a;
+		float3 T = float3(1.0 + sign * dir.x * dir.x * a, sign * bb, -sign * dir.x);
+		float3 B = float3(bb, sign + dir.y * dir.y * a, -dir.y);
+		return float3x3(T, B, dir);
+	}
+
 }
 
 #endif  //__MATH_DEPENDENCY_HLSL__
