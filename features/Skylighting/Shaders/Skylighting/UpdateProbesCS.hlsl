@@ -79,8 +79,8 @@ RWTexture2DArray<float4> ProbeArray : register(u0);
 
 static const float GOLDEN_ANGLE = 2.39996322972865332;  // PI * (3 - sqrt(5))
 
-#	define SAMPLES 256      //256
-#	define RAY_SAMPLES 128  //128
+#	define SAMPLES 64      //256
+#	define RAY_SAMPLES 64  //128
 
 float3 SampleSkyRadiance(float3 rayDir)
 {
@@ -228,8 +228,8 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 	float cosTheta = dot(ray.direction, SharedData::DirLightDirection.xyz);
 	float StepLength = (RayT.y - RayT.x) / RAY_SAMPLES;
 
-	float CloudScatteringA = 3.0;  //24.9;  // km^-1 (default 24.9)
-	float CloudExtinctionA = 26;   //25.0;  // km^-1 (default 25)
+	float CloudScatteringA = CloudScattering;  //3.0;  //24.9;  // km^-1 (default 24.9)
+	float CloudExtinctionA = CloudExtinction;  //26;   //25.0;  // km^-1 (default 25)
 	CloudParticpatingMedium medium;
 	medium.scattering = CloudScatteringA;
 	medium.extinction = CloudExtinctionA;
@@ -248,7 +248,7 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 		state.rayStep = float4(0, 0, 0, StepLength);
 		state.upVector = normalize(SamplePos);
 
-		float sunVis = 0;  //EnvelopeZ;
+		float sunVis = 0;
 		ComputeLightingV1(CloudDensity, StepLength, sunVis, medium, Inscattering, Transmittance);
 	}
 
