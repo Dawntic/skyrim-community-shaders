@@ -35,24 +35,7 @@ SamplerComparisonState comparisonSampler : register(s0);
 		uint accumFrames = isValid ? (outAccumFramesArray[dtid] + 1) : 1;
 		float visibility = srcOcclusionDepth.SampleCmpLevelZero(comparisonSampler, occlusionUV, cellCentreOS.z);
 
-		//float Zenith = 90;
-		//float rcpPdf = Math::PI * sin(radians(Zenith)) / max(settings.OcclusionDir.z, 0.05);
-		//sh2 occlusionSH = SH::Scale(SH::Evaluate(settings.OcclusionDir.xyz), visibility * rcpPdf);
 		sh2 occlusionSH = SH::Scale(SH::Evaluate(settings.OcclusionDir.xyz), visibility * 2 * Math::PI);
-		//occlusionSH = SH::Add(occlusionSH, SH::Scale(SH::Evaluate(-settings.OcclusionDir.xyz), 0 * 2 * Math::PI));
-
-		const float Y00 = 0.28209479f;
-		const float Y1 = 0.48860251f;
-		float c0 = occlusionSH.x;
-		float3 c1 = occlusionSH.yzw;
-		float l1 = length(c1);
-		float dcVal = Y00 * c0;
-		float amp = Y1 * l1;                         // reconstruction's linear amplitude
-		float maxAllowed = min(1.0 - dcVal, dcVal);  // symmetric headroom around dcVal
-		if (amp > maxAllowed && l1 > 1e-6) {
-			float scale = max(maxAllowed, 0) / amp;
-			//occlusionSH.yzw = c1 * scale; // doesnt rly work
-		}
 
 		if (isValid) {
 			float lerpFactor = rcp(accumFrames);
