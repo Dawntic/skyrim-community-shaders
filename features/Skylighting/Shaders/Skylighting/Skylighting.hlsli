@@ -88,8 +88,8 @@ namespace Skylighting
 		const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
 
 		float3 output = 0;
-		const float2 atlasMin = settings.BentNormalAtlasBounds.xy;
-		const float2 atlasMax = settings.BentNormalAtlasBounds.zw;
+		const float2 atlasMin = settings.AtlasBounds.xy;
+		const float2 atlasMax = settings.AtlasBounds.zw;
 
 		WorldPosition += FrameBuffer::CameraPosAdjust.xyz;
 
@@ -106,8 +106,8 @@ namespace Skylighting
 	{
 		const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
 
-		const float2 atlasMin = settings.BentNormalAtlasBounds.xy;
-		const float2 atlasMax = settings.BentNormalAtlasBounds.zw;
+		const float2 atlasMin = settings.AtlasBounds.xy;
+		const float2 atlasMax = settings.AtlasBounds.zw;
 		WorldPosition += FrameBuffer::CameraPosAdjust.xyz;  // new
 
 		//float2 CoordsUV = (WorldPosition.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
@@ -162,8 +162,8 @@ namespace Skylighting
 
 		// Outside it, or with no tile resident: the atlas, which is stitched north up so v flips.
 		if (settings.HasBentNormalAtlas) {
-			const float2 atlasMin = settings.BentNormalAtlasBounds.xy;
-			const float2 atlasMax = settings.BentNormalAtlasBounds.zw;
+			const float2 atlasMin = settings.AtlasBounds.xy;
+			const float2 atlasMax = settings.AtlasBounds.zw;
 
 			if (all(positionWS >= atlasMin) && all(positionWS < atlasMax)) {
 				float2 uv = (positionWS - atlasMin) / (atlasMax - atlasMin);

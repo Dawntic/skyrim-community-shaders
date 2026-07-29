@@ -164,8 +164,8 @@ namespace SharedData
 		float4 Basis0;
 		float4 Basis1;
 
-		float4 BentNormalTileBounds;   // xy: min, zw: max world XY the streamed tile covers
-		float4 BentNormalAtlasBounds;  // xy: min, zw: max world XY the atlas covers
+		float4 BentNormalTileBounds;  // xy: min, zw: max world XY the streamed tile covers
+		float4 AtlasBounds;           // xy: min, zw: max world XY the atlas covers
 		uint HasBentNormalTile;
 		uint HasBentNormalAtlas;
 		uint2 pad1;

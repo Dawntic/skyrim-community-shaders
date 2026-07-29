@@ -118,27 +118,7 @@ float3 SampleSkyRadiance(float3 rayDir)
 	return SkyViewLUTTex.SampleLevel(LinearWrapSampler, frac(float2(u, v)), 0).rgb;
 }
 
-float GetCloudProfile(float3 SamplePos, float Height)
-{
-	float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0);  // Perlin-Worley + 3 octaves of worley
-	float PerlinWorley = NoiseSample.x;
-	float3 Worley = NoiseSample.yzw;
-
-	float WorleyFBM = dot(Worley, float3(0.625, 0.25, 0.125));
-	float cloudCover = Coverage2;
-
-	// Method used in frost nova
-	float layerDensity = GetDensityHeightGradientForPoint(SamplePos, CloudType, Height);
-	float Density = layerDensity * LerpLinearStepClamped(PerlinWorley, 0.3, 1.0, 0.0, 1.0);
-	float Coverage = pow(CloudCoverage, LerpLinearStep(Height, 0.7, 0.8, 1.0, 0.8));
-
-	float Erosion = LerpLinearStepClamped(WorleyFBM, Coverage, 1.0, 0.0, 1.0);
-	Erosion = LerpLinearStepClamped(Erosion, cloudCover, 1.0, 0.0, 1.0);
-
-	Density = LerpLinearStepClamped(Density, Erosion, 1.0, 0.0, 1.0);
-
-	return Density;
-}
+// GetCloudProfile now lives in PhysicalSky/CloudCommon.hlsli (shared with the view raymarch).
 
 static const float3 CLOUD_AMBIENT = float3(0.4, 0.45, 0.5);  // flat skylight fill into the cloud
 static const float CLOUD_MS_GAIN = 1.8;
@@ -220,8 +200,8 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 	float2 CoordsUV = (ThreadID.xy + 0.5) * rcp(settings.GridTexSize);
 
 	// gives correct height values
-	const float2 atlasMin = settings.BentNormalAtlasBounds.xy;
-	const float2 atlasMax = settings.BentNormalAtlasBounds.zw;
+	const float2 atlasMin = settings.AtlasBounds.xy;
+	const float2 atlasMax = settings.AtlasBounds.zw;
 	float3 WorldPos = float3(lerp(atlasMin, atlasMax, float2(CoordsUV.x, 1 - CoordsUV.y)), 0);
 
 	float2 AtlasUV = LinearStep(atlasMin, atlasMax, WorldPos.xy);

@@ -1,3 +1,8 @@
+// PhysSky namespace + SharedData/Math/Color, needed by the cloud helpers below
+// (SampleCloudSunTr samples the global Tr LUT). Guarded, so re-including it from
+// the translation units that also pull it in directly is a no-op.
+#include "PhysicalSky/Common.hlsli"
+
 cbuffer CloudDataCB : register(b0)
 {
 	float3 cameraPosIN;
@@ -138,26 +143,6 @@ float hgPhase(float anisotropy, float cosTheta)  // Henyey-Greenstein
 	float i = rsqrt(saturate((g2 + 1.0f) - cosTheta * (anisotropy * 2.0f)));
 	return (i * i * i) * ((1.0f - g2) * float(M_1_PI4));
 }
-
-float hgPhaseCloud(float cosTheta)  // Emulates the sun silver lining highlights.
-{
-	const float anisotropy = 0.6f, silverIntens = 0.6f, silverSpread = 0.2f;
-	return max(hgPhase(anisotropy, cosTheta), hgPhase(0.99 - silverSpread, cosTheta) * silverIntens);
-}
-
-// HG makes far clouds too dark, clouds away from star direction need extra scattering.
-float beerLambertCloud(float accumDensity, float cosTheta)
-{
-	float transmission = exp(-accumDensity);
-	float modulated = max(transmission, exp(accumDensity * -0.25f) * 0.7f);
-	return lerp(transmission, modulated, mad(cosTheta, -0.5f, 0.5f));
-}
-
-float calcMultiScattering(float hgMultiScatt, float stepSize, float3 cloudData, float relativeHeight, float cloudCoverage, float dimProfile, float transmittance)
-{
-	const float depthPower = 0.5f, heightPower = 0.5f;
-	return hgMultiScatt * LerpLinearStep(dimProfile * stepSize * 1000.0f, 0.1f, 1.0f, 0.0f, 1.0f) * pow(cloudCoverage * cloudData.z, 0.25f) * pow(transmittance, depthPower) * pow(relativeHeight, heightPower);
-}
 ///////////////////////////////////////////////////////////
 
 // Cloud General //////////////////////////////////////////
@@ -218,82 +203,7 @@ float GetDensityHeightGradientForPoint(float3 pointT, float weather_data, float 
 
 	return GetGradientHeightFactor(relativeHeight, cloudtype);
 }
-
-float calcRelativeHeightA(float3 SamplePos, float PlanetCenterToEnvelopeBottom, float InvVertEnvelopeSize)
-{
-	float3 projPos = normalize(SamplePos) * PlanetCenterToEnvelopeBottom;
-	return saturate(length(SamplePos - projPos) * InvVertEnvelopeSize);
-}
-
-float calcStepSize(float stepSizeFactor, float distance)
-{
-	const float nearStepSize = 0.003, farStepOffset = 0.06;
-	return mad(farStepOffset * distance, stepSizeFactor / 8.192, nearStepSize);
-}
-
-float calcRelativeHeight(float bottomRadius, float coverage, float3 samplePos, float invThickness)
-{
-	float3 projPos = normalize(samplePos) * bottomRadius;
-	float relativeHeight = distance(samplePos, projPos) * invThickness + max(coverage * 0.6, 0.2);
-	return saturate(relativeHeight);
-}
-
-float3 calcFieldWindDir(float3 windDir, float Coverage2) { return windDir * (Coverage2 * 0.02f); }
-float3 calcShapeWindDir(float3 windDir, float Coverage2) { return windDir * (Coverage2 * -0.002f); }
-float calcCloudMipLevel(float3 cameraPos, float3 samplePos, float scale, float offset)
-{
-	return log2(mad(max(distance(cameraPos, samplePos) + offset, 0.0f), scale, 1.0f));
-}
-
-float calcCloudCoverage(float coverage, float3 cloudData)
-{
-	return saturate(LerpLinearStep(cloudData.y, coverage, 1.0f, 0.0f, 1.0f));
-}
-
-float calcVerticalProfile(float CloudType, float3 cloudData, float relativeHeight)
-{
-	float topProfile = VertProfileTex.SampleLevel(LinearSampler, float2(min(cloudData.z, CloudType), relativeHeight), 0).x;
-	float bottomProfile = VertProfileTex.SampleLevel(LinearSampler, float2(cloudData.x, relativeHeight), 0).y;
-
-	return topProfile * bottomProfile;
-}
-
-// perlin worley noise
-float3 sampleDataFields(float3 cameraPos, float3 samplePos, float3 windDir, float posScale)
-{
-	float mipLod = calcCloudMipLevel(cameraPos, samplePos, 1.5, -15.0);
-	samplePos += windDir;
-
-	return DataFieldTex.SampleLevel(LinearRepeatSampler, samplePos.xy * posScale, mipLod).xyz;
-}
-
-float calcCloudDensity(float3 cameraPos, float3 samplePos, float3 cloudData, float dimProfile, float3 windDir)
-{
-	float mipLod = calcCloudMipLevel(cameraPos, samplePos, 0.5, -15.0);
-	float4 noise = NoiseShapeTex.SampleLevel(LinearRepeatSampler, (samplePos.xzy + windDir) * 0.4, mipLod);  // windDir needs mult
-	float wispyNoise = lerp(noise.r, noise.g, dimProfile);
-	float billowyNoise = lerp(noise.b * 0.3, noise.a * 0.3, pow(dimProfile, 0.25));
-	float noiseComposite = lerp(wispyNoise, billowyNoise, cloudData.z);
-	return LinearStep(noiseComposite, 1.0, dimProfile);  // Erosion
-}
 ///////////////////////////////////////////////////////////
-
-float pow2(float input)
-{
-	return input * input;
-}
-
-float pow3(float input)
-{
-	return input * input * input;
-}
-
-struct CloudRenderParams
-{
-	float3 lightDir;
-	float3 lightIrradiance;
-	float cosLightTheta;
-};
 
 struct CloudParticpatingMedium
 {
@@ -302,23 +212,11 @@ struct CloudParticpatingMedium
 	float3 phase;
 };
 
-struct CloudRaymarchLayerParam
-{
-	CloudParticpatingMedium medium;
-	float3 ambientIrradiance;
-};
-
 struct CloudRaymarchStepState
 {
 	float height;
 	float4 rayStep;
 	float3 upVector;
-};
-
-struct CloudRaymarchAccumState
-{
-	float3 totalInscattering;
-	float totalTransmittance;
 };
 
 float Draine(float cos_theta, float g, float alpha)
@@ -353,4 +251,139 @@ float3 CloudPhase(float cosTheta)
 {
 	return CloudPhase(cosTheta, 1.0);
 }
-//#endif
+
+// Cloud lighting march ///////////////////////////////////
+// Shared by the view raymarch (Clouds.hlsl) and the skylighting probe march
+// (UpdateProbesCS.hlsl).
+
+float GetCloudProfile(float3 SamplePos, float Height)
+{
+	float4 NoiseSample = CloudBaseTex.SampleLevel(LinearRepeatSampler, float3(SamplePos.xy, Scroll) * HeightScale, 0);  // Perlin-Worley + 3 octaves of worley
+	float PerlinWorley = NoiseSample.x;
+	float3 Worley = NoiseSample.yzw;
+
+	float WorleyFBM = dot(Worley, float3(0.625, 0.25, 0.125));
+	float cloudCover = Coverage2;
+
+	// Method used in frost nova
+	float layerDensity = GetDensityHeightGradientForPoint(SamplePos, CloudType, Height);
+	float Density = layerDensity * LerpLinearStepClamped(PerlinWorley, 0.3, 1.0, 0.0, 1.0);
+	float Coverage = pow(CloudCoverage, LerpLinearStep(Height, 0.7, 0.8, 1.0, 0.8));
+
+	float Erosion = LerpLinearStepClamped(WorleyFBM, Coverage, 1.0, 0.0, 1.0);
+	Erosion = LerpLinearStepClamped(Erosion, cloudCover, 1.0, 0.0, 1.0);
+
+	Density = LerpLinearStepClamped(Density, Erosion, 1.0, 0.0, 1.0);
+
+	return Density;
+}
+
+float ApplyCloudDetail(float BaseDensity, float3 SamplePos, float Height, float ViewDistance)
+{
+	float fade = 1.0 - LerpLinearStepClamped(ViewDistance, DetailFadeStart, DetailFadeEnd, 0.0, 1.0);
+	float strength = DetailStrength * fade;
+	if (strength <= 0.0)
+		return BaseDensity;
+
+	// Turbulent advection: curl-distort the detail lookup (2D field, strongest
+	// at the cloud base where wind shear lives).
+	float2 curl = CurlNoiseTex.SampleLevel(LinearRepeatSampler, SamplePos.xy * (HeightScale * DetailCurlScale), 0).xy * 2.0 - 1.0;
+	float3 detailPos = SamplePos + float3(curl * ((1.0 - Height) * DetailCurlStrength), Scroll);
+
+	float3 worley = CloudDetailTex.SampleLevel(LinearRepeatSampler, detailPos * (HeightScale * DetailFrequency), 0).xyz;
+	float detailFBM = dot(worley, float3(0.625, 0.25, 0.125));
+
+	// Wispy at the base, billowy at the top.
+	float erosion = lerp(detailFBM, 1.0 - detailFBM, saturate(Height * 10.0)) * strength;
+
+	return LerpLinearStepClamped(BaseDensity, erosion, 1.0, 0.0, 1.0);
+}
+
+// Optical depth toward the sun: 5 exponential steps, ~1.5 km total, coarse
+// density only (erosion skipped). sunDir points TOWARD the sun, which at
+// sunset goes DOWNWARD through the layer -- exiting through the layer BASE is
+// the unoccluded case, exactly like exiting through the top. The atmosphere
+// beyond the exit is already accounted for by the windowed sun-transmittance
+// LUT; the two are independent path segments composed by multiplication.
+float GetOpticalDepth(float3 Pos, float3 Dir, float extinction)
+{
+	float OpticalDepth = 0.0;
+	float t = 0.0, dt = 0.05;  // km
+	[unroll] for (int i = 0; i < 5; ++i)
+	{
+		t += dt;
+		float3 SamplePos = Pos + Dir * t;
+		// Unsaturated height: the exit test must see out-of-layer values
+		float Height = LinearStep(bottomRadius, topRadius, SamplePos.z);
+		if (Height < 0.0 || Height > 1.0)
+			break;
+		OpticalDepth += GetCloudProfile(SamplePos, Height) * dt * extinction;
+		dt *= 2.0;
+	}
+	return OpticalDepth;
+}
+
+static const float OCTAVE_ENERGY_ATTEN = 0.6;
+
+// Wrenninge multi-scatter octaves: fakes deep multiple scattering of spectrally neutral droplet medium.
+float SunVisibilityMS(float SunOpticalDepth)
+{
+	float vis = 0.0;
+	float a = 1.0, b = 1.0;
+	[unroll] for (int i = 0; i < 3; ++i)
+	{
+		vis += b * exp(-a * SunOpticalDepth);
+		a *= OctaveAttenA;
+		b *= OCTAVE_ENERGY_ATTEN;
+	}
+	return vis;
+}
+
+// Per-octave phase eccentricity attenuation for the sun light march
+// (g *= 0.5 per octave, so deeply-scattered light goes isotropic).
+// Default on per the cloud lighting upgrade plan.
+#ifndef CLOUD_SUN_OCTAVE_PHASE
+#	define CLOUD_SUN_OCTAVE_PHASE 1
+#endif
+
+#if CLOUD_SUN_OCTAVE_PHASE
+// Octave sum with per-octave phase
+float SunVisibilityMSPhased(float SunOpticalDepth, float3 phaseOctaves)
+{
+	float vis = 0.0;
+	float a = 1.0, b = 1.0;
+	[unroll] for (int i = 0; i < 3; ++i)
+	{
+		vis += b * exp(-a * SunOpticalDepth) * phaseOctaves[i];
+		a *= OctaveAttenA;
+		b *= OCTAVE_ENERGY_ATTEN;
+	}
+	return vis;
+}
+#endif
+
+// Direct sun transmittance at a raymarch sample, from the per-frame windowed
+// LUT (LUTGEN 4), parameterized by the sample'i actual altitude and sun zenith
+// cosine -- including mu < 0 (afterglow/underlighting). Debug overrides sit
+// AFTER the UV remap decision so remap bugs are excluded from
+// application-side tests.
+static const float REFRACTION_MU_BIAS = 0.009;
+
+float3 SampleCloudSunTr(float3 posPlanetRel)
+{
+	if (DebugSunTrMode == 1)
+		return 1.0;
+	if (DebugSunTrMode == 2)
+		return float3(1.0, 0.35, 0.08);
+	if (DebugSunTrMode == 3) {
+		float2 uvGlobal = PhysSky::TrLutUvPlanet(posPlanetRel / GAME_UNIT_TO_KM, SharedData::physSkyData.sunDir);
+		return PhysSky::TexTrLut.SampleLevel(LinearSampler, uvGlobal, 0).xyz;
+	}
+	float r = length(posPlanetRel);
+	float mu = dot(posPlanetRel / r, SharedData::physSkyData.sunDir);
+	// Atmospheric refraction lifts the apparent sun ~0.5 deg at the horizon extending the underlighting window
+	mu += REFRACTION_MU_BIAS * (mu < 0.0);
+	float2 uv = float2(LinearStep(cloudTrMuMin, cloudTrMuMax, mu), LinearStep(cloudTrRBot, cloudTrRTop, r));
+	return TexCloudSunTr.SampleLevel(LinearSampler, saturate(uv), 0).xyz;
+}
+///////////////////////////////////////////////////////////
