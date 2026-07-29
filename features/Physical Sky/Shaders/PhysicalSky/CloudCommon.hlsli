@@ -1,7 +1,10 @@
-// PhysSky namespace + SharedData/Math/Color, needed by the cloud helpers below
-// (SampleCloudSunTr samples the global Tr LUT). Guarded, so re-including it from
-// the translation units that also pull it in directly is a no-op.
-#include "PhysicalSky/Common.hlsli"
+// PhysSky namespace, needed by SampleCloudSunTr below (it samples the global Tr
+// LUT). Common.hlsli references SharedData::PhysSkyData, which only exists in
+// PS/CS builds, so it must NOT be dragged into the vertex-shader permutation --
+// gate it (and SampleCloudSunTr) on the same guard SharedData.hlsli uses.
+#if defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER)
+#	include "PhysicalSky/Common.hlsli"
+#endif
 
 cbuffer CloudDataCB : register(b0)
 {
@@ -367,6 +370,9 @@ float SunVisibilityMSPhased(float SunOpticalDepth, float3 phaseOctaves)
 // cosine -- including mu < 0 (afterglow/underlighting). Debug overrides sit
 // AFTER the UV remap decision so remap bugs are excluded from
 // application-side tests.
+// Guarded on PS/CS: it reaches into the PhysSky namespace (Common.hlsli), which
+// is only available in those builds -- see the include guard at the top.
+#if defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER)
 static const float REFRACTION_MU_BIAS = 0.009;
 
 float3 SampleCloudSunTr(float3 posPlanetRel)
@@ -386,4 +392,5 @@ float3 SampleCloudSunTr(float3 posPlanetRel)
 	float2 uv = float2(LinearStep(cloudTrMuMin, cloudTrMuMax, mu), LinearStep(cloudTrRBot, cloudTrRTop, r));
 	return TexCloudSunTr.SampleLevel(LinearSampler, saturate(uv), 0).xyz;
 }
+#endif
 ///////////////////////////////////////////////////////////
