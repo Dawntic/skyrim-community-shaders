@@ -97,24 +97,24 @@ PixelOut main(VertexOut input)
 		return output;
 
 	// clip march to opaque scene
-	float sceneDepth = DepthTex.SampleLevel(LinearSampler, input.TexCoord, 0).x;
-	float4 worldPos = mul(FrameBuffer::CameraViewProjInverse, float4(float2(CoordsNDC.x, -CoordsNDC.y), sceneDepth, 1.0));
-	worldPos.xyz = worldPos.xyz / worldPos.w;
-	float sceneDistKm = length(worldPos.xyz) * GAME_UNIT_TO_KM;
-	if (sceneDepth < 1.0) {
-		RayT.y = min(RayT.y, sceneDistKm);
+	float Depth = DepthTex.SampleLevel(LinearSampler, input.TexCoord, 0).x;
+	float4 CoordsWS = mul(FrameBuffer::CameraViewProjInverse, float4(float2(CoordsNDC.x, -CoordsNDC.y), Depth, 1.0));
+	CoordsWS.xyz = CoordsWS.xyz / CoordsWS.w;
+	float GeomDist = length(CoordsWS.xyz) * GAME_UNIT_TO_KM;
+	if (Depth < 1.0) {
+		RayT.y = min(RayT.y, GeomDist);
 		if (RayT.y <= RayT.x)
 			return output;
 	}
 
-	float disocclusion = DisocculsionTex.SampleLevel(LinearSampler, input.TexCoord, 0.0).x;
+	float disocclusion = 1;  //DisocculsionTex.SampleLevel(LinearSampler, input.TexCoord, 0.0).x;
 	if (disocclusion == 0) {
-		float4 prevNdcPos = mul(FrameBuffer::CameraPreviousViewProjUnjittered, float4(normalize(worldPos.xyz), 0.0));
+		float4 prevNdcPos = mul(FrameBuffer::CameraPreviousViewProjUnjittered, float4(normalize(CoordsWS.xyz), 0.0));
 		prevNdcPos.xyz = prevNdcPos.xyz / prevNdcPos.w;
 		float2 prevTexCoords = float2(prevNdcPos.x, -prevNdcPos.y) * 0.5 + 0.5;
 		if (bayerPos.x != -1.0 && all(prevTexCoords < 1.0 && prevTexCoords > 0.0)) {
 			float prevDepth = DepthTex.SampleLevel(LinearSampler, prevTexCoords, 0);
-			if (all((uint2)input.Position.xy % 4 != (uint2)bayerPos) && (prevDepth <= sceneDepth)) {
+			if (all((uint2)input.Position.xy % 4 != (uint2)bayerPos) && (prevDepth <= Depth)) {
 				output.color = PrevFrameCloudTex.SampleLevel(LinearSampler, prevTexCoords, 0);
 				output.depth = PrevFrameCloudDepthTex.SampleLevel(LinearSampler, prevTexCoords, 0).x;
 				return output;
@@ -191,21 +191,41 @@ PixelOut main(VertexOut input)
 	}
 	/////////////////////////////////////////////
 
-	// TODO: gamma placement. Encoding here is only valid if the composite
-	// consumes gamma; if clouds ever blend with the linear-HDR sky
-	// pre-tonemap, this shifts hues exactly at twilight, where the
-	// channel ratios are extreme. Revisit when the compose path is settled.
-	output.color = float4(Color::LLLinearToGamma(Inscattering), max(1.0 - Transmittance, 1e-6));
+	output.color = float4(Inscattering, max(1.0 - Transmittance, 1e-6));
 
-	//float cloudDistance = (TrSum > 0.0) ? TrDepthSum / TrSum : RayT.y;
-	//float3 cloudCamPos  = ray.direction * cloudDistance;
-	//float4 clipPos = mul(FrameBuffer::CameraViewProj, float4(cloudCamPos / GAME_UNIT_TO_KM, 1.0));
-	//output.depth = saturate(clipPos.z / clipPos.w);
+	float cloudDistance = (TrSum > 0.0) ? TrDepthSum / TrSum : RayT.y;
+	float3 cloudCamPos = ray.direction * cloudDistance;
+	float4 clipPos = mul(FrameBuffer::CameraViewProj, float4(cloudCamPos / GAME_UNIT_TO_KM, 1.0));
+	output.depth = saturate(clipPos.z / clipPos.w);
 
 	return output;
 }
 #endif
 /////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////
+#ifdef CLOUD_BLEND_PS
+
+Texture2D CloudColorTex : register(t0);
+Texture2D CloudDepthTex : register(t1);
+Texture2D DepthTexA : register(t2);
+
+SamplerState LinearSamplerA : register(s0);
+
+float4 main(VertexOut input) : SV_TARGET0
+{
+	float depth = DepthTexA.SampleLevel(LinearSamplerA, input.TexCoord, 0).x;
+	float cloudDepth = CloudDepthTex.SampleLevel(LinearSamplerA, input.TexCoord, 0).x;
+	if (depth < cloudDepth) {
+		discard;
+	}
+
+	float4 Cloud = CloudColorTex.SampleLevel(LinearSamplerA, input.TexCoord, 0);
+	Cloud = Color::LLLinearToGamma(Cloud);
+
+	return Cloud;
+}
+#endif
 
 ////////////////////////////////////////////////////////////////////////
 #ifdef CLOUD_DEBUG_BLIT_PS
@@ -226,26 +246,3 @@ float4 main(VertexOut input) : SV_TARGET0
 }
 #endif
 /////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////
-#ifdef CLOUD_BLEND_PS
-
-Texture2D CloudColorTex : register(t0);
-Texture2D CloudDepthTex : register(t1);
-Texture2D DepthTexA : register(t2);
-
-SamplerState LinearSamplerA : register(s0);
-
-float4 main(VertexOut input) : SV_TARGET0
-{
-	//float depth = DepthTexA.SampleLevel(LinearSamplerA, input.TexCoord, 0).x;
-	//float cloudDepth = CloudDepthTex.SampleLevel(LinearSamplerA, input.TexCoord, 0).x;
-	//if (depth < cloudDepth){
-	//	discard;
-	//}
-
-	float4 Cloud = CloudColorTex.SampleLevel(LinearSamplerA, input.TexCoord, 0);
-
-	return Cloud;
-}
-#endif
