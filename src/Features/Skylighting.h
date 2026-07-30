@@ -66,24 +66,6 @@ public:
 		uint toggleGrass = true;
 		uint toggleDeferred = true;
 		uint toggleEffect = true;
-
-		int cacheProgressX = -57;
-		int cacheProgressY = -43;
-		int cacheTileCells = 8;            // worldspace cells per height tile edge (4 or 8)
-		int cacheTileSize = 1024;          // texels per height tile edge (512 or 1024)
-		bool cacheExport16Bit = true;      // export tiles as xLODGen-style 16 bit unsigned instead of raw float
-		bool cacheAtlasZeroBase = false;   // bias the atlas so its lowest point sits at 0.0
-		float cacheAtlasMinHeight = 0.0f;  // game unit height the last biased atlas stores as 0.0
-
-		// Layout of the last built atlas, so texel coordinates can be mapped back to cells.
-		int cacheAtlasMinCellX = 0;  // origin cell of the atlas' lower left tile
-		int cacheAtlasMinCellY = 0;
-		int cacheAtlasTileSize = 0;   // texels per tile edge, 0 if no atlas has been built
-		int cacheAtlasTileCells = 0;  // cells per tile edge
-		int cacheAtlasTilesX = 0;     // tile columns
-		int cacheAtlasTilesY = 0;     // tile rows, needed to flip texel Y into cell space
-
-		float cacheBentNormalAtlasScale = 1.0f;  // downscale factor applied when stitching the BN atlas
 	} settings;
 
 	struct SkylightingCB
@@ -161,12 +143,15 @@ public:
 	void GetCachedWorldspaces();
 	bool LoadWorldspaceCache();
 
+	/// @brief Force every cache map to be reloaded from disk on the next frame.
+	/// Called by TexGen after it has regenerated one of them.
+	void InvalidateCacheMaps() { cacheWorldspaceID.clear(); }
+
 	void UpdateTerrainLighting();
 
 	bool runSparse = true;  /////////////
 
 	bool worldHasCache = false;
-	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
 	std::unordered_set<std::string> worldSpaceCachedMapList;
 	std::string cacheWorldspaceID = "";
 
@@ -182,131 +167,10 @@ public:
 	ID3D11ShaderResourceView* DOMapSRVB = nullptr;
 	ID3D11ShaderResourceView* DO2MapSRVB = nullptr;
 
-	//// Cache gen resources ////
-	static constexpr uint COMapSize = 1024;
-	static constexpr int2 BNMapSize = int2(3808, 3008);
-	float HeightMapOffset = 0;  //32767;  // from xlodgen
-	float HeightMapScale = 1;   //8.0;     // from xlodgen
-
-	std::filesystem::path lodPath = L"C:\\Skyrim Modding Utilities\\DynDOLOD\\xLODGen\\Output\\textures\\terrain\\tamriel";
-	void BuildAtlas(const std::filesystem::path& outputDir, std::string mapTag);
-	void GenerateBentNormalMap();
-	void GenerateCardinalOcclusionMap();
-	//void GenerateNormalStepMap();
-	void GenerateNormalMap();
-	bool MapGen = false;
-	bool heightGenInit = true;              // set to restart the height run from the stored tile boundary
-	bool heightGenSingleTile = false;       // generate only the tile covering heightGenTargetCell, then stop
-	int2 heightGenTargetCell = int2(0, 0);  // cell whose tile a single tile run generates
-	int cellsDone = 0;
-	int tilesDone = 0;
-	bool test = false;
-	bool test2 = false;
-	bool test3 = false;
-
-	//// Height cache tiles ////
-	// The height cache is written out as a grid of fixed-size tiles instead of one huge
-	// worldspace-sized texture. Each tile covers cacheTileCells x cacheTileCells worldspace
-	// cells and is saved to disk as soon as its last cell has been sampled.
-	static constexpr float worldCellSize = 4096.0f;  // world units per worldspace cell edge
-	static inline int heightSettleFrames = 20;       // 60 // frames to let terrain stream in after a teleport
-	static inline eastl::unique_ptr<Texture2D> cacheOutputTexH = nullptr;
-
-	// xLODGen-compatible export encoding: 16 bit unsigned, zero height stored as 32767, one step
-	// per 8 game units. Decode with height = (encoded - heightExportOffset) * heightExportScale.
-	static constexpr float heightExportOffset = 32767.0f;
-	static constexpr float heightExportScale = 8.0f;
-
-	/// @brief Cells per tile edge, sanitised to a value the tile size divides evenly (4 or 8).
-	int GetHeightTileCells() const { return settings.cacheTileCells == 4 ? 4 : 8; }
-	/// @brief Texels per tile edge, sanitised to a supported size (512 or 1024).
-	uint GetHeightTileSize() const { return settings.cacheTileSize == 512 ? 512u : 1024u; }
-	/// @brief (Re)create the staging tile at the given edge size. Returns false on failure.
-	bool EnsureHeightTileTexture(uint tileSize);
-	/// @brief Zero the staging tile so cells that fall outside the worldspace stay at zero height.
-	void ClearHeightTile();
-	/// @brief Write the staging tile to "<Worldspace>_H<tileSize>.<cellsPerTile>.<originX>.<originY>.dds".
-	bool SaveHeightTile(const int2& tileOriginCell, int cellsPerTile);
-	/// @brief Copy the staging tile into a viewable texture holding exactly what gets written to disk.
-	void UpdateHeightPreview(const int2& tileOriginCell);
-	/// @brief The worldspace cell range a stitched atlas covers, carried in its file name so the
-	/// extent always describes the file on disk rather than whatever the settings last recorded.
-	struct AtlasCellRange
-	{
-		int2 minCell = int2(0, 0);  // south west cell, inclusive
-		int2 maxCell = int2(0, 0);  // north east cell, inclusive
-		bool valid = false;
-
-		float4 WorldBounds() const
-		{
-			return float4(
-				(float)minCell.x * worldCellSize,
-				(float)minCell.y * worldCellSize,
-				(float)(maxCell.x + 1) * worldCellSize,
-				(float)(maxCell.y + 1) * worldCellSize);
-		}
-	};
-
-	AtlasCellRange heightAtlasRange;
-	AtlasCellRange bentNormalAtlasRange;
-
-	/// @brief Locate "<Worldspace><mapTag>.<minX>.<minY>.<maxX>.<maxY>.dds" and read its cell range.
-	bool FindAtlas(const std::string& worldspaceID, const std::string& mapTag, std::filesystem::path& o_path, AtlasCellRange& o_range) const;
-	/// @brief World bounds of the bent normal atlas, which may cover a different range to the height map.
-	float4 GetBentNormalAtlasBounds() const;
-
-	/// @brief A set of tiles stitched into one north up image, with where each tile landed.
-	struct TileAtlasResult
-	{
-		DirectX::ScratchImage image;
-		std::vector<std::pair<int2, std::string>> placements;  // atlas texel origin -> source file
-		int2 minOriginCell = int2(0, 0);
-		int2 maxOriginCell = int2(0, 0);
-		int2 tileCounts = int2(0, 0);
-		uint tileSize = 0;
-		int cellsPerTile = 0;
-	};
-
-	/// @brief Stitch "<Worldspace><mapTag><tileSize>.<cells>.<x>.<y>.dds" tiles into one image.
-	/// @param unormFill Value gaps between tiles take in a UNORM format, normalised to [0, 1].
-	/// @param floatFill Value gaps between tiles take in a float format.
-	/// @param scale Downscale applied per tile, 0 to 1. Rounded so tiles stay texel aligned.
-	bool StitchTileAtlas(const std::string& worldspaceID, const std::string& mapTag, const float4& unormFill, const float4& floatFill, TileAtlasResult& o_result, float scale = 1.0f);
-
-	/// @brief Ensure "<Worldspace>_H.dds" exists, stitching it from the generated height tiles if not.
-	/// @param forceRebuild Rebuild even when the atlas is already on disk.
-	/// @return True if the atlas exists once the call returns.
-	bool EnsureHeightAtlas(const std::string& worldspaceID, bool forceRebuild = false);
-	/// @brief Ensure "<Worldspace>_BN.dds" exists, stitching it from the generated bent normal tiles.
-	bool EnsureBentNormalAtlas(const std::string& worldspaceID, bool forceRebuild = false);
-	/// @brief Map an atlas texel to the worldspace cell it covers, using the last built atlas layout.
-	/// @return False if no atlas has been built, leaving o_cell untouched.
-	bool AtlasTexelToCell(const int2& texel, int2& o_cell) const;
-
-	//// LOD bent normal tiles ////
-	// One bent normal tile per height tile, matching their dimensions, format and naming, built
-	// from the stitched height atlas so rays still see terrain beyond the tile they belong to.
-
-	/// @brief Run the per texel bent normal march over a UV region of the height atlas.
-	/// @param regionOffsetScale xy uv offset, zw uv scale. (0, 0, 1, 1) covers the whole atlas.
-	bool DispatchBentNormals(ID3D11ComputeShader* computeShader, Texture2D* outputTex, const float4& regionOffsetScale);
-	/// @brief Line sweep bent normals for one tile: one dispatch per azimuth, then a resolve pass.
-	/// @param tileOriginAtlasPx North west corner of the tile in atlas texels.
-	bool DispatchBentNormalSweep(Texture2D* accumTex, const int2& tileOriginAtlasPx);
-	static constexpr int bentNormalAzimuths = 64;  // must match NUM_AZIMUTH in the shader
-	static constexpr int bentNormalHullCapacity = 1024;
-	/// @brief Queue a bent normal tile for every height tile on disk. Tiles are processed one per frame.
-	bool StartBentNormalTiles();
-	/// @brief Process the next queued bent normal tile, if any.
-	void UpdateBentNormalTiles();
-	/// @brief Generate and save the bent normal tile whose grid starts at the given cell.
-	bool GenerateBentNormalTile(const int2& tileOriginCell);
-	void StopBentNormalTiles();
-
 	//// Bent normal tile streaming ////
 	// Exactly one bent normal tile is resident at a time: the one covering the player. Coverage
 	// therefore ends at the tile edge rather than at a fixed radius, which is a deliberate trade
-	// for keeping a single texture in memory.
+	// for keeping a single texture in memory. Tiles themselves are baked by TexGen.
 
 	ID3D11ShaderResourceView* BNTileSRV = nullptr;  // streamed tile, separate from the BN atlas
 	int2 bnTileOriginCell = int2(0, 0);             // origin cell of the tile last attempted
@@ -318,42 +182,8 @@ public:
 	/// @brief Drop the resident tile and forget which one it was.
 	void ReleaseBentNormalTileStream();
 
-	bool bentNormalTileGen = false;
-	size_t bentNormalTileIndex = 0;
-	std::vector<int2> bentNormalTileQueue;
-	int2 bentNormalAtlasSize = int2(0, 0);
-	eastl::unique_ptr<Texture2D> bentNormalTileTex = nullptr;
-	winrt::com_ptr<ID3D11ComputeShader> bentNormalSweepCS = nullptr;
-	winrt::com_ptr<ID3D11ComputeShader> bentNormalFinalizeCS = nullptr;
-	winrt::com_ptr<ID3D11Buffer> bentNormalHullBuffer = nullptr;
-	winrt::com_ptr<ID3D11UnorderedAccessView> bentNormalHullUAV = nullptr;
-
-	eastl::unique_ptr<Texture2D> heightPreviewTex = nullptr;
-	int2 heightPreviewOrigin = int2(0, 0);
-	bool heightPreviewValid = false;
-
-	float GetRayIntersectionHeight(float3 position, float f);
-	void SetWorldPosition(const int2& currentCellXY, RE::NiPoint3& worldPos);
-	void GenerateHeightMap();
-	bool IsPositionValid(RE::NiPoint3 inputPosition);
-	ID3D11ShaderResourceView* tmpTex = nullptr;
-	float SampleHeightMap(float2 coords);
-
-	struct alignas(16) CacheGenCBStruct
-	{
-		float4 TexParams;
-		float4 RegionOffsetScale = float4(0.0f, 0.0f, 1.0f, 1.0f);  // height map sub rect to process
-		float4 GridBounds;                                          // world xy min/max of the height map
-		float4 SweepDir;                                            // xy: world dir, z: slope, w: major step
-		float4 SweepParams;                                         // x: first line, y: line count, z: transpose, w: units per step
-		float4 SweepRect;                                           // xy: tile origin in atlas texels, z: tile size
-	};
-	ConstantBuffer* cacheGenBuffer = nullptr;
-
-	/// @brief World bounds (minX, minY, maxX, maxY) of the cells the height map covers.
-	float4 GetHeightMapBounds() const;
-	/// @brief Fill the cache gen constants shared by every generator.
-	CacheGenCBStruct MakeCacheGenCB(const float2& outputSize, const float4& regionOffsetScale = float4(0.0f, 0.0f, 1.0f, 1.0f)) const;
+	/// @brief (Re)load a cache map, releasing whatever the view held. False if it is missing or unreadable.
+	bool LoadCacheMap(const std::filesystem::path& a_path, ID3D11ShaderResourceView** a_srv);
 
 	void ResetSkylighting();
 	std::chrono::time_point<std::chrono::system_clock> lastUpdateTimer = std::chrono::system_clock::now();
