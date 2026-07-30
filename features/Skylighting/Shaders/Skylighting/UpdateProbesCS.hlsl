@@ -60,20 +60,9 @@ SamplerComparisonState comparisonSampler : register(s0);
 //SamplerState LinearSampler : register(s0);
 SamplerState LinearWrapSampler : register(s2);
 
-// 0-11 is cloud stuff
-Texture2D SkyViewLUTTex : register(t12);
-Texture2D HeightTex : register(t13);
-Texture2D BentNormalTex : register(t14);
-Texture2D CardinalOcclusionTex : register(t15);
-Texture2D CardinalOcclusionDiagTex : register(t16);
-Texture2D AlbedoTex : register(t17);
-Texture2D NormalTex : register(t18);
-Texture2D GroundRadianceTex : register(t19);
-Texture2D ReflectionDistribTex : register(t20);
-Texture2D Card1 : register(t21);
-Texture2D Card2 : register(t22);
-Texture2D Diag1 : register(t23);
-Texture2D Diag2 : register(t24);
+Texture2D HeightTex : register(t0);
+Texture2D SkyViewLUTTex : register(t1);
+// t8 is cloud base density
 
 RWTexture2DArray<float4> ProbeArray : register(u0);
 
@@ -117,8 +106,6 @@ float3 SampleSkyRadiance(float3 rayDir)
 
 	return SkyViewLUTTex.SampleLevel(LinearWrapSampler, frac(float2(u, v)), 0).rgb;
 }
-
-// GetCloudProfile now lives in PhysicalSky/CloudCommon.hlsli (shared with the view raymarch).
 
 static const float3 CLOUD_AMBIENT = float3(0.4, 0.45, 0.5);  // flat skylight fill into the cloud
 static const float CLOUD_MS_GAIN = 1.8;

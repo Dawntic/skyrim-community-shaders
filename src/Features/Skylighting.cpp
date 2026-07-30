@@ -162,6 +162,9 @@ void Skylighting::DrawSettings()
 	ImGui::SliderFloat("Sky Influence", &settings.SkyInfluence, 0.01f, 5.0f);
 	ImGui::SliderFloat("Environment Influence", &settings.EnvInfluence, 0.01f, 5.0f);
 
+	ImGui::Checkbox("Terrain Lighting Map", &updateTerrainLighting);
+	ImGui::Checkbox("Sparse Probe Map", &runSparse);
+
 	static float debugRescale = 1.0f;
 	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
 
@@ -1221,43 +1224,25 @@ void Skylighting::UpdateSparseProbeGrid()
 	context->CSSetConstantBuffers(0, 2, buffer);
 
 	auto& physSky = globals::features::physicalSky;
-	auto& depthTexture = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	//auto& depthTexture = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 
 	ID3D11ShaderResourceView* srvs[] = {
-		depthTexture.depthSRV,         //0
-		physSky.disoccTex->srv.get(),  //1
-		nullptr,                       //2
-		nullptr,                       //3
-		physSky.dataFieldsSRV.get(),   //4
-		physSky.cirrusShapeSRV.get(),  //5
-		physSky.vertProfileSRV.get(),  //6
-		physSky.noiseShapeSRV.get(),   //7
-		physSky.cloudBaseSRV.get(),
-		physSky.cloudDetailSRV.get(),
-		physSky.curlNoiseSRV.get(),
-		physSky.weatherMapSRV.get(),  //11
-
-		physSky.texSvLut->srv.get(),  //12
-		HMapSRV,                      //globals::features::terrainShadows.texHeightMap->srv.get(),
-		BNMapSRV,
-		COMapSRV,
-		CO2MapSRV,
-		AMapSRV,
-		NMapSRV,
-		terrainLightingTex->srv.get(),
-		nullptr,  //NSMapSRV,
-		DOMapSRV,
-		DO2MapSRV,
-		DOMapSRVB,
-		DO2MapSRVB,
-
+		HMapSRV,
+		physSky.texSvLut->srv.get(),
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		physSky.cloudBaseSRV.get(),  //t8
 	};
 
 	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
 	context->Dispatch((sparseGridSize.x + 7) / 8, (sparseGridSize.y + 7) / 8, 1);
 
-	ID3D11UnorderedAccessView* nullUAVs[2] = { nullptr, nullptr };
+	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
 
 	if (globals::state->frameAnnotations)
@@ -1367,7 +1352,8 @@ void Skylighting::Prepass()
 
 	UpdateDenseProbeGrid();
 
-	UpdateTerrainLighting();
+	if (updateTerrainLighting)
+		UpdateTerrainLighting();
 
 	if (runSparse)
 		UpdateSparseProbeGrid();

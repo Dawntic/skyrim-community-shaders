@@ -149,6 +149,9 @@ public:
 	float4 OcclusionDir;
 	uint frameCount = 0;
 
+	bool updateTerrainLighting = false;
+	bool runSparse = true;  /////////////
+
 	// Sparse grid
 	static constexpr int2 sparseGridSize = int2(1024, 1024);  //int2(256, 256);  //int2(119 * 4, 94 * 4);
 	eastl::unique_ptr<Texture2D> texSparseProbeArray = nullptr;
@@ -162,8 +165,6 @@ public:
 	bool LoadWorldspaceCache();
 
 	void UpdateTerrainLighting();
-
-	bool runSparse = true;  /////////////
 
 	bool worldHasCache = false;
 	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
