@@ -66,8 +66,8 @@ Texture2D SkyViewLUTTex : register(t1);
 
 RWTexture2DArray<float4> ProbeArray : register(u0);
 
-#	define SAMPLES 64      //256
-#	define RAY_SAMPLES 64  //128
+#	define SAMPLES 64            //256
+#	define CLOUD_RAY_SAMPLES 64  //128
 
 // These matches physical sky
 float2 SkyViewLutUv(float3 rayDir)
@@ -147,20 +147,18 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 		return;
 
 	float cosTheta = dot(ray.direction, SharedData::DirLightDirection.xyz);
-	float StepLength = (RayT.y - RayT.x) / RAY_SAMPLES;
+	float StepLength = (RayT.y - RayT.x) / CLOUD_RAY_SAMPLES;
 
-	float CloudScatteringA = CloudScattering;  //3.0;  //24.9;  // km^-1 (default 24.9)
-	float CloudExtinctionA = CloudExtinction;  //26;   //25.0;  // km^-1 (default 25)
 	CloudParticpatingMedium medium;
-	medium.scattering = CloudScatteringA;
-	medium.extinction = CloudExtinctionA;
+	medium.scattering = CloudScattering;
+	medium.extinction = CloudExtinction;
 	medium.phase = CloudPhase(cosTheta);
 
-	for (int i = 0; i < RAY_SAMPLES; i++) {  // 128 samples
+	for (int i = 0; i < CLOUD_RAY_SAMPLES; i++) {  // 128 samples
 		float3 SamplePos = ray.direction * (RayT.x + i * StepLength) + cameraPos;
 		float EnvelopeZ = GetEnvelopeRelativeZ(SamplePos, float2(bottomRadius, topRadius));
 
-		float CloudDensity = GetCloudProfile(SamplePos, EnvelopeZ);  // + 1;
+		float CloudDensity = GetCloudProfile(SamplePos, EnvelopeZ);
 		if (CloudDensity <= 0.0)
 			continue;
 
@@ -216,9 +214,6 @@ void RaymarchCloud(float3 worldDir, float3 cameraPosA, inout float3 Inscattering
 		float cloudTr = 1;
 		float3 cloudInscattering = 0;
 		RaymarchCloud(SkySampleDir, WorldPos, cloudInscattering, cloudTr);
-
-		//float Mult = 1.0 - LinearStep(10000, 25000, WorldHeight); // playing with contact hardening effect
-		//cloudInscattering *= Mult;
 
 		SkyRadiance = SkyRadiance * cloudTr + cloudInscattering;
 

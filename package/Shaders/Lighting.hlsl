@@ -3052,7 +3052,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	//SkyIrradiance = Skylighting::TestMap(input.WorldPosition.xyz);
 
 	//if (ApplyIrradiance) {
-	//directionalAmbientColor = SkyIrradiance;
+	//directionalAmbientColor = Color::IrradianceToGamma(SkyIrradiance);
 	//}
 #	endif
 
