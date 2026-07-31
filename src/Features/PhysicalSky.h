@@ -105,7 +105,9 @@ struct PhysicalSky final : public Feature
 
 		float detailFadeStart;
 		float detailFadeEnd;
-		float2 cloudDataPad;
+		float pad[2];
+		Matrix viewProj;
+		Matrix prevViewProj;
 	};
 	STATIC_ASSERT_ALIGNAS_16(CloudCB);
 
@@ -175,7 +177,8 @@ struct PhysicalSky final : public Feature
 	eastl::unique_ptr<Texture2D> cloudColorTex[2] = { nullptr, nullptr };
 	eastl::unique_ptr<Texture2D> cloudDepthTex[2] = { nullptr, nullptr };
 
-	eastl::unique_ptr<Texture2D> disoccTex = nullptr;
+	eastl::unique_ptr<Texture2D> cloudClipDistTex[2] = { nullptr, nullptr };
+	static constexpr float SKY = 1e6f;
 
 	ID3D11PixelShader* cloudShader = nullptr;
 	ID3D11VertexShader* cloudVShader = nullptr;

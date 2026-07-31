@@ -1200,9 +1200,13 @@ void PhysicalSky::CreateCloudResources()
 		cloudDepthTex[1]->CreateSRV(srvDesc);
 		cloudDepthTex[1]->CreateRTV(rtvDesc);
 
-		disoccTex = eastl::make_unique<Texture2D>(texDesc);
-		disoccTex->CreateSRV(srvDesc);
-		disoccTex->CreateRTV(rtvDesc);
+		cloudClipDistTex[0] = eastl::make_unique<Texture2D>(texDesc, "PhysicalSky::CloudClipDist0");
+		cloudClipDistTex[0]->CreateSRV(srvDesc);
+		cloudClipDistTex[0]->CreateRTV(rtvDesc);
+
+		cloudClipDistTex[1] = eastl::make_unique<Texture2D>(texDesc, "PhysicalSky::CloudClipDist1");
+		cloudClipDistTex[1]->CreateSRV(srvDesc);
+		cloudClipDistTex[1]->CreateRTV(rtvDesc);
 	}
 
 	cloudBuffer = new ConstantBuffer(ConstantBufferDesc<CloudCB>());
@@ -1228,7 +1232,7 @@ void PhysicalSky::RenderClouds()
 	port.MinDepth = port.TopLeftX = port.TopLeftY = 0.0;
 	port.Width = CLOUD_TEX_SIZE.x;
 	port.Height = CLOUD_TEX_SIZE.y;
-	port.MaxDepth = 1.0;
+	port.MaxDepth = 1.0;  //0.999998;
 
 	context->RSSetViewports(1, &port);
 
@@ -1239,17 +1243,19 @@ void PhysicalSky::RenderClouds()
 
 	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
 
-	ID3D11RenderTargetView* rtvs[] = { cloudColorTex[par]->rtv.get(), cloudDepthTex[par]->rtv.get() };
+	ID3D11RenderTargetView* rtvs[] = { cloudColorTex[par]->rtv.get(), cloudDepthTex[par]->rtv.get(), cloudClipDistTex[par]->rtv.get() };
 
 	float clear[4] = { 0, 0, 0, 0 };
+	float clearFar[4] = { SKY, SKY, SKY, SKY };
 	context->ClearRenderTargetView(rtvs[0], clear);
-	context->ClearRenderTargetView(rtvs[1], clear);
-	context->OMSetRenderTargets(2, rtvs, nullptr);
+	context->ClearRenderTargetView(rtvs[1], clearFar);
+	context->ClearRenderTargetView(rtvs[2], clearFar);
+	context->OMSetRenderTargets(3, rtvs, nullptr);
 
 	auto& depthTexture = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 	ID3D11ShaderResourceView* srvs[] = {
 		depthTexture.depthSRV,
-		disoccTex->srv.get(),
+		cloudClipDistTex[!par]->srv.get(),
 		cloudColorTex[!par]->srv.get(),
 		cloudDepthTex[!par]->srv.get(),
 		dataFieldsSRV.get(),
@@ -1271,7 +1277,10 @@ void PhysicalSky::RenderClouds()
 	context->PSSetShaderResources(61, 1, &trLutSrv);
 
 	auto bayerIndex = bayerIndices4x4[frameCount % 16];
-	auto playerPos = RE::PlayerCharacter::GetSingleton()->GetPosition();
+
+	// These go invalid so must be cached
+	static auto playerPos = globals::game::frameBufferCached.GetCameraPosAdjust();
+	static Matrix prevViewProj = globals::game::frameBufferCached.GetCameraPreviousViewProjUnjittered();
 
 	CloudCB cb{};
 	cb.cameraPos = float3(playerPos.x, playerPos.y, playerPos.z);
@@ -1320,7 +1329,16 @@ void PhysicalSky::RenderClouds()
 	// The shader's fade remap divides by (end - start).
 	cb.detailFadeStart = std::max(cloudSettings.detailFadeStart, 0.f);
 	cb.detailFadeEnd = std::max(cloudSettings.detailFadeEnd, cb.detailFadeStart + 0.1f);
+
+	cb.viewProj = globals::game::frameBufferCached.GetCameraViewProjInverse();
+	cb.prevViewProj = prevViewProj;
 	cloudBuffer->Update(cb);
+
+	auto currViewProj = globals::game::frameBufferCached.GetCameraViewProjUnjittered();
+	if (currViewProj.m[2][3] < -10) {
+		prevViewProj = currViewProj;
+		playerPos = globals::game::frameBufferCached.GetCameraPosAdjust();
+	}
 
 	CloudDebugCB debugCb{};
 	debugCb.debugSunTrMode = cloudLighting.debugSunTrMode;
@@ -1349,26 +1367,6 @@ void PhysicalSky::RenderClouds()
 
 	context->Draw(3, 0);
 
-	ID3D11ShaderResourceView* nullSrvs[] = {
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-	};
-	context->PSSetShaderResources(0, 12, nullSrvs);
-	context->PSSetShaderResources(18, 2, nullSrvs);
-	context->PSSetShaderResources(61, 1, nullSrvs);
-
-	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET, RE::BSGraphics::DIRTY_VIEWPORT);
-
 	++frameCount;
 }
 
@@ -1387,9 +1385,10 @@ void PhysicalSky::CloudCompose()
 	port.MinDepth = port.TopLeftX = port.TopLeftY = 0.0;
 	port.Width = size.x;
 	port.Height = size.y;
-	port.MaxDepth = 1.0;
+	port.MaxDepth = 1.0;  //0.999998;
 
 	context->RSSetViewports(1, &port);
+	//context->RSSetState(rasterState);
 
 	context->VSSetShader(cloudVShader, nullptr, NULL);
 	context->PSSetShader(cloudBlendShader, nullptr, NULL);
@@ -1404,6 +1403,9 @@ void PhysicalSky::CloudCompose()
 
 	ID3D11ShaderResourceView* srv[] = { cloudColorTex[par]->srv.get(), cloudDepthTex[par]->srv.get(), depth.depthSRV };
 	context->PSSetShaderResources(0, 3, srv);
+
+	//ID3D11SamplerState* samplers[2] = { sampTr.get(), sampNoise.get() };
+	//context->PSSetSamplers(0, 2, samplers);
 
 	context->Draw(3, 0);
 
@@ -1441,9 +1443,6 @@ void PhysicalSky::CloudCompose()
 
 		globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
 	}
-
-	ID3D11ShaderResourceView* nullSrvs[] = { nullptr, nullptr, nullptr };
-	context->PSSetShaderResources(0, 3, nullSrvs);
 
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_RENDERTARGET, RE::BSGraphics::DIRTY_VIEWPORT);
 }

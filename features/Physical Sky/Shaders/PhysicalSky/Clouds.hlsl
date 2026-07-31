@@ -13,7 +13,8 @@ struct VertexOut
 struct PixelOut
 {
 	float4 color: SV_TARGET0;
-	float4 depth: SV_TARGET1;
+	float4 Depth: SV_TARGET1;
+	float clipDist: SV_TARGET2;
 };
 
 #ifdef CLOUD_VS
@@ -69,14 +70,15 @@ PixelOut main(VertexOut input)
 	PixelOut output;
 
 	output.color = float4(0, 0, 0, 0);
-	output.depth = 1.0;
+	output.Depth = SKY;
+	output.clipDist = SKY;
 
 	float3 cameraPos = cameraPosIN.xyz * GAME_UNIT_TO_KM;
 	cameraPos.z += groundRadius;
 	//cameraPos = float3(0,0, groundRadius);
 
 	float2 CoordsNDC = input.TexCoord * 2.0 - 1.0;
-	float4 worldPosition = mul(FrameBuffer::CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.5, 1.0));
+	float4 worldPosition = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, 0.5, 1.0));
 
 	Ray ray;
 	ray.origin = cameraPos;
@@ -98,26 +100,37 @@ PixelOut main(VertexOut input)
 
 	// clip march to opaque scene
 	float Depth = DepthTex.SampleLevel(LinearSampler, input.TexCoord, 0).x;
-	float4 CoordsWS = mul(FrameBuffer::CameraViewProjInverse, float4(float2(CoordsNDC.x, -CoordsNDC.y), Depth, 1.0));
-	CoordsWS.xyz = CoordsWS.xyz / CoordsWS.w;
+	float4 CoordsWS = mul(CameraViewProjInverse, float4(float2(CoordsNDC.x, -CoordsNDC.y), 0, 1.0));
+	CoordsWS.xyz *= SharedData::GetScreenDepth(Depth);
+
 	float GeomDist = length(CoordsWS.xyz) * GAME_UNIT_TO_KM;
+
+	float ClipDist = (Depth < 1.0 && GeomDist < RayT.y) ? GeomDist : SKY;
+	output.clipDist = ClipDist;
+
 	if (Depth < 1.0) {
 		RayT.y = min(RayT.y, GeomDist);
 		if (RayT.y <= RayT.x)
 			return output;
 	}
 
-	float disocclusion = 1;  //DisocculsionTex.SampleLevel(LinearSampler, input.TexCoord, 0.0).x;
-	if (disocclusion == 0) {
-		float4 prevNdcPos = mul(FrameBuffer::CameraPreviousViewProjUnjittered, float4(normalize(CoordsWS.xyz), 0.0));
-		prevNdcPos.xyz = prevNdcPos.xyz / prevNdcPos.w;
-		float2 prevTexCoords = float2(prevNdcPos.x, -prevNdcPos.y) * 0.5 + 0.5;
-		if (bayerPos.x != -1.0 && all(prevTexCoords < 1.0 && prevTexCoords > 0.0)) {
-			float prevDepth = DepthTex.SampleLevel(LinearSampler, prevTexCoords, 0);
-			if (all((uint2)input.Position.xy % 4 != (uint2)bayerPos) && (prevDepth <= Depth)) {
-				output.color = PrevFrameCloudTex.SampleLevel(LinearSampler, prevTexCoords, 0);
-				output.depth = PrevFrameCloudDepthTex.SampleLevel(LinearSampler, prevTexCoords, 0).x;
-				return output;
+	if (bayerPos.x != -1.0 && all((uint2)input.Position.xy % 4 != (uint2)bayerPos)) {
+		float4 prevNdcPos = mul(PrevViewProj, float4(normalize(CoordsWS.xyz), 0.0));
+		if (prevNdcPos.w > SharedData::CameraData.y) {
+			prevNdcPos.xyz = prevNdcPos.xyz / prevNdcPos.w;
+			float2 prevTexCoords = float2(prevNdcPos.x, -prevNdcPos.y) * 0.5 + 0.5;
+
+			if (all(prevTexCoords > 0.0) && all(prevTexCoords < 1.0)) {
+				uint2 histDims;
+				PrevFrameClipDistTex.GetDimensions(histDims.x, histDims.y);
+				int2 histPx = clamp(int2(prevTexCoords * histDims), 0, int2(histDims) - 1);
+				float prevClipDist = PrevFrameClipDistTex.Load(int3(histPx, 0)).x;
+
+				if (IsCloudHistoryValid(prevClipDist, ClipDist)) {
+					output.color = PrevFrameCloudTex.SampleLevel(LinearSampler, prevTexCoords, 0);
+					output.Depth = PrevFrameCloudDepthTex.SampleLevel(LinearSampler, prevTexCoords, 0).x;
+					return output;
+				}
 			}
 		}
 	}
@@ -192,11 +205,7 @@ PixelOut main(VertexOut input)
 	/////////////////////////////////////////////
 
 	output.color = float4(Inscattering, max(1.0 - Transmittance, 1e-6));
-
-	float cloudDistance = (TrSum > 0.0) ? TrDepthSum / TrSum : RayT.y;
-	float3 cloudCamPos = ray.direction * cloudDistance;
-	float4 clipPos = mul(FrameBuffer::CameraViewProj, float4(cloudCamPos / GAME_UNIT_TO_KM, 1.0));
-	output.depth = saturate(clipPos.z / clipPos.w);
+	output.Depth = (TrSum > 0.0) ? TrDepthSum / TrSum : RayT.y;
 
 	return output;
 }
@@ -214,14 +223,20 @@ SamplerState LinearSamplerA : register(s0);
 
 float4 main(VertexOut input) : SV_TARGET0
 {
-	float depth = DepthTexA.SampleLevel(LinearSamplerA, input.TexCoord, 0).x;
-	float cloudDepth = CloudDepthTex.SampleLevel(LinearSamplerA, input.TexCoord, 0).x;
-	if (depth < cloudDepth) {
+	float Depth = DepthTexA.SampleLevel(LinearSamplerA, input.TexCoord, 0).x;
+	float CloudDepth = CloudDepthTex.SampleLevel(LinearSamplerA, input.TexCoord, 0).x;
+
+	float2 CoordsNDC = input.TexCoord * 2.0 - 1.0;
+	float4 CoordsWS = mul(CameraViewProjInverse, float4(CoordsNDC.x, -CoordsNDC.y, Depth, 1.0));
+	CoordsWS.xyz *= SharedData::GetScreenDepth(Depth);
+	float sceneDist = length(CoordsWS.xyz) * GAME_UNIT_TO_KM;
+
+	if (Depth < 1.0 && CloudDepth > sceneDist) {
 		discard;
 	}
 
 	float4 Cloud = CloudColorTex.SampleLevel(LinearSamplerA, input.TexCoord, 0);
-	Cloud = Color::LLLinearToGamma(Cloud);
+	Cloud.xyz = Color::LLLinearToGamma(Cloud.xyz);
 
 	return Cloud;
 }

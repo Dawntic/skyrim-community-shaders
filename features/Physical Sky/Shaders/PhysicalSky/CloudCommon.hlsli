@@ -32,7 +32,9 @@ cbuffer CloudDataCB : register(b0)
 
 	float DetailFadeStart;  // km -- detail fades out over [start, end]; the 32^3
 	float DetailFadeEnd;    // texture has no mips, so it goes subpixel past this
-	float2 cloudDataPad;
+
+	row_major float4x4 CameraViewProjInverse;
+	row_major float4x4 PrevViewProj;
 };
 
 // Debug/verification seams for the cloud lighting chain. Uniform flow control
@@ -61,7 +63,7 @@ cbuffer CloudDebugCB : register(b1)
 };
 
 Texture2D DepthTex : register(t0);
-Texture2D DisocculsionTex : register(t1);
+Texture2D PrevFrameClipDistTex : register(t1);
 Texture2D PrevFrameCloudTex : register(t2);
 Texture2D PrevFrameCloudDepthTex : register(t3);
 
@@ -145,6 +147,29 @@ float hgPhase(float anisotropy, float cosTheta)  // Henyey-Greenstein
 	const float g2 = anisotropy * anisotropy;
 	float i = rsqrt(saturate((g2 + 1.0f) - cosTheta * (anisotropy * 2.0f)));
 	return (i * i * i) * ((1.0f - g2) * float(M_1_PI4));
+}
+///////////////////////////////////////////////////////////
+
+// Cloud temporal reuse ///////////////////////////////////
+
+static const float SKY = 1e6;
+// Is last frame's cloud colour still valid for a pixel whose march the opaque
+// scene now truncates at curClipDist? The march ends at
+// min(cloud exit, geometry), so both frames have to agree on whether geometry
+// cut the ray short, and on where it did.
+bool IsCloudHistoryValid(float prevClipDist, float curClipDist)
+{
+	bool prevSky = prevClipDist >= SKY;
+	bool curSky = curClipDist >= SKY;
+
+	if (prevSky && curSky)
+		return true;
+
+	if (prevSky != curSky)
+		return false;
+
+	// Occluded both frames: reuse only while the occluder has not moved.
+	return abs(prevClipDist - curClipDist) <= max(1e-3, 0.02 * curClipDist);
 }
 ///////////////////////////////////////////////////////////
 
