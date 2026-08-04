@@ -71,6 +71,10 @@ namespace SharedData
 		float3 Scale;
 		float2 ZRange;
 		float2 Offset;
+		uint TraversalStartLevel;
+		uint TraversalMaxIterations;
+		uint ShadowMipLevels;  // 0 when the min/max chain is unavailable, which disables hierarchical traversal
+		float pad0;
 	};
 
 	struct LightLimitFixSettings

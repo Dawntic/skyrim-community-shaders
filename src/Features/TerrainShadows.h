@@ -26,10 +26,32 @@ public:
 	struct Settings
 	{
 		bool EnableTerrainShadow = true;
+
+		// Hierarchical traversal of the shadow height field (see TerrainShadowsTraversal.hlsli).
+		// The chain is only built when this is on, and consumers fall back to point sampling
+		// when ShadowMipLevels is reported as 0.
+		bool EnableMinMaxMip = true;
+		uint TraversalStartLevel = 4;
+		uint TraversalMaxIterations = 64;
 	} settings;
+
+	// Validation state for the traversal debug view. Deliberately not serialised: this is a
+	// diagnostic overlay and should never survive a restart.
+	struct DebugSettings
+	{
+		bool EnableTraversalDebug = false;
+		int TraversalDebugMode = 0;
+		uint ReferenceSteps = 30;
+		float Sigma = 0.f;
+		float DifferenceGain = 10.f;
+		float MaxRayLength = 40000.f;
+	} debugSettings;
 
 	bool needPrecompute = false;
 	uint shadowUpdateIdx = 0;
+	// Only true once a full shadow-map sweep has been reduced into the chain; consumers read
+	// this through PerFrame::ShadowMipLevels.
+	bool mipChainBuilt = false;
 
 	struct HeightMapMetadata
 	{
@@ -55,34 +77,83 @@ public:
 	static_assert(sizeof(ShadowUpdateCB) % 16 == 0);
 	std::unique_ptr<ConstantBuffer> shadowUpdateCB = nullptr;
 
+	struct MinMaxMipCB
+	{
+		uint SrcDim[2];
+		uint DstDim[2];
+	} minMaxMipCBData;
+	static_assert(sizeof(MinMaxMipCB) % 16 == 0);
+	std::unique_ptr<ConstantBuffer> minMaxMipCB = nullptr;
+
+	struct alignas(16) TraversalDebugCB
+	{
+		float2 BufferDim;
+		float2 RcpBufferDim;
+
+		uint DebugMode;
+		uint ReferenceSteps;
+		float Sigma;
+		float DifferenceGain;
+
+		float MaxRayLength;
+		uint MaxIterationsForDisplay;
+		float2 pad0;
+	} traversalDebugCBData;
+	STATIC_ASSERT_ALIGNAS_16(TraversalDebugCB);
+	std::unique_ptr<ConstantBuffer> traversalDebugCB = nullptr;
+
 	struct alignas(16) PerFrame
 	{
 		uint EnableTerrainShadow;
 		float3 Scale;
 		float2 ZRange;
 		float2 Offset;
+		uint TraversalStartLevel;
+		uint TraversalMaxIterations;
+		uint ShadowMipLevels;  // 0 when the min/max chain is unavailable, which disables traversal in shaders
+		float pad0;
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
 
 	PerFrame GetCommonBufferData();
 
 	winrt::com_ptr<ID3D11ComputeShader> shadowUpdateProgram = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> minMaxMipLevel0Program = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> minMaxMipLevelNProgram = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> traversalDebugProgram = nullptr;
 
 	std::unique_ptr<Texture2D> texHeightMap = nullptr;
 	std::unique_ptr<Texture2D> texShadowHeight = nullptr;
+	std::unique_ptr<Texture2D> texShadowMinMaxMip = nullptr;
+	std::unique_ptr<Texture2D> texTraversalDebug = nullptr;
+
+	// One view per level: the chain is reduced level by level, reading L-1 and writing L.
+	std::vector<winrt::com_ptr<ID3D11ShaderResourceView>> minMaxMipLevelSRVs;
+	std::vector<winrt::com_ptr<ID3D11UnorderedAccessView>> minMaxMipLevelUAVs;
+
+	winrt::com_ptr<ID3D11SamplerState> linearClampSampler = nullptr;
 
 	bool IsHeightMapReady();
+	uint GetShadowMipLevels() const;
 
 	virtual void SetupResources() override;
 	void ParseHeightmapPath(std::filesystem::path p, bool xlodgen_style);
 	void CompileComputeShaders();
 
 	virtual void DrawSettings() override;
+	void DrawTraversalSettings();
+	void DrawDebugSettings();
 
 	virtual void EarlyPrepass() override;
 	void LoadHeightmap();
 	void Precompute();
 	void UpdateShadow();
+	void BuildMinMaxMip();
+	void BindShadowResources();
+	void UnbindShadowResources();
+
+	virtual void Prepass() override;
+	void DrawTraversalDebug();
 
 	virtual void ReflectionsPrepass() override;
 
