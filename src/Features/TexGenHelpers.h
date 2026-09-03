@@ -199,4 +199,180 @@ namespace TexGenHelpers
 
 		return true;
 	}
+	inline std::string GetCurrentWorldspaceID()
+	{
+		auto tes = RE::TES::GetSingleton();
+		auto worldspace = tes ? tes->GetRuntimeData2().worldSpace : nullptr;
+		while (worldspace && worldspace->parentWorld)
+			worldspace = worldspace->parentWorld;
+
+		return worldspace ? std::string(worldspace->GetFormEditorID()) : std::string();
+	}
+
+	inline int2 WorldToCell(float worldX, float worldY)
+	{
+		return int2((int)std::floor(worldX / TexGen::worldCellSize), (int)std::floor(worldY / TexGen::worldCellSize));
+	}
+
+	inline int2 GetTileOriginCell(const int2& cell, int cellsPerTile)
+	{
+		if (cellsPerTile <= 0)
+			return cell;
+
+		return int2(FloorDiv(cell.x, cellsPerTile), FloorDiv(cell.y, cellsPerTile)) * cellsPerTile;
+	}
+
+	inline std::filesystem::path GetTilePath(const std::string& worldspaceID, const std::string& mapTag, uint tileSize, int cellsPerTile, const int2& originCell)
+	{
+		return TexGen::cachePath / fmt::format("{}{}{}.{}.{}.{}.dds", worldspaceID, mapTag, tileSize, cellsPerTile, originCell.x, originCell.y);
+	}
+
+	inline bool FindAtlas(const std::string& worldspaceID, const std::string& mapTag, std::filesystem::path& o_path, TexGen::AtlasCellRange& o_range)
+	{
+		if (worldspaceID.empty())
+			return false;
+
+		std::error_code ec;
+		if (!std::filesystem::exists(TexGen::cachePath, ec))
+			return false;
+
+		bool found = false;
+		for (const auto& entry : std::filesystem::directory_iterator(TexGen::cachePath, ec)) {
+			const auto& path = entry.path();
+			if (!path.has_extension() || _stricmp(path.extension().string().c_str(), ".dds") != 0)
+				continue;
+
+			TexGen::AtlasCellRange range;
+			if (!ParseAtlasName(path, worldspaceID, mapTag, range))
+				continue;
+
+			if (found)
+				logger::warn("[TexGen] Multiple {}{} atlases present, using {}", worldspaceID, mapTag, path.string());
+
+			o_path = path;
+			o_range = range;
+			found = true;
+		}
+
+		return found;
+	}
+
+	inline TexGen::CacheGenCBStruct MakeCacheGenCB(const float2& outputSize, const float4& gridBounds)
+	{
+		TexGen::CacheGenCBStruct data;
+		data.TexParams = float4(outputSize.x, outputSize.y, 0.0f, 0.0f);
+		data.GridBounds = gridBounds;
+		return data;
+	}
+
+	inline bool AtlasTexelToCell(const int2& texel, const TexGen::Settings& settings, int2& o_cell)
+	{
+		if (settings.cacheAtlasTileSize <= 0 || settings.cacheAtlasTileCells <= 0 || settings.cacheAtlasTilesY <= 0)
+			return false;
+
+		const int texelsPerCell = settings.cacheAtlasTileSize / settings.cacheAtlasTileCells;
+		if (texelsPerCell <= 0)
+			return false;
+
+		const int maxCellY = settings.cacheAtlasMinCellY + settings.cacheAtlasTilesY * settings.cacheAtlasTileCells - 1;
+		o_cell = int2(settings.cacheAtlasMinCellX + FloorDiv(texel.x, texelsPerCell),
+			maxCellY - FloorDiv(texel.y, texelsPerCell));
+		return true;
+	}
+
+	inline bool IsPositionValid(RE::NiPoint3 inputPosition)
+	{
+		bool valid = false;
+		if (auto player = RE::PlayerCharacter::GetSingleton()) {
+			auto diff = player->GetPosition() - inputPosition;
+			valid = std::max(diff.x, diff.y) < TexGen::worldCellSize;
+			logger::trace("diff: {}, {}", diff.x, diff.y);
+			logger::trace("Pos: {}  :  InPos: {}", player->GetPosition(), inputPosition);
+		}
+
+		return valid;
+	}
+
+	inline float GetRayIntersectionHeight(float3 position, float rayOffset)
+	{
+		static constexpr int MAX_ATTEMPTS = 10;
+		static float prevZ = 0.0f;
+		auto player = RE::PlayerCharacter::GetSingleton();
+		auto cell = player->GetParentCell();
+		auto bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
+
+		if (auto hkpWorld = bhkWorld ? cell->GetbhkWorld()->GetWorld1() : nullptr; hkpWorld) {
+			float scale = RE::bhkWorld::GetWorldScale();
+			float2 posScaledXY = float2(position.x * scale, position.y * scale);
+			float currentZ = position.z + rayOffset;
+			float endZ = position.z - rayOffset;
+
+			for (int i = 0; i < MAX_ATTEMPTS; i++) {
+				RE::hkpWorldRayCastInput input;
+				input.from.quad.m128_f32[0] = posScaledXY.x;
+				input.from.quad.m128_f32[1] = posScaledXY.y;
+				input.from.quad.m128_f32[2] = currentZ * scale;
+				input.from.quad.m128_f32[3] = 0;
+				input.to.quad.m128_f32[0] = posScaledXY.x;
+				input.to.quad.m128_f32[1] = posScaledXY.y;
+				input.to.quad.m128_f32[2] = endZ * scale;
+				input.to.quad.m128_f32[3] = 0;
+
+				RE::hkpWorldRayCastOutput output;
+				hkpWorld->CastRay(input, output);
+
+				if (!output.HasHit()) {
+					logger::error("[TexGen] Ray cast failed to find surface... continuing");
+					return prevZ;
+				}
+
+				auto rootCollidable = output.rootCollidable;
+				if (!rootCollidable) {
+					logger::error("[TexGen] Null Root collidable... continuing");
+					return prevZ;
+				}
+
+				auto collisionObj = rootCollidable->GetCollisionLayer();
+				if (!(collisionObj == RE::COL_LAYER::kTerrain || collisionObj == RE::COL_LAYER::kGround || collisionObj == RE::COL_LAYER::kStatic)) {
+					float rayLength = currentZ - endZ;
+					currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
+					continue;
+				}
+
+				if (i + 1 == MAX_ATTEMPTS) {
+					logger::error("[TexGen] Ray cast had no valid hit; last recorded collision was: {} ... continuing", collisionObj);
+					return prevZ;
+				}
+
+				float rayLength = currentZ - endZ;
+				float hitZ = currentZ - output.hitFraction * rayLength;
+				prevZ = hitZ;
+				return hitZ;
+			}
+		}
+
+		return prevZ;
+	}
+
+	inline void SetWorldPosition(const int2& currentCellXY, RE::NiPoint3& o_worldPos)
+	{
+		auto tes = RE::TES::GetSingleton();
+		auto player = RE::PlayerCharacter::GetSingleton();
+		float2 worldXY = float2((float)currentCellXY.x, (float)currentCellXY.y) * TexGen::worldCellSize;
+
+		float landHeight;
+		tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
+		logger::trace("land: {}", landHeight);
+
+		float groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight), 15000);
+		logger::trace("ground: {}", groundHeight);
+		float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
+		groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
+
+		float3 sampleCoordsWS = float3(worldXY.x, worldXY.y, groundHeight);
+		logger::trace("sampleCoordsWS: {}, {}, {}", sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z);
+
+		o_worldPos = RE::NiPoint3(sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z + 1500.0f);
+		player->SetPosition(o_worldPos, false);
+	}
 }

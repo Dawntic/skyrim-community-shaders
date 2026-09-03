@@ -87,16 +87,6 @@ public:
 		}
 	};
 
-	/// @brief The parent worldspace the player is currently in, empty when there is none.
-	static std::string GetCurrentWorldspaceID();
-
-	/// @brief The cell containing a world XY position.
-	static int2 WorldToCell(float a_worldX, float a_worldY);
-	/// @brief The origin (south west) cell of the tile a cell belongs to.
-	static int2 GetTileOriginCell(const int2& a_cell, int a_cellsPerTile);
-	/// @brief "<Worldspace><mapTag><tileSize>.<cellsPerTile>.<originX>.<originY>.dds", e.g. Tamriel_H1024.8.-64.-40.dds
-	static std::filesystem::path GetTilePath(const std::string& a_worldspaceID, const std::string& a_mapTag, uint a_tileSize, int a_cellsPerTile, const int2& a_originCell);
-
 	/// @brief Texels per tile edge of the last stitched atlas, 0 if none has been built.
 	int GetAtlasTileSize() const { return settings.cacheAtlasTileSize; }
 	/// @brief Worldspace cells per tile edge of the last stitched atlas, 0 if none has been built.
@@ -143,9 +133,6 @@ public:
 	//// Atlas naming and stitching
 	//////////////////////////////////////////////////////////////////////////////////
 
-	/// @brief Locate "<Worldspace><mapTag>.<minX>.<minY>.<maxX>.<maxY>.dds" and read its cell range.
-	bool FindAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, std::filesystem::path& o_path, AtlasCellRange& o_range) const;
-
 	/// @brief A set of tiles stitched into one north up image, with where each tile landed.
 	struct TileAtlasResult
 	{
@@ -169,9 +156,6 @@ public:
 	bool EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRebuild = false);
 	/// @brief Ensure the bent normal atlas exists, stitching it from the generated bent normal tiles.
 	bool EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_forceRebuild = false);
-	/// @brief Map an atlas texel to the worldspace cell it covers, using the last built atlas layout.
-	/// @return False if no atlas has been built, leaving o_cell untouched.
-	bool AtlasTexelToCell(const int2& a_texel, int2& o_cell) const;
 
 	//////////////////////////////////////////////////////////////////////////////////
 	//// Height cache tiles
@@ -195,9 +179,6 @@ public:
 
 	/// @brief Sample one cell of terrain into the staging tile, advancing the run by one cell.
 	void GenerateHeightMap();
-	float GetRayIntersectionHeight(float3 a_position, float a_rayOffset);
-	void SetWorldPosition(const int2& a_currentCellXY, RE::NiPoint3& o_worldPos);
-	bool IsPositionValid(RE::NiPoint3 a_inputPosition);
 
 	//////////////////////////////////////////////////////////////////////////////////
 	//// LOD bent normal tiles
@@ -232,9 +213,6 @@ public:
 		float4 SweepParams;  // x: first line, y: line count, z: transpose, w: units per step
 		float4 SweepRect;    // xy: tile origin in atlas texels, z: tile size
 	};
-
-	/// @brief Fill the cache gen constants shared by every generator.
-	CacheGenCBStruct MakeCacheGenCB(const float2& outputSize) const;
 
 private:
 	/// @brief Refresh the worldspace the cache is generated for, keeping the last known one indoors.

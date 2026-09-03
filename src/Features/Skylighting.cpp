@@ -1,7 +1,7 @@
 #include "Skylighting.h"
 
 #include "Features/IBL.h"
-#include "Features/TexGen.h"
+#include "Features/TexGenHelpers.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -255,7 +255,7 @@ bool Skylighting::LoadWorldspaceCache()
 {
 	auto& texGen = globals::features::texGen;
 
-	auto newWorldspaceID = TexGen::GetCurrentWorldspaceID();
+	auto newWorldspaceID = TexGenHelpers::GetCurrentWorldspaceID();
 	if (newWorldspaceID.empty())
 		return false;
 
@@ -946,7 +946,7 @@ void Skylighting::UpdateBentNormalTileStream()
 		return;
 
 	auto playerPos = player->GetPosition();
-	const int2 originCell = TexGen::GetTileOriginCell(TexGen::WorldToCell(playerPos.x, playerPos.y), cellsPerTile);
+	const int2 originCell = TexGenHelpers::GetTileOriginCell(TexGenHelpers::WorldToCell(playerPos.x, playerPos.y), cellsPerTile);
 
 	// Still inside the resident tile. Tracked even when the load failed, so a missing tile is not
 	// retried every frame.
@@ -959,7 +959,7 @@ void Skylighting::UpdateBentNormalTileStream()
 	bnTileOriginCell = originCell;
 	bnTileOriginValid = true;
 
-	auto path = TexGen::GetTilePath(cacheWorldspaceID, "_BN", (uint)tileSize, cellsPerTile, originCell);
+	auto path = TexGenHelpers::GetTilePath(cacheWorldspaceID, "_BN", (uint)tileSize, cellsPerTile, originCell);
 	if (!std::filesystem::exists(path)) {
 		logger::debug("[Skylighting] No bent normal tile for cell {}, {}", originCell.x, originCell.y);
 		return;

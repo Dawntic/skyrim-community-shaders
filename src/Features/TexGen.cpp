@@ -58,16 +58,6 @@ void TexGen::Prepass()
 	UpdateBentNormalTiles();
 }
 
-std::string TexGen::GetCurrentWorldspaceID()
-{
-	auto tes = RE::TES::GetSingleton();
-	auto worldspace = tes ? tes->GetRuntimeData2().worldSpace : nullptr;
-	while (worldspace && worldspace->parentWorld)
-		worldspace = worldspace->parentWorld;
-
-	return worldspace ? std::string(worldspace->GetFormEditorID()) : std::string();
-}
-
 void TexGen::UpdateWorldspaceID()
 {
 	// Interiors have no worldspace; keep the last exterior one so the UI and any queued bake still
@@ -96,54 +86,6 @@ void TexGen::EnsureCacheGenBuffer()
 //// Cache layout helpers
 //////////////////////////////////////////////////////////////////////////////////
 
-int2 TexGen::WorldToCell(float a_worldX, float a_worldY)
-{
-	return int2((int)std::floor(a_worldX / worldCellSize), (int)std::floor(a_worldY / worldCellSize));
-}
-
-int2 TexGen::GetTileOriginCell(const int2& a_cell, int a_cellsPerTile)
-{
-	if (a_cellsPerTile <= 0)
-		return a_cell;
-
-	return int2(FloorDiv(a_cell.x, a_cellsPerTile), FloorDiv(a_cell.y, a_cellsPerTile)) * a_cellsPerTile;
-}
-
-std::filesystem::path TexGen::GetTilePath(const std::string& a_worldspaceID, const std::string& a_mapTag, uint a_tileSize, int a_cellsPerTile, const int2& a_originCell)
-{
-	return cachePath / fmt::format("{}{}{}.{}.{}.{}.dds", a_worldspaceID, a_mapTag, a_tileSize, a_cellsPerTile, a_originCell.x, a_originCell.y);
-}
-
-bool TexGen::FindAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, std::filesystem::path& o_path, AtlasCellRange& o_range) const
-{
-	if (a_worldspaceID.empty())
-		return false;
-
-	std::error_code ec;
-	if (!std::filesystem::exists(cachePath, ec))
-		return false;
-
-	bool found = false;
-	for (const auto& entry : std::filesystem::directory_iterator(cachePath, ec)) {
-		const auto& path = entry.path();
-		if (!path.has_extension() || _stricmp(path.extension().string().c_str(), ".dds") != 0)
-			continue;
-
-		AtlasCellRange range;
-		if (!ParseAtlasName(path, a_worldspaceID, a_mapTag, range))
-			continue;
-
-		if (found)  // a rebuild removes the old one, so more than one means the folder was edited by hand
-			logger::warn("[TexGen] Multiple {}{} atlases present, using {}", a_worldspaceID, a_mapTag, path.string());
-
-		o_path = path;
-		o_range = range;
-		found = true;
-	}
-
-	return found;
-}
-
 float4 TexGen::GetHeightMapBounds() const
 {
 	// The cell range the atlas on disk actually covers, read from its file name.
@@ -160,14 +102,6 @@ float4 TexGen::GetBentNormalAtlasBounds() const
 		return bentNormalAtlasRange.WorldBounds();
 
 	return GetHeightMapBounds();  // the bent normal tiles mirror the height tiles
-}
-
-TexGen::CacheGenCBStruct TexGen::MakeCacheGenCB(const float2& outputSize) const
-{
-	CacheGenCBStruct data;
-	data.TexParams = float4(outputSize.x, outputSize.y, 0.0f, 0.0f);
-	data.GridBounds = GetHeightMapBounds();
-	return data;
 }
 
 bool TexGen::ResolveHeightAtlas(const std::string& a_worldspaceID, std::filesystem::path& o_path, bool a_forceRebuild)
@@ -235,7 +169,7 @@ bool TexGen::GenerateNormalMap()
 	auto heightSRV = heightMapSRV;
 	context->CSSetShaderResources(0, 1, &heightSRV);
 
-	auto data = MakeCacheGenCB(float2((float)BNMapSize.x, (float)BNMapSize.y));
+	auto data = MakeCacheGenCB(float2((float)BNMapSize.x, (float)BNMapSize.y), GetHeightMapBounds());
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
@@ -284,7 +218,7 @@ bool TexGen::DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D
 	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
 	context->CSSetSamplers(0, 1, &linSampler);
 
-	auto data = MakeCacheGenCB(float2((float)a_outputTex->desc.Width, (float)a_outputTex->desc.Height));
+	auto data = MakeCacheGenCB(float2((float)a_outputTex->desc.Width, (float)a_outputTex->desc.Height), GetHeightMapBounds());
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
@@ -404,7 +338,7 @@ bool TexGen::GenerateCardinalOcclusionMap()
 	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
 	context->CSSetSamplers(0, 1, &linSampler);
 
-	auto data = MakeCacheGenCB(float2((float)COMapSize, (float)COMapSize));
+	auto data = MakeCacheGenCB(float2((float)COMapSize, (float)COMapSize), GetHeightMapBounds());
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
@@ -784,24 +718,6 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 	return true;
 }
 
-bool TexGen::AtlasTexelToCell(const int2& a_texel, int2& o_cell) const
-{
-	if (settings.cacheAtlasTileSize <= 0 || settings.cacheAtlasTileCells <= 0 || settings.cacheAtlasTilesY <= 0)
-		return false;
-
-	// The atlas is a uniform grid of cells, so the tile boundaries do not need to be walked.
-	const int texelsPerCell = settings.cacheAtlasTileSize / settings.cacheAtlasTileCells;
-	if (texelsPerCell <= 0)
-		return false;
-
-	// Top left origin: texel Y grows southwards, so it counts down from the northernmost cell.
-	const int maxCellY = settings.cacheAtlasMinCellY + settings.cacheAtlasTilesY * settings.cacheAtlasTileCells - 1;
-
-	o_cell = int2(settings.cacheAtlasMinCellX + FloorDiv(a_texel.x, texelsPerCell),
-		maxCellY - FloorDiv(a_texel.y, texelsPerCell));
-	return true;
-}
-
 //////////////////////////////////////////////////////////////////////////////////
 //// Height cache tiles
 //////////////////////////////////////////////////////////////////////////////////
@@ -1160,109 +1076,6 @@ void TexGen::GenerateHeightMap()
 	settleFrames = heightSettleFrames;  // let terrain settle
 }
 
-bool TexGen::IsPositionValid(RE::NiPoint3 a_inputPosition)
-{
-	static constexpr float CELL = worldCellSize;
-
-	bool valid = false;
-	if (auto player = RE::PlayerCharacter::GetSingleton()) {
-		auto diff = player->GetPosition() - a_inputPosition;
-		valid = std::max(diff.x, diff.y) < CELL;
-		logger::trace("diff: {}, {}", diff.x, diff.y);
-		logger::trace("Pos: {}  :  InPos: {}", player->GetPosition(), a_inputPosition);
-	}
-
-	return valid;
-}
-
-void TexGen::SetWorldPosition(const int2& a_currentCellXY, RE::NiPoint3& o_worldPos)
-{
-	static constexpr float CELL = worldCellSize;
-
-	auto tes = RE::TES::GetSingleton();
-	auto player = RE::PlayerCharacter::GetSingleton();
-
-	float2 worldXY = float2((float)a_currentCellXY.x, (float)a_currentCellXY.y) * CELL;
-
-	float landHeight;
-	tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
-	logger::trace("land: {}", landHeight);
-
-	float groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight), 15000);
-	logger::trace("ground: {}", groundHeight);
-	float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
-	groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
-
-	float3 sampleCoordsWS = float3(worldXY.x, worldXY.y, groundHeight);
-	logger::trace("sampleCoordsWS: {}, {}, {}", sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z);
-
-	o_worldPos = RE::NiPoint3(sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z + 1500.0f);  // place character in air to avoid crap happening
-	player->SetPosition(o_worldPos, false);
-}
-
-float TexGen::GetRayIntersectionHeight(float3 a_position, float a_rayOffset)
-{
-	static constexpr int MAX_ATTEMPTS = 10;
-
-	static float prevZ = 0.0f;
-	auto player = RE::PlayerCharacter::GetSingleton();
-	auto cell = player->GetParentCell();
-	auto bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
-
-	if (auto hkpWorld = bhkWorld ? cell->GetbhkWorld()->GetWorld1() : nullptr; hkpWorld) {
-		float scale = RE::bhkWorld::GetWorldScale();
-		float2 posScaledXY = float2(a_position.x * scale, a_position.y * scale);
-		float currentZ = a_position.z + a_rayOffset;
-		float endZ = a_position.z - a_rayOffset;
-
-		for (int i = 0; i < MAX_ATTEMPTS; i++) {
-			RE::hkpWorldRayCastInput input;
-			input.from.quad.m128_f32[0] = posScaledXY.x;
-			input.from.quad.m128_f32[1] = posScaledXY.y;
-			input.from.quad.m128_f32[2] = currentZ * scale;
-			input.from.quad.m128_f32[3] = 0;
-			input.to.quad.m128_f32[0] = posScaledXY.x;
-			input.to.quad.m128_f32[1] = posScaledXY.y;
-			input.to.quad.m128_f32[2] = endZ * scale;
-			input.to.quad.m128_f32[3] = 0;
-
-			RE::hkpWorldRayCastOutput output;
-			hkpWorld->CastRay(input, output);
-
-			if (!output.HasHit()) {
-				logger::error("[TexGen] Ray cast failed to find surface... continuing");
-				return prevZ;
-			}
-
-			auto rootCollidable = output.rootCollidable;
-			if (!rootCollidable) {
-				logger::error("[TexGen] Null Root collidable... continuing");
-				return prevZ;
-			}
-
-			auto collisionObj = rootCollidable->GetCollisionLayer();
-
-			if (!(collisionObj == RE::COL_LAYER::kTerrain || collisionObj == RE::COL_LAYER::kGround || collisionObj == RE::COL_LAYER::kStatic)) {
-				float rayLength = currentZ - endZ;
-				currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
-				continue;
-			}
-
-			if (i + 1 == MAX_ATTEMPTS) {
-				logger::error("[TexGen] Ray cast had no valid hit; last recorded collision was: {} ... continuing", collisionObj);
-				return prevZ;
-			}
-
-			float rayLength = currentZ - endZ;
-			float hitZ = currentZ - output.hitFraction * rayLength;
-			prevZ = hitZ;
-			return hitZ;
-		}
-	}
-
-	return prevZ;
-}
-
 //////////////////////////////////////////////////////////////////////////////////
 //// LOD bent normal tiles
 //////////////////////////////////////////////////////////////////////////////////
@@ -1327,7 +1140,7 @@ bool TexGen::DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOrig
 		const float worldPerMinor = transpose ? worldPerTexel.x : worldPerTexel.y;
 		const float stepWorldDist = std::sqrt(worldPerMajor * worldPerMajor + (slope * worldPerMinor) * (slope * worldPerMinor));
 
-		auto data = MakeCacheGenCB(float2((float)tileSize, (float)tileSize));
+		auto data = MakeCacheGenCB(float2((float)tileSize, (float)tileSize), GetHeightMapBounds());
 		data.SweepDir = float4(worldDir.x, worldDir.y, slope, majorStep);
 		data.SweepParams = float4((float)firstLine, (float)lineCount, transpose ? 1.0f : 0.0f, stepWorldDist);
 		data.SweepRect = float4((float)tileOriginAtlasPx.x, (float)tileOriginAtlasPx.y, (float)tileSize, 0.0f);
@@ -1337,7 +1150,7 @@ bool TexGen::DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOrig
 	}
 
 	// Resolve the accumulated integral in place
-	auto data = MakeCacheGenCB(float2((float)tileSize, (float)tileSize));
+	auto data = MakeCacheGenCB(float2((float)tileSize, (float)tileSize), GetHeightMapBounds());
 	cacheGenBuffer->Update(data);
 
 	ID3D11UnorderedAccessView* resolveUAVs[2] = { a_accumTex->uav.get(), nullptr };
@@ -1745,7 +1558,7 @@ void TexGen::DrawSettings()
 		ImGui::InputInt2("Atlas Texel", texelCoords);
 
 		int2 texelCell;
-		if (!AtlasTexelToCell(int2(texelCoords[0], texelCoords[1]), texelCell)) {
+		if (!AtlasTexelToCell(int2(texelCoords[0], texelCoords[1]), settings, texelCell)) {
 			ImGui::BulletText("Build the atlas to map texels to cells");
 		} else {
 			ImGui::BulletText("Cell: %d, %d", texelCell.x, texelCell.y);
