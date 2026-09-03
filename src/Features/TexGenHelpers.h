@@ -3,6 +3,9 @@
 #include "TexGen.h"
 #include "Utils/D3D.h"
 
+#include <fstream>
+#include <iomanip>
+
 #include <DirectXPackedVector.h>
 
 namespace TexGenHelpers
@@ -197,6 +200,62 @@ namespace TexGenHelpers
 		return TexGen::cachePath / fmt::format("{}{}{}.{}.{}.{}.dds", worldspaceID, mapTag, tileSize, cellsPerTile, originCell.x, originCell.y);
 	}
 
+	inline std::filesystem::path GetHeightTileManifestPath(const std::string& worldspaceID)
+	{
+		return TexGen::cachePath / (worldspaceID + "_H_tiles.json");
+	}
+
+	inline std::vector<HeightTileFile> GetAtlasTiles(const std::string& worldspaceID, const std::string& mapTag, uint tileSize, int cellsPerTile, const TexGen::AtlasCellRange& range)
+	{
+		std::vector<HeightTileFile> tiles;
+		std::error_code ec;
+		for (const auto& entry : std::filesystem::directory_iterator(TexGen::cachePath, ec)) {
+			HeightTileFile tile;
+			if (!ParseTileName(entry.path(), worldspaceID, mapTag, tile) || tile.tileSize != tileSize || tile.cellsPerTile != cellsPerTile)
+				continue;
+
+			const int2 tileMax = tile.originCell + int2(cellsPerTile - 1, cellsPerTile - 1);
+			if (tile.originCell.x >= range.minCell.x && tile.originCell.y >= range.minCell.y && tileMax.x <= range.maxCell.x && tileMax.y <= range.maxCell.y)
+				tiles.push_back(std::move(tile));
+		}
+
+		return tiles;
+	}
+
+	inline bool SaveHeightTileManifest(const std::string& worldspaceID, const std::vector<HeightTileFile>& tiles)
+	{
+		json names = json::array();
+		for (const auto& tile : tiles)
+			names.push_back(tile.path.filename().string());
+
+		std::ofstream manifest(GetHeightTileManifestPath(worldspaceID));
+		manifest << std::setw(2) << names;
+		return manifest.good();
+	}
+
+	inline std::vector<HeightTileFile> LoadHeightTileManifest(const std::string& worldspaceID)
+	{
+		std::ifstream manifest(GetHeightTileManifestPath(worldspaceID));
+		if (!manifest)
+			return {};
+		json names;
+		manifest >> names;
+
+		std::vector<HeightTileFile> tiles;
+		for (const auto& name : names) {
+			HeightTileFile tile;
+			if (ParseTileName(TexGen::cachePath / name.get<std::string>(), worldspaceID, "_H", tile))
+				tiles.push_back(std::move(tile));
+		}
+		return tiles;
+	}
+
+	inline void DeleteTiles(const std::vector<HeightTileFile>& tiles)
+	{
+		std::error_code ec;
+		for (const auto& tile : tiles)
+			std::filesystem::remove(tile.path, ec);
+	}
 	inline bool FindAtlas(const std::string& worldspaceID, const std::string& mapTag, std::filesystem::path& o_path, TexGen::AtlasCellRange& o_range)
 	{
 		if (worldspaceID.empty())

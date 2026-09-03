@@ -173,6 +173,8 @@ public:
 
 	/// @brief Sample one cell of terrain into the staging tile, advancing the run by one cell.
 	void GenerateHeightMap();
+	/// @brief Stitch a completed height run, preserve its tile names, then remove its temporary tiles.
+	bool FinalizeHeightTiles();
 
 	//////////////////////////////////////////////////////////////////////////////////
 	//// LOD bent normal tiles

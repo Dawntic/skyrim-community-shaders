@@ -273,6 +273,7 @@ void TexGen::GenerateHeightMap()
 
 		if (!advanceToNextTile() || !beginTile()) {
 			logger::info("[TexGen] Height cache complete: {} tiles, {} cells", tilesDone, cellsDone);
+			FinalizeHeightTiles();
 			settings.cacheProgressX = startCell.x;
 			settings.cacheProgressY = startCell.y;
 			globals::state->Save();
@@ -292,6 +293,19 @@ void TexGen::GenerateHeightMap()
 	settleFrames = heightSettleFrames;  // let terrain settle
 }
 
+bool TexGen::FinalizeHeightTiles()
+{
+	if (!EnsureHeightAtlas(worldspaceID, true))
+		return false;
+
+	auto tiles = GetAtlasTiles(worldspaceID, "_H", (uint)settings.cacheAtlasTileSize, settings.cacheAtlasTileCells, heightAtlasRange);
+	if (!SaveHeightTileManifest(worldspaceID, tiles))
+		return false;
+	DeleteTiles(tiles);
+	logger::info("[TexGen] Saved height tile manifest and removed {} temporary tiles", tiles.size());
+	NotifyCacheMapsChanged();
+	return true;
+}
 //////////////////////////////////////////////////////////////////////////////////
 //// Settings and lifecycle
 //////////////////////////////////////////////////////////////////////////////////
@@ -1035,18 +1049,12 @@ bool TexGen::StartBentNormalTiles()
 	DX::ThrowIfFailed(DirectX::GetMetadataFromDDSFile(atlasPath.c_str(), DirectX::DDS_FLAGS_NONE, metadata));
 	bentNormalAtlasSize = int2((int)metadata.width, (int)metadata.height);
 
-	// Mirror the set of height tiles exactly, so every height tile gets a bent normal partner.
+	// Mirror the completed height run exactly, using the manifest retained when its temporary tiles
+	// were removed.
 	bentNormalTileQueue.clear();
-	std::error_code ec;
-	for (const auto& entry : std::filesystem::directory_iterator(cachePath, ec)) {
-		const auto& path = entry.path();
-		if (!path.has_extension() || _stricmp(path.extension().string().c_str(), ".dds") != 0)
-			continue;
-
-		HeightTileFile tile;
-		if (ParseTileName(path, worldspaceID, "_H", tile) && tile.tileSize == (uint)tileSize && tile.cellsPerTile == cellsPerTile)
+	for (const auto& tile : LoadHeightTileManifest(worldspaceID))
+		if (tile.tileSize == (uint)tileSize && tile.cellsPerTile == cellsPerTile)
 			bentNormalTileQueue.push_back(tile.originCell);
-	}
 
 	if (bentNormalTileQueue.empty()) {
 		logger::error("[TexGen] No height tiles matching the atlas layout, nothing to generate");
@@ -1135,6 +1143,12 @@ void TexGen::UpdateBentNormalTiles()
 
 	if (bentNormalTileIndex >= bentNormalTileQueue.size()) {
 		logger::info("[TexGen] Bent normal tiles complete: {} tiles", bentNormalTileQueue.size());
+		const auto completedTiles = GetAtlasTiles(worldspaceID, "_BN", (uint)settings.cacheAtlasTileSize, settings.cacheAtlasTileCells, heightAtlasRange);
+		if (EnsureBentNormalAtlas(worldspaceID, true)) {
+			DeleteTiles(completedTiles);
+			logger::info("[TexGen] Removed {} temporary bent normal tiles", completedTiles.size());
+		}
+
 		bentNormalTileGen = false;
 		bentNormalTileQueue.clear();
 		bentNormalTileIndex = 0;
@@ -1144,7 +1158,6 @@ void TexGen::UpdateBentNormalTiles()
 		bentNormalHullUAV = nullptr;
 		bentNormalHullBuffer = nullptr;
 
-		// The atlas is stitched from these tiles, so it is stale until it is rebuilt.
 		NotifyCacheMapsChanged();
 	}
 }
