@@ -136,7 +136,7 @@ bool TexGen::GenerateNormalMap()
 	eastl::unique_ptr<Texture2D> cacheOutputTexN = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> NComputeShader = nullptr;
 
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16G16B16A16_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
 	cacheOutputTexN = eastl::make_unique<Texture2D>(desc, "TexGen::NormalMap");
@@ -227,7 +227,7 @@ bool TexGen::GenerateBentNormalMap()
 	eastl::unique_ptr<Texture2D> cacheOutputTexBN = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> BNComputeShader = nullptr;
 
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16G16B16A16_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
 	cacheOutputTexBN = eastl::make_unique<Texture2D>(desc, "TexGen::BentNormalMap");
@@ -275,7 +275,7 @@ bool TexGen::GenerateCardinalOcclusionMap()
 	std::array<eastl::unique_ptr<Texture2D>, 6> outputs;
 	winrt::com_ptr<ID3D11ComputeShader> COComputeShader = nullptr;
 
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, COMapSize, COMapSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16G16B16A16_FLOAT, COMapSize, COMapSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
 	for (size_t i = 0; i < outputs.size(); ++i) {
@@ -433,7 +433,7 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 //// Tile stitching
 //////////////////////////////////////////////////////////////////////////////////
 
-bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, const float4& unormFill, const float4& floatFill, TileAtlasResult& o_result, float scale, const AtlasCellRange* a_range)
+bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, const float4& fill, TileAtlasResult& o_result, float scale, const AtlasCellRange* a_range)
 {
 	using namespace DirectX;
 
@@ -508,11 +508,7 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 
 	const size_t tilesX = (size_t)((maxOrigin.x - minOrigin.x) / cellsPerTile) + 1;
 	const size_t tilesY = (size_t)((maxOrigin.y - minOrigin.y) / cellsPerTile) + 1;
-	TexMetadata metadata;
-
-	DX::ThrowIfFailed(GetMetadataFromDDSFile(tiles[0].path.c_str(), DDS_FLAGS_NONE, metadata));
-
-	const DXGI_FORMAT format = metadata.format;
+	const DXGI_FORMAT format = a_mapTag == "_H" ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
 	const size_t bytesPerTexel = BitsPerPixel(format) / 8;
 
 	// Scaling happens per tile so the intermediate never exceeds one tile, and the scaled size is
@@ -525,7 +521,7 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 	DX::ThrowIfFailed(atlas.Initialize2D(format, atlasWidth, atlasHeight, 1, 1));
 
 	const Image* atlasImage = atlas.GetImages();
-	FillImage(*atlasImage, unormFill, floatFill);
+	FillImage(*atlasImage, fill);
 
 	// The atlas is north up with a top left origin, so both the tile order and each tile's rows are
 	// mirrored on the way in: the tiles themselves are stored south to north.
@@ -535,9 +531,15 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 		DX::ThrowIfFailed(LoadFromDDSFile(tile.path.c_str(), DDS_FLAGS_NONE, nullptr, tileImage));
 
 		const Image* src = tileImage.GetImages();
-		if (src->width != tileSize || src->height != tileSize || src->format != format) {
+		if (src->width != tileSize || src->height != tileSize) {
 			logger::warn("[TexGen] Skipping tile {}, does not match the atlas layout", tile.path.string());
 			continue;
+		}
+
+		ScratchImage convertedImage;
+		if (src->format != format) {
+			DX::ThrowIfFailed(Convert(*src, format, TEX_FILTER_DEFAULT, TEX_THRESHOLD_DEFAULT, convertedImage));
+			src = convertedImage.GetImages();
 		}
 
 		ScratchImage scaledImage;
@@ -587,7 +589,7 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 
 	// Gaps between tiles read as zero height, matching how the tiles clear unsampled texels.
 	TileAtlasResult result;
-	if (!StitchTileAtlas(a_worldspaceID, "_H", float4(0.0f, 0.0f, 0.0f, 0.0f), float4(0.0f, 0.0f, 0.0f, 0.0f), result))
+	if (!StitchTileAtlas(a_worldspaceID, "_H", float4(0.0f, 0.0f, 0.0f, 0.0f), result))
 		return false;
 
 	const Image* atlasImage = result.image.GetImages();
@@ -645,7 +647,7 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 
 	// Gaps read as an unoccluded surface: normal straight up, encoded, and full visibility.
 	TileAtlasResult result;
-	if (!StitchTileAtlas(a_worldspaceID, "_BN", float4(0.5f, 0.5f, 1.0f, 1.0f), float4(0.5f, 0.5f, 1.0f, 1.0f), result, settings.cacheBentNormalAtlasScale, &heightAtlasRange))
+	if (!StitchTileAtlas(a_worldspaceID, "_BN", float4(0.5f, 0.5f, 1.0f, 1.0f), result, settings.cacheBentNormalAtlasScale, &heightAtlasRange))
 		return false;
 
 	const Image* atlasImage = result.image.GetImages();
@@ -670,7 +672,7 @@ void TexGen::EnsureHeightTileTexture(uint a_tileSize)  // TODO: is possible get 
 	if (cacheOutputTexH && cacheOutputTexH->desc.Width == a_tileSize && cacheOutputTexH->desc.Height == a_tileSize)
 		return;
 
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32_FLOAT, a_tileSize, a_tileSize, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16_FLOAT, a_tileSize, a_tileSize, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
 	cacheOutputTexH = eastl::make_unique<Texture2D>(desc, "TexGen::HeightCacheTile");
 }
 
@@ -684,7 +686,7 @@ void TexGen::ClearHeightTile()  // TODO: Check if this func is needed or if they
 
 	// Texels belonging to cells outside the worldspace are never sampled and stay at zero height.
 	for (uint y = 0; y < tileSize; ++y)
-		memset((uint8_t*)mapped.pData + y * mapped.RowPitch, 0, tileSize * sizeof(float));
+		memset((uint8_t*)mapped.pData + y * mapped.RowPitch, 0, tileSize * sizeof(uint16_t));
 
 	context->Unmap(cacheOutputTexH->resource.get(), 0);
 }
@@ -697,14 +699,14 @@ void TexGen::SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile)
 	auto path = GetTilePath(tileWorldspaceID, "_H", tileSize, a_cellsPerTile, a_tileOriginCell);
 
 	DirectX::ScratchImage outputImage;
-	DX::ThrowIfFailed(outputImage.Initialize2D(DXGI_FORMAT_R32_FLOAT, tileSize, tileSize, 1, 1));
+	DX::ThrowIfFailed(outputImage.Initialize2D(DXGI_FORMAT_R16_FLOAT, tileSize, tileSize, 1, 1));
 
 	D3D11_MAPPED_SUBRESOURCE mapped;
 	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &mapped));
 
 	const DirectX::Image* image = outputImage.GetImages();
 	for (uint y = 0; y < tileSize; ++y)
-		memcpy(image->pixels + y * image->rowPitch, (const uint8_t*)mapped.pData + y * mapped.RowPitch, tileSize * sizeof(float));
+		memcpy(image->pixels + y * image->rowPitch, (const uint8_t*)mapped.pData + y * mapped.RowPitch, tileSize * sizeof(uint16_t));
 
 	context->Unmap(cacheOutputTexH->resource.get(), 0);
 	SaveMapDDS(*image, path);
@@ -716,7 +718,7 @@ void TexGen::UpdateHeightPreview(const int2& a_tileOriginCell)
 {
 	auto context = globals::d3d::context;
 	const uint tileSize = cacheOutputTexH->desc.Width;
-	const DXGI_FORMAT format = DXGI_FORMAT_R32_FLOAT;
+	const DXGI_FORMAT format = DXGI_FORMAT_R16_FLOAT;
 
 	// The preview holds exactly what the DDS holds, in the same format, unmodified.
 	if (!heightPreviewTex || heightPreviewTex->desc.Width != tileSize || heightPreviewTex->desc.Format != format) {
@@ -735,7 +737,7 @@ void TexGen::UpdateHeightPreview(const int2& a_tileOriginCell)
 	DX::ThrowIfFailed(context->Map(heightPreviewTex->resource.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &dst));
 
 	for (uint y = 0; y < tileSize; ++y)
-		memcpy((uint8_t*)dst.pData + y * dst.RowPitch, (const uint8_t*)src.pData + y * src.RowPitch, tileSize * sizeof(float));
+		memcpy((uint8_t*)dst.pData + y * dst.RowPitch, (const uint8_t*)src.pData + y * src.RowPitch, tileSize * sizeof(uint16_t));
 
 	context->Unmap(heightPreviewTex->resource.get(), 0);
 	context->Unmap(cacheOutputTexH->resource.get(), 0);
@@ -850,7 +852,7 @@ void TexGen::GenerateHeightMap()
 
 		beginTile();
 
-		logger::info("[TexGen] Generating {0} height cache: {1}x{1} tiles of {2}x{2} cells, {3} texels per cell, {4} units per texel, 32 bit float",
+		logger::info("[TexGen] Generating {0} height cache: {1}x{1} tiles of {2}x{2} cells, {3} texels per cell, {4} units per texel, 16 bit float",
 			heightGenSingleTile ? "single tile" : "full", tileSize, cellsPerTile, texelsPerCell, worldRes);
 
 		SetWorldPosition(currentCellXY, worldPositionSet);
@@ -890,8 +892,8 @@ void TexGen::GenerateHeightMap()
 			groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
 
 			int2 texCoord = localCell * texelsPerCell + int2(x, y);
-			float* tex = (float*)((uint8_t*)mapped.pData + texCoord.y * mapped.RowPitch);
-			tex[texCoord.x] = groundHeight;  // write to tex
+			uint16_t* tex = (uint16_t*)((uint8_t*)mapped.pData + texCoord.y * mapped.RowPitch);
+			tex[texCoord.x] = DirectX::PackedVector::XMConvertFloatToHalf(groundHeight);
 		}
 	}
 	context->Unmap(cacheOutputTexH->resource.get(), 0);
@@ -1073,7 +1075,7 @@ bool TexGen::StartBentNormalTiles()
 	});
 
 	// One float output tile is reused for the whole run.
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)tileSize, (uint)tileSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16G16B16A16_FLOAT, (uint)tileSize, (uint)tileSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
 	bentNormalTileTex = eastl::make_unique<Texture2D>(desc, "TexGen::BentNormalTile");
@@ -1241,7 +1243,7 @@ void TexGen::DrawSettings()
 		ImGui::EndDisabled();
 
 		const int texelsPerCell = (int)GetHeightTileSize() / GetHeightTileCells();
-		ImGui::Text("%u^2 tile, %d texels per cell, %.0f units per texel, 32 bit float",
+		ImGui::Text("%u^2 tile, %d texels per cell, %.0f units per texel, 16 bit float",
 			GetHeightTileSize(), texelsPerCell, worldCellSize / (float)texelsPerCell);
 
 		ImGui::BeginDisabled(heightGenRunning);

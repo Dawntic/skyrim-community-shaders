@@ -142,10 +142,9 @@ public:
 	};
 
 	/// @brief Stitch "<Worldspace><mapTag><tileSize>.<cells>.<x>.<y>.dds" tiles into one image.
-	/// @param unormFill Value gaps between tiles take in a UNORM format, normalised to [0, 1].
-	/// @param floatFill Value gaps between tiles take in a float format.
+	/// @param fill Value gaps between tiles take.
 	/// @param scale Downscale applied per tile, 0 to 1. Rounded so tiles stay texel aligned.
-	bool StitchTileAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, const float4& unormFill, const float4& floatFill, TileAtlasResult& o_result, float scale = 1.0f, const AtlasCellRange* a_range = nullptr);
+	bool StitchTileAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, const float4& fill, TileAtlasResult& o_result, float scale = 1.0f, const AtlasCellRange* a_range = nullptr);
 
 	/// @brief Ensure the height atlas exists, stitching it from the generated height tiles if not.
 	/// @param a_forceRebuild Rebuild even when the atlas is already on disk.

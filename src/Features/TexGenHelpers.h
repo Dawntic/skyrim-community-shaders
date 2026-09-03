@@ -3,6 +3,8 @@
 #include "TexGen.h"
 #include "Utils/D3D.h"
 
+#include <DirectXPackedVector.h>
+
 namespace TexGenHelpers
 {
 	// Every generated LOD map is a single surface: one mip level, one array slice, no cube faces.
@@ -137,39 +139,16 @@ namespace TexGenHelpers
 		return true;
 	}
 
-	// Fill an image with a constant, expressed normalised for UNORM formats and raw for float ones.
-	inline void FillImage(const DirectX::Image& image, const float4& unormFill, const float4& floatFill)
+	inline void FillImage(const DirectX::Image& image, const float4& fill)
 	{
-		const float unorm[4] = { unormFill.x, unormFill.y, unormFill.z, unormFill.w };
-		const float raw[4] = { floatFill.x, floatFill.y, floatFill.z, floatFill.w };
-
-		size_t channels = 0;
-		switch (image.format) {
-		case DXGI_FORMAT_R16_UNORM:
-		case DXGI_FORMAT_R32_FLOAT:
-			channels = 1;
-			break;
-		case DXGI_FORMAT_R16G16B16A16_UNORM:
-		case DXGI_FORMAT_R32G32B32A32_FLOAT:
-			channels = 4;
-			break;
-		default:
-			memset(image.pixels, 0, image.slicePitch);
-			return;
-		}
-
-		const bool isUnorm = image.format == DXGI_FORMAT_R16_UNORM || image.format == DXGI_FORMAT_R16G16B16A16_UNORM;
+		const float raw[4] = { fill.x, fill.y, fill.z, fill.w };
+		const size_t channels = image.format == DXGI_FORMAT_R16_FLOAT ? 1 : 4;
 
 		for (size_t y = 0; y < image.height; ++y) {
 			auto row = image.pixels + y * image.rowPitch;
-			for (size_t x = 0; x < image.width; ++x) {
-				for (size_t c = 0; c < channels; ++c) {
-					if (isUnorm)
-						((uint16_t*)row)[x * channels + c] = (uint16_t)std::clamp(unorm[c] * 65535.0f, 0.0f, 65535.0f);
-					else
-						((float*)row)[x * channels + c] = raw[c];
-				}
-			}
+			for (size_t x = 0; x < image.width; ++x)
+				for (size_t c = 0; c < channels; ++c)
+					((uint16_t*)row)[x * channels + c] = DirectX::PackedVector::XMConvertFloatToHalf(raw[c]);
 		}
 	}
 
