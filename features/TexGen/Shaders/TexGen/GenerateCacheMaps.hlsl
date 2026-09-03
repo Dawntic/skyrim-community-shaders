@@ -10,20 +10,16 @@ cbuffer CacheGenBuffer : register(b0)
 	float4 SweepRect;    // xy: tile origin in atlas texels, z: tile size
 };
 
-//// Bent Normal and Cardinal AO Map ////////////////////////////////////////////////////
+//// Cardinal AO Map ///////////////////////////////////////////////////////////////////
 #ifdef CSHADER
 
 Texture2D<float> HeightTex : register(t0);
 SamplerState LinearSampler : register(s0);
 
-#	ifdef CARDINALS
 RWTexture2D<float4> OutputHorizon0 : register(u0);
 RWTexture2D<float4> OutputHorizon1 : register(u1);
 RWTexture2D<float4> OutputHorizon2 : register(u2);
 RWTexture2D<float4> OutputHorizon3 : register(u3);
-#	else
-RWTexture2D<float4> OutputBentNormal : register(u0);
-#	endif
 
 static const float2 CARD[4] = {
 	float2(1, 0), float2(0, 1),   // +X - East, +Y - South
@@ -45,20 +41,14 @@ float TexelsToEdge(float2 uv, float2 Dir, float2 Dim)
 }
 
 // March one ray; return sin(elevation) of the highest occluder (>= 0 = flat).
-#	ifdef CARDINALS
 float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, float2 Dir, out float MeanHitDist)
-#	else
-float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, float2 Dir)
-#	endif
 {
 	float2 InvPxSize = 1.0 / HeightMapPxSize;
 	float MaxHeight = 0.0;
 	float WeightedDist = 0.0;
 
 	float StepCount = TexelsToEdge(CoordsUV, Dir, HeightMapPxSize);
-
 	float2 TexelWorldSize = (GridBounds.zw - GridBounds.xy) / (float2)HeightMapPxSize;
-
 	float StepDist = length(Dir * TexelWorldSize);
 
 	float PosOffset = StepDist;
@@ -72,24 +62,16 @@ float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, f
 
 		float HDiff = Height - SampleHeight;
 		float Hypot = sqrt(PosOffset * PosOffset + HDiff * HDiff);
-
 		float SinElevation = HDiff / Hypot;
-#	ifdef CARDINALS
 		if (SinElevation > MaxHeight) {
 			WeightedDist += (SinElevation - MaxHeight) * PosOffset;
 			MaxHeight = SinElevation;
 		}
-#	else
-		MaxHeight = max(SinElevation, MaxHeight);
-#	endif
 
 		PosOffset += StepDist;
 	}
 
-#	ifdef CARDINALS
 	MeanHitDist = MaxHeight > 1e-4 ? WeightedDist / MaxHeight : 0.0;
-#	endif
-
 	return max(MaxHeight, 0.0);
 }
 
@@ -97,7 +79,6 @@ float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, f
 	if (any(ThreadID.xy >= (uint2)OutputTexSize))
 		return;
 
-	// Map the output texel onto the height map.
 	float2 CoordsUV = (ThreadID.xy + 0.5) / OutputTexSize;
 
 	float2 SampCoords = CoordsUV;
@@ -107,7 +88,6 @@ float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, f
 	uint2 HeightMapPxSize;
 	HeightTex.GetDimensions(HeightMapPxSize.x, HeightMapPxSize.y);
 
-#	ifdef CARDINALS
 	float4 card, diag;
 	float4 cardWeight, diagWeight;
 	[unroll] for (int step = 0; step < 8; step++)
@@ -123,37 +103,6 @@ float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, f
 	OutputHorizon1[ThreadID.xy] = diag;
 	OutputHorizon2[ThreadID.xy] = cardWeight;
 	OutputHorizon3[ThreadID.xy] = diagWeight;
-#	else
-	static const uint NUM_AZIMUTH = 64;  // more than this doesn't improve quality
-
-	const float AzStep = 2.0 * Math::PI / NUM_AZIMUTH;
-	const float RadiualWeight = 2.0 * sin(0.5 * AzStep);  // exact ∫ cos/sin over the wedge
-	float3 DirAccum = 0.0;                                // unnormalized ∫_visible ω dω
-	float VisAccum = 0.0;
-	[loop] for (uint step = 0; step < NUM_AZIMUTH; ++step)
-	{
-		float phi = (step + 0.5) * AzStep;
-		float2 Dir;
-		sincos(phi, Dir.x, Dir.y);
-
-		float SinH = MarchHorizon(CoordsUV, HeightSample, HeightMapPxSize, Dir.yx);
-
-		float SinH2 = SinH * SinH;
-		float CosH = sqrt(max(0.0, 1.0 - SinH2));
-		float AngleRad = asin(saturate(SinH));
-
-		float Zenith = AzStep * 0.5 * (1.0 - SinH2);                                           // z of ∫ω dω
-		float Radial = RadiualWeight * ((Math::PI / 4) - 0.5 * AngleRad - 0.5 * SinH * CosH);  // radial of (π/4 - θ/2 - sc/2)
-
-		VisAccum += AzStep * (1.0 - SinH);  // ∫sinθ dθ over the wedge, no cosine
-		DirAccum += float3(Radial * Dir.yx, Zenith);
-	}
-
-	float AO = saturate(VisAccum * rcp(2.0 * Math::PI));
-	float3 BentNormal = normalize(DirAccum);
-
-	OutputBentNormal[ThreadID.xy] = float4(BentNormal * 0.5 + 0.5, AO);
-#	endif
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////

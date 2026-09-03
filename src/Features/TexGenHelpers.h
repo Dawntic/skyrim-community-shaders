@@ -282,25 +282,6 @@ namespace TexGenHelpers
 
 		return found;
 	}
-	inline bool CanGenerateMap(std::string_view a_mapName, const std::string& a_worldspaceID, ID3D11ShaderResourceView* a_heightMapSRV, bool a_atlasRangeValid)
-	{
-		if (a_worldspaceID.empty()) {
-			logger::error("[TexGen] No worldspace known, skipping {} generation", a_mapName);
-			return false;
-		}
-
-		if (!a_heightMapSRV) {
-			logger::error("[TexGen] No height map loaded, skipping {} generation", a_mapName);
-			return false;
-		}
-
-		if (!a_atlasRangeValid) {
-			logger::error("[TexGen] No height atlas range known, skipping {} generation", a_mapName);
-			return false;
-		}
-
-		return true;
-	}
 
 	inline bool AtlasTexelToCell(const int2& texel, const TexGen::Settings& settings, int2& o_cell)
 	{

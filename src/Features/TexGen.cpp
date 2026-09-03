@@ -384,154 +384,123 @@ bool TexGen::ResolveBentNormalAtlas(const std::string& a_worldspaceID, std::file
 //////////////////////////////////////////////////////////////////////////////////
 //// GPU generators
 //////////////////////////////////////////////////////////////////////////////////
+bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceRebuild)
+{
+	worldspaceID = a_worldspaceID;
 
-bool TexGen::GenerateNormalMap()
+	std::filesystem::path heightAtlasPath;
+	if (!ResolveHeightAtlas(worldspaceID, heightAtlasPath))
+		return false;
+
+	const auto downscaledHeightPath = MakeAtlasPath(cachePath, worldspaceID, "_HD", heightAtlasRange.minCell, heightAtlasRange.maxCell);
+	static constexpr std::array<const char*, 7> outputTags = { "_N", "_CO", "_CO2", "_DO", "_DO2", "_DOB", "_DO2B" };
+
+	bool rebuild = a_forceRebuild;
+	std::error_code ec;
+	rebuild = !std::filesystem::exists(downscaledHeightPath, ec) || rebuild;
+	for (const auto* tag : outputTags) {
+		const auto path = cachePath / (worldspaceID + tag + ".dds");
+		rebuild = !std::filesystem::exists(path, ec) || rebuild;
+	}
+
+	if (!rebuild) {
+		const auto sourceWriteTime = std::filesystem::last_write_time(heightAtlasPath, ec);
+		const auto downscaledWriteTime = std::filesystem::last_write_time(downscaledHeightPath, ec);
+		rebuild = sourceWriteTime > downscaledWriteTime;
+	}
+	if (!rebuild)
+		return true;
+
+	using namespace DirectX;
+
+	ScratchImage sourceImage;
+	DX::ThrowIfFailed(LoadFromDDSFile(heightAtlasPath.c_str(), DDS_FLAGS_NONE, nullptr, sourceImage));
+
+	const Image* source = sourceImage.GetImages();
+	const uint width = std::max(1u, (uint)std::lround((float)source->width * derivedHeightScale));
+	const uint height = std::max(1u, (uint)std::lround((float)source->height * derivedHeightScale));
+
+	ScratchImage downscaledImage;
+	DX::ThrowIfFailed(Resize(*source, width, height, TEX_FILTER_DEFAULT, downscaledImage));
+
+	RemoveExistingAtlases(cachePath, worldspaceID, "_HD");
+	SaveMapDDS(*downscaledImage.GetImages(), downscaledHeightPath);
+
+	winrt::com_ptr<ID3D11Resource> heightResource;
+	DX::ThrowIfFailed(CreateTexture(
+		globals::d3d::device,
+		downscaledImage.GetImages(),
+		downscaledImage.GetImageCount(),
+		downscaledImage.GetMetadata(),
+		heightResource.put()));
+
+	winrt::com_ptr<ID3D11ShaderResourceView> downscaledHeightSRV;
+	DX::ThrowIfFailed(globals::d3d::device->CreateShaderResourceView(heightResource.get(), nullptr, downscaledHeightSRV.put()));
+
+	auto previousHeightMapSRV = heightMapSRV;
+	heightMapSRV = downscaledHeightSRV.get();
+	const int2 mapSize = int2((int)width, (int)height);
+	const bool generated = GenerateNormalMap(mapSize) && GenerateCardinalOcclusionMaps(mapSize);
+	heightMapSRV = previousHeightMapSRV;
+
+	if (generated) {
+		logger::info("[TexGen] Built derived maps at {}x{} from {}", width, height, heightAtlasPath.string());
+		NotifyCacheMapsChanged();
+	}
+	return generated;
+}
+
+bool TexGen::GenerateNormalMap(const int2& a_mapSize)
 {
 	auto context = globals::d3d::context;
 
-	UpdateWorldspaceID();  // callable straight from a consumer's load path, before Prepass has run
+	eastl::unique_ptr<Texture2D> output;
+	winrt::com_ptr<ID3D11ComputeShader> computeShader;
 
-	if (!CanGenerateMap("normal map", worldspaceID, heightMapSRV, heightAtlasRange.valid))
-		return false;
-
-	// Setup resources
-	eastl::unique_ptr<Texture2D> cacheOutputTexN = nullptr;
-	winrt::com_ptr<ID3D11ComputeShader> NComputeShader = nullptr;
-
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16G16B16A16_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16G16B16A16_FLOAT, (uint)a_mapSize.x, (uint)a_mapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
-	cacheOutputTexN = eastl::make_unique<Texture2D>(desc, "TexGen::NormalMap");
-	cacheOutputTexN->CreateUAV(uavDesc);
-
-	NComputeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "NORMALS", "" } }, "cs_5_0")));
+	output = eastl::make_unique<Texture2D>(desc, "TexGen::NormalMap");
+	output->CreateUAV(uavDesc);
+	computeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "NORMALS", "" } }, "cs_5_0")));
 
 	if (!cacheGenBuffer)
 		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 
-	// Generate map
-	ID3D11UnorderedAccessView* uav = cacheOutputTexN->uav.get();
-	context->CSSetShader(NComputeShader.get(), nullptr, 0);
+	ID3D11UnorderedAccessView* uav = output->uav.get();
+	context->CSSetShader(computeShader.get(), nullptr, 0);
 	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
-
-	auto heightSRV = heightMapSRV;
-	context->CSSetShaderResources(0, 1, &heightSRV);
+	context->CSSetShaderResources(0, 1, &heightMapSRV);
 
 	CacheGenCBStruct data = {
-		.TexParams = float4((float)BNMapSize.x, (float)BNMapSize.y, 0.0f, 0.0f),
+		.TexParams = float4((float)a_mapSize.x, (float)a_mapSize.y, 0.0f, 0.0f),
 		.GridBounds = GetAtlasWorldBound()
 	};
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
 	context->CSSetConstantBuffers(0, 1, &buffer);
+	context->Dispatch((a_mapSize.x + 7) / 8, (a_mapSize.y + 7) / 8, 1);
 
-	auto groups = (BNMapSize.x + 7) / 8;
-	context->Dispatch(groups, (BNMapSize.y + 7) / 8, 1);
+	ID3D11UnorderedAccessView* nullUAV = nullptr;
+	context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
+	ID3D11ShaderResourceView* nullSRV = nullptr;
+	context->CSSetShaderResources(0, 1, &nullSRV);
 
-	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
-	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
-	ID3D11ShaderResourceView* nullSRVs[1] = { nullptr };
-	context->CSSetShaderResources(0, 1, nullSRVs);
-
-	// Save output
-	auto outputPath = cachePath / (worldspaceID + "_N.dds");
-	DirectX::ScratchImage ouputImage;
-	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexN->resource.get(), ouputImage));
-	SaveMapDDS(*ouputImage.GetImages(), outputPath);
-
-	NotifyCacheMapsChanged();
+	DirectX::ScratchImage captured;
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, context, output->resource.get(), captured));
+	SaveMapDDS(*captured.GetImages(), cachePath / (worldspaceID + "_N.dds"));
 	return true;
 }
 
-void TexGen::DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D* a_outputTex)
+bool TexGen::GenerateCardinalOcclusionMaps(const int2& a_mapSize)
 {
-	if (!cacheGenBuffer)
-		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
-
-	auto context = globals::d3d::context;
-
-	ID3D11UnorderedAccessView* uav = a_outputTex->uav.get();
-	context->CSSetShader(a_computeShader, nullptr, 0);
-	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
-
-	auto heightSRV = heightMapSRV;
-	context->CSSetShaderResources(0, 1, &heightSRV);
-
-	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
-	context->CSSetSamplers(0, 1, &linSampler);
-
-	CacheGenCBStruct data = {
-		.TexParams = float4((float)a_outputTex->desc.Width, (float)a_outputTex->desc.Height, 0.0f, 0.0f),
-		.GridBounds = GetAtlasWorldBound()
-	};
-	cacheGenBuffer->Update(data);
-
-	auto buffer = cacheGenBuffer->CB();
-	context->CSSetConstantBuffers(0, 1, &buffer);
-
-	context->Dispatch((a_outputTex->desc.Width + 7) / 8, (a_outputTex->desc.Height + 7) / 8, 1);
-
-	// Clear compute bindings before capture/reload and release references to temporary outputs.
-	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
-	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
-	ID3D11ShaderResourceView* nullSRVs[1] = { nullptr };
-	context->CSSetShaderResources(0, 1, nullSRVs);
-}
-
-bool TexGen::GenerateBentNormalMap()
-{
-	UpdateWorldspaceID();
-
-	if (!CanGenerateMap("bent normal map", worldspaceID, heightMapSRV, heightAtlasRange.valid))
-		return false;
-
-	// Setup resources
-	eastl::unique_ptr<Texture2D> cacheOutputTexBN = nullptr;
-	winrt::com_ptr<ID3D11ComputeShader> BNComputeShader = nullptr;
-
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16G16B16A16_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
-	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
-
-	cacheOutputTexBN = eastl::make_unique<Texture2D>(desc, "TexGen::BentNormalMap");
-	cacheOutputTexBN->CreateUAV(uavDesc);
-
-	BNComputeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "CSHADER", "" } }, "cs_5_0")));
-
-	DispatchBentNormals(BNComputeShader.get(), cacheOutputTexBN.get());
-
-	// Save output. This pass covers whatever the height map covers, so it is named with that range
-	// and is found by the same lookup as a stitched atlas.
-	const float4 bounds = GetAtlasWorldBound();
-	const int2 minCell = int2((int)std::floor(bounds.x / worldCellSize), (int)std::floor(bounds.y / worldCellSize));
-	const int2 maxCell = int2((int)std::floor(bounds.z / worldCellSize) - 1, (int)std::floor(bounds.w / worldCellSize) - 1);
-	auto outputPath = MakeAtlasPath(cachePath, worldspaceID, "_BN", minCell, maxCell);
-
-	DirectX::ScratchImage ouputImage;
-	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexBN->resource.get(), ouputImage));
-
-	RemoveExistingAtlases(cachePath, worldspaceID, "_BN");
-	SaveMapDDS(*ouputImage.GetImages(), outputPath);
-
-	NotifyCacheMapsChanged();
-	return true;
-}
-
-bool TexGen::GenerateCardinalOcclusionMap()
-{
-	UpdateWorldspaceID();
-
-	if (!CanGenerateMap("cardinal occlusion maps", worldspaceID, heightMapSRV, heightAtlasRange.valid))
-		return false;
-
-	// Setup resources. Six outputs, all the same shape: cardinal, diagonal and the second set the
-	// shader writes for the wider horizon search.
 	static constexpr std::array<const char*, 6> outputTags = { "_CO", "_CO2", "_DO", "_DO2", "_DOB", "_DO2B" };
 
 	std::array<eastl::unique_ptr<Texture2D>, 6> outputs;
-	winrt::com_ptr<ID3D11ComputeShader> COComputeShader = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> computeShader;
 
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16G16B16A16_FLOAT, COMapSize, COMapSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16G16B16A16_FLOAT, (uint)a_mapSize.x, (uint)a_mapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
 	for (size_t i = 0; i < outputs.size(); ++i) {
@@ -540,52 +509,43 @@ bool TexGen::GenerateCardinalOcclusionMap()
 		outputs[i]->CreateUAV(uavDesc);
 	}
 
-	COComputeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "CSHADER", "" }, { "CARDINALS", "" } }, "cs_5_0")));
+	computeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "CSHADER", "" }, { "CARDINALS", "" } }, "cs_5_0")));
 
 	if (!cacheGenBuffer)
 		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 
-	// Generate maps
 	auto context = globals::d3d::context;
-
-	ID3D11UnorderedAccessView* uav[6];
+	ID3D11UnorderedAccessView* uavs[6];
 	for (size_t i = 0; i < outputs.size(); ++i)
-		uav[i] = outputs[i]->uav.get();
+		uavs[i] = outputs[i]->uav.get();
 
-	context->CSSetShader(COComputeShader.get(), nullptr, 0);
-	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uav), uav, nullptr);
+	context->CSSetShader(computeShader.get(), nullptr, 0);
+	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+	context->CSSetShaderResources(0, 1, &heightMapSRV);
 
-	auto heightSRV = heightMapSRV;
-	context->CSSetShaderResources(0, 1, &heightSRV);
-
-	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
-	context->CSSetSamplers(0, 1, &linSampler);
+	ID3D11SamplerState* linearSampler = globals::deferred->linearSampler;
+	context->CSSetSamplers(0, 1, &linearSampler);
 
 	CacheGenCBStruct data = {
-		.TexParams = float4((float)COMapSize, (float)COMapSize, 0.0f, 0.0f),
+		.TexParams = float4((float)a_mapSize.x, (float)a_mapSize.y, 0.0f, 0.0f),
 		.GridBounds = GetAtlasWorldBound()
 	};
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
 	context->CSSetConstantBuffers(0, 1, &buffer);
+	context->Dispatch((a_mapSize.x + 7) / 8, (a_mapSize.y + 7) / 8, 1);
 
-	auto groups = (COMapSize + 7) / 8;
-	context->Dispatch(groups, groups, 1);
-
-	ID3D11UnorderedAccessView* nullUAVs[6] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+	ID3D11UnorderedAccessView* nullUAVs[6] = {};
 	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(nullUAVs), nullUAVs, nullptr);
-	ID3D11ShaderResourceView* nullSRVs[1] = { nullptr };
-	context->CSSetShaderResources(0, 1, nullSRVs);
+	ID3D11ShaderResourceView* nullSRV = nullptr;
+	context->CSSetShaderResources(0, 1, &nullSRV);
 
-	// Save output
-	DirectX::ScratchImage ouputImage;
+	DirectX::ScratchImage captured;
 	for (size_t i = 0; i < outputs.size(); ++i) {
-		DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, outputs[i]->resource.get(), ouputImage));
-		SaveMapDDS(*ouputImage.GetImages(), cachePath / (worldspaceID + outputTags[i] + ".dds"));
+		DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, context, outputs[i]->resource.get(), captured));
+		SaveMapDDS(*captured.GetImages(), cachePath / (worldspaceID + outputTags[i] + ".dds"));
 	}
-
-	NotifyCacheMapsChanged();
 	return true;
 }
 
@@ -1203,14 +1163,8 @@ void TexGen::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Stitches the xLODGen LOD tiles in\n%s\ninto one albedo atlas.", settings.dynDOLODPath.c_str());
 
-		if (ImGui::Button("Generate card Occl"))
-			GenerateCardinalOcclusionMap();
-
-		if (ImGui::Button("Generate bent normal"))
-			GenerateBentNormalMap();
-
-		if (ImGui::Button("Generate Normal"))
-			GenerateNormalMap();
+		if (ImGui::Button("Generate Normal and Cardinal AO"))
+			BuildDerivedMaps(worldspaceID, true);
 
 		ImGui::BeginDisabled(heightGenRunning);  // the tile layout is latched for the duration of a run
 

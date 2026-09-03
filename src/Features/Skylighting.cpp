@@ -263,11 +263,10 @@ bool Skylighting::LoadWorldspaceCache()
 
 	logger::info("[Skylighting] Loading cached texture maps...");
 
-	// The height atlas has to come first: every generator reads it, and generating against a
-	// null height map would write out empty maps.
-	{
-		texGen.SetHeightMapSRV(nullptr);  // TexGen holds a non-owning view of the texture released below
+	texGen.SetHeightMapSRV(nullptr);
+	texGen.BuildDerivedMaps(newWorldspaceID);
 
+	{
 		std::filesystem::path path;
 		if (texGen.ResolveHeightAtlas(newWorldspaceID, path)) {
 			if (!LoadCacheMap(path, &HMapSRV))
@@ -285,11 +284,7 @@ bool Skylighting::LoadWorldspaceCache()
 			LoadCacheMap(path, &AMapSRV);
 	}
 
-	{
-		auto path = TexGen::cachePath / (newWorldspaceID + "_N.dds");
-		if (!LoadCacheMap(path, &NMapSRV) && texGen.GenerateNormalMap())
-			LoadCacheMap(path, &NMapSRV);
-	}
+	LoadCacheMap(TexGen::cachePath / (newWorldspaceID + "_N.dds"), &NMapSRV);
 
 	{
 		std::filesystem::path path;
@@ -299,24 +294,16 @@ bool Skylighting::LoadWorldspaceCache()
 			// bake that took hours.
 			if (!LoadCacheMap(path, &BNMapSRV))
 				logger::error("[Skylighting] {} exists but failed to load; leaving it untouched", path.string());
-		} else if (texGen.GenerateBentNormalMap()) {  // no tiles to stitch, fall back to the full map pass
-			if (texGen.ResolveBentNormalAtlas(newWorldspaceID, path))
-				LoadCacheMap(path, &BNMapSRV);
 		}
 	}
 
-	// A single pass writes all six occlusion maps, so any one of them missing regenerates the set.
+	// The TexGen derived-map pass writes the whole set together.
 	{
 		static constexpr std::array<const char*, 6> occlusionTags = { "_CO", "_CO2", "_DO", "_DO2", "_DOB", "_DO2B" };
 		ID3D11ShaderResourceView** occlusionSRVs[6] = { &COMapSRV, &CO2MapSRV, &DOMapSRV, &DO2MapSRV, &DOMapSRVB, &DO2MapSRVB };
 
-		bool anyMissing = false;
 		for (size_t i = 0; i < occlusionTags.size(); ++i)
-			anyMissing = !LoadCacheMap(TexGen::cachePath / (newWorldspaceID + occlusionTags[i] + ".dds"), occlusionSRVs[i]) || anyMissing;
-
-		if (anyMissing && texGen.GenerateCardinalOcclusionMap())
-			for (size_t i = 0; i < occlusionTags.size(); ++i)
-				LoadCacheMap(TexGen::cachePath / (newWorldspaceID + occlusionTags[i] + ".dds"), occlusionSRVs[i]);
+			LoadCacheMap(TexGen::cachePath / (newWorldspaceID + occlusionTags[i] + ".dds"), occlusionSRVs[i]);
 	}
 
 	// Recorded last: a generator above asks for a reload by clearing this, and setting it before the

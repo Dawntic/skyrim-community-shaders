@@ -114,12 +114,9 @@ public:
 
 	/// @brief Stitch xLODGen LOD tiles into one albedo atlas at the given path.
 	bool BuildLODAtlas(const std::filesystem::path& a_outputPath);
-	/// @brief Write "<Worldspace>_N.dds" from the height atlas.
-	bool GenerateNormalMap();
-	/// @brief Write the full worldspace bent normal map, named with the height atlas' cell range.
-	bool GenerateBentNormalMap();
-	/// @brief Write the six cardinal and diagonal occlusion maps in one pass.
-	bool GenerateCardinalOcclusionMap();
+	/// @brief Downscale the height atlas and generate the complete normal and cardinal AO set from it.
+	/// Existing outputs are reused unless a_forceRebuild is set.
+	bool BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceRebuild = false);
 
 	/// @brief Whether a bake is in flight, during which the player is teleported around.
 	bool IsGenerating() const { return heightGenRunning || bentNormalTileGen; }
@@ -182,8 +179,6 @@ public:
 	// One bent normal tile per height tile, matching their dimensions and naming, built
 	// from the stitched height atlas so rays still see terrain beyond the tile they belong to.
 
-	/// @brief Run the per texel bent normal march over a UV region of the height atlas.
-	void DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D* a_outputTex);
 	/// @brief Line sweep bent normals for one tile: one dispatch per azimuth, then a resolve pass.
 	/// @param tileOriginAtlasPx North west corner of the tile in atlas texels.
 	void DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOriginAtlasPx);
@@ -212,6 +207,11 @@ private:
 	void UpdateWorldspaceID();
 	/// @brief Ask the features that render with the cache to reload it from disk.
 	void NotifyCacheMapsChanged();
+	/// @brief Write the normal map at exactly the downscaled height map dimensions.
+	bool GenerateNormalMap(const int2& a_mapSize);
+	/// @brief Write the cardinal and diagonal AO set at exactly the downscaled height map dimensions.
+	bool GenerateCardinalOcclusionMaps(const int2& a_mapSize);
+
 	std::string worldspaceID = "";
 
 	ID3D11ShaderResourceView* heightMapSRV = nullptr;  // non-owning, set by the consumer that loaded it
@@ -221,8 +221,7 @@ private:
 	ConstantBuffer* cacheGenBuffer = nullptr;
 
 	//// Cache gen resources ////
-	static constexpr uint COMapSize = 1024;
-	static constexpr int2 BNMapSize = int2(3808, 3008);
+	static constexpr float derivedHeightScale = 0.25f;
 
 	//// Height bake state ////
 	bool heightGenRunning = false;
