@@ -264,7 +264,7 @@ bool Skylighting::LoadWorldspaceCache()
 	logger::info("[Skylighting] Loading cached texture maps...");
 
 	texGen.SetHeightMapSRV(nullptr);
-	ID3D11ShaderResourceView** cacheSRVs[] = { &HMapSRV, &AMapSRV, &NMapSRV, &BNMapSRV, &COMapSRV, &CO2MapSRV };
+	ID3D11ShaderResourceView** cacheSRVs[] = { &HMapSRV, &AMapSRV, &NMapSRV, &BNMapSRV, &COMapSRV, &CO2MapSRV, &DOMapSRV, &DO2MapSRV };
 	for (auto srv : cacheSRVs) {
 		if (*srv) {
 			(*srv)->Release();
@@ -307,8 +307,8 @@ bool Skylighting::LoadWorldspaceCache()
 
 	// The TexGen derived-map pass writes the whole set together.
 	{
-		static constexpr std::array<const char*, 2> occlusionTags = { "_CO", "_CO2" };
-		ID3D11ShaderResourceView** occlusionSRVs[2] = { &COMapSRV, &CO2MapSRV };
+		static constexpr std::array<const char*, 4> occlusionTags = { "_CO", "_CO2", "_DO", "_DO2" };
+		ID3D11ShaderResourceView** occlusionSRVs[4] = { &COMapSRV, &CO2MapSRV, &DOMapSRV, &DO2MapSRV };
 
 		for (size_t i = 0; i < occlusionTags.size(); ++i)
 			LoadCacheMap(TexGen::cachePath / (newWorldspaceID + occlusionTags[i] + ".dds"), occlusionSRVs[i]);
@@ -446,13 +446,23 @@ void Skylighting::UpdateSparseProbeGrid()
 	auto& physSky = globals::features::physicalSky;
 	//auto& depthTexture = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 
-	ID3D11ShaderResourceView* terrainSRVs[] = {
+	ID3D11ShaderResourceView* srvs[] = {
 		HMapSRV,
 		physSky.texSvLut->srv.get(),
+
+		AMapSRV,
+		BNMapSRV,
+		DOMapSRV,
+		DO2MapSRV,
+		nullptr,
+		nullptr,
+
+		physSky.cloudBaseSRV.get(),  //t8
+
+		NMapSRV,
 	};
-	context->CSSetShaderResources(0, ARRAYSIZE(terrainSRVs), terrainSRVs);
-	auto cloudBaseSRV = physSky.cloudBaseSRV.get();
-	context->CSSetShaderResources(8, 1, &cloudBaseSRV);
+
+	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
 	ID3D11ShaderResourceView* skyIBLSRV = globals::features::ibl.skyIBLTexture ? globals::features::ibl.skyIBLTexture->srv.get() : nullptr;
 	context->CSSetShaderResources(77, 1, &skyIBLSRV);

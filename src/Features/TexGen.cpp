@@ -389,7 +389,7 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 		return false;
 
 	const auto downscaledHeightPath = MakeAtlasPath(cachePath, worldspaceID, "_HD", heightAtlasRange.minCell, heightAtlasRange.maxCell);
-	static constexpr std::array<const char*, 3> outputTags = { "_N", "_CO", "_CO2" };
+	static constexpr std::array<const char*, 5> outputTags = { "_N", "_CO", "_CO2", "_DO", "_DO2" };
 
 	bool rebuild = a_forceRebuild;
 	std::error_code ec;
@@ -420,7 +420,6 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 	DX::ThrowIfFailed(Resize(*source, width, height, TEX_FILTER_DEFAULT, downscaledImage));
 
 	SaveMapDDS(*downscaledImage.GetImages(), downscaledHeightPath);
-	RemoveOtherAtlases(cachePath, worldspaceID, "_HD", downscaledHeightPath);
 
 	winrt::com_ptr<ID3D11Resource> heightResource;
 	DX::ThrowIfFailed(CreateTexture(
@@ -491,9 +490,9 @@ bool TexGen::GenerateNormalMap(const int2& a_mapSize)
 
 bool TexGen::GenerateCardinalOcclusionMaps(const int2& a_mapSize)
 {
-	static constexpr std::array<const char*, 2> outputTags = { "_CO", "_CO2" };
+	static constexpr std::array<const char*, 4> outputTags = { "_CO", "_CO2", "_DO", "_DO2" };
 
-	std::array<eastl::unique_ptr<Texture2D>, 2> outputs;
+	std::array<eastl::unique_ptr<Texture2D>, 4> outputs;
 	winrt::com_ptr<ID3D11ComputeShader> computeShader;
 
 	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16G16B16A16_FLOAT, (uint)a_mapSize.x, (uint)a_mapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
@@ -511,7 +510,7 @@ bool TexGen::GenerateCardinalOcclusionMaps(const int2& a_mapSize)
 		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 
 	auto context = globals::d3d::context;
-	ID3D11UnorderedAccessView* uavs[2];
+	ID3D11UnorderedAccessView* uavs[4];
 	for (size_t i = 0; i < outputs.size(); ++i)
 		uavs[i] = outputs[i]->uav.get();
 
@@ -532,7 +531,7 @@ bool TexGen::GenerateCardinalOcclusionMaps(const int2& a_mapSize)
 	context->CSSetConstantBuffers(0, 1, &buffer);
 	context->Dispatch((a_mapSize.x + 7) / 8, (a_mapSize.y + 7) / 8, 1);
 
-	ID3D11UnorderedAccessView* nullUAVs[2] = {};
+	ID3D11UnorderedAccessView* nullUAVs[4] = {};
 	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(nullUAVs), nullUAVs, nullptr);
 	ID3D11ShaderResourceView* nullSRV = nullptr;
 	context->CSSetShaderResources(0, 1, &nullSRV);
@@ -842,9 +841,7 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 	if (!SaveHeightTileManifest(a_worldspaceID, tiles))
 		return false;
 
-	// A changed cell range produces a different filename, so remove stale atlases before saving.
 	SaveMapDDS(*atlasImage, atlasPath);
-	RemoveOtherAtlases(cachePath, a_worldspaceID, "_H", atlasPath);
 
 	const auto removedTiles = DeleteTiles(tiles);
 	logger::info("[TexGen] Saved height tile manifest and removed {} temporary tiles", removedTiles);
@@ -882,7 +879,6 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 	const Image* atlasImage = result.image.GetImages();
 
 	SaveMapDDS(*atlasImage, atlasPath);
-	RemoveOtherAtlases(cachePath, a_worldspaceID, "_BN", atlasPath);
 
 	logger::info("[TexGen] Built bent normal atlas {}: {}x{}, cells {},{} to {},{}",
 		atlasPath.string(), atlasImage->width, atlasImage->height,

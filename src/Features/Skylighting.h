@@ -159,6 +159,8 @@ public:
 	ID3D11ShaderResourceView* BNMapSRV = nullptr;
 	ID3D11ShaderResourceView* COMapSRV = nullptr;
 	ID3D11ShaderResourceView* CO2MapSRV = nullptr;
+	ID3D11ShaderResourceView* DOMapSRV = nullptr;
+	ID3D11ShaderResourceView* DO2MapSRV = nullptr;
 	ID3D11ShaderResourceView* AMapSRV = nullptr;
 	ID3D11ShaderResourceView* NMapSRV = nullptr;
 	//ID3D11ShaderResourceView* NSMapSRV = nullptr;

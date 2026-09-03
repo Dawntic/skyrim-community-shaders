@@ -84,28 +84,6 @@ namespace TexGenHelpers
 		return true;
 	}
 
-	// Once a replacement is safely written, remove older range-named atlases so lookup stays
-	// unambiguous. Only files matching this map's atlas pattern are touched.
-	inline void RemoveOtherAtlases(const std::filesystem::path& dir, const std::string& worldspaceID, const std::string& mapTag, const std::filesystem::path& keepPath)
-	{
-		std::error_code ec;
-		for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-			const auto& path = entry.path();
-			if (!path.has_extension() || _stricmp(path.extension().string().c_str(), ".dds") != 0)
-				continue;
-
-			TexGen::AtlasCellRange range;
-			if (!ParseAtlasName(path, worldspaceID, mapTag, range))
-				continue;
-
-			if (path.filename() == keepPath.filename())
-				continue;
-
-			if (std::filesystem::remove(path, ec))
-				logger::info("[TexGen] Replaced previous atlas {}", path.string());
-		}
-	}
-
 	struct HeightTileFile
 	{
 		std::filesystem::path path;
