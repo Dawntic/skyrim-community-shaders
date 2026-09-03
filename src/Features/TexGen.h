@@ -47,11 +47,8 @@ public:
 	{
 		int cacheProgressX = -57;
 		int cacheProgressY = -43;
-		int cacheTileCells = 8;            // worldspace cells per height tile edge (4 or 8)
-		int cacheTileSize = 1024;          // texels per height tile edge (512 or 1024)
-		bool cacheExport16Bit = true;      // export tiles as xLODGen-style 16 bit unsigned instead of raw float
-		bool cacheAtlasZeroBase = false;   // bias the atlas so its lowest point sits at 0.0
-		float cacheAtlasMinHeight = 0.0f;  // game unit height the last biased atlas stores as 0.0
+		int cacheTileCells = 8;    // worldspace cells per height tile edge (4 or 8)
+		int cacheTileSize = 1024;  // texels per height tile edge (512 or 1024)
 
 		// Layout of the last built atlas, so texel coordinates can be mapped back to cells.
 		int cacheAtlasMinCellX = 0;  // origin cell of the atlas' lower left tile
@@ -71,11 +68,6 @@ public:
 
 	static constexpr float worldCellSize = 4096.0f;  // world units per worldspace cell edge
 	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
-
-	// xLODGen-compatible export encoding: 16 bit unsigned, zero height stored as 32767, one step
-	// per 8 game units. Decode with height = (encoded - heightExportOffset) * heightExportScale.
-	static constexpr float heightExportOffset = 32767.0f;
-	static constexpr float heightExportScale = 8.0f;
 
 	/// @brief The worldspace cell range a stitched atlas covers, carried in its file name so the
 	/// extent always describes the file on disk rather than whatever the settings last recorded.
@@ -210,7 +202,7 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////
 	//// LOD bent normal tiles
 	//////////////////////////////////////////////////////////////////////////////////
-	// One bent normal tile per height tile, matching their dimensions, format and naming, built
+	// One bent normal tile per height tile, matching their dimensions and naming, built
 	// from the stitched height atlas so rays still see terrain beyond the tile they belong to.
 
 	/// @brief Run the per texel bent normal march over a UV region of the height atlas.
@@ -255,8 +247,6 @@ private:
 	std::string worldspaceID = "";
 
 	ID3D11ShaderResourceView* heightMapSRV = nullptr;  // non-owning, set by the consumer that loaded it
-	float heightMapOffset = 0.0f;                      // decode bias for the loaded atlas format
-	float heightMapScale = 1.0f;                       // decode scale for the loaded atlas format
 
 	AtlasCellRange heightAtlasRange;
 	AtlasCellRange bentNormalAtlasRange;

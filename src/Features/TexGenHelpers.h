@@ -103,33 +103,6 @@ namespace TexGenHelpers
 		}
 	}
 
-	// Encode a height in game units into the xLODGen 16 bit unsigned representation:
-	// zero height is 32767, one step is 8 game units, so height = (encoded - 32767) * 8.
-	inline uint16_t EncodeHeight16(float height)
-	{
-		float encoded = std::round(height / TexGen::heightExportScale) + TexGen::heightExportOffset;
-		return (uint16_t)std::clamp(encoded, 0.0f, 65535.0f);
-	}
-
-	// Convert one row of sampled heights into the stored representation: either the 16 bit encoding
-	// above or the raw game units. Shared by the DDS writer and the UI preview so both hold the
-	// exact same data.
-	inline void ConvertHeightRow(const float* src, uint8_t* dst, uint count, bool export16Bit)
-	{
-		if (export16Bit) {
-			auto encoded = (uint16_t*)dst;
-			for (uint x = 0; x < count; ++x)
-				encoded[x] = EncodeHeight16(src[x]);
-		} else {
-			memcpy(dst, src, count * sizeof(float));
-		}
-	}
-
-	inline DXGI_FORMAT HeightStorageFormat(bool export16Bit)
-	{
-		return export16Bit ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R32_FLOAT;
-	}
-
 	struct HeightTileFile
 	{
 		std::filesystem::path path;

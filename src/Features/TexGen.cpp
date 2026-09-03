@@ -18,9 +18,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	cacheProgressY,
 	cacheTileCells,
 	cacheTileSize,
-	cacheExport16Bit,
-	cacheAtlasZeroBase,
-	cacheAtlasMinHeight,
 	cacheAtlasMinCellX,
 	cacheAtlasMinCellY,
 	cacheAtlasTileSize,
@@ -168,7 +165,7 @@ float4 TexGen::GetBentNormalAtlasBounds() const
 TexGen::CacheGenCBStruct TexGen::MakeCacheGenCB(const float2& outputSize) const
 {
 	CacheGenCBStruct data;
-	data.TexParams = float4(outputSize.x, outputSize.y, heightMapOffset, heightMapScale);
+	data.TexParams = float4(outputSize.x, outputSize.y, 0.0f, 0.0f);
 	data.GridBounds = GetHeightMapBounds();
 	return data;
 }
@@ -180,17 +177,6 @@ bool TexGen::ResolveHeightAtlas(const std::string& a_worldspaceID, std::filesyst
 
 	if (!FindAtlas(a_worldspaceID, "_H", o_path, heightAtlasRange))
 		return false;
-
-	// The decode the cache gen shaders need: a 16 bit atlas samples as UNORM, so undo the
-	// normalisation as well as the xLODGen offset/scale. A raw float atlas is already in game units.
-	// A zero based atlas has had its offset folded out already, and reads relative to
-	// settings.cacheAtlasMinHeight rather than absolute world Z.
-	DirectX::TexMetadata metadata;
-	if (SUCCEEDED(DirectX::GetMetadataFromDDSFile(o_path.c_str(), DirectX::DDS_FLAGS_NONE, metadata))) {
-		bool is16Bit = metadata.format == DXGI_FORMAT_R16_UNORM;
-		heightMapOffset = (is16Bit && !settings.cacheAtlasZeroBase) ? heightExportOffset / 65535.0f : 0.0f;
-		heightMapScale = is16Bit ? heightExportScale * 65535.0f : 1.0f;
-	}
 
 	return true;
 }
@@ -720,11 +706,10 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 
 	// Gaps between tiles read as zero height, matching how the tiles clear unsampled texels.
 	TileAtlasResult result;
-	if (!StitchTileAtlas(a_worldspaceID, "_H", float4(heightExportOffset / 65535.0f, 0.0f, 0.0f, 0.0f), float4(0.0f, 0.0f, 0.0f, 0.0f), result))
+	if (!StitchTileAtlas(a_worldspaceID, "_H", float4(0.0f, 0.0f, 0.0f, 0.0f), float4(0.0f, 0.0f, 0.0f, 0.0f), result))
 		return false;
 
 	const Image* atlasImage = result.image.GetImages();
-	const DXGI_FORMAT format = atlasImage->format;
 	const int2 minOrigin = result.minOriginCell;
 	const int2 maxOrigin = result.maxOriginCell;
 	const uint tileSize = result.tileSize;
@@ -738,46 +723,6 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 	settings.cacheAtlasTilesX = result.tileCounts.x;
 	settings.cacheAtlasTilesY = result.tileCounts.y;
 
-	// Optionally bias the whole atlas so its lowest point becomes 0.0. The scan covers the gap fill
-	// too, so the result is the lowest value the atlas actually stores. Applied uniformly, so terrain
-	// stays continuous across tile seams; for 16 bit this also reclaims the unused negative half of
-	// the range. settings.cacheAtlasMinHeight records what 0.0 means in game units.
-	settings.cacheAtlasMinHeight = 0.0f;
-	if (settings.cacheAtlasZeroBase) {
-		if (format == DXGI_FORMAT_R16_UNORM) {
-			uint16_t minEncoded = UINT16_MAX;
-			for (size_t y = 0; y < atlasImage->height; ++y) {
-				auto row = (const uint16_t*)(atlasImage->pixels + y * atlasImage->rowPitch);
-				for (size_t x = 0; x < atlasImage->width; ++x)
-					minEncoded = std::min(minEncoded, row[x]);
-			}
-
-			for (size_t y = 0; y < atlasImage->height; ++y) {
-				auto row = (uint16_t*)(atlasImage->pixels + y * atlasImage->rowPitch);
-				for (size_t x = 0; x < atlasImage->width; ++x)
-					row[x] = (uint16_t)(row[x] - minEncoded);
-			}
-
-			settings.cacheAtlasMinHeight = ((float)minEncoded - heightExportOffset) * heightExportScale;
-		} else {
-			float minHeight = FLT_MAX;
-			for (size_t y = 0; y < atlasImage->height; ++y) {
-				auto row = (const float*)(atlasImage->pixels + y * atlasImage->rowPitch);
-				for (size_t x = 0; x < atlasImage->width; ++x)
-					minHeight = std::min(minHeight, row[x]);
-			}
-
-			for (size_t y = 0; y < atlasImage->height; ++y) {
-				auto row = (float*)(atlasImage->pixels + y * atlasImage->rowPitch);
-				for (size_t x = 0; x < atlasImage->width; ++x)
-					row[x] -= minHeight;
-			}
-
-			settings.cacheAtlasMinHeight = minHeight;
-		}
-
-		logger::info("[TexGen] Height atlas biased to zero base, 0.0 is {} game units", settings.cacheAtlasMinHeight);
-	}
 	globals::state->Save();
 
 	// The name carries the inclusive cell range the atlas covers, so its extent is always readable
@@ -866,7 +811,7 @@ bool TexGen::EnsureHeightTileTexture(uint a_tileSize)
 	if (cacheOutputTexH && cacheOutputTexH->desc.Width == a_tileSize && cacheOutputTexH->desc.Height == a_tileSize)
 		return true;
 
-	// Sampling keeps full float precision; the encode to 16 bit happens on save.
+	// Height tiles are stored in raw game units at full float precision.
 	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32_FLOAT, a_tileSize, a_tileSize, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
 
 	cacheOutputTexH = nullptr;
@@ -909,13 +854,12 @@ bool TexGen::SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile)
 
 	auto context = globals::d3d::context;
 	const uint tileSize = cacheOutputTexH->desc.Width;
-	const bool export16Bit = settings.cacheExport16Bit;
 
 	auto tileWorldspaceID = worldspaceID.empty() ? std::string("Unknown") : worldspaceID;
 	auto path = GetTilePath(tileWorldspaceID, "_H", tileSize, a_cellsPerTile, a_tileOriginCell);
 
 	DirectX::ScratchImage outputImage;
-	HRESULT hr = outputImage.Initialize2D(HeightStorageFormat(export16Bit), tileSize, tileSize, 1, 1);
+	HRESULT hr = outputImage.Initialize2D(DXGI_FORMAT_R32_FLOAT, tileSize, tileSize, 1, 1);
 	if (FAILED(hr)) {
 		logger::error("[TexGen] Failed to allocate height tile image: {:X}", (uint32_t)hr);
 		return false;
@@ -929,10 +873,8 @@ bool TexGen::SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile)
 	}
 
 	const DirectX::Image* image = outputImage.GetImages();
-	for (uint y = 0; y < tileSize; ++y) {
-		auto src = (const float*)((const uint8_t*)mapped.pData + y * mapped.RowPitch);
-		ConvertHeightRow(src, image->pixels + y * image->rowPitch, tileSize, export16Bit);
-	}
+	for (uint y = 0; y < tileSize; ++y)
+		memcpy(image->pixels + y * image->rowPitch, (const uint8_t*)mapped.pData + y * mapped.RowPitch, tileSize * sizeof(float));
 
 	context->Unmap(cacheOutputTexH->resource.get(), 0);
 
@@ -950,8 +892,7 @@ void TexGen::UpdateHeightPreview(const int2& a_tileOriginCell)
 
 	auto context = globals::d3d::context;
 	const uint tileSize = cacheOutputTexH->desc.Width;
-	const bool export16Bit = settings.cacheExport16Bit;
-	const DXGI_FORMAT format = HeightStorageFormat(export16Bit);
+	const DXGI_FORMAT format = DXGI_FORMAT_R32_FLOAT;
 
 	// The preview holds exactly what the DDS holds, in the same format, unmodified.
 	if (!heightPreviewTex || heightPreviewTex->desc.Width != tileSize || heightPreviewTex->desc.Format != format) {
@@ -985,10 +926,8 @@ void TexGen::UpdateHeightPreview(const int2& a_tileOriginCell)
 		return;
 	}
 
-	for (uint y = 0; y < tileSize; ++y) {
-		auto srcRow = (const float*)((const uint8_t*)src.pData + y * src.RowPitch);
-		ConvertHeightRow(srcRow, (uint8_t*)dst.pData + y * dst.RowPitch, tileSize, export16Bit);
-	}
+	for (uint y = 0; y < tileSize; ++y)
+		memcpy((uint8_t*)dst.pData + y * dst.RowPitch, (const uint8_t*)src.pData + y * src.RowPitch, tileSize * sizeof(float));
 
 	context->Unmap(heightPreviewTex->resource.get(), 0);
 	context->Unmap(cacheOutputTexH->resource.get(), 0);
@@ -1121,9 +1060,8 @@ void TexGen::GenerateHeightMap()
 			return;
 		}
 
-		logger::info("[TexGen] Generating {0} height cache: {1}x{1} tiles of {2}x{2} cells, {3} texels per cell, {4} units per texel, {5}",
-			heightGenSingleTile ? "single tile" : "full", tileSize, cellsPerTile, texelsPerCell, worldRes,
-			settings.cacheExport16Bit ? "16 bit unsigned" : "32 bit float");
+		logger::info("[TexGen] Generating {0} height cache: {1}x{1} tiles of {2}x{2} cells, {3} texels per cell, {4} units per texel, 32 bit float",
+			heightGenSingleTile ? "single tile" : "full", tileSize, cellsPerTile, texelsPerCell, worldRes);
 
 		SetWorldPosition(currentCellXY, worldPositionSet);
 		settleFrames = heightSettleFrames;
@@ -1600,18 +1538,7 @@ bool TexGen::GenerateBentNormalTile(const int2& a_tileOriginCell)
 		return false;
 	}
 
-	// Same storage convention as the height tiles: 16 bit unsigned, or raw float when that is off.
-	// The shader already writes normal * 0.5 + 0.5 and AO, so everything is in range for UNORM.
-	DirectX::ScratchImage converted;
-	if (settings.cacheExport16Bit) {
-		hr = DirectX::Convert(*captured.GetImages(), DXGI_FORMAT_R16G16B16A16_UNORM, DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
-		if (FAILED(hr)) {
-			logger::error("[TexGen] Failed to convert bent normal tile {}, {}: {:X}", a_tileOriginCell.x, a_tileOriginCell.y, (uint32_t)hr);
-			return false;
-		}
-	}
-
-	const DirectX::Image* image = settings.cacheExport16Bit ? converted.GetImages() : captured.GetImages();
+	const DirectX::Image* image = captured.GetImages();
 	auto path = GetTilePath(worldspaceID, "_BN", (uint)tileSize, cellsPerTile, a_tileOriginCell);
 
 	if (!SaveMapDDS(*image, path))
@@ -1689,22 +1616,13 @@ void TexGen::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Texels per height tile edge. Higher resolutions take proportionally longer to generate.");
 
-		ImGui::Checkbox("Export 16 Bit Height", &settings.cacheExport16Bit);
 		ImGui::SliderInt("Wait frames", &heightSettleFrames, 1, 100);
-
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text(
-				"On: xLODGen format, 16 bit unsigned with zero height at %d and 8 game units per step\n"
-				"(height = (value - %d) * %g).\n"
-				"Off: raw 32 bit float game units.",
-				(int)heightExportOffset, (int)heightExportOffset, heightExportScale);
 
 		ImGui::EndDisabled();
 
 		const int texelsPerCell = (int)GetHeightTileSize() / GetHeightTileCells();
-		ImGui::Text("%u^2 tile, %d texels per cell, %.0f units per texel, %s",
-			GetHeightTileSize(), texelsPerCell, worldCellSize / (float)texelsPerCell,
-			settings.cacheExport16Bit ? "16 bit unsigned" : "32 bit float");
+		ImGui::Text("%u^2 tile, %d texels per cell, %.0f units per texel, 32 bit float",
+			GetHeightTileSize(), texelsPerCell, worldCellSize / (float)texelsPerCell);
 
 		ImGui::BeginDisabled(heightGenRunning);
 		if (ImGui::Button("Generate Tile At Player")) {
@@ -1719,13 +1637,6 @@ void TexGen::DrawSettings()
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Generates only the tile covering the player's current cell, then stops.\nDoes not touch the progress of a full run.");
-
-		ImGui::Checkbox("Zero Base Atlas", &settings.cacheAtlasZeroBase);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("Bias the atlas so its lowest point is 0.0 instead of storing absolute heights.\nTakes effect on the next atlas build.");
-
-		if (settings.cacheAtlasZeroBase && settings.cacheAtlasMinHeight != 0.0f)
-			ImGui::Text("Last atlas: 0.0 is %.0f game units", settings.cacheAtlasMinHeight);
 
 		ImGui::BeginDisabled(heightGenRunning || worldspaceID.empty());
 		if (ImGui::Button("Rebuild Height Atlas")) {

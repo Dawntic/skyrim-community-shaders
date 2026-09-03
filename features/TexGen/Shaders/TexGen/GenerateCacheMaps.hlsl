@@ -3,7 +3,7 @@
 cbuffer CacheGenBuffer : register(b0)
 {
 	float2 OutputTexSize;
-	float2 HeightMapOffsetScale;
+	float2 Padding;
 	float4 GridBounds;   // world xy min/max of the cells the height map covers
 	float4 SweepDir;     // xy: world direction, z: minor per major slope, w: major step
 	float4 SweepParams;  // x: first line offset, y: line count, z: transpose, w: world units per step
@@ -221,7 +221,7 @@ RWStructuredBuffer<float2> HullStack : register(u1);  // (t, height) pairs, HULL
 
 		const int2 Px = Transpose ? int2(Minor, Major) : int2(Major, Minor);
 		const float t = (float)(Major * MajorStep);  // grows along the ray direction
-		const float H = (HeightTex[Px] - HeightMapOffsetScale.x) * HeightMapOffsetScale.y;
+		const float H = HeightTex[Px];
 
 		// Peel back the hull until its top is the tangent point seen from here.
 		while (StackSize >= 2) {
