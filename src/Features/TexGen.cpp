@@ -1627,231 +1627,240 @@ bool TexGen::GenerateBentNormalTile(const int2& a_tileOriginCell)
 
 void TexGen::DrawSettings()
 {
-	ImGui::TextWrapped(
-		"Bakes the terrain LOD map cache into %s.\n"
-		"Generation teleports the player across the worldspace and takes a long time; the features "
-		"that render with these maps load them from disk and do not need this feature at runtime.",
-		cachePath.string().c_str());
+	if (!ImGui::BeginTabBar("##TexGenTabs"))
+		return;
 
-	ImGui::Separator();
-
-	ImGui::Text("Worldspace: %s", worldspaceID.empty() ? "N/A" : worldspaceID.c_str());
-
-	ImGui::InputText("DynDOLOD Worldspace Directory", &settings.dynDOLODPath);
-	ImGui::TextWrapped("Select the DynDOLOD terrain-texture folder for the worldspace you want to generate textures for.");
-
-	ImGui::BeginDisabled(settings.dynDOLODPath.empty());
-	if (ImGui::Button("Generate albedo atlas")) {
-		auto outputPath = cachePath / ((worldspaceID.empty() ? std::string("Tamriel") : worldspaceID) + "_A.dds");
-		BuildLODAtlas(outputPath);
-	}
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Stitches the xLODGen LOD tiles in\n%s\ninto one albedo atlas.", settings.dynDOLODPath.c_str());
-
-	if (ImGui::Button("Generate card Occl"))
-		GenerateCardinalOcclusionMap();
-
-	if (ImGui::Button("Generate bent normal"))
-		GenerateBentNormalMap();
-
-	if (ImGui::Button("Generate Normal"))
-		GenerateNormalMap();
-
-	ImGui::BeginDisabled(heightGenRunning);  // the tile layout is latched for the duration of a run
-
-	int cellsIndex = settings.cacheTileCells == 4 ? 0 : 1;
-	if (ImGui::Combo("Height Tile Cells", &cellsIndex,
-			"4x4 cells\0"
-			"8x8 cells\0"))
-		settings.cacheTileCells = cellsIndex == 0 ? 4 : 8;
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Worldspace cells covered by each height tile.");
-
-	int sizeIndex = settings.cacheTileSize == 512 ? 0 : 1;
-	if (ImGui::Combo("Height Tile Resolution", &sizeIndex,
-			"512\0"
-			"1024\0"))
-		settings.cacheTileSize = sizeIndex == 0 ? 512 : 1024;
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Texels per height tile edge. Higher resolutions take proportionally longer to generate.");
-
-	ImGui::Checkbox("Export 16 Bit Height", &settings.cacheExport16Bit);
-	ImGui::SliderInt("Wait frames", &heightSettleFrames, 1, 100);
-
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text(
-			"On: xLODGen format, 16 bit unsigned with zero height at %d and 8 game units per step\n"
-			"(height = (value - %d) * %g).\n"
-			"Off: raw 32 bit float game units.",
-			(int)heightExportOffset, (int)heightExportOffset, heightExportScale);
-
-	ImGui::EndDisabled();
-
-	const int texelsPerCell = (int)GetHeightTileSize() / GetHeightTileCells();
-	ImGui::Text("%u^2 tile, %d texels per cell, %.0f units per texel, %s",
-		GetHeightTileSize(), texelsPerCell, worldCellSize / (float)texelsPerCell,
-		settings.cacheExport16Bit ? "16 bit unsigned" : "32 bit float");
-
-	if (ImGui::Button(heightGenRunning ? "Stop Height Generation" : "Generate Height Map")) {
-		heightGenRunning = !heightGenRunning;
-		heightGenSingleTile = false;
-		heightGenInit = true;  // stopping discards the in-flight tile; restart on its boundary
-	}
-
-	ImGui::SameLine();
-
-	ImGui::BeginDisabled(heightGenRunning);
-	if (ImGui::Button("Generate Tile At Player")) {
-		if (auto player = RE::PlayerCharacter::GetSingleton()) {
-			auto playerPos = player->GetPosition();
-			heightGenTargetCell = WorldToCell(playerPos.x, playerPos.y);
-			heightGenSingleTile = true;
+	if (ImGui::BeginTabItem("Generation")) {
+		if (ImGui::Button(heightGenRunning ? "Stop Height Generation" : "Generate Height Map")) {
+			heightGenRunning = !heightGenRunning;
+			heightGenSingleTile = false;
 			heightGenInit = true;
-			heightGenRunning = true;
 		}
-	}
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Generates only the tile covering the player's current cell, then stops.\nDoes not touch the progress of a full run.");
-
-	ImGui::Checkbox("Zero Base Atlas", &settings.cacheAtlasZeroBase);
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Bias the atlas so its lowest point is 0.0 instead of storing absolute heights.\nTakes effect on the next atlas build.");
-
-	if (settings.cacheAtlasZeroBase && settings.cacheAtlasMinHeight != 0.0f)
-		ImGui::Text("Last atlas: 0.0 is %.0f game units", settings.cacheAtlasMinHeight);
-
-	ImGui::BeginDisabled(heightGenRunning || worldspaceID.empty());
-	if (ImGui::Button("Rebuild Height Atlas")) {
-		std::filesystem::path path;
-		if (ResolveHeightAtlas(worldspaceID, path, true))
-			NotifyCacheMapsChanged();
-	}
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Stitches every height tile for %s into %s_H.<minX>.<minY>.<maxX>.<maxY>.dds, replacing any earlier one.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
-			worldspaceID.empty() ? "the current worldspace" : worldspaceID.c_str(),
-			worldspaceID.empty() ? "<Worldspace>" : worldspaceID.c_str());
-
-	if (heightAtlasRange.valid)
-		ImGui::BulletText("Height atlas cells %d,%d to %d,%d", heightAtlasRange.minCell.x, heightAtlasRange.minCell.y, heightAtlasRange.maxCell.x, heightAtlasRange.maxCell.y);
-
-	ImGui::BeginDisabled(heightGenRunning || (!bentNormalTileGen && (worldspaceID.empty() || !heightMapSRV)));
-	if (ImGui::Button(bentNormalTileGen ? "Stop Bent Normal Tiles" : "Generate Bent Normal Tiles")) {
-		if (bentNormalTileGen)
-			StopBentNormalTiles();
-		else
-			StartBentNormalTiles();
-	}
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Generates one bent normal tile per height tile from the atlas, matching their\nsize, format and naming. One tile per frame; expect a long, unresponsive run.");
-
-	ImGui::SliderFloat("BN Atlas Scale", &settings.cacheBentNormalAtlasScale, 0.05f, 1.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Downscales every tile as the bent normal atlas is stitched.\n0.85 makes it 15%% smaller per edge, so roughly 28%% of the memory saved.");
-
-	if (settings.cacheAtlasTileSize > 0) {
-		const int scaledTile = std::clamp((int)std::lround((float)settings.cacheAtlasTileSize * settings.cacheBentNormalAtlasScale), 1, settings.cacheAtlasTileSize);
-		const size_t atlasBytes = (size_t)scaledTile * settings.cacheAtlasTilesX * (size_t)scaledTile * settings.cacheAtlasTilesY * 8;
-		ImGui::BulletText("BN atlas: %d texel tiles, %dx%d, %zu MB",
-			scaledTile, scaledTile * settings.cacheAtlasTilesX, scaledTile * settings.cacheAtlasTilesY, atlasBytes / (1024 * 1024));
+		ImGui::EndTabItem();
 	}
 
-	ImGui::BeginDisabled(IsGenerating() || worldspaceID.empty());
-	if (ImGui::Button("Rebuild Bent Normal Atlas")) {
-		std::filesystem::path path;
-		if (ResolveBentNormalAtlas(worldspaceID, path, true))
-			NotifyCacheMapsChanged();
-	}
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Stitches every bent normal tile into %s_BN.<minX>.<minY>.<maxX>.<maxY>.dds, replacing any earlier one.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
-			worldspaceID.empty() ? "<Worldspace>" : worldspaceID.c_str());
+	if (ImGui::BeginTabItem("Debugging")) {
+		ImGui::TextWrapped(
+			"Bakes the terrain LOD map cache into %s.\n"
+			"Generation teleports the player across the worldspace and takes a long time; the features "
+			"that render with these maps load them from disk and do not need this feature at runtime.",
+			cachePath.string().c_str());
 
-	if (bentNormalAtlasRange.valid)
-		ImGui::BulletText("BN atlas cells %d,%d to %d,%d", bentNormalAtlasRange.minCell.x, bentNormalAtlasRange.minCell.y, bentNormalAtlasRange.maxCell.x, bentNormalAtlasRange.maxCell.y);
+		ImGui::Separator();
 
-	if (bentNormalTileGen)
-		ImGui::Text("Bent normal tiles: %zu / %zu", bentNormalTileIndex, bentNormalTileQueue.size());
+		ImGui::Text("Worldspace: %s", worldspaceID.empty() ? "N/A" : worldspaceID.c_str());
 
-	if (heightGenRunning) {
-		if (heightGenSingleTile)
-			ImGui::Text("Generating single tile at cell %d, %d - %d cells done", heightGenTargetCell.x, heightGenTargetCell.y, cellsDone);
-		else
-			ImGui::Text("Generating from cell %d, %d - %d tiles / %d cells done", settings.cacheProgressX, settings.cacheProgressY, tilesDone, cellsDone);
-	}
+		ImGui::InputText("DynDOLOD Worldspace Directory", &settings.dynDOLODPath);
+		ImGui::TextWrapped("Select the DynDOLOD terrain-texture folder for the worldspace you want to generate textures for.");
 
-	if (heightPreviewValid && heightPreviewTex) {
-		static float heightPreviewScale = 0.25f;
-		ImGui::SliderFloat("Preview Scale", &heightPreviewScale, 0.1f, 1.0f, "%.2f");
-
-		ImGui::Text("Last tile: origin cell %d, %d", heightPreviewOrigin.x, heightPreviewOrigin.y);
-		BUFFER_VIEWER_NODE_BULLET(heightPreviewTex, heightPreviewScale);
-	}
-
-	// Cell to world position converter
-	static int cellCoords[2] = { 0, 0 };
-	ImGui::InputInt2("Cell", cellCoords);
-
-	ImGui::SameLine();
-	if (ImGui::Button("From Player")) {
-		if (auto player = RE::PlayerCharacter::GetSingleton()) {
-			auto playerPos = player->GetPosition();
-			const int2 playerCell = WorldToCell(playerPos.x, playerPos.y);
-			cellCoords[0] = playerCell.x;
-			cellCoords[1] = playerCell.y;
+		ImGui::BeginDisabled(settings.dynDOLODPath.empty());
+		if (ImGui::Button("Generate albedo atlas")) {
+			auto outputPath = cachePath / ((worldspaceID.empty() ? std::string("Tamriel") : worldspaceID) + "_A.dds");
+			BuildLODAtlas(outputPath);
 		}
-	}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Stitches the xLODGen LOD tiles in\n%s\ninto one albedo atlas.", settings.dynDOLODPath.c_str());
 
-	const float2 cellOrigin = float2((float)cellCoords[0], (float)cellCoords[1]) * worldCellSize;
-	ImGui::BulletText("SW corner: %.0f, %.0f", cellOrigin.x, cellOrigin.y);
-	ImGui::BulletText("Centre:    %.0f, %.0f", cellOrigin.x + worldCellSize * 0.5f, cellOrigin.y + worldCellSize * 0.5f);
-	ImGui::BulletText("NE corner: %.0f, %.0f", cellOrigin.x + worldCellSize, cellOrigin.y + worldCellSize);
+		if (ImGui::Button("Generate card Occl"))
+			GenerateCardinalOcclusionMap();
 
-	const int2 targetTileOrigin = GetTileOriginCell(int2(cellCoords[0], cellCoords[1]), GetHeightTileCells());
-	ImGui::BulletText("Tile origin cell: %d, %d", targetTileOrigin.x, targetTileOrigin.y);
+		if (ImGui::Button("Generate bent normal"))
+			GenerateBentNormalMap();
 
-	ImGui::BeginDisabled(heightGenRunning);
-	if (ImGui::Button("Generate Tile At Cell")) {
-		heightGenTargetCell = int2(cellCoords[0], cellCoords[1]);
-		heightGenSingleTile = true;
-		heightGenInit = true;
-		heightGenRunning = true;
-	}
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Generates the tile containing this cell, teleporting the player through it.\nDoes not touch the progress of a full run.");
+		if (ImGui::Button("Generate Normal"))
+			GenerateNormalMap();
 
-	// Atlas texel to cell, using the layout the last atlas build recorded
-	static int texelCoords[2] = { 0, 0 };
-	ImGui::InputInt2("Atlas Texel", texelCoords);
+		ImGui::BeginDisabled(heightGenRunning);  // the tile layout is latched for the duration of a run
 
-	int2 texelCell;
-	if (!AtlasTexelToCell(int2(texelCoords[0], texelCoords[1]), texelCell)) {
-		ImGui::BulletText("Build the atlas to map texels to cells");
-	} else {
-		ImGui::BulletText("Cell: %d, %d", texelCell.x, texelCell.y);
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Copy To Cell")) {
-			cellCoords[0] = texelCell.x;
-			cellCoords[1] = texelCell.y;
-		}
+		int cellsIndex = settings.cacheTileCells == 4 ? 0 : 1;
+		if (ImGui::Combo("Height Tile Cells", &cellsIndex,
+				"4x4 cells\0"
+				"8x8 cells\0"))
+			settings.cacheTileCells = cellsIndex == 0 ? 4 : 8;
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Worldspace cells covered by each height tile.");
+
+		int sizeIndex = settings.cacheTileSize == 512 ? 0 : 1;
+		if (ImGui::Combo("Height Tile Resolution", &sizeIndex,
+				"512\0"
+				"1024\0"))
+			settings.cacheTileSize = sizeIndex == 0 ? 512 : 1024;
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Texels per height tile edge. Higher resolutions take proportionally longer to generate.");
+
+		ImGui::Checkbox("Export 16 Bit Height", &settings.cacheExport16Bit);
+		ImGui::SliderInt("Wait frames", &heightSettleFrames, 1, 100);
+
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"On: xLODGen format, 16 bit unsigned with zero height at %d and 8 game units per step\n"
+				"(height = (value - %d) * %g).\n"
+				"Off: raw 32 bit float game units.",
+				(int)heightExportOffset, (int)heightExportOffset, heightExportScale);
+
+		ImGui::EndDisabled();
+
+		const int texelsPerCell = (int)GetHeightTileSize() / GetHeightTileCells();
+		ImGui::Text("%u^2 tile, %d texels per cell, %.0f units per texel, %s",
+			GetHeightTileSize(), texelsPerCell, worldCellSize / (float)texelsPerCell,
+			settings.cacheExport16Bit ? "16 bit unsigned" : "32 bit float");
 
 		ImGui::BeginDisabled(heightGenRunning);
-		if (ImGui::Button("Generate Tile At Texel")) {
-			heightGenTargetCell = texelCell;
+		if (ImGui::Button("Generate Tile At Player")) {
+			if (auto player = RE::PlayerCharacter::GetSingleton()) {
+				auto playerPos = player->GetPosition();
+				heightGenTargetCell = WorldToCell(playerPos.x, playerPos.y);
+				heightGenSingleTile = true;
+				heightGenInit = true;
+				heightGenRunning = true;
+			}
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Generates only the tile covering the player's current cell, then stops.\nDoes not touch the progress of a full run.");
+
+		ImGui::Checkbox("Zero Base Atlas", &settings.cacheAtlasZeroBase);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Bias the atlas so its lowest point is 0.0 instead of storing absolute heights.\nTakes effect on the next atlas build.");
+
+		if (settings.cacheAtlasZeroBase && settings.cacheAtlasMinHeight != 0.0f)
+			ImGui::Text("Last atlas: 0.0 is %.0f game units", settings.cacheAtlasMinHeight);
+
+		ImGui::BeginDisabled(heightGenRunning || worldspaceID.empty());
+		if (ImGui::Button("Rebuild Height Atlas")) {
+			std::filesystem::path path;
+			if (ResolveHeightAtlas(worldspaceID, path, true))
+				NotifyCacheMapsChanged();
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Stitches every height tile for %s into %s_H.<minX>.<minY>.<maxX>.<maxY>.dds, replacing any earlier one.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
+				worldspaceID.empty() ? "the current worldspace" : worldspaceID.c_str(),
+				worldspaceID.empty() ? "<Worldspace>" : worldspaceID.c_str());
+
+		if (heightAtlasRange.valid)
+			ImGui::BulletText("Height atlas cells %d,%d to %d,%d", heightAtlasRange.minCell.x, heightAtlasRange.minCell.y, heightAtlasRange.maxCell.x, heightAtlasRange.maxCell.y);
+
+		ImGui::BeginDisabled(heightGenRunning || (!bentNormalTileGen && (worldspaceID.empty() || !heightMapSRV)));
+		if (ImGui::Button(bentNormalTileGen ? "Stop Bent Normal Tiles" : "Generate Bent Normal Tiles")) {
+			if (bentNormalTileGen)
+				StopBentNormalTiles();
+			else
+				StartBentNormalTiles();
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Generates one bent normal tile per height tile from the atlas, matching their\nsize, format and naming. One tile per frame; expect a long, unresponsive run.");
+
+		ImGui::SliderFloat("BN Atlas Scale", &settings.cacheBentNormalAtlasScale, 0.05f, 1.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Downscales every tile as the bent normal atlas is stitched.\n0.85 makes it 15%% smaller per edge, so roughly 28%% of the memory saved.");
+
+		if (settings.cacheAtlasTileSize > 0) {
+			const int scaledTile = std::clamp((int)std::lround((float)settings.cacheAtlasTileSize * settings.cacheBentNormalAtlasScale), 1, settings.cacheAtlasTileSize);
+			const size_t atlasBytes = (size_t)scaledTile * settings.cacheAtlasTilesX * (size_t)scaledTile * settings.cacheAtlasTilesY * 8;
+			ImGui::BulletText("BN atlas: %d texel tiles, %dx%d, %zu MB",
+				scaledTile, scaledTile * settings.cacheAtlasTilesX, scaledTile * settings.cacheAtlasTilesY, atlasBytes / (1024 * 1024));
+		}
+
+		ImGui::BeginDisabled(IsGenerating() || worldspaceID.empty());
+		if (ImGui::Button("Rebuild Bent Normal Atlas")) {
+			std::filesystem::path path;
+			if (ResolveBentNormalAtlas(worldspaceID, path, true))
+				NotifyCacheMapsChanged();
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Stitches every bent normal tile into %s_BN.<minX>.<minY>.<maxX>.<maxY>.dds, replacing any earlier one.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
+				worldspaceID.empty() ? "<Worldspace>" : worldspaceID.c_str());
+
+		if (bentNormalAtlasRange.valid)
+			ImGui::BulletText("BN atlas cells %d,%d to %d,%d", bentNormalAtlasRange.minCell.x, bentNormalAtlasRange.minCell.y, bentNormalAtlasRange.maxCell.x, bentNormalAtlasRange.maxCell.y);
+
+		if (bentNormalTileGen)
+			ImGui::Text("Bent normal tiles: %zu / %zu", bentNormalTileIndex, bentNormalTileQueue.size());
+
+		if (heightGenRunning) {
+			if (heightGenSingleTile)
+				ImGui::Text("Generating single tile at cell %d, %d - %d cells done", heightGenTargetCell.x, heightGenTargetCell.y, cellsDone);
+			else
+				ImGui::Text("Generating from cell %d, %d - %d tiles / %d cells done", settings.cacheProgressX, settings.cacheProgressY, tilesDone, cellsDone);
+		}
+
+		if (heightPreviewValid && heightPreviewTex) {
+			static float heightPreviewScale = 0.25f;
+			ImGui::SliderFloat("Preview Scale", &heightPreviewScale, 0.1f, 1.0f, "%.2f");
+
+			ImGui::Text("Last tile: origin cell %d, %d", heightPreviewOrigin.x, heightPreviewOrigin.y);
+			BUFFER_VIEWER_NODE_BULLET(heightPreviewTex, heightPreviewScale);
+		}
+
+		// Cell to world position converter
+		static int cellCoords[2] = { 0, 0 };
+		ImGui::InputInt2("Cell", cellCoords);
+
+		ImGui::SameLine();
+		if (ImGui::Button("From Player")) {
+			if (auto player = RE::PlayerCharacter::GetSingleton()) {
+				auto playerPos = player->GetPosition();
+				const int2 playerCell = WorldToCell(playerPos.x, playerPos.y);
+				cellCoords[0] = playerCell.x;
+				cellCoords[1] = playerCell.y;
+			}
+		}
+
+		const float2 cellOrigin = float2((float)cellCoords[0], (float)cellCoords[1]) * worldCellSize;
+		ImGui::BulletText("SW corner: %.0f, %.0f", cellOrigin.x, cellOrigin.y);
+		ImGui::BulletText("Centre:    %.0f, %.0f", cellOrigin.x + worldCellSize * 0.5f, cellOrigin.y + worldCellSize * 0.5f);
+		ImGui::BulletText("NE corner: %.0f, %.0f", cellOrigin.x + worldCellSize, cellOrigin.y + worldCellSize);
+
+		const int2 targetTileOrigin = GetTileOriginCell(int2(cellCoords[0], cellCoords[1]), GetHeightTileCells());
+		ImGui::BulletText("Tile origin cell: %d, %d", targetTileOrigin.x, targetTileOrigin.y);
+
+		ImGui::BeginDisabled(heightGenRunning);
+		if (ImGui::Button("Generate Tile At Cell")) {
+			heightGenTargetCell = int2(cellCoords[0], cellCoords[1]);
 			heightGenSingleTile = true;
 			heightGenInit = true;
 			heightGenRunning = true;
 		}
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("Generates the tile containing this atlas texel.\nTexel 0,0 is the top left corner of %s_H.dds, %d texels per cell.",
-				worldspaceID.empty() ? "<Worldspace>" : worldspaceID.c_str(),
-				settings.cacheAtlasTileSize / std::max(1, settings.cacheAtlasTileCells));
+			ImGui::Text("Generates the tile containing this cell, teleporting the player through it.\nDoes not touch the progress of a full run.");
+
+		// Atlas texel to cell, using the layout the last atlas build recorded
+		static int texelCoords[2] = { 0, 0 };
+		ImGui::InputInt2("Atlas Texel", texelCoords);
+
+		int2 texelCell;
+		if (!AtlasTexelToCell(int2(texelCoords[0], texelCoords[1]), texelCell)) {
+			ImGui::BulletText("Build the atlas to map texels to cells");
+		} else {
+			ImGui::BulletText("Cell: %d, %d", texelCell.x, texelCell.y);
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Copy To Cell")) {
+				cellCoords[0] = texelCell.x;
+				cellCoords[1] = texelCell.y;
+			}
+
+			ImGui::BeginDisabled(heightGenRunning);
+			if (ImGui::Button("Generate Tile At Texel")) {
+				heightGenTargetCell = texelCell;
+				heightGenSingleTile = true;
+				heightGenInit = true;
+				heightGenRunning = true;
+			}
+			ImGui::EndDisabled();
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("Generates the tile containing this atlas texel.\nTexel 0,0 is the top left corner of %s_H.dds, %d texels per cell.",
+					worldspaceID.empty() ? "<Worldspace>" : worldspaceID.c_str(),
+					settings.cacheAtlasTileSize / std::max(1, settings.cacheAtlasTileCells));
+		}
+		ImGui::EndTabItem();
 	}
+
+	ImGui::EndTabBar();
 }
 
 #undef I18N_KEY_PREFIX
