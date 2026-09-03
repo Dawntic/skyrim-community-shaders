@@ -28,6 +28,277 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	dynDOLODPath)
 
 //////////////////////////////////////////////////////////////////////////////////
+//// Height cache tiles
+//////////////////////////////////////////////////////////////////////////////////
+
+void TexGen::EnsureHeightTileTexture(uint a_tileSize)  // TODO: is possible get rid of this func and create inline
+{
+	if (cacheOutputTexH && cacheOutputTexH->desc.Width == a_tileSize && cacheOutputTexH->desc.Height == a_tileSize)
+		return;
+
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16_FLOAT, a_tileSize, a_tileSize, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
+	cacheOutputTexH = eastl::make_unique<Texture2D>(desc, "TexGen::HeightCacheTile");
+}
+
+void TexGen::ClearHeightTile()  // TODO: Check if this func is needed or if they default to zero anyway.
+{
+	auto context = globals::d3d::context;
+	const uint tileSize = cacheOutputTexH->desc.Width;
+
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_WRITE, 0, &mapped));
+
+	// Texels belonging to cells outside the worldspace are never sampled and stay at zero height.
+	for (uint y = 0; y < tileSize; ++y)
+		memset((uint8_t*)mapped.pData + y * mapped.RowPitch, 0, tileSize * sizeof(uint16_t));
+
+	context->Unmap(cacheOutputTexH->resource.get(), 0);
+}
+
+void TexGen::SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile)
+{
+	auto context = globals::d3d::context;
+	const uint tileSize = cacheOutputTexH->desc.Width;
+	auto tileWorldspaceID = worldspaceID.empty() ? std::string("Unknown") : worldspaceID;
+	auto path = GetTilePath(tileWorldspaceID, "_H", tileSize, a_cellsPerTile, a_tileOriginCell);
+
+	DirectX::ScratchImage outputImage;
+	DX::ThrowIfFailed(outputImage.Initialize2D(DXGI_FORMAT_R16_FLOAT, tileSize, tileSize, 1, 1));
+
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &mapped));
+
+	const DirectX::Image* image = outputImage.GetImages();
+	for (uint y = 0; y < tileSize; ++y)
+		memcpy(image->pixels + y * image->rowPitch, (const uint8_t*)mapped.pData + y * mapped.RowPitch, tileSize * sizeof(uint16_t));
+
+	context->Unmap(cacheOutputTexH->resource.get(), 0);
+	SaveMapDDS(*image, path);
+	logger::info("[TexGen] Saved height tile {}", path.string());
+}
+
+// debugging func.
+void TexGen::UpdateHeightPreview(const int2& a_tileOriginCell)
+{
+	auto context = globals::d3d::context;
+	const uint tileSize = cacheOutputTexH->desc.Width;
+	const DXGI_FORMAT format = DXGI_FORMAT_R16_FLOAT;
+
+	// The preview holds exactly what the DDS holds, in the same format, unmodified.
+	if (!heightPreviewTex || heightPreviewTex->desc.Width != tileSize || heightPreviewTex->desc.Format != format) {
+		CD3D11_TEXTURE2D_DESC desc(format, tileSize, tileSize, 1, 1, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
+		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, format, 0, 1);
+
+		heightPreviewValid = false;
+		heightPreviewTex = eastl::make_unique<Texture2D>(desc, "TexGen::HeightTilePreview");
+		heightPreviewTex->CreateSRV(srvDesc);
+	}
+
+	D3D11_MAPPED_SUBRESOURCE src;
+	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &src));
+
+	D3D11_MAPPED_SUBRESOURCE dst;
+	DX::ThrowIfFailed(context->Map(heightPreviewTex->resource.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &dst));
+
+	for (uint y = 0; y < tileSize; ++y)
+		memcpy((uint8_t*)dst.pData + y * dst.RowPitch, (const uint8_t*)src.pData + y * src.RowPitch, tileSize * sizeof(uint16_t));
+
+	context->Unmap(heightPreviewTex->resource.get(), 0);
+	context->Unmap(cacheOutputTexH->resource.get(), 0);
+
+	heightPreviewOrigin = a_tileOriginCell;
+	heightPreviewValid = true;
+}
+
+void TexGen::GenerateHeightMap()
+{
+	static constexpr float CELL = worldCellSize;
+	static constexpr int2 startCell = int2(-57, -43);  // same as dyndolod
+	static constexpr int2 endCell = int2(61, 50);      // same as dyndolod, exclusive
+
+	auto context = globals::d3d::context;
+	auto tes = RE::TES::GetSingleton();
+	auto player = RE::PlayerCharacter::GetSingleton();
+	auto worldSpace = player ? player->GetWorldspace() : nullptr;
+
+	if (!tes || !worldSpace) {
+		logger::error("[TexGen] tes or worldspace INVALID");
+		return;
+	}
+
+	RE::PlayerCamera::GetSingleton()->GetRuntimeData2().idleTimer = 0;
+
+	// Latched at the start of a run so changing the settings mid-run can't desync the tile layout.
+	static int cellsPerTile = 8;
+	static uint tileSize = 1024;
+	static int2 currentTile = int2(0, 0);
+	static int2 currentCellXY = startCell;
+	static int cellIndexInTile = 0;
+	static RE::NiPoint3 worldPositionSet = RE::NiPoint3();
+	static int settleFrames = 0;
+
+	if (heightGenInit) {  // latch the layout before anything derives from it
+		cellsPerTile = GetHeightTileCells();
+		tileSize = GetHeightTileSize();
+	}
+
+	const int texelsPerCell = (int)tileSize / cellsPerTile;
+	const float worldRes = CELL / (float)texelsPerCell;  // world units per texel
+
+	// Tile grid bounds, inclusive, anchored to the worldspace cell grid.
+	const int2 startTile = int2(FloorDiv(startCell.x, cellsPerTile), FloorDiv(startCell.y, cellsPerTile));
+	const int2 endTile = int2(FloorDiv(endCell.x - 1, cellsPerTile), FloorDiv(endCell.y - 1, cellsPerTile));
+
+	auto inWorldRange = [&](const int2& cell) {
+		if (heightGenSingleTile)  // the player's tile is generated whole, wherever it sits
+			return true;
+		return cell.x >= startCell.x && cell.x < endCell.x && cell.y >= startCell.y && cell.y < endCell.y;
+	};
+
+	// Walk to the next cell of the current tile that actually lies inside the worldspace.
+	auto advanceToNextCell = [&]() {
+		const int cellsInTile = cellsPerTile * cellsPerTile;
+		while (++cellIndexInTile < cellsInTile) {
+			int2 candidate = currentTile * cellsPerTile + int2(cellIndexInTile % cellsPerTile, cellIndexInTile / cellsPerTile);
+			if (inWorldRange(candidate)) {
+				currentCellXY = candidate;
+				return true;
+			}
+		}
+		return false;
+	};
+
+	auto advanceToNextTile = [&]() {
+		if (++currentTile.x > endTile.x) {
+			currentTile.x = startTile.x;
+			if (++currentTile.y > endTile.y)
+				return false;
+		}
+		return true;
+	};
+
+	// Start the current tile, skipping tiles that are entirely outside the worldspace.
+	auto beginTile = [&]() {
+		while (true) {
+			cellIndexInTile = -1;
+			if (advanceToNextCell()) {
+				ClearHeightTile();
+				return true;
+			}
+			if (!advanceToNextTile())
+				return false;
+		}
+	};
+
+	if (heightGenInit) {
+		RE::GetINISetting("iFPSClamp:General")->data.i = 0;
+		RE::GetINISetting("bLockFramerate:Display")->data.b = false;
+		RE::GetINISetting("iVSyncPresentInterval:Display")->data.b = false;
+		RE::GetINISetting("bBorderRegionsEnabled:General")->data.b = false;
+		RE::GetINISetting("fMaxTime:HAVOK")->data.f = 0.001f;
+
+		cellsDone = 0;
+		tilesDone = 0;
+		settleFrames = 0;
+
+		EnsureHeightTileTexture(tileSize);
+
+		if (heightGenSingleTile) {
+			// Whichever tile holds the requested cell, unclamped so it also works outside the
+			// range a full run covers.
+			currentTile = int2(FloorDiv(heightGenTargetCell.x, cellsPerTile), FloorDiv(heightGenTargetCell.y, cellsPerTile));
+		} else {
+			// Resume on a tile boundary; a partially generated tile is regenerated from scratch.
+			currentTile = int2(FloorDiv(settings.cacheProgressX, cellsPerTile), FloorDiv(settings.cacheProgressY, cellsPerTile));
+			currentTile.x = std::clamp(currentTile.x, startTile.x, endTile.x);
+			currentTile.y = std::clamp(currentTile.y, startTile.y, endTile.y);
+		}
+
+		beginTile();
+
+		logger::info("[TexGen] Generating {0} height cache: {1}x{1} tiles of {2}x{2} cells, {3} texels per cell, {4} units per texel, 16 bit float",
+			heightGenSingleTile ? "single tile" : "full", tileSize, cellsPerTile, texelsPerCell, worldRes);
+
+		SetWorldPosition(currentCellXY, worldPositionSet);
+		settleFrames = heightSettleFrames;
+		heightGenInit = false;
+		return;
+	}
+
+	if (!IsPositionValid(worldPositionSet)) {
+		SetWorldPosition(currentCellXY, worldPositionSet);
+		return;
+	}
+
+	if (settleFrames > 0) {
+		settleFrames--;
+		return;
+	}
+
+	// write heightmap
+
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped));
+
+	const int2 localCell = currentCellXY - currentTile * cellsPerTile;
+	const float2 cellOrigin = float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
+	const float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
+
+	for (int x = 0; x < texelsPerCell; ++x) {
+		for (int y = 0; y < texelsPerCell; ++y) {
+			float2 worldXY = cellOrigin + float2((float)x, (float)y) * worldRes;
+
+			float landHeight;
+			tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
+
+			float groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight), 5000);
+
+			groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
+
+			int2 texCoord = localCell * texelsPerCell + int2(x, y);
+			uint16_t* tex = (uint16_t*)((uint8_t*)mapped.pData + texCoord.y * mapped.RowPitch);
+			tex[texCoord.x] = DirectX::PackedVector::XMConvertFloatToHalf(groundHeight);
+		}
+	}
+	context->Unmap(cacheOutputTexH->resource.get(), 0);
+
+	cellsDone += 1;
+
+	if (!advanceToNextCell()) {
+		// Tile complete: flush it to disk before moving on.
+		SaveHeightTile(currentTile * cellsPerTile, cellsPerTile);
+		UpdateHeightPreview(currentTile * cellsPerTile);
+		tilesDone += 1;
+
+		if (heightGenSingleTile) {  // one-off, leaves the full run's progress alone
+			logger::info("[TexGen] Single height tile complete: {} cells", cellsDone);
+			heightGenRunning = false;
+			heightGenInit = true;
+			return;
+		}
+
+		if (!advanceToNextTile() || !beginTile()) {
+			logger::info("[TexGen] Height cache complete: {} tiles, {} cells", tilesDone, cellsDone);
+			settings.cacheProgressX = startCell.x;
+			settings.cacheProgressY = startCell.y;
+			globals::state->Save();
+			heightGenRunning = false;
+			heightGenInit = true;
+			return;
+		}
+
+		// Progress is stored as the origin cell of the tile now in flight.
+		settings.cacheProgressX = currentTile.x * cellsPerTile;
+		settings.cacheProgressY = currentTile.y * cellsPerTile;
+		globals::state->Save();
+	}
+
+	SetWorldPosition(currentCellXY, worldPositionSet);
+	// after SetWorldPosition:
+	settleFrames = heightSettleFrames;  // let terrain settle
+}
+
+//////////////////////////////////////////////////////////////////////////////////
 //// Settings and lifecycle
 //////////////////////////////////////////////////////////////////////////////////
 
@@ -661,277 +932,6 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 		heightAtlasRange.minCell.x, heightAtlasRange.minCell.y, heightAtlasRange.maxCell.x, heightAtlasRange.maxCell.y);
 
 	return true;
-}
-
-//////////////////////////////////////////////////////////////////////////////////
-//// Height cache tiles
-//////////////////////////////////////////////////////////////////////////////////
-
-void TexGen::EnsureHeightTileTexture(uint a_tileSize)  // TODO: is possible get rid of this func and create inline
-{
-	if (cacheOutputTexH && cacheOutputTexH->desc.Width == a_tileSize && cacheOutputTexH->desc.Height == a_tileSize)
-		return;
-
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16_FLOAT, a_tileSize, a_tileSize, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
-	cacheOutputTexH = eastl::make_unique<Texture2D>(desc, "TexGen::HeightCacheTile");
-}
-
-void TexGen::ClearHeightTile()  // TODO: Check if this func is needed or if they default to zero anyway.
-{
-	auto context = globals::d3d::context;
-	const uint tileSize = cacheOutputTexH->desc.Width;
-
-	D3D11_MAPPED_SUBRESOURCE mapped;
-	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_WRITE, 0, &mapped));
-
-	// Texels belonging to cells outside the worldspace are never sampled and stay at zero height.
-	for (uint y = 0; y < tileSize; ++y)
-		memset((uint8_t*)mapped.pData + y * mapped.RowPitch, 0, tileSize * sizeof(uint16_t));
-
-	context->Unmap(cacheOutputTexH->resource.get(), 0);
-}
-
-void TexGen::SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile)
-{
-	auto context = globals::d3d::context;
-	const uint tileSize = cacheOutputTexH->desc.Width;
-	auto tileWorldspaceID = worldspaceID.empty() ? std::string("Unknown") : worldspaceID;
-	auto path = GetTilePath(tileWorldspaceID, "_H", tileSize, a_cellsPerTile, a_tileOriginCell);
-
-	DirectX::ScratchImage outputImage;
-	DX::ThrowIfFailed(outputImage.Initialize2D(DXGI_FORMAT_R16_FLOAT, tileSize, tileSize, 1, 1));
-
-	D3D11_MAPPED_SUBRESOURCE mapped;
-	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &mapped));
-
-	const DirectX::Image* image = outputImage.GetImages();
-	for (uint y = 0; y < tileSize; ++y)
-		memcpy(image->pixels + y * image->rowPitch, (const uint8_t*)mapped.pData + y * mapped.RowPitch, tileSize * sizeof(uint16_t));
-
-	context->Unmap(cacheOutputTexH->resource.get(), 0);
-	SaveMapDDS(*image, path);
-	logger::info("[TexGen] Saved height tile {}", path.string());
-}
-
-// debugging func.
-void TexGen::UpdateHeightPreview(const int2& a_tileOriginCell)
-{
-	auto context = globals::d3d::context;
-	const uint tileSize = cacheOutputTexH->desc.Width;
-	const DXGI_FORMAT format = DXGI_FORMAT_R16_FLOAT;
-
-	// The preview holds exactly what the DDS holds, in the same format, unmodified.
-	if (!heightPreviewTex || heightPreviewTex->desc.Width != tileSize || heightPreviewTex->desc.Format != format) {
-		CD3D11_TEXTURE2D_DESC desc(format, tileSize, tileSize, 1, 1, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
-		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, format, 0, 1);
-
-		heightPreviewValid = false;
-		heightPreviewTex = eastl::make_unique<Texture2D>(desc, "TexGen::HeightTilePreview");
-		heightPreviewTex->CreateSRV(srvDesc);
-	}
-
-	D3D11_MAPPED_SUBRESOURCE src;
-	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &src));
-
-	D3D11_MAPPED_SUBRESOURCE dst;
-	DX::ThrowIfFailed(context->Map(heightPreviewTex->resource.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &dst));
-
-	for (uint y = 0; y < tileSize; ++y)
-		memcpy((uint8_t*)dst.pData + y * dst.RowPitch, (const uint8_t*)src.pData + y * src.RowPitch, tileSize * sizeof(uint16_t));
-
-	context->Unmap(heightPreviewTex->resource.get(), 0);
-	context->Unmap(cacheOutputTexH->resource.get(), 0);
-
-	heightPreviewOrigin = a_tileOriginCell;
-	heightPreviewValid = true;
-}
-
-void TexGen::GenerateHeightMap()
-{
-	static constexpr float CELL = worldCellSize;
-	static constexpr int2 startCell = int2(-57, -43);  // same as dyndolod
-	static constexpr int2 endCell = int2(61, 50);      // same as dyndolod, exclusive
-
-	auto context = globals::d3d::context;
-	auto tes = RE::TES::GetSingleton();
-	auto player = RE::PlayerCharacter::GetSingleton();
-	auto worldSpace = player ? player->GetWorldspace() : nullptr;
-
-	if (!tes || !worldSpace) {
-		logger::error("[TexGen] tes or worldspace INVALID");
-		return;
-	}
-
-	RE::PlayerCamera::GetSingleton()->GetRuntimeData2().idleTimer = 0;
-
-	// Latched at the start of a run so changing the settings mid-run can't desync the tile layout.
-	static int cellsPerTile = 8;
-	static uint tileSize = 1024;
-	static int2 currentTile = int2(0, 0);
-	static int2 currentCellXY = startCell;
-	static int cellIndexInTile = 0;
-	static RE::NiPoint3 worldPositionSet = RE::NiPoint3();
-	static int settleFrames = 0;
-
-	if (heightGenInit) {  // latch the layout before anything derives from it
-		cellsPerTile = GetHeightTileCells();
-		tileSize = GetHeightTileSize();
-	}
-
-	const int texelsPerCell = (int)tileSize / cellsPerTile;
-	const float worldRes = CELL / (float)texelsPerCell;  // world units per texel
-
-	// Tile grid bounds, inclusive, anchored to the worldspace cell grid.
-	const int2 startTile = int2(FloorDiv(startCell.x, cellsPerTile), FloorDiv(startCell.y, cellsPerTile));
-	const int2 endTile = int2(FloorDiv(endCell.x - 1, cellsPerTile), FloorDiv(endCell.y - 1, cellsPerTile));
-
-	auto inWorldRange = [&](const int2& cell) {
-		if (heightGenSingleTile)  // the player's tile is generated whole, wherever it sits
-			return true;
-		return cell.x >= startCell.x && cell.x < endCell.x && cell.y >= startCell.y && cell.y < endCell.y;
-	};
-
-	// Walk to the next cell of the current tile that actually lies inside the worldspace.
-	auto advanceToNextCell = [&]() {
-		const int cellsInTile = cellsPerTile * cellsPerTile;
-		while (++cellIndexInTile < cellsInTile) {
-			int2 candidate = currentTile * cellsPerTile + int2(cellIndexInTile % cellsPerTile, cellIndexInTile / cellsPerTile);
-			if (inWorldRange(candidate)) {
-				currentCellXY = candidate;
-				return true;
-			}
-		}
-		return false;
-	};
-
-	auto advanceToNextTile = [&]() {
-		if (++currentTile.x > endTile.x) {
-			currentTile.x = startTile.x;
-			if (++currentTile.y > endTile.y)
-				return false;
-		}
-		return true;
-	};
-
-	// Start the current tile, skipping tiles that are entirely outside the worldspace.
-	auto beginTile = [&]() {
-		while (true) {
-			cellIndexInTile = -1;
-			if (advanceToNextCell()) {
-				ClearHeightTile();
-				return true;
-			}
-			if (!advanceToNextTile())
-				return false;
-		}
-	};
-
-	if (heightGenInit) {
-		RE::GetINISetting("iFPSClamp:General")->data.i = 0;
-		RE::GetINISetting("bLockFramerate:Display")->data.b = false;
-		RE::GetINISetting("iVSyncPresentInterval:Display")->data.b = false;
-		RE::GetINISetting("bBorderRegionsEnabled:General")->data.b = false;
-		RE::GetINISetting("fMaxTime:HAVOK")->data.f = 0.001f;
-
-		cellsDone = 0;
-		tilesDone = 0;
-		settleFrames = 0;
-
-		EnsureHeightTileTexture(tileSize);
-
-		if (heightGenSingleTile) {
-			// Whichever tile holds the requested cell, unclamped so it also works outside the
-			// range a full run covers.
-			currentTile = int2(FloorDiv(heightGenTargetCell.x, cellsPerTile), FloorDiv(heightGenTargetCell.y, cellsPerTile));
-		} else {
-			// Resume on a tile boundary; a partially generated tile is regenerated from scratch.
-			currentTile = int2(FloorDiv(settings.cacheProgressX, cellsPerTile), FloorDiv(settings.cacheProgressY, cellsPerTile));
-			currentTile.x = std::clamp(currentTile.x, startTile.x, endTile.x);
-			currentTile.y = std::clamp(currentTile.y, startTile.y, endTile.y);
-		}
-
-		beginTile();
-
-		logger::info("[TexGen] Generating {0} height cache: {1}x{1} tiles of {2}x{2} cells, {3} texels per cell, {4} units per texel, 16 bit float",
-			heightGenSingleTile ? "single tile" : "full", tileSize, cellsPerTile, texelsPerCell, worldRes);
-
-		SetWorldPosition(currentCellXY, worldPositionSet);
-		settleFrames = heightSettleFrames;
-		heightGenInit = false;
-		return;
-	}
-
-	if (!IsPositionValid(worldPositionSet)) {
-		SetWorldPosition(currentCellXY, worldPositionSet);
-		return;
-	}
-
-	if (settleFrames > 0) {
-		settleFrames--;
-		return;
-	}
-
-	// write heightmap
-
-	D3D11_MAPPED_SUBRESOURCE mapped;
-	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped));
-
-	const int2 localCell = currentCellXY - currentTile * cellsPerTile;
-	const float2 cellOrigin = float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
-	const float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
-
-	for (int x = 0; x < texelsPerCell; ++x) {
-		for (int y = 0; y < texelsPerCell; ++y) {
-			float2 worldXY = cellOrigin + float2((float)x, (float)y) * worldRes;
-
-			float landHeight;
-			tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
-
-			float groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight), 5000);
-
-			groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
-
-			int2 texCoord = localCell * texelsPerCell + int2(x, y);
-			uint16_t* tex = (uint16_t*)((uint8_t*)mapped.pData + texCoord.y * mapped.RowPitch);
-			tex[texCoord.x] = DirectX::PackedVector::XMConvertFloatToHalf(groundHeight);
-		}
-	}
-	context->Unmap(cacheOutputTexH->resource.get(), 0);
-
-	cellsDone += 1;
-
-	if (!advanceToNextCell()) {
-		// Tile complete: flush it to disk before moving on.
-		SaveHeightTile(currentTile * cellsPerTile, cellsPerTile);
-		UpdateHeightPreview(currentTile * cellsPerTile);
-		tilesDone += 1;
-
-		if (heightGenSingleTile) {  // one-off, leaves the full run's progress alone
-			logger::info("[TexGen] Single height tile complete: {} cells", cellsDone);
-			heightGenRunning = false;
-			heightGenInit = true;
-			return;
-		}
-
-		if (!advanceToNextTile() || !beginTile()) {
-			logger::info("[TexGen] Height cache complete: {} tiles, {} cells", tilesDone, cellsDone);
-			settings.cacheProgressX = startCell.x;
-			settings.cacheProgressY = startCell.y;
-			globals::state->Save();
-			heightGenRunning = false;
-			heightGenInit = true;
-			return;
-		}
-
-		// Progress is stored as the origin cell of the tile now in flight.
-		settings.cacheProgressX = currentTile.x * cellsPerTile;
-		settings.cacheProgressY = currentTile.y * cellsPerTile;
-		globals::state->Save();
-	}
-
-	SetWorldPosition(currentCellXY, worldPositionSet);
-	// after SetWorldPosition:
-	settleFrames = heightSettleFrames;  // let terrain settle
 }
 
 //////////////////////////////////////////////////////////////////////////////////
