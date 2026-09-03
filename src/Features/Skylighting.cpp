@@ -461,10 +461,11 @@ void Skylighting::UpdateSparseProbeGrid()
 
 		AMapSRV,
 		BNMapSRV,
+
+		COMapSRV,
+		CO2MapSRV,
 		DOMapSRV,
 		DO2MapSRV,
-		DOMapSRVB,
-		DO2MapSRVB,
 
 		physSky.cloudBaseSRV.get(),  //t8
 

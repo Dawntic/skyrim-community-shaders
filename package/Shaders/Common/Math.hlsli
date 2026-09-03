@@ -35,7 +35,7 @@ namespace Math
 	// Uniform (area-weighted) hemisphere/sphere sampler, stratified via Hammersley.
 	// ap == 1 -> hemisphere, solid angle 2PI.  ap == 2 -> full sphere.
 	// domain: xy[-1,1], z[1-ap, 1].
-	float3 UniformHemisphere(float i, float n, float ap)
+	float3 UniformSphereSample(float i, float n, float ap = 2.0)
 	{
 		// radical inverse base 2 (van der Corput) for the second dimension
 		uint bits = uint(i);
@@ -49,29 +49,6 @@ namespace Math
 		float u1 = (i + 0.5) / n;  // stratified first dim
 
 		float cosT = lerp(1.0, 1.0 - ap, u2);  // uniform in z -> area-uniform
-		float phi = u1 * Math::PI * 2;
-
-		float3 Out;
-		sincos(phi, Out.y, Out.x);
-		Out.xy *= sqrt(saturate(1.0 - cosT * cosT));
-		Out.z = cosT;
-		return Out;
-	}
-
-	float3 UniformHemisphere(float i, float n)
-	{
-		// radical inverse base 2 (van der Corput) for the second dimension
-		uint bits = uint(i);
-		bits = (bits << 16) | (bits >> 16);
-		bits = ((bits & 0x55555555u) << 1) | ((bits & 0xAAAAAAAAu) >> 1);
-		bits = ((bits & 0x33333333u) << 2) | ((bits & 0xCCCCCCCCu) >> 2);
-		bits = ((bits & 0x0F0F0F0Fu) << 4) | ((bits & 0xF0F0F0F0u) >> 4);
-		bits = ((bits & 0x00FF00FFu) << 8) | ((bits & 0xFF00FF00u) >> 8);
-		float u2 = float(bits) * 2.3283064365386963e-10;  // / 2^32
-
-		float u1 = (i + 0.5) / n;  // stratified first dim
-
-		float cosT = u2;  // uniform in z over [0,1] -> area-uniform hemisphere
 		float phi = u1 * Math::PI * 2;
 
 		float3 Out;
