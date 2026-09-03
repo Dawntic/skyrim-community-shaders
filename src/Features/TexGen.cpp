@@ -50,8 +50,7 @@ void TexGen::SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile)
 {
 	auto context = globals::d3d::context;
 	const uint tileSize = cacheOutputTexH->desc.Width;
-	auto tileWorldspaceID = worldspaceID.empty() ? std::string("Unknown") : worldspaceID;
-	auto path = GetTilePath(tileWorldspaceID, "_H", tileSize, a_cellsPerTile, a_tileOriginCell);
+	auto path = GetTilePath(worldspaceID, "_H", tileSize, a_cellsPerTile, a_tileOriginCell);
 
 	DirectX::ScratchImage outputImage;
 	DX::ThrowIfFailed(outputImage.Initialize2D(DXGI_FORMAT_R16_FLOAT, tileSize, tileSize, 1, 1));
@@ -238,8 +237,8 @@ void TexGen::GenerateHeightMap()
 	const float2 cellOrigin = float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
 	const float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
 
-	for (int x = 0; x < texelsPerCell; ++x) {
-		for (int y = 0; y < texelsPerCell; ++y) {
+	for (int y = 0; y < texelsPerCell; ++y) {
+		for (int x = 0; x < texelsPerCell; ++x) {
 			float2 worldXY = cellOrigin + float2((float)x, (float)y) * worldRes;
 
 			float landHeight;
@@ -273,10 +272,11 @@ void TexGen::GenerateHeightMap()
 
 		if (!advanceToNextTile() || !beginTile()) {
 			logger::info("[TexGen] Height cache complete: {} tiles, {} cells", tilesDone, cellsDone);
-			FinalizeHeightTiles();
-			settings.cacheProgressX = startCell.x;
-			settings.cacheProgressY = startCell.y;
-			globals::state->Save();
+			if (FinalizeHeightTiles()) {
+				settings.cacheProgressX = startCell.x;
+				settings.cacheProgressY = startCell.y;
+				globals::state->Save();
+			}
 			heightGenRunning = false;
 			heightGenInit = true;
 			return;
@@ -359,7 +359,8 @@ float4 TexGen::GetAtlasWorldBound() const
 bool TexGen::ResolveHeightAtlas(const std::string& a_worldspaceID, std::filesystem::path& o_path, bool a_forceRebuild)
 {
 	heightAtlasRange = {};
-	EnsureHeightAtlas(a_worldspaceID, a_forceRebuild);  // stitch the generated tiles together if it is missing
+	if (!EnsureHeightAtlas(a_worldspaceID, a_forceRebuild))
+		return false;
 
 	if (!FindAtlas(a_worldspaceID, "_H", o_path, heightAtlasRange))
 		return false;
@@ -388,7 +389,7 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 		return false;
 
 	const auto downscaledHeightPath = MakeAtlasPath(cachePath, worldspaceID, "_HD", heightAtlasRange.minCell, heightAtlasRange.maxCell);
-	static constexpr std::array<const char*, 7> outputTags = { "_N", "_CO", "_CO2", "_DO", "_DO2", "_DOB", "_DO2B" };
+	static constexpr std::array<const char*, 3> outputTags = { "_N", "_CO", "_CO2" };
 
 	bool rebuild = a_forceRebuild;
 	std::error_code ec;
@@ -418,8 +419,8 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 	ScratchImage downscaledImage;
 	DX::ThrowIfFailed(Resize(*source, width, height, TEX_FILTER_DEFAULT, downscaledImage));
 
-	RemoveExistingAtlases(cachePath, worldspaceID, "_HD");
 	SaveMapDDS(*downscaledImage.GetImages(), downscaledHeightPath);
+	RemoveOtherAtlases(cachePath, worldspaceID, "_HD", downscaledHeightPath);
 
 	winrt::com_ptr<ID3D11Resource> heightResource;
 	DX::ThrowIfFailed(CreateTexture(
@@ -490,9 +491,9 @@ bool TexGen::GenerateNormalMap(const int2& a_mapSize)
 
 bool TexGen::GenerateCardinalOcclusionMaps(const int2& a_mapSize)
 {
-	static constexpr std::array<const char*, 6> outputTags = { "_CO", "_CO2", "_DO", "_DO2", "_DOB", "_DO2B" };
+	static constexpr std::array<const char*, 2> outputTags = { "_CO", "_CO2" };
 
-	std::array<eastl::unique_ptr<Texture2D>, 6> outputs;
+	std::array<eastl::unique_ptr<Texture2D>, 2> outputs;
 	winrt::com_ptr<ID3D11ComputeShader> computeShader;
 
 	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16G16B16A16_FLOAT, (uint)a_mapSize.x, (uint)a_mapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
@@ -504,13 +505,13 @@ bool TexGen::GenerateCardinalOcclusionMaps(const int2& a_mapSize)
 		outputs[i]->CreateUAV(uavDesc);
 	}
 
-	computeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "CSHADER", "" }, { "CARDINALS", "" } }, "cs_5_0")));
+	computeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "CARDINALS", "" } }, "cs_5_0")));
 
 	if (!cacheGenBuffer)
 		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 
 	auto context = globals::d3d::context;
-	ID3D11UnorderedAccessView* uavs[6];
+	ID3D11UnorderedAccessView* uavs[2];
 	for (size_t i = 0; i < outputs.size(); ++i)
 		uavs[i] = outputs[i]->uav.get();
 
@@ -531,7 +532,7 @@ bool TexGen::GenerateCardinalOcclusionMaps(const int2& a_mapSize)
 	context->CSSetConstantBuffers(0, 1, &buffer);
 	context->Dispatch((a_mapSize.x + 7) / 8, (a_mapSize.y + 7) / 8, 1);
 
-	ID3D11UnorderedAccessView* nullUAVs[6] = {};
+	ID3D11UnorderedAccessView* nullUAVs[2] = {};
 	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(nullUAVs), nullUAVs, nullptr);
 	ID3D11ShaderResourceView* nullSRV = nullptr;
 	context->CSSetShaderResources(0, 1, &nullSRV);
@@ -799,8 +800,11 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 		return false;
 
 	std::filesystem::path existingPath;
-	if (!a_forceRebuild && FindAtlas(a_worldspaceID, "_H", existingPath, heightAtlasRange))
+	if (!a_forceRebuild && FindAtlas(a_worldspaceID, "_H", existingPath, heightAtlasRange)) {
+		if (UpdateAtlasLayout(a_worldspaceID, heightAtlasRange, settings))
+			globals::state->Save();
 		return true;
+	}
 
 	// Gaps between tiles read as zero height, matching how the tiles clear unsampled texels.
 	TileAtlasResult result;
@@ -828,11 +832,6 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 	const int2 maxCell = maxOrigin + int2(cellsPerTile - 1, cellsPerTile - 1);
 	auto atlasPath = MakeAtlasPath(cachePath, a_worldspaceID, "_H", minOrigin, maxCell);
 
-	// A changed cell range produces a different filename, so remove stale atlases before saving.
-	RemoveExistingAtlases(cachePath, a_worldspaceID, "_H");
-
-	SaveMapDDS(*atlasImage, atlasPath);
-
 	heightAtlasRange.minCell = minOrigin;
 	heightAtlasRange.maxCell = maxCell;
 	heightAtlasRange.valid = true;
@@ -842,8 +841,13 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 	auto tiles = GetAtlasTiles(a_worldspaceID, "_H", tileSize, cellsPerTile, heightAtlasRange);
 	if (!SaveHeightTileManifest(a_worldspaceID, tiles))
 		return false;
-	DeleteTiles(tiles);
-	logger::info("[TexGen] Saved height tile manifest and removed {} temporary tiles", tiles.size());
+
+	// A changed cell range produces a different filename, so remove stale atlases before saving.
+	SaveMapDDS(*atlasImage, atlasPath);
+	RemoveOtherAtlases(cachePath, a_worldspaceID, "_H", atlasPath);
+
+	const auto removedTiles = DeleteTiles(tiles);
+	logger::info("[TexGen] Saved height tile manifest and removed {} temporary tiles", removedTiles);
 
 	logger::info("[TexGen] Built height atlas {}: {}x{}, cells {},{} to {},{}",
 		atlasPath.string(), atlasImage->width, atlasImage->height,
@@ -859,11 +863,12 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 	if (a_worldspaceID.empty())
 		return false;
 
-	if (!heightAtlasRange.valid) {
-		std::filesystem::path heightPath;
-		if (!FindAtlas(a_worldspaceID, "_H", heightPath, heightAtlasRange))
-			return false;
-	}
+	std::filesystem::path heightPath;
+	heightAtlasRange = {};
+	if (!FindAtlas(a_worldspaceID, "_H", heightPath, heightAtlasRange))
+		return false;
+	if (UpdateAtlasLayout(a_worldspaceID, heightAtlasRange, settings))
+		globals::state->Save();
 
 	auto atlasPath = MakeAtlasPath(cachePath, a_worldspaceID, "_BN", heightAtlasRange.minCell, heightAtlasRange.maxCell);
 	if (!a_forceRebuild && std::filesystem::exists(atlasPath))
@@ -876,9 +881,8 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 
 	const Image* atlasImage = result.image.GetImages();
 
-	RemoveExistingAtlases(cachePath, a_worldspaceID, "_BN");
-
 	SaveMapDDS(*atlasImage, atlasPath);
+	RemoveOtherAtlases(cachePath, a_worldspaceID, "_BN", atlasPath);
 
 	logger::info("[TexGen] Built bent normal atlas {}: {}x{}, cells {},{} to {},{}",
 		atlasPath.string(), atlasImage->width, atlasImage->height,
@@ -1108,8 +1112,8 @@ void TexGen::UpdateBentNormalTiles()
 		logger::info("[TexGen] Bent normal tiles complete: {} tiles", bentNormalTileQueue.size());
 		const auto completedTiles = GetAtlasTiles(worldspaceID, "_BN", (uint)settings.cacheAtlasTileSize, settings.cacheAtlasTileCells, heightAtlasRange);
 		if (EnsureBentNormalAtlas(worldspaceID, true)) {
-			DeleteTiles(completedTiles);
-			logger::info("[TexGen] Removed {} temporary bent normal tiles", completedTiles.size());
+			const auto removedTiles = DeleteTiles(completedTiles);
+			logger::info("[TexGen] Removed {} temporary bent normal tiles", removedTiles);
 		}
 
 		bentNormalTileGen = false;
@@ -1135,11 +1139,13 @@ void TexGen::DrawSettings()
 		return;
 
 	if (ImGui::BeginTabItem("Generation")) {
+		ImGui::BeginDisabled(!heightGenRunning && worldspaceID.empty());
 		if (ImGui::Button(heightGenRunning ? "Stop Height Generation" : "Generate Height Map")) {
 			heightGenRunning = !heightGenRunning;
 			heightGenSingleTile = false;
 			heightGenInit = true;
 		}
+		ImGui::EndDisabled();
 		ImGui::EndTabItem();
 	}
 
@@ -1157,17 +1163,19 @@ void TexGen::DrawSettings()
 		ImGui::InputText("DynDOLOD Worldspace Directory", &settings.dynDOLODPath);
 		ImGui::TextWrapped("Select the DynDOLOD terrain-texture folder for the worldspace you want to generate textures for.");
 
-		ImGui::BeginDisabled(settings.dynDOLODPath.empty());
+		ImGui::BeginDisabled(settings.dynDOLODPath.empty() || worldspaceID.empty());
 		if (ImGui::Button("Generate albedo atlas")) {
-			auto outputPath = cachePath / ((worldspaceID.empty() ? std::string("Tamriel") : worldspaceID) + "_A.dds");
+			auto outputPath = cachePath / (worldspaceID + "_A.dds");
 			BuildLODAtlas(outputPath);
 		}
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Stitches the xLODGen LOD tiles in\n%s\ninto one albedo atlas.", settings.dynDOLODPath.c_str());
 
+		ImGui::BeginDisabled(worldspaceID.empty());
 		if (ImGui::Button("Generate Normal and Cardinal AO"))
 			BuildDerivedMaps(worldspaceID, true);
+		ImGui::EndDisabled();
 
 		ImGui::BeginDisabled(heightGenRunning);  // the tile layout is latched for the duration of a run
 
@@ -1195,7 +1203,7 @@ void TexGen::DrawSettings()
 		ImGui::Text("%u^2 tile, %d texels per cell, %.0f units per texel, 16 bit float",
 			GetHeightTileSize(), texelsPerCell, worldCellSize / (float)texelsPerCell);
 
-		ImGui::BeginDisabled(heightGenRunning);
+		ImGui::BeginDisabled(heightGenRunning || worldspaceID.empty());
 		if (ImGui::Button("Generate Tile At Player")) {
 			if (auto player = RE::PlayerCharacter::GetSingleton()) {
 				auto playerPos = player->GetPosition();
@@ -1294,7 +1302,7 @@ void TexGen::DrawSettings()
 		const int2 targetTileOrigin = GetTileOriginCell(int2(cellCoords[0], cellCoords[1]), GetHeightTileCells());
 		ImGui::BulletText("Tile origin cell: %d, %d", targetTileOrigin.x, targetTileOrigin.y);
 
-		ImGui::BeginDisabled(heightGenRunning);
+		ImGui::BeginDisabled(heightGenRunning || worldspaceID.empty());
 		if (ImGui::Button("Generate Tile At Cell")) {
 			heightGenTargetCell = int2(cellCoords[0], cellCoords[1]);
 			heightGenSingleTile = true;

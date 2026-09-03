@@ -11,15 +11,13 @@ cbuffer CacheGenBuffer : register(b0)
 };
 
 //// Cardinal AO Map ///////////////////////////////////////////////////////////////////
-#ifdef CSHADER
+#ifdef CARDINALS
 
 Texture2D<float> HeightTex : register(t0);
 SamplerState LinearSampler : register(s0);
 
 RWTexture2D<float4> OutputHorizon0 : register(u0);
 RWTexture2D<float4> OutputHorizon1 : register(u1);
-RWTexture2D<float4> OutputHorizon2 : register(u2);
-RWTexture2D<float4> OutputHorizon3 : register(u3);
 
 static const float2 CARD[4] = {
 	float2(1, 0), float2(0, 1),   // +X - East, +Y - South
@@ -41,11 +39,10 @@ float TexelsToEdge(float2 uv, float2 Dir, float2 Dim)
 }
 
 // March one ray; return sin(elevation) of the highest occluder (>= 0 = flat).
-float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, float2 Dir, out float MeanHitDist)
+float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, float2 Dir)
 {
 	float2 InvPxSize = 1.0 / HeightMapPxSize;
 	float MaxHeight = 0.0;
-	float WeightedDist = 0.0;
 
 	float StepCount = TexelsToEdge(CoordsUV, Dir, HeightMapPxSize);
 	float2 TexelWorldSize = (GridBounds.zw - GridBounds.xy) / (float2)HeightMapPxSize;
@@ -63,15 +60,12 @@ float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, f
 		float HDiff = Height - SampleHeight;
 		float Hypot = sqrt(PosOffset * PosOffset + HDiff * HDiff);
 		float SinElevation = HDiff / Hypot;
-		if (SinElevation > MaxHeight) {
-			WeightedDist += (SinElevation - MaxHeight) * PosOffset;
+		if (SinElevation > MaxHeight)
 			MaxHeight = SinElevation;
-		}
 
 		PosOffset += StepDist;
 	}
 
-	MeanHitDist = MaxHeight > 1e-4 ? WeightedDist / MaxHeight : 0.0;
 	return max(MaxHeight, 0.0);
 }
 
@@ -89,20 +83,17 @@ float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, f
 	HeightTex.GetDimensions(HeightMapPxSize.x, HeightMapPxSize.y);
 
 	float4 card, diag;
-	float4 cardWeight, diagWeight;
 	[unroll] for (int step = 0; step < 8; step++)
 	{
 		if (step < 4) {
-			card[step] = MarchHorizon(CoordsUV, HeightSample, HeightMapPxSize, CARD[step], cardWeight[step]);
+			card[step] = MarchHorizon(CoordsUV, HeightSample, HeightMapPxSize, CARD[step]);
 		} else {
 			int idx = step - 4;
-			diag[idx] = MarchHorizon(CoordsUV, HeightSample, HeightMapPxSize, DIAG[idx], diagWeight[idx]);
+			diag[idx] = MarchHorizon(CoordsUV, HeightSample, HeightMapPxSize, DIAG[idx]);
 		}
 	}
 	OutputHorizon0[ThreadID.xy] = card;
 	OutputHorizon1[ThreadID.xy] = diag;
-	OutputHorizon2[ThreadID.xy] = cardWeight;
-	OutputHorizon3[ThreadID.xy] = diagWeight;
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////

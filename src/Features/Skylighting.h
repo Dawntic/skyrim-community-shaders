@@ -159,14 +159,10 @@ public:
 	ID3D11ShaderResourceView* BNMapSRV = nullptr;
 	ID3D11ShaderResourceView* COMapSRV = nullptr;
 	ID3D11ShaderResourceView* CO2MapSRV = nullptr;
-	ID3D11ShaderResourceView* DOMapSRV = nullptr;
-	ID3D11ShaderResourceView* DO2MapSRV = nullptr;
 	ID3D11ShaderResourceView* AMapSRV = nullptr;
 	ID3D11ShaderResourceView* NMapSRV = nullptr;
 	//ID3D11ShaderResourceView* NSMapSRV = nullptr;
 	ID3D11ShaderResourceView* HMapSRV = nullptr;
-	ID3D11ShaderResourceView* DOMapSRVB = nullptr;
-	ID3D11ShaderResourceView* DO2MapSRVB = nullptr;
 
 	//// Bent normal tile streaming ////
 	// Exactly one bent normal tile is resident at a time: the one covering the player. Coverage

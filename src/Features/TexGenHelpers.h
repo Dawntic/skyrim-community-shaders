@@ -84,9 +84,9 @@ namespace TexGenHelpers
 		return true;
 	}
 
-	// A rebuild writes a new name whenever the cell range changed, so the previous atlas has to go or
-	// the lookup would find two. Only files matching this map's atlas pattern are touched.
-	inline void RemoveExistingAtlases(const std::filesystem::path& dir, const std::string& worldspaceID, const std::string& mapTag)
+	// Once a replacement is safely written, remove older range-named atlases so lookup stays
+	// unambiguous. Only files matching this map's atlas pattern are touched.
+	inline void RemoveOtherAtlases(const std::filesystem::path& dir, const std::string& worldspaceID, const std::string& mapTag, const std::filesystem::path& keepPath)
 	{
 		std::error_code ec;
 		for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
@@ -96,6 +96,9 @@ namespace TexGenHelpers
 
 			TexGen::AtlasCellRange range;
 			if (!ParseAtlasName(path, worldspaceID, mapTag, range))
+				continue;
+
+			if (path.filename() == keepPath.filename())
 				continue;
 
 			if (std::filesystem::remove(path, ec))
@@ -250,11 +253,44 @@ namespace TexGenHelpers
 		return tiles;
 	}
 
-	inline void DeleteTiles(const std::vector<HeightTileFile>& tiles)
+	inline size_t DeleteTiles(const std::vector<HeightTileFile>& tiles)
 	{
 		std::error_code ec;
+		size_t removed = 0;
 		for (const auto& tile : tiles)
-			std::filesystem::remove(tile.path, ec);
+			removed += std::filesystem::remove(tile.path, ec);
+		return removed;
+	}
+
+	inline bool UpdateAtlasLayout(const std::string& worldspaceID, const TexGen::AtlasCellRange& range, TexGen::Settings& settings)
+	{
+		auto tiles = LoadHeightTileManifest(worldspaceID);
+		if (tiles.empty())
+			return false;
+
+		const auto tileSize = tiles.front().tileSize;
+		const auto cellsPerTile = tiles.front().cellsPerTile;
+		if (!std::ranges::all_of(tiles, [&](const HeightTileFile& tile) { return tile.tileSize == tileSize && tile.cellsPerTile == cellsPerTile; }))
+			return false;
+
+		const int2 cellExtent = range.maxCell - range.minCell + int2(1, 1);
+		if (cellExtent.x % cellsPerTile != 0 || cellExtent.y % cellsPerTile != 0)
+			return false;
+
+		const bool changed = settings.cacheAtlasMinCellX != range.minCell.x ||
+		                     settings.cacheAtlasMinCellY != range.minCell.y ||
+		                     settings.cacheAtlasTileSize != (int)tileSize ||
+		                     settings.cacheAtlasTileCells != cellsPerTile ||
+		                     settings.cacheAtlasTilesX != cellExtent.x / cellsPerTile ||
+		                     settings.cacheAtlasTilesY != cellExtent.y / cellsPerTile;
+
+		settings.cacheAtlasMinCellX = range.minCell.x;
+		settings.cacheAtlasMinCellY = range.minCell.y;
+		settings.cacheAtlasTileSize = (int)tileSize;
+		settings.cacheAtlasTileCells = cellsPerTile;
+		settings.cacheAtlasTilesX = cellExtent.x / cellsPerTile;
+		settings.cacheAtlasTilesY = cellExtent.y / cellsPerTile;
+		return changed;
 	}
 	inline bool FindAtlas(const std::string& worldspaceID, const std::string& mapTag, std::filesystem::path& o_path, TexGen::AtlasCellRange& o_range)
 	{
@@ -302,9 +338,7 @@ namespace TexGenHelpers
 	{
 		auto player = RE::PlayerCharacter::GetSingleton();
 		auto diff = player->GetPosition() - inputPosition;
-		logger::trace("diff: {}, {}", diff.x, diff.y);
-		logger::trace("Pos: {}  :  InPos: {}", player->GetPosition(), inputPosition);
-		return std::max(diff.x, diff.y) < TexGen::worldCellSize;
+		return std::max(std::abs(diff.x), std::abs(diff.y)) < TexGen::worldCellSize;
 	}
 
 	inline float GetRayIntersectionHeight(float3 position, float rayOffset)
@@ -342,7 +376,7 @@ namespace TexGenHelpers
 			auto collisionObj = output.rootCollidable->GetCollisionLayer();
 			if (!(collisionObj == RE::COL_LAYER::kTerrain || collisionObj == RE::COL_LAYER::kGround || collisionObj == RE::COL_LAYER::kStatic)) {
 				float rayLength = currentZ - endZ;
-				currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
+				currentZ = currentZ - output.hitFraction * rayLength - 50.0f;
 				continue;
 			}
 
@@ -363,17 +397,12 @@ namespace TexGenHelpers
 
 		float landHeight;
 		tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
-		logger::trace("land: {}", landHeight);
 
 		float groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight), 15000);
-		logger::trace("ground: {}", groundHeight);
 		float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
 		groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
 
-		float3 sampleCoordsWS = float3(worldXY.x, worldXY.y, groundHeight);
-		logger::trace("sampleCoordsWS: {}, {}, {}", sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z);
-
-		o_worldPos = RE::NiPoint3(sampleCoordsWS.x, sampleCoordsWS.y, sampleCoordsWS.z + 1500.0f);
+		o_worldPos = RE::NiPoint3(worldXY.x, worldXY.y, groundHeight + 1500.0f);
 		player->SetPosition(o_worldPos, false);
 	}
 }

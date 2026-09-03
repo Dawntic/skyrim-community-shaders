@@ -184,7 +184,7 @@ public:
 	void DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOriginAtlasPx);
 	static constexpr int bentNormalAzimuths = 64;  // must match NUM_AZIMUTH in the shader
 	static constexpr int bentNormalHullCapacity = 1024;
-	/// @brief Queue a bent normal tile for every height tile on disk. Tiles are processed one per frame.
+	/// @brief Queue a bent normal tile for every entry in the retained height-tile manifest.
 	bool StartBentNormalTiles();
 	/// @brief Process the next queued bent normal tile, if any.
 	void UpdateBentNormalTiles();
