@@ -298,11 +298,6 @@ bool TexGen::FinalizeHeightTiles()
 	if (!EnsureHeightAtlas(worldspaceID, true))
 		return false;
 
-	auto tiles = GetAtlasTiles(worldspaceID, "_H", (uint)settings.cacheAtlasTileSize, settings.cacheAtlasTileCells, heightAtlasRange);
-	if (!SaveHeightTileManifest(worldspaceID, tiles))
-		return false;
-	DeleteTiles(tiles);
-	logger::info("[TexGen] Saved height tile manifest and removed {} temporary tiles", tiles.size());
 	NotifyCacheMapsChanged();
 	return true;
 }
@@ -841,6 +836,14 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 	heightAtlasRange.minCell = minOrigin;
 	heightAtlasRange.maxCell = maxCell;
 	heightAtlasRange.valid = true;
+	// Loading a legacy tile-only cache follows the same finalization path as a newly completed bake.
+	// Preserve the names before removing the tile DDS files because bent-normal generation only
+	// needs their layout after this point.
+	auto tiles = GetAtlasTiles(a_worldspaceID, "_H", tileSize, cellsPerTile, heightAtlasRange);
+	if (!SaveHeightTileManifest(a_worldspaceID, tiles))
+		return false;
+	DeleteTiles(tiles);
+	logger::info("[TexGen] Saved height tile manifest and removed {} temporary tiles", tiles.size());
 
 	logger::info("[TexGen] Built height atlas {}: {}x{}, cells {},{} to {},{}",
 		atlasPath.string(), atlasImage->width, atlasImage->height,
