@@ -58,7 +58,6 @@ public:
 		int cacheAtlasTilesX = 0;     // tile columns
 		int cacheAtlasTilesY = 0;     // tile rows, needed to flip texel Y into cell space
 
-		float cacheBentNormalAtlasScale = 1.0f;  // downscale factor applied when stitching the BN atlas
 		std::string dynDOLODPath;
 	} settings;
 
@@ -140,8 +139,7 @@ public:
 
 	/// @brief Stitch "<Worldspace><mapTag><tileSize>.<cells>.<x>.<y>.dds" tiles into one image.
 	/// @param fill Value gaps between tiles take.
-	/// @param scale Downscale applied per tile, 0 to 1. Rounded so tiles stay texel aligned.
-	bool StitchTileAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, const float4& fill, TileAtlasResult& o_result, float scale = 1.0f, const AtlasCellRange* a_range = nullptr);
+	bool StitchTileAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, const float4& fill, TileAtlasResult& o_result, const AtlasCellRange* a_range = nullptr);
 
 	/// @brief Ensure the height atlas exists, stitching it from the generated height tiles if not.
 	/// @param a_forceRebuild Rebuild even when the atlas is already on disk.

@@ -24,7 +24,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	cacheAtlasTileCells,
 	cacheAtlasTilesX,
 	cacheAtlasTilesY,
-	cacheBentNormalAtlasScale,
 	dynDOLODPath)
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -555,6 +554,18 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 
 	using namespace DirectX;
 
+	std::filesystem::path heightAtlasPath;
+	if (!ResolveHeightAtlas(worldspaceID, heightAtlasPath))
+		return false;
+
+	TexMetadata heightMetadata;
+	DX::ThrowIfFailed(GetMetadataFromDDSFile(heightAtlasPath.c_str(), DDS_FLAGS_NONE, heightMetadata));
+
+	static constexpr int lodCellsPerTile = 32;
+	const int2 atlasMinCell = heightAtlasRange.minCell;
+	const int2 atlasMaxCellExclusive = heightAtlasRange.maxCell + int2(1, 1);
+	const int2 atlasCellExtent = atlasMaxCellExclusive - atlasMinCell;
+
 	const std::filesystem::path lodPath = settings.dynDOLODPath;
 	std::error_code ec;
 	if (!std::filesystem::exists(lodPath, ec)) {
@@ -592,53 +603,65 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 	if (tiles.empty())
 		return false;
 
-	size_t lodTexSize = tiles[0].image.GetImage(0, 0, 0)->width;
-
-	// Sort tiles and assign grid positions
-	std::sort(tiles.begin(), tiles.end(), [](const TileInfo& a, const TileInfo& b) {
-		return a.cellY != b.cellY ? a.cellY > b.cellY : a.cellX < b.cellX;
-	});
-
-	std::vector<int> uniqueX, uniqueY;
-	for (auto& t : tiles) {
-		if (std::find(uniqueX.begin(), uniqueX.end(), t.cellX) == uniqueX.end())
-			uniqueX.push_back(t.cellX);
-		if (std::find(uniqueY.begin(), uniqueY.end(), t.cellY) == uniqueY.end())
-			uniqueY.push_back(t.cellY);
+	const Image* firstTile = tiles.front().image.GetImage(0, 0, 0);
+	const size_t lodTileSize = firstTile->width;
+	if (firstTile->height != lodTileSize || lodTileSize % lodCellsPerTile != 0) {
+		logger::error("[TexGen] LOD32 tile dimensions must be square and divisible by {}", lodCellsPerTile);
+		return false;
 	}
-	std::sort(uniqueX.begin(), uniqueX.end());
-	std::sort(uniqueY.begin(), uniqueY.end(), std::greater<int>());  // north-up
 
-	size_t atlasW = lodTexSize * uniqueX.size();
-	size_t atlasH = lodTexSize * uniqueY.size();
-
-	logger::info("[TexGen] LOD atlas size: {}, {}", atlasW, atlasH);
+	const size_t texelsPerCell = lodTileSize / lodCellsPerTile;
+	const size_t sourceWidth = (size_t)atlasCellExtent.x * texelsPerCell;
+	const size_t sourceHeight = (size_t)atlasCellExtent.y * texelsPerCell;
 
 	ScratchImage atlas;
-	DX::ThrowIfFailed(atlas.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, atlasW, atlasH, 1, 1));
+	DX::ThrowIfFailed(atlas.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, sourceWidth, sourceHeight, 1, 1));
+	const Image* atlasImage = atlas.GetImage(0, 0, 0);
+	memset(atlasImage->pixels, 0, atlasImage->slicePitch);
 
-	// Zero-fill
-	const Image* atlasImg = atlas.GetImage(0, 0, 0);
-	memset(atlasImg->pixels, 0, atlasImg->slicePitch);
+	size_t blitted = 0;
+	for (auto& tile : tiles) {
+		const Image* source = tile.image.GetImage(0, 0, 0);
+		if (source->width != lodTileSize || source->height != lodTileSize)
+			continue;
 
-	for (auto& t : tiles) {
-		const Image* src = t.image.GetImage(0, 0, 0);
-		auto col = std::find(uniqueX.begin(), uniqueX.end(), t.cellX) - uniqueX.begin();
-		auto row = std::find(uniqueY.begin(), uniqueY.end(), t.cellY) - uniqueY.begin();
+		const int copyMinX = std::max(atlasMinCell.x, tile.cellX);
+		const int copyMinY = std::max(atlasMinCell.y, tile.cellY);
+		const int copyMaxX = std::min(atlasMaxCellExclusive.x, tile.cellX + lodCellsPerTile);
+		const int copyMaxY = std::min(atlasMaxCellExclusive.y, tile.cellY + lodCellsPerTile);
+		if (copyMinX >= copyMaxX || copyMinY >= copyMaxY)
+			continue;
 
-		size_t dstX = col * lodTexSize;
-		size_t dstY = row * lodTexSize;
+		const size_t sourceX = (size_t)(copyMinX - tile.cellX) * texelsPerCell;
+		const size_t sourceY = (size_t)(tile.cellY + lodCellsPerTile - copyMaxY) * texelsPerCell;
+		const size_t destinationX = (size_t)(copyMinX - atlasMinCell.x) * texelsPerCell;
+		const size_t destinationY = (size_t)(atlasMaxCellExclusive.y - copyMaxY) * texelsPerCell;
+		const size_t copyWidth = (size_t)(copyMaxX - copyMinX) * texelsPerCell;
+		const size_t copyHeight = (size_t)(copyMaxY - copyMinY) * texelsPerCell;
 
-		for (size_t y = 0; y < lodTexSize; ++y) {
-			uint8_t* dst = atlasImg->pixels + (dstY + y) * atlasImg->rowPitch + dstX * 4;
-			const uint8_t* s = src->pixels + y * src->rowPitch;
-			memcpy(dst, s, lodTexSize * 4);
+		for (size_t y = 0; y < copyHeight; ++y) {
+			uint8_t* destination = atlasImage->pixels + (destinationY + y) * atlasImage->rowPitch + destinationX * 4;
+			const uint8_t* sourceRow = source->pixels + (sourceY + y) * source->rowPitch + sourceX * 4;
+			memcpy(destination, sourceRow, copyWidth * 4);
 		}
+		blitted++;
 	}
 
-	SaveMapDDS(*atlasImg, a_outputPath);
+	if (blitted == 0)
+		return false;
 
-	logger::info("[TexGen] Built LOD atlas {}", a_outputPath.string());
+	ScratchImage resizedAtlas;
+	const Image* outputImage = atlasImage;
+	if (sourceWidth != heightMetadata.width || sourceHeight != heightMetadata.height) {
+		DX::ThrowIfFailed(Resize(*atlasImage, heightMetadata.width, heightMetadata.height, TEX_FILTER_DEFAULT, resizedAtlas));
+		outputImage = resizedAtlas.GetImages();
+	}
+
+	SaveMapDDS(*outputImage, a_outputPath);
+
+	logger::info("[TexGen] Built LOD atlas {}: {}x{}, cells {},{} to {},{}",
+		a_outputPath.string(), outputImage->width, outputImage->height,
+		heightAtlasRange.minCell.x, heightAtlasRange.minCell.y, heightAtlasRange.maxCell.x, heightAtlasRange.maxCell.y);
 
 	NotifyCacheMapsChanged();
 	return true;
@@ -648,7 +671,7 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 //// Tile stitching
 //////////////////////////////////////////////////////////////////////////////////
 
-bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, const float4& fill, TileAtlasResult& o_result, float scale, const AtlasCellRange* a_range)
+bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, const float4& fill, TileAtlasResult& o_result, const AtlasCellRange* a_range)
 {
 	using namespace DirectX;
 
@@ -726,11 +749,8 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 	const DXGI_FORMAT format = a_mapTag == "_H" ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
 	const size_t bytesPerTexel = BitsPerPixel(format) / 8;
 
-	// Scaling happens per tile so the intermediate never exceeds one tile, and the scaled size is
-	// rounded to a whole number of texels so tiles stay aligned and cannot leave seams.
-	const uint outTileSize = (uint)std::clamp((int)std::lround((float)tileSize * std::clamp(scale, 0.0f, 1.0f)), 1, (int)tileSize);
-	const size_t atlasWidth = tilesX * outTileSize;
-	const size_t atlasHeight = tilesY * outTileSize;
+	const size_t atlasWidth = tilesX * tileSize;
+	const size_t atlasHeight = tilesY * tileSize;
 
 	ScratchImage atlas;
 	DX::ThrowIfFailed(atlas.Initialize2D(format, atlasWidth, atlasHeight, 1, 1));
@@ -757,20 +777,14 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 			src = convertedImage.GetImages();
 		}
 
-		ScratchImage scaledImage;
-		if (outTileSize != tileSize) {
-			DX::ThrowIfFailed(Resize(*src, outTileSize, outTileSize, TEX_FILTER_DEFAULT, scaledImage));
-			src = scaledImage.GetImages();
-		}
-
 		size_t tileColumn = (size_t)((tile.originCell.x - minOrigin.x) / cellsPerTile);
 		size_t tileRow = (size_t)((maxOrigin.y - tile.originCell.y) / cellsPerTile);  // north first
-		size_t dstX = tileColumn * outTileSize;
-		size_t dstY = tileRow * outTileSize;
+		size_t dstX = tileColumn * tileSize;
+		size_t dstY = tileRow * tileSize;
 
-		for (uint y = 0; y < outTileSize; ++y) {
+		for (uint y = 0; y < tileSize; ++y) {
 			auto dst = atlasImage->pixels + (dstY + y) * atlasImage->rowPitch + dstX * bytesPerTexel;
-			memcpy(dst, src->pixels + (outTileSize - 1 - y) * src->rowPitch, outTileSize * bytesPerTexel);
+			memcpy(dst, src->pixels + (tileSize - 1 - y) * src->rowPitch, tileSize * bytesPerTexel);
 		}
 
 		blitted++;
@@ -785,7 +799,7 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 	o_result.minOriginCell = minOrigin;
 	o_result.maxOriginCell = maxOrigin;
 	o_result.tileCounts = int2((int)tilesX, (int)tilesY);
-	o_result.tileSize = outTileSize;
+	o_result.tileSize = tileSize;
 	o_result.cellsPerTile = cellsPerTile;
 
 	return true;
@@ -864,19 +878,32 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 	heightAtlasRange = {};
 	if (!FindAtlas(a_worldspaceID, "_H", heightPath, heightAtlasRange))
 		return false;
+
+	TexMetadata heightMetadata;
+	DX::ThrowIfFailed(GetMetadataFromDDSFile(heightPath.c_str(), DDS_FLAGS_NONE, heightMetadata));
+
 	if (UpdateAtlasLayout(a_worldspaceID, heightAtlasRange, settings))
 		globals::state->Save();
 
 	auto atlasPath = MakeAtlasPath(cachePath, a_worldspaceID, "_BN", heightAtlasRange.minCell, heightAtlasRange.maxCell);
-	if (!a_forceRebuild && std::filesystem::exists(atlasPath))
-		return true;
+	if (!a_forceRebuild && std::filesystem::exists(atlasPath)) {
+		TexMetadata bentNormalMetadata;
+		DX::ThrowIfFailed(GetMetadataFromDDSFile(atlasPath.c_str(), DDS_FLAGS_NONE, bentNormalMetadata));
+		if (bentNormalMetadata.width == heightMetadata.width && bentNormalMetadata.height == heightMetadata.height)
+			return true;
+	}
 
 	// Gaps read as an unoccluded surface: normal straight up, encoded, and full visibility.
 	TileAtlasResult result;
-	if (!StitchTileAtlas(a_worldspaceID, "_BN", float4(0.5f, 0.5f, 1.0f, 1.0f), result, settings.cacheBentNormalAtlasScale, &heightAtlasRange))
+	if (!StitchTileAtlas(a_worldspaceID, "_BN", float4(0.5f, 0.5f, 1.0f, 1.0f), result, &heightAtlasRange))
 		return false;
 
 	const Image* atlasImage = result.image.GetImages();
+	if (atlasImage->width != heightMetadata.width || atlasImage->height != heightMetadata.height) {
+		logger::error("[TexGen] Bent normal atlas dimensions {}x{} do not match height atlas {}x{}",
+			atlasImage->width, atlasImage->height, heightMetadata.width, heightMetadata.height);
+		return false;
+	}
 
 	SaveMapDDS(*atlasImage, atlasPath);
 
@@ -993,23 +1020,52 @@ bool TexGen::StartBentNormalTiles()
 		return false;
 	}
 
-	const int tileSize = settings.cacheAtlasTileSize;
-	const int cellsPerTile = settings.cacheAtlasTileCells;
-	if (tileSize <= 0 || cellsPerTile <= 0) {
-		logger::error("[TexGen] No atlas layout recorded, rebuild the height atlas first");
-		return false;
-	}
-
 	// The atlas dimensions the height tiles were stitched into; the regions are relative to these.
 	std::filesystem::path atlasPath;
-	heightAtlasRange = {};
-	if (!FindAtlas(worldspaceID, "_H", atlasPath, heightAtlasRange)) {
+	if (!ResolveHeightAtlas(worldspaceID, atlasPath)) {
 		logger::error("[TexGen] No height atlas found, cannot generate bent normal tiles");
 		return false;
 	}
 
 	DirectX::TexMetadata metadata;
 	DX::ThrowIfFailed(DirectX::GetMetadataFromDDSFile(atlasPath.c_str(), DirectX::DDS_FLAGS_NONE, metadata));
+
+	const int cellsPerTile = settings.cacheAtlasTileCells;
+	const int2 cellExtent = heightAtlasRange.maxCell - heightAtlasRange.minCell + int2(1, 1);
+	if (cellsPerTile <= 0 || cellExtent.x % cellsPerTile != 0 || cellExtent.y % cellsPerTile != 0) {
+		logger::error("[TexGen] Invalid height atlas tile layout");
+		return false;
+	}
+
+	const int tilesX = cellExtent.x / cellsPerTile;
+	const int tilesY = cellExtent.y / cellsPerTile;
+	if (metadata.width % tilesX != 0 || metadata.height % tilesY != 0) {
+		logger::error("[TexGen] Height atlas dimensions do not divide evenly into its tile layout");
+		return false;
+	}
+
+	const int tileSizeX = (int)metadata.width / tilesX;
+	const int tileSizeY = (int)metadata.height / tilesY;
+	if (tileSizeX != tileSizeY) {
+		logger::error("[TexGen] Height atlas tiles are not square: {}x{}", tileSizeX, tileSizeY);
+		return false;
+	}
+
+	const int tileSize = tileSizeX;
+	const bool layoutChanged =
+		settings.cacheAtlasMinCellX != heightAtlasRange.minCell.x ||
+		settings.cacheAtlasMinCellY != heightAtlasRange.minCell.y ||
+		settings.cacheAtlasTileSize != tileSize ||
+		settings.cacheAtlasTilesX != tilesX ||
+		settings.cacheAtlasTilesY != tilesY;
+	settings.cacheAtlasMinCellX = heightAtlasRange.minCell.x;
+	settings.cacheAtlasMinCellY = heightAtlasRange.minCell.y;
+	settings.cacheAtlasTileSize = tileSize;
+	settings.cacheAtlasTilesX = tilesX;
+	settings.cacheAtlasTilesY = tilesY;
+	if (layoutChanged)
+		globals::state->Save();
+
 	bentNormalAtlasSize = int2((int)metadata.width, (int)metadata.height);
 
 	// Mirror the completed height run exactly, using the manifest retained when its temporary tiles
@@ -1235,17 +1291,6 @@ void TexGen::DrawSettings()
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Generates one bent normal tile per height tile from the atlas, matching their\nsize, format and naming. One tile per frame; expect a long, unresponsive run.");
-
-		ImGui::SliderFloat("BN Atlas Scale", &settings.cacheBentNormalAtlasScale, 0.05f, 1.0f, "%.2f");
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("Downscales every tile as the bent normal atlas is stitched.\n0.85 makes it 15%% smaller per edge, so roughly 28%% of the memory saved.");
-
-		if (settings.cacheAtlasTileSize > 0) {
-			const int scaledTile = std::clamp((int)std::lround((float)settings.cacheAtlasTileSize * settings.cacheBentNormalAtlasScale), 1, settings.cacheAtlasTileSize);
-			const size_t atlasBytes = (size_t)scaledTile * settings.cacheAtlasTilesX * (size_t)scaledTile * settings.cacheAtlasTilesY * 8;
-			ImGui::BulletText("BN atlas: %d texel tiles, %dx%d, %zu MB",
-				scaledTile, scaledTile * settings.cacheAtlasTilesX, scaledTile * settings.cacheAtlasTilesY, atlasBytes / (1024 * 1024));
-		}
 
 		ImGui::BeginDisabled(IsGenerating() || worldspaceID.empty());
 		if (ImGui::Button("Rebuild Bent Normal Atlas")) {
