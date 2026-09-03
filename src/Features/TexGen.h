@@ -62,6 +62,7 @@ public:
 		int cacheAtlasTilesY = 0;     // tile rows, needed to flip texel Y into cell space
 
 		float cacheBentNormalAtlasScale = 1.0f;  // downscale factor applied when stitching the BN atlas
+		std::string dynDOLODPath;
 	} settings;
 
 	//////////////////////////////////////////////////////////////////////////////////
@@ -271,8 +272,6 @@ private:
 	//// Cache gen resources ////
 	static constexpr uint COMapSize = 1024;
 	static constexpr int2 BNMapSize = int2(3808, 3008);
-
-	std::filesystem::path lodPath = L"C:\\Skyrim Modding Utilities\\DynDOLOD\\xLODGen\\Output\\textures\\terrain\\tamriel";
 
 	//// Height bake state ////
 	bool heightGenRunning = false;

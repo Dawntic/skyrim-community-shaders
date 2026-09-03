@@ -6,6 +6,8 @@
 #include "State.h"
 #include "Utils/D3D.h"
 
+#include <imgui_stdlib.h>
+
 #define I18N_KEY_PREFIX "feature.texgen."
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
@@ -23,7 +25,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	cacheAtlasTileCells,
 	cacheAtlasTilesX,
 	cacheAtlasTilesY,
-	cacheBentNormalAtlasScale)
+	cacheBentNormalAtlasScale,
+	dynDOLODPath)
 
 // Every generated LOD map is a single surface: one mip level, one array slice, no cube faces.
 // Written through explicit metadata so the property is enforced at the call rather than being an
@@ -682,6 +685,7 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath, const std:
 
 	using namespace DirectX;
 
+	const std::filesystem::path lodPath = settings.dynDOLODPath;
 	std::error_code ec;
 	if (!std::filesystem::exists(lodPath, ec)) {
 		logger::error("[TexGen] xLODGen output folder {} not found, cannot build {}", lodPath.string(), a_outputPath.filename().string());
@@ -1904,12 +1908,17 @@ void TexGen::DrawSettings()
 
 	ImGui::Text("Worldspace: %s", worldspaceID.empty() ? "N/A" : worldspaceID.c_str());
 
+	ImGui::InputText("DynDOLOD Worldspace Directory", &settings.dynDOLODPath);
+	ImGui::TextWrapped("Select the DynDOLOD terrain-texture folder for the worldspace you want to generate textures for.");
+
+	ImGui::BeginDisabled(settings.dynDOLODPath.empty());
 	if (ImGui::Button("Generate albedo atlas")) {
 		auto outputPath = cachePath / ((worldspaceID.empty() ? std::string("Tamriel") : worldspaceID) + "_A.dds");
 		BuildLODAtlas(outputPath, "");
 	}
+	ImGui::EndDisabled();
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Stitches the xLODGen LOD tiles in\n%s\ninto one albedo atlas.", lodPath.string().c_str());
+		ImGui::Text("Stitches the xLODGen LOD tiles in\n%s\ninto one albedo atlas.", settings.dynDOLODPath.c_str());
 
 	if (ImGui::Button("Generate card Occl"))
 		GenerateCardinalOcclusionMap();
