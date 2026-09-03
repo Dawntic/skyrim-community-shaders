@@ -164,8 +164,6 @@ public:
 	int GetHeightTileCells() const { return settings.cacheTileCells == 4 ? 4 : 8; }
 	/// @brief Texels per tile edge, sanitised to a supported size (512 or 1024).
 	uint GetHeightTileSize() const { return settings.cacheTileSize == 512 ? 512u : 1024u; }
-	/// @brief (Re)create the staging tile at the given edge size.
-	void EnsureHeightTileTexture(uint a_tileSize);
 	/// @brief Zero the staging tile so cells that fall outside the worldspace stay at zero height.
 	void ClearHeightTile();
 	/// @brief Write the staging tile to "<Worldspace>_H<tileSize>.<cellsPerTile>.<originX>.<originY>.dds".
@@ -193,7 +191,6 @@ public:
 	bool StartBentNormalTiles();
 	/// @brief Process the next queued bent normal tile, if any.
 	void UpdateBentNormalTiles();
-	void StopBentNormalTiles();
 
 	//////////////////////////////////////////////////////////////////////////////////
 	//// Generation state
@@ -213,9 +210,6 @@ private:
 	void UpdateWorldspaceID();
 	/// @brief Ask the features that render with the cache to reload it from disk.
 	void NotifyCacheMapsChanged();
-	/// @brief Create the shared cache gen constant buffer on first use.
-	void EnsureCacheGenBuffer();
-
 	std::string worldspaceID = "";
 
 	ID3D11ShaderResourceView* heightMapSRV = nullptr;  // non-owning, set by the consumer that loaded it

@@ -31,16 +31,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 //// Height cache tiles
 //////////////////////////////////////////////////////////////////////////////////
 
-void TexGen::EnsureHeightTileTexture(uint a_tileSize)  // TODO: is possible get rid of this func and create inline
-{
-	if (cacheOutputTexH && cacheOutputTexH->desc.Width == a_tileSize && cacheOutputTexH->desc.Height == a_tileSize)
-		return;
-
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16_FLOAT, a_tileSize, a_tileSize, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
-	cacheOutputTexH = eastl::make_unique<Texture2D>(desc, "TexGen::HeightCacheTile");
-}
-
-void TexGen::ClearHeightTile()  // TODO: Check if this func is needed or if they default to zero anyway.
+void TexGen::ClearHeightTile()
 {
 	auto context = globals::d3d::context;
 	const uint tileSize = cacheOutputTexH->desc.Width;
@@ -201,7 +192,10 @@ void TexGen::GenerateHeightMap()
 		tilesDone = 0;
 		settleFrames = 0;
 
-		EnsureHeightTileTexture(tileSize);
+		if (!cacheOutputTexH || cacheOutputTexH->desc.Width != tileSize || cacheOutputTexH->desc.Height != tileSize) {
+			CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16_FLOAT, tileSize, tileSize, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
+			cacheOutputTexH = eastl::make_unique<Texture2D>(desc, "TexGen::HeightCacheTile");
+		}
 
 		if (heightGenSingleTile) {
 			// Whichever tile holds the requested cell, unclamped so it also works outside the
@@ -344,23 +338,13 @@ void TexGen::NotifyCacheMapsChanged()
 		globals::features::skylighting.InvalidateCacheMaps();
 }
 
-// TODO: delete this function, add check where needed
-void TexGen::EnsureCacheGenBuffer()
-{
-	if (!cacheGenBuffer)
-		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
-}
-
 //////////////////////////////////////////////////////////////////////////////////
 //// Cache layout helpers
 //////////////////////////////////////////////////////////////////////////////////
 
 float4 TexGen::GetAtlasWorldBound() const
 {
-	if (heightAtlasRange.valid)  // TODO: check if this can be not valid, fix that case.
-		return heightAtlasRange.WorldBounds();
-
-	return float4();
+	return heightAtlasRange.WorldBounds();
 }
 
 bool TexGen::ResolveHeightAtlas(const std::string& a_worldspaceID, std::filesystem::path& o_path, bool a_forceRebuild)
@@ -393,15 +377,8 @@ bool TexGen::GenerateNormalMap()
 
 	UpdateWorldspaceID();  // callable straight from a consumer's load path, before Prepass has run
 
-	if (!heightMapSRV) {
-		logger::error("[TexGen] No height map loaded, skipping normal map generation");
+	if (!CanGenerateMap("normal map", worldspaceID, heightMapSRV, heightAtlasRange.valid))
 		return false;
-	}
-
-	if (worldspaceID.empty()) {
-		logger::error("[TexGen] No worldspace known, skipping normal map generation");
-		return false;
-	}
 
 	// Setup resources
 	eastl::unique_ptr<Texture2D> cacheOutputTexN = nullptr;
@@ -415,7 +392,8 @@ bool TexGen::GenerateNormalMap()
 
 	NComputeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "NORMALS", "" } }, "cs_5_0")));
 
-	EnsureCacheGenBuffer();
+	if (!cacheGenBuffer)
+		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 
 	// Generate map
 	ID3D11UnorderedAccessView* uav = cacheOutputTexN->uav.get();
@@ -425,7 +403,10 @@ bool TexGen::GenerateNormalMap()
 	auto heightSRV = heightMapSRV;
 	context->CSSetShaderResources(0, 1, &heightSRV);
 
-	auto data = MakeCacheGenCB(float2((float)BNMapSize.x, (float)BNMapSize.y), GetAtlasWorldBound());
+	CacheGenCBStruct data = {
+		.TexParams = float4((float)BNMapSize.x, (float)BNMapSize.y, 0.0f, 0.0f),
+		.GridBounds = GetAtlasWorldBound()
+	};
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
@@ -451,7 +432,8 @@ bool TexGen::GenerateNormalMap()
 
 void TexGen::DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D* a_outputTex)
 {
-	EnsureCacheGenBuffer();
+	if (!cacheGenBuffer)
+		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 
 	auto context = globals::d3d::context;
 
@@ -465,7 +447,10 @@ void TexGen::DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D
 	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
 	context->CSSetSamplers(0, 1, &linSampler);
 
-	auto data = MakeCacheGenCB(float2((float)a_outputTex->desc.Width, (float)a_outputTex->desc.Height), GetAtlasWorldBound());  // TODO: make cb doesnt need to be a func - delete it
+	CacheGenCBStruct data = {
+		.TexParams = float4((float)a_outputTex->desc.Width, (float)a_outputTex->desc.Height, 0.0f, 0.0f),
+		.GridBounds = GetAtlasWorldBound()
+	};
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
@@ -473,9 +458,10 @@ void TexGen::DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D
 
 	context->Dispatch((a_outputTex->desc.Width + 7) / 8, (a_outputTex->desc.Height + 7) / 8, 1);
 
+	// Clear compute bindings before capture/reload and release references to temporary outputs.
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
-	ID3D11ShaderResourceView* nullSRVs[1] = { nullptr };  // TODO: find out if we rly need to null srvs/uavs.
+	ID3D11ShaderResourceView* nullSRVs[1] = { nullptr };
 	context->CSSetShaderResources(0, 1, nullSRVs);
 }
 
@@ -483,16 +469,8 @@ bool TexGen::GenerateBentNormalMap()
 {
 	UpdateWorldspaceID();
 
-	//TODO: put these 2 checks in a func and replace duplicates with that func.
-	if (worldspaceID.empty()) {
-		logger::error("[TexGen] No worldspace known, skipping bent normal generation");
+	if (!CanGenerateMap("bent normal map", worldspaceID, heightMapSRV, heightAtlasRange.valid))
 		return false;
-	}
-
-	if (!heightMapSRV) {
-		logger::error("[TexGen] No height map loaded, skipping bent normal generation");
-		return false;
-	}
 
 	// Setup resources
 	eastl::unique_ptr<Texture2D> cacheOutputTexBN = nullptr;
@@ -529,15 +507,8 @@ bool TexGen::GenerateCardinalOcclusionMap()
 {
 	UpdateWorldspaceID();
 
-	if (!heightMapSRV) {
-		logger::error("[TexGen] No height map loaded, skipping cardinal occlusion generation");
+	if (!CanGenerateMap("cardinal occlusion maps", worldspaceID, heightMapSRV, heightAtlasRange.valid))
 		return false;
-	}
-
-	if (worldspaceID.empty()) {
-		logger::error("[TexGen] No worldspace known, skipping cardinal occlusion generation");
-		return false;
-	}
 
 	// Setup resources. Six outputs, all the same shape: cardinal, diagonal and the second set the
 	// shader writes for the wider horizon search.
@@ -557,7 +528,8 @@ bool TexGen::GenerateCardinalOcclusionMap()
 
 	COComputeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "CSHADER", "" }, { "CARDINALS", "" } }, "cs_5_0")));
 
-	EnsureCacheGenBuffer();
+	if (!cacheGenBuffer)
+		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 
 	// Generate maps
 	auto context = globals::d3d::context;
@@ -575,7 +547,10 @@ bool TexGen::GenerateCardinalOcclusionMap()
 	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
 	context->CSSetSamplers(0, 1, &linSampler);
 
-	auto data = MakeCacheGenCB(float2((float)COMapSize, (float)COMapSize), GetAtlasWorldBound());
+	CacheGenCBStruct data = {
+		.TexParams = float4((float)COMapSize, (float)COMapSize, 0.0f, 0.0f),
+		.GridBounds = GetAtlasWorldBound()
+	};
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
@@ -884,7 +859,8 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 	const int2 maxCell = maxOrigin + int2(cellsPerTile - 1, cellsPerTile - 1);
 	auto atlasPath = MakeAtlasPath(cachePath, a_worldspaceID, "_H", minOrigin, maxCell);
 
-	RemoveExistingAtlases(cachePath, a_worldspaceID, "_H");  // TODO: delete func if we override existing atlas with SaveMapDDS anyway
+	// A changed cell range produces a different filename, so remove stale atlases before saving.
+	RemoveExistingAtlases(cachePath, a_worldspaceID, "_H");
 
 	SaveMapDDS(*atlasImage, atlasPath);
 
@@ -940,7 +916,8 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 
 void TexGen::DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOriginAtlasPx)
 {
-	EnsureCacheGenBuffer();
+	if (!cacheGenBuffer)
+		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 
 	auto context = globals::d3d::context;
 	const int tileSize = (int)a_accumTex->desc.Width;
@@ -995,7 +972,10 @@ void TexGen::DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOrig
 		const float worldPerMinor = transpose ? worldPerTexel.x : worldPerTexel.y;
 		const float stepWorldDist = std::sqrt(worldPerMajor * worldPerMajor + (slope * worldPerMinor) * (slope * worldPerMinor));
 
-		auto data = MakeCacheGenCB(float2((float)tileSize, (float)tileSize), GetAtlasWorldBound());
+		CacheGenCBStruct data = {
+			.TexParams = float4((float)tileSize, (float)tileSize, 0.0f, 0.0f),
+			.GridBounds = GetAtlasWorldBound()
+		};
 		data.SweepDir = float4(worldDir.x, worldDir.y, slope, majorStep);
 		data.SweepParams = float4((float)firstLine, (float)lineCount, transpose ? 1.0f : 0.0f, stepWorldDist);
 		data.SweepRect = float4((float)tileOriginAtlasPx.x, (float)tileOriginAtlasPx.y, (float)tileSize, 0.0f);
@@ -1005,7 +985,10 @@ void TexGen::DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOrig
 	}
 
 	// Resolve the accumulated integral in place
-	auto data = MakeCacheGenCB(float2((float)tileSize, (float)tileSize), GetAtlasWorldBound());
+	CacheGenCBStruct data = {
+		.TexParams = float4((float)tileSize, (float)tileSize, 0.0f, 0.0f),
+		.GridBounds = GetAtlasWorldBound()
+	};
 	cacheGenBuffer->Update(data);
 
 	ID3D11UnorderedAccessView* resolveUAVs[2] = { a_accumTex->uav.get(), nullptr };
@@ -1042,8 +1025,8 @@ bool TexGen::StartBentNormalTiles()
 
 	// The atlas dimensions the height tiles were stitched into; the regions are relative to these.
 	std::filesystem::path atlasPath;
-	AtlasCellRange atlasRange;
-	if (!FindAtlas(worldspaceID, "_H", atlasPath, atlasRange)) {
+	heightAtlasRange = {};
+	if (!FindAtlas(worldspaceID, "_H", atlasPath, heightAtlasRange)) {
 		logger::error("[TexGen] No height atlas found, cannot generate bent normal tiles");
 		return false;
 	}
@@ -1122,18 +1105,6 @@ bool TexGen::StartBentNormalTiles()
 	return true;
 }
 
-void TexGen::StopBentNormalTiles()  // TODO: get rid of this - make so user cant stop process.
-{
-	bentNormalTileGen = false;
-	bentNormalTileQueue.clear();
-	bentNormalTileIndex = 0;
-	bentNormalTileTex = nullptr;
-	bentNormalSweepCS = nullptr;
-	bentNormalFinalizeCS = nullptr;
-	bentNormalHullUAV = nullptr;
-	bentNormalHullBuffer = nullptr;
-}
-
 void TexGen::UpdateBentNormalTiles()
 {
 	if (!bentNormalTileGen)
@@ -1142,12 +1113,13 @@ void TexGen::UpdateBentNormalTiles()
 	// One tile per frame; a whole set in a single call would sit far past the driver timeout.
 	if (bentNormalTileIndex < bentNormalTileQueue.size()) {
 		const int tileSize = settings.cacheAtlasTileSize;
+		const int2 tileOriginCell = bentNormalTileQueue[bentNormalTileIndex];
 		const int cellsPerTile = settings.cacheAtlasTileCells;
 
 		// The tile's north west corner in atlas texels; atlas rows run north first, hence the flip.
-		const int tileColumn = (a_tileOriginCell.x - settings.cacheAtlasMinCellX) / cellsPerTile;
+		const int tileColumn = (tileOriginCell.x - settings.cacheAtlasMinCellX) / cellsPerTile;
 		const int maxOriginCellY = settings.cacheAtlasMinCellY + (settings.cacheAtlasTilesY - 1) * cellsPerTile;
-		const int tileRow = (maxOriginCellY - a_tileOriginCell.y) / cellsPerTile;
+		const int tileRow = (maxOriginCellY - tileOriginCell.y) / cellsPerTile;
 
 		DispatchBentNormalSweep(bentNormalTileTex.get(), int2(tileColumn * tileSize, tileRow * tileSize));
 
@@ -1155,7 +1127,7 @@ void TexGen::UpdateBentNormalTiles()
 		DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, bentNormalTileTex->resource.get(), captured));
 
 		const DirectX::Image* image = captured.GetImages();
-		auto path = GetTilePath(worldspaceID, "_BN", (uint)tileSize, cellsPerTile, a_tileOriginCell);
+		auto path = GetTilePath(worldspaceID, "_BN", (uint)tileSize, cellsPerTile, tileOriginCell);
 		SaveMapDDS(*image, path);
 		logger::info("[TexGen] Saved bent normal tile {}", path.string());
 		bentNormalTileIndex++;
@@ -1163,7 +1135,14 @@ void TexGen::UpdateBentNormalTiles()
 
 	if (bentNormalTileIndex >= bentNormalTileQueue.size()) {
 		logger::info("[TexGen] Bent normal tiles complete: {} tiles", bentNormalTileQueue.size());
-		StopBentNormalTiles();
+		bentNormalTileGen = false;
+		bentNormalTileQueue.clear();
+		bentNormalTileIndex = 0;
+		bentNormalTileTex = nullptr;
+		bentNormalSweepCS = nullptr;
+		bentNormalFinalizeCS = nullptr;
+		bentNormalHullUAV = nullptr;
+		bentNormalHullBuffer = nullptr;
 
 		// The atlas is stitched from these tiles, so it is stale until it is rebuilt.
 		NotifyCacheMapsChanged();
@@ -1275,13 +1254,10 @@ void TexGen::DrawSettings()
 		if (heightAtlasRange.valid)
 			ImGui::BulletText("Height atlas cells %d,%d to %d,%d", heightAtlasRange.minCell.x, heightAtlasRange.minCell.y, heightAtlasRange.maxCell.x, heightAtlasRange.maxCell.y);
 
-		ImGui::BeginDisabled(heightGenRunning || (!bentNormalTileGen && (worldspaceID.empty() || !heightMapSRV)));
-		if (ImGui::Button(bentNormalTileGen ? "Stop Bent Normal Tiles" : "Generate Bent Normal Tiles")) {
-			if (bentNormalTileGen)
-				StopBentNormalTiles();
-			else
-				StartBentNormalTiles();
-		}
+		ImGui::BeginDisabled(heightGenRunning || bentNormalTileGen || worldspaceID.empty() || !heightMapSRV);
+		if (ImGui::Button("Generate Bent Normal Tiles"))
+			StartBentNormalTiles();
+
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Generates one bent normal tile per height tile from the atlas, matching their\nsize, format and naming. One tile per frame; expect a long, unresponsive run.");
