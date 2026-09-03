@@ -1,13 +1,14 @@
 #pragma once
 
 #include "TexGen.h"
+#include "Utils/D3D.h"
 
 namespace TexGenHelpers
 {
 	// Every generated LOD map is a single surface: one mip level, one array slice, no cube faces.
 	// Written through explicit metadata so the property is enforced at the call rather than being an
 	// accident of which SaveToDDSFile overload was picked.
-	inline bool SaveMapDDS(const DirectX::Image& image, const std::filesystem::path& path)
+	inline void SaveMapDDS(const DirectX::Image& image, const std::filesystem::path& path)
 	{
 		DirectX::TexMetadata metadata = {};
 		metadata.width = image.width;
@@ -18,13 +19,7 @@ namespace TexGenHelpers
 		metadata.format = image.format;
 		metadata.dimension = DirectX::TEX_DIMENSION_TEXTURE2D;
 
-		HRESULT hr = DirectX::SaveToDDSFile(&image, 1, metadata, DirectX::DDS_FLAGS_NONE, path.c_str());
-		if (FAILED(hr)) {
-			logger::error("[TexGen] Failed to save {}: {:X}", path.string(), (uint32_t)hr);
-			return false;
-		}
-
-		return true;
+		DX::ThrowIfFailed(DirectX::SaveToDDSFile(&image, 1, metadata, DirectX::DDS_FLAGS_NONE, path.c_str()));
 	}
 
 	// Floor division; the tile grid is anchored to the worldspace cell grid, so negative cell
@@ -201,8 +196,7 @@ namespace TexGenHelpers
 	}
 	inline std::string GetCurrentWorldspaceID()
 	{
-		auto tes = RE::TES::GetSingleton();
-		auto worldspace = tes ? tes->GetRuntimeData2().worldSpace : nullptr;
+		auto worldspace = RE::TES::GetSingleton()->GetRuntimeData2().worldSpace;
 		while (worldspace && worldspace->parentWorld)
 			worldspace = worldspace->parentWorld;
 
@@ -216,9 +210,6 @@ namespace TexGenHelpers
 
 	inline int2 GetTileOriginCell(const int2& cell, int cellsPerTile)
 	{
-		if (cellsPerTile <= 0)
-			return cell;
-
 		return int2(FloorDiv(cell.x, cellsPerTile), FloorDiv(cell.y, cellsPerTile)) * cellsPerTile;
 	}
 
@@ -245,9 +236,6 @@ namespace TexGenHelpers
 			TexGen::AtlasCellRange range;
 			if (!ParseAtlasName(path, worldspaceID, mapTag, range))
 				continue;
-
-			if (found)
-				logger::warn("[TexGen] Multiple {}{} atlases present, using {}", worldspaceID, mapTag, path.string());
 
 			o_path = path;
 			o_range = range;
@@ -282,15 +270,11 @@ namespace TexGenHelpers
 
 	inline bool IsPositionValid(RE::NiPoint3 inputPosition)
 	{
-		bool valid = false;
-		if (auto player = RE::PlayerCharacter::GetSingleton()) {
-			auto diff = player->GetPosition() - inputPosition;
-			valid = std::max(diff.x, diff.y) < TexGen::worldCellSize;
-			logger::trace("diff: {}, {}", diff.x, diff.y);
-			logger::trace("Pos: {}  :  InPos: {}", player->GetPosition(), inputPosition);
-		}
-
-		return valid;
+		auto player = RE::PlayerCharacter::GetSingleton();
+		auto diff = player->GetPosition() - inputPosition;
+		logger::trace("diff: {}, {}", diff.x, diff.y);
+		logger::trace("Pos: {}  :  InPos: {}", player->GetPosition(), inputPosition);
+		return std::max(diff.x, diff.y) < TexGen::worldCellSize;
 	}
 
 	inline float GetRayIntersectionHeight(float3 position, float rayOffset)
@@ -300,55 +284,42 @@ namespace TexGenHelpers
 		auto player = RE::PlayerCharacter::GetSingleton();
 		auto cell = player->GetParentCell();
 		auto bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
+		auto hkpWorld = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
+		if (!hkpWorld)
+			return prevZ;
 
-		if (auto hkpWorld = bhkWorld ? cell->GetbhkWorld()->GetWorld1() : nullptr; hkpWorld) {
-			float scale = RE::bhkWorld::GetWorldScale();
-			float2 posScaledXY = float2(position.x * scale, position.y * scale);
-			float currentZ = position.z + rayOffset;
-			float endZ = position.z - rayOffset;
+		float scale = RE::bhkWorld::GetWorldScale();
+		float2 posScaledXY = float2(position.x * scale, position.y * scale);
+		float currentZ = position.z + rayOffset;
+		float endZ = position.z - rayOffset;
 
-			for (int i = 0; i < MAX_ATTEMPTS; i++) {
-				RE::hkpWorldRayCastInput input;
-				input.from.quad.m128_f32[0] = posScaledXY.x;
-				input.from.quad.m128_f32[1] = posScaledXY.y;
-				input.from.quad.m128_f32[2] = currentZ * scale;
-				input.from.quad.m128_f32[3] = 0;
-				input.to.quad.m128_f32[0] = posScaledXY.x;
-				input.to.quad.m128_f32[1] = posScaledXY.y;
-				input.to.quad.m128_f32[2] = endZ * scale;
-				input.to.quad.m128_f32[3] = 0;
+		for (int i = 0; i < MAX_ATTEMPTS; i++) {
+			RE::hkpWorldRayCastInput input;
+			input.from.quad.m128_f32[0] = posScaledXY.x;
+			input.from.quad.m128_f32[1] = posScaledXY.y;
+			input.from.quad.m128_f32[2] = currentZ * scale;
+			input.from.quad.m128_f32[3] = 0;
+			input.to.quad.m128_f32[0] = posScaledXY.x;
+			input.to.quad.m128_f32[1] = posScaledXY.y;
+			input.to.quad.m128_f32[2] = endZ * scale;
+			input.to.quad.m128_f32[3] = 0;
 
-				RE::hkpWorldRayCastOutput output;
-				hkpWorld->CastRay(input, output);
+			RE::hkpWorldRayCastOutput output;
+			hkpWorld->CastRay(input, output);
+			if (!output.HasHit())
+				return prevZ;
 
-				if (!output.HasHit()) {
-					logger::error("[TexGen] Ray cast failed to find surface... continuing");
-					return prevZ;
-				}
-
-				auto rootCollidable = output.rootCollidable;
-				if (!rootCollidable) {
-					logger::error("[TexGen] Null Root collidable... continuing");
-					return prevZ;
-				}
-
-				auto collisionObj = rootCollidable->GetCollisionLayer();
-				if (!(collisionObj == RE::COL_LAYER::kTerrain || collisionObj == RE::COL_LAYER::kGround || collisionObj == RE::COL_LAYER::kStatic)) {
-					float rayLength = currentZ - endZ;
-					currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
-					continue;
-				}
-
-				if (i + 1 == MAX_ATTEMPTS) {
-					logger::error("[TexGen] Ray cast had no valid hit; last recorded collision was: {} ... continuing", collisionObj);
-					return prevZ;
-				}
-
+			auto collisionObj = output.rootCollidable->GetCollisionLayer();
+			if (!(collisionObj == RE::COL_LAYER::kTerrain || collisionObj == RE::COL_LAYER::kGround || collisionObj == RE::COL_LAYER::kStatic)) {
 				float rayLength = currentZ - endZ;
-				float hitZ = currentZ - output.hitFraction * rayLength;
-				prevZ = hitZ;
-				return hitZ;
+				currentZ = currentZ - output.hitFraction * rayLength - (50.0f * scale);
+				continue;
 			}
+
+			float rayLength = currentZ - endZ;
+			float hitZ = currentZ - output.hitFraction * rayLength;
+			prevZ = hitZ;
+			return hitZ;
 		}
 
 		return prevZ;

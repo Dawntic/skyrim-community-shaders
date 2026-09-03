@@ -152,10 +152,6 @@ bool TexGen::GenerateNormalMap()
 	cacheOutputTexN->CreateUAV(uavDesc);
 
 	NComputeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "NORMALS", "" } }, "cs_5_0")));
-	if (!NComputeShader) {
-		logger::error("[TexGen] Failed to compile the normal map shader");
-		return false;
-	}
 
 	EnsureCacheGenBuffer();
 
@@ -187,23 +183,14 @@ bool TexGen::GenerateNormalMap()
 	auto outputPath = cachePath / (worldspaceID + "_N.dds");
 	DirectX::ScratchImage ouputImage;
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexN->resource.get(), ouputImage));
-	if (!SaveMapDDS(*ouputImage.GetImages(), outputPath))
-		return false;
+	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
 	NotifyCacheMapsChanged();
 	return true;
 }
 
-bool TexGen::DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D* a_outputTex)
+void TexGen::DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D* a_outputTex)
 {
-	if (!a_computeShader || !a_outputTex)
-		return false;
-
-	if (!heightMapSRV) {
-		logger::error("[TexGen] No height map loaded, cannot generate bent normals");
-		return false;
-	}
-
 	EnsureCacheGenBuffer();
 
 	auto context = globals::d3d::context;
@@ -230,8 +217,6 @@ bool TexGen::DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
 	ID3D11ShaderResourceView* nullSRVs[1] = { nullptr };
 	context->CSSetShaderResources(0, 1, nullSRVs);
-
-	return true;
 }
 
 bool TexGen::GenerateBentNormalMap()
@@ -240,6 +225,11 @@ bool TexGen::GenerateBentNormalMap()
 
 	if (worldspaceID.empty()) {
 		logger::error("[TexGen] No worldspace known, skipping bent normal generation");
+		return false;
+	}
+
+	if (!heightMapSRV) {
+		logger::error("[TexGen] No height map loaded, skipping bent normal generation");
 		return false;
 	}
 
@@ -255,12 +245,7 @@ bool TexGen::GenerateBentNormalMap()
 
 	BNComputeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "CSHADER", "" } }, "cs_5_0")));
 
-	// Generate map over the whole height map. Never save an output the dispatch did not write:
-	// that would overwrite a good map on disk with the uninitialised target.
-	if (!DispatchBentNormals(BNComputeShader.get(), cacheOutputTexBN.get())) {
-		logger::error("[TexGen] Bent normal generation did not run, nothing written");
-		return false;
-	}
+	DispatchBentNormals(BNComputeShader.get(), cacheOutputTexBN.get());
 
 	// Save output. This pass covers whatever the height map covers, so it is named with that range
 	// and is found by the same lookup as a stitched atlas.
@@ -273,8 +258,7 @@ bool TexGen::GenerateBentNormalMap()
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, cacheOutputTexBN->resource.get(), ouputImage));
 
 	RemoveExistingAtlases(cachePath, worldspaceID, "_BN");
-	if (!SaveMapDDS(*ouputImage.GetImages(), outputPath))
-		return false;
+	SaveMapDDS(*ouputImage.GetImages(), outputPath);
 
 	bentNormalAtlasRange.minCell = minCell;
 	bentNormalAtlasRange.maxCell = maxCell;
@@ -315,10 +299,6 @@ bool TexGen::GenerateCardinalOcclusionMap()
 	}
 
 	COComputeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "CSHADER", "" }, { "CARDINALS", "" } }, "cs_5_0")));
-	if (!COComputeShader) {
-		logger::error("[TexGen] Failed to compile the occlusion shader");
-		return false;
-	}
 
 	EnsureCacheGenBuffer();
 
@@ -353,17 +333,14 @@ bool TexGen::GenerateCardinalOcclusionMap()
 	context->CSSetShaderResources(0, 1, nullSRVs);
 
 	// Save output
-	bool saved = true;
 	DirectX::ScratchImage ouputImage;
 	for (size_t i = 0; i < outputs.size(); ++i) {
 		DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, outputs[i]->resource.get(), ouputImage));
-		saved = SaveMapDDS(*ouputImage.GetImages(), cachePath / (worldspaceID + outputTags[i] + ".dds")) && saved;
+		SaveMapDDS(*ouputImage.GetImages(), cachePath / (worldspaceID + outputTags[i] + ".dds"));
 	}
 
-	if (saved)
-		NotifyCacheMapsChanged();
-
-	return saved;
+	NotifyCacheMapsChanged();
+	return true;
 }
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -397,21 +374,13 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 		if (!ParseLODTile(path, ti.cellX, ti.cellY))
 			continue;
 
-		HRESULT hr = LoadFromDDSFile(path.c_str(), DDS_FLAGS_NONE, nullptr, ti.image);
-		if (FAILED(hr)) {
-			logger::error("[TexGen] Failed load: {}", stem);
-			return false;
-		}
+		DX::ThrowIfFailed(LoadFromDDSFile(path.c_str(), DDS_FLAGS_NONE, nullptr, ti.image));
 
 		// Convert to RGBA32 for uniform blitting
 		auto img = ti.image.GetImage(0, 0, 0);
-		if (img && img->format != DXGI_FORMAT_R8G8B8A8_UNORM) {
+		if (img->format != DXGI_FORMAT_R8G8B8A8_UNORM) {
 			ScratchImage converted;
-			hr = Convert(*img, DXGI_FORMAT_R8G8B8A8_UNORM, TEX_FILTER_DEFAULT, TEX_THRESHOLD_DEFAULT, converted);
-			if (FAILED(hr)) {
-				logger::error("[TexGen] Failed Convert: {}", stem);
-				return false;
-			}
+			DX::ThrowIfFailed(Convert(*img, DXGI_FORMAT_R8G8B8A8_UNORM, TEX_FILTER_DEFAULT, TEX_THRESHOLD_DEFAULT, converted));
 			ti.image = std::move(converted);
 		}
 
@@ -445,11 +414,7 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 	logger::info("[TexGen] LOD atlas size: {}, {}", atlasW, atlasH);
 
 	ScratchImage atlas;
-	HRESULT hr = atlas.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, atlasW, atlasH, 1, 1);
-	if (FAILED(hr)) {
-		logger::error("[TexGen] Failed to allocate the {}x{} LOD atlas: {:X}", atlasW, atlasH, (uint32_t)hr);
-		return false;
-	}
+	DX::ThrowIfFailed(atlas.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, atlasW, atlasH, 1, 1));
 
 	// Zero-fill
 	const Image* atlasImg = atlas.GetImage(0, 0, 0);
@@ -470,8 +435,7 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 		}
 	}
 
-	if (!SaveMapDDS(*atlasImg, a_outputPath))
-		return false;
+	SaveMapDDS(*atlasImg, a_outputPath);
 
 	logger::info("[TexGen] Built LOD atlas {}", a_outputPath.string());
 
@@ -535,13 +499,9 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 
 	const size_t tilesX = (size_t)((maxOrigin.x - minOrigin.x) / cellsPerTile) + 1;
 	const size_t tilesY = (size_t)((maxOrigin.y - minOrigin.y) / cellsPerTile) + 1;
-
 	TexMetadata metadata;
-	HRESULT hr = GetMetadataFromDDSFile(tiles[0].path.c_str(), DDS_FLAGS_NONE, metadata);
-	if (FAILED(hr)) {
-		logger::error("[TexGen] Failed to read {} tile metadata: {:X}", a_mapTag, (uint32_t)hr);
-		return false;
-	}
+
+	DX::ThrowIfFailed(GetMetadataFromDDSFile(tiles[0].path.c_str(), DDS_FLAGS_NONE, metadata));
 
 	const DXGI_FORMAT format = metadata.format;
 	const size_t bytesPerTexel = BitsPerPixel(format) / 8;
@@ -563,11 +523,7 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 		(atlasWidth * atlasHeight * bytesPerTexel) / (1024 * 1024));
 
 	ScratchImage atlas;
-	hr = atlas.Initialize2D(format, atlasWidth, atlasHeight, 1, 1);
-	if (FAILED(hr)) {
-		logger::error("[TexGen] Failed to allocate {}x{} atlas: {:X}", atlasWidth, atlasHeight, (uint32_t)hr);
-		return false;
-	}
+	DX::ThrowIfFailed(atlas.Initialize2D(format, atlasWidth, atlasHeight, 1, 1));
 
 	const Image* atlasImage = atlas.GetImages();
 	FillImage(*atlasImage, unormFill, floatFill);
@@ -577,25 +533,17 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 	size_t blitted = 0;
 	for (const auto& tile : tiles) {
 		ScratchImage tileImage;
-		hr = LoadFromDDSFile(tile.path.c_str(), DDS_FLAGS_NONE, nullptr, tileImage);
-		if (FAILED(hr)) {
-			logger::warn("[TexGen] Skipping unreadable tile {}: {:X}", tile.path.string(), (uint32_t)hr);
-			continue;
-		}
+		DX::ThrowIfFailed(LoadFromDDSFile(tile.path.c_str(), DDS_FLAGS_NONE, nullptr, tileImage));
 
 		const Image* src = tileImage.GetImages();
-		if (!src || src->width != tileSize || src->height != tileSize || src->format != format) {
+		if (src->width != tileSize || src->height != tileSize || src->format != format) {
 			logger::warn("[TexGen] Skipping tile {}, does not match the atlas layout", tile.path.string());
 			continue;
 		}
 
 		ScratchImage scaledImage;
 		if (outTileSize != tileSize) {
-			hr = Resize(*src, outTileSize, outTileSize, TEX_FILTER_DEFAULT, scaledImage);
-			if (FAILED(hr)) {
-				logger::error("[TexGen] Failed to scale tile {}: {:X}", tile.path.string(), (uint32_t)hr);
-				return false;
-			}
+			DX::ThrowIfFailed(Resize(*src, outTileSize, outTileSize, TEX_FILTER_DEFAULT, scaledImage));
 			src = scaledImage.GetImages();
 		}
 
@@ -666,8 +614,7 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 
 	RemoveExistingAtlases(cachePath, a_worldspaceID, "_H");
 
-	if (!SaveMapDDS(*atlasImage, atlasPath))
-		return false;
+	SaveMapDDS(*atlasImage, atlasPath);
 
 	heightAtlasRange.minCell = minOrigin;
 	heightAtlasRange.maxCell = maxCell;
@@ -704,8 +651,7 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 
 	RemoveExistingAtlases(cachePath, a_worldspaceID, "_BN");
 
-	if (!SaveMapDDS(*atlasImage, atlasPath))
-		return false;
+	SaveMapDDS(*atlasImage, atlasPath);
 
 	bentNormalAtlasRange.minCell = minCell;
 	bentNormalAtlasRange.maxCell = maxCell;
@@ -722,39 +668,22 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 //// Height cache tiles
 //////////////////////////////////////////////////////////////////////////////////
 
-bool TexGen::EnsureHeightTileTexture(uint a_tileSize)
+void TexGen::EnsureHeightTileTexture(uint a_tileSize)
 {
 	if (cacheOutputTexH && cacheOutputTexH->desc.Width == a_tileSize && cacheOutputTexH->desc.Height == a_tileSize)
-		return true;
+		return;
 
-	// Height tiles are stored in raw game units at full float precision.
 	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32_FLOAT, a_tileSize, a_tileSize, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
-
-	cacheOutputTexH = nullptr;
-	try {
-		cacheOutputTexH = eastl::make_unique<Texture2D>(desc, "TexGen::HeightCacheTile");
-	} catch (const std::exception& e) {
-		logger::error("[TexGen] Failed to create {0}x{0} height tile: {1}", a_tileSize, e.what());
-		return false;
-	}
-
-	return cacheOutputTexH != nullptr;
+	cacheOutputTexH = eastl::make_unique<Texture2D>(desc, "TexGen::HeightCacheTile");
 }
 
 void TexGen::ClearHeightTile()
 {
-	if (!cacheOutputTexH)
-		return;
-
 	auto context = globals::d3d::context;
 	const uint tileSize = cacheOutputTexH->desc.Width;
 
 	D3D11_MAPPED_SUBRESOURCE mapped;
-	HRESULT hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_WRITE, 0, &mapped);
-	if (FAILED(hr) || !mapped.pData) {
-		logger::error("[TexGen] Height tile clear failed to map: {:X}", (uint32_t)hr);
-		return;
-	}
+	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_WRITE, 0, &mapped));
 
 	// Texels belonging to cells outside the worldspace are never sampled and stay at zero height.
 	for (uint y = 0; y < tileSize; ++y)
@@ -763,49 +692,30 @@ void TexGen::ClearHeightTile()
 	context->Unmap(cacheOutputTexH->resource.get(), 0);
 }
 
-bool TexGen::SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile)
+void TexGen::SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile)
 {
-	if (!cacheOutputTexH)
-		return false;
-
 	auto context = globals::d3d::context;
 	const uint tileSize = cacheOutputTexH->desc.Width;
-
 	auto tileWorldspaceID = worldspaceID.empty() ? std::string("Unknown") : worldspaceID;
 	auto path = GetTilePath(tileWorldspaceID, "_H", tileSize, a_cellsPerTile, a_tileOriginCell);
 
 	DirectX::ScratchImage outputImage;
-	HRESULT hr = outputImage.Initialize2D(DXGI_FORMAT_R32_FLOAT, tileSize, tileSize, 1, 1);
-	if (FAILED(hr)) {
-		logger::error("[TexGen] Failed to allocate height tile image: {:X}", (uint32_t)hr);
-		return false;
-	}
+	DX::ThrowIfFailed(outputImage.Initialize2D(DXGI_FORMAT_R32_FLOAT, tileSize, tileSize, 1, 1));
 
 	D3D11_MAPPED_SUBRESOURCE mapped;
-	hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &mapped);
-	if (FAILED(hr) || !mapped.pData) {
-		logger::error("[TexGen] Failed to map height tile for save: {:X}", (uint32_t)hr);
-		return false;
-	}
+	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &mapped));
 
 	const DirectX::Image* image = outputImage.GetImages();
 	for (uint y = 0; y < tileSize; ++y)
 		memcpy(image->pixels + y * image->rowPitch, (const uint8_t*)mapped.pData + y * mapped.RowPitch, tileSize * sizeof(float));
 
 	context->Unmap(cacheOutputTexH->resource.get(), 0);
-
-	if (!SaveMapDDS(*image, path))
-		return false;
-
+	SaveMapDDS(*image, path);
 	logger::info("[TexGen] Saved height tile {}", path.string());
-	return true;
 }
 
 void TexGen::UpdateHeightPreview(const int2& a_tileOriginCell)
 {
-	if (!cacheOutputTexH)
-		return;
-
 	auto context = globals::d3d::context;
 	const uint tileSize = cacheOutputTexH->desc.Width;
 	const DXGI_FORMAT format = DXGI_FORMAT_R32_FLOAT;
@@ -816,31 +726,15 @@ void TexGen::UpdateHeightPreview(const int2& a_tileOriginCell)
 		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, format, 0, 1);
 
 		heightPreviewValid = false;
-		heightPreviewTex = nullptr;
-		try {
-			heightPreviewTex = eastl::make_unique<Texture2D>(desc, "TexGen::HeightTilePreview");
-			heightPreviewTex->CreateSRV(srvDesc);
-		} catch (const std::exception& e) {
-			logger::error("[TexGen] Failed to create height tile preview: {}", e.what());
-			heightPreviewTex = nullptr;
-			return;
-		}
+		heightPreviewTex = eastl::make_unique<Texture2D>(desc, "TexGen::HeightTilePreview");
+		heightPreviewTex->CreateSRV(srvDesc);
 	}
 
 	D3D11_MAPPED_SUBRESOURCE src;
-	HRESULT hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &src);
-	if (FAILED(hr) || !src.pData) {
-		logger::error("[TexGen] Failed to map height tile for preview: {:X}", (uint32_t)hr);
-		return;
-	}
+	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &src));
 
 	D3D11_MAPPED_SUBRESOURCE dst;
-	hr = context->Map(heightPreviewTex->resource.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &dst);
-	if (FAILED(hr) || !dst.pData) {
-		logger::error("[TexGen] Failed to map height preview: {:X}", (uint32_t)hr);
-		context->Unmap(cacheOutputTexH->resource.get(), 0);
-		return;
-	}
+	DX::ThrowIfFailed(context->Map(heightPreviewTex->resource.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &dst));
 
 	for (uint y = 0; y < tileSize; ++y)
 		memcpy((uint8_t*)dst.pData + y * dst.RowPitch, (const uint8_t*)src.pData + y * src.RowPitch, tileSize * sizeof(float));
@@ -886,7 +780,6 @@ void TexGen::GenerateHeightMap()
 	static int cellIndexInTile = 0;
 	static RE::NiPoint3 worldPositionSet = RE::NiPoint3();
 	static int settleFrames = 0;
-	static int failedCount = 0;
 
 	if (heightGenInit) {  // latch the layout before anything derives from it
 		cellsPerTile = GetHeightTileCells();
@@ -950,13 +843,9 @@ void TexGen::GenerateHeightMap()
 
 		cellsDone = 0;
 		tilesDone = 0;
-		failedCount = 0;
 		settleFrames = 0;
 
-		if (!EnsureHeightTileTexture(tileSize)) {
-			heightGenRunning = false;
-			return;  // heightGenInit stays set so a retry re-runs the whole setup
-		}
+		EnsureHeightTileTexture(tileSize);
 
 		if (heightGenSingleTile) {
 			// Whichever tile holds the requested cell, unclamped so it also works outside the
@@ -969,12 +858,7 @@ void TexGen::GenerateHeightMap()
 			currentTile.y = std::clamp(currentTile.y, startTile.y, endTile.y);
 		}
 
-		if (!beginTile()) {
-			logger::error("[TexGen] No height tiles to generate");
-			heightGenRunning = false;
-			heightGenInit = true;
-			return;
-		}
+		beginTile();
 
 		logger::info("[TexGen] Generating {0} height cache: {1}x{1} tiles of {2}x{2} cells, {3} texels per cell, {4} units per texel, 32 bit float",
 			heightGenSingleTile ? "single tile" : "full", tileSize, cellsPerTile, texelsPerCell, worldRes);
@@ -985,22 +869,8 @@ void TexGen::GenerateHeightMap()
 		return;
 	}
 
-	if (!cacheOutputTexH) {
-		logger::error("[TexGen] cacheOutputTexH INVALID");
-		heightGenRunning = false;
-		heightGenInit = true;
-		return;
-	}
-
-	bool valid = IsPositionValid(worldPositionSet);
-	failedCount = valid ? 0 : ++failedCount;
-	if (!valid) {
-		if (failedCount >= 10) {  // This should never happen but since its possible for the game to refuse an update we should handle it anyway.
-			logger::error("[TexGen] Sample position was unable to be updated");
-			failedCount = 0;
-		} else {
-			SetWorldPosition(currentCellXY, worldPositionSet);
-		}
+	if (!IsPositionValid(worldPositionSet)) {
+		SetWorldPosition(currentCellXY, worldPositionSet);
 		return;
 	}
 
@@ -1012,11 +882,7 @@ void TexGen::GenerateHeightMap()
 	// write heightmap
 
 	D3D11_MAPPED_SUBRESOURCE mapped;
-	HRESULT hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped);
-	if (FAILED(hr) || !mapped.pData) {
-		logger::error("[TexGen] Map failed: {:x}", (uint32_t)hr);
-		return;  // skip this frame, don't deref null
-	}
+	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped));
 
 	const int2 localCell = currentCellXY - currentTile * cellsPerTile;
 	const float2 cellOrigin = float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
@@ -1080,11 +946,8 @@ void TexGen::GenerateHeightMap()
 //// LOD bent normal tiles
 //////////////////////////////////////////////////////////////////////////////////
 
-bool TexGen::DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOriginAtlasPx)
+void TexGen::DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOriginAtlasPx)
 {
-	if (!a_accumTex || !bentNormalSweepCS || !bentNormalFinalizeCS || !bentNormalHullUAV || !heightMapSRV)
-		return false;
-
 	EnsureCacheGenBuffer();
 
 	auto context = globals::d3d::context;
@@ -1162,15 +1025,10 @@ bool TexGen::DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOrig
 	context->CSSetUnorderedAccessViews(0, 2, nullUAVs, nullptr);
 	ID3D11ShaderResourceView* nullSRVs[1] = { nullptr };
 	context->CSSetShaderResources(0, 1, nullSRVs);
-
-	return true;
 }
 
 bool TexGen::StartBentNormalTiles()
 {
-	if (bentNormalTileGen)
-		return false;
-
 	UpdateWorldspaceID();
 
 	if (worldspaceID.empty()) {
@@ -1199,10 +1057,7 @@ bool TexGen::StartBentNormalTiles()
 	}
 
 	DirectX::TexMetadata metadata;
-	if (FAILED(DirectX::GetMetadataFromDDSFile(atlasPath.c_str(), DirectX::DDS_FLAGS_NONE, metadata))) {
-		logger::error("[TexGen] Failed to read the height atlas, cannot generate bent normal tiles");
-		return false;
-	}
+	DX::ThrowIfFailed(DirectX::GetMetadataFromDDSFile(atlasPath.c_str(), DirectX::DDS_FLAGS_NONE, metadata));
 	bentNormalAtlasSize = int2((int)metadata.width, (int)metadata.height);
 
 	// Mirror the set of height tiles exactly, so every height tile gets a bent normal partner.
@@ -1227,30 +1082,17 @@ bool TexGen::StartBentNormalTiles()
 		return a.y != b.y ? a.y < b.y : a.x < b.x;
 	});
 
-	// One output tile, reused for the whole run. The compute shader writes normalised values, so
-	// the float target converts cleanly to the 16 bit storage format on save.
+	// One float output tile is reused for the whole run.
 	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)tileSize, (uint)tileSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
-	bentNormalTileTex = nullptr;
-	try {
-		bentNormalTileTex = eastl::make_unique<Texture2D>(desc, "TexGen::BentNormalTile");
-		bentNormalTileTex->CreateUAV(uavDesc);
-	} catch (const std::exception& e) {
-		logger::error("[TexGen] Failed to create bent normal tile target: {}", e.what());
-		bentNormalTileTex = nullptr;
-		return false;
-	}
+	bentNormalTileTex = eastl::make_unique<Texture2D>(desc, "TexGen::BentNormalTile");
+	bentNormalTileTex->CreateUAV(uavDesc);
 
 	bentNormalSweepCS = nullptr;
 	bentNormalFinalizeCS = nullptr;
 	bentNormalSweepCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "SWEEP", "" } }, "cs_5_0")));
 	bentNormalFinalizeCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "SWEEP_FINALIZE", "" } }, "cs_5_0")));
-	if (!bentNormalSweepCS || !bentNormalFinalizeCS) {
-		logger::error("[TexGen] Failed to compile the bent normal sweep shaders");
-		StopBentNormalTiles();
-		return false;
-	}
 
 	// Hull scratch, one slot per line of the widest azimuth. A line drifts at most one minor texel
 	// per major step, so a tile is never covered by more than twice its edge in lines.
@@ -1272,14 +1114,8 @@ bool TexGen::StartBentNormalTiles()
 			.Buffer = { .FirstElement = 0, .NumElements = maxLines * bentNormalHullCapacity, .Flags = 0 }
 		};
 
-		bentNormalHullBuffer = nullptr;
-		bentNormalHullUAV = nullptr;
-		if (FAILED(globals::d3d::device->CreateBuffer(&bufferDesc, nullptr, bentNormalHullBuffer.put())) ||
-			FAILED(globals::d3d::device->CreateUnorderedAccessView(bentNormalHullBuffer.get(), &uavBufferDesc, bentNormalHullUAV.put()))) {
-			logger::error("[TexGen] Failed to create the bent normal hull scratch buffer");
-			StopBentNormalTiles();
-			return false;
-		}
+		DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&bufferDesc, nullptr, bentNormalHullBuffer.put()));
+		DX::ThrowIfFailed(globals::d3d::device->CreateUnorderedAccessView(bentNormalHullBuffer.get(), &uavBufferDesc, bentNormalHullUAV.put()));
 
 		Util::SetResourceName(bentNormalHullBuffer.get(), "TexGen::BentNormalHullStack");
 		Util::SetResourceName(bentNormalHullUAV.get(), "TexGen::BentNormalHullStack UAV");
@@ -1326,39 +1162,25 @@ void TexGen::UpdateBentNormalTiles()
 	}
 }
 
-bool TexGen::GenerateBentNormalTile(const int2& a_tileOriginCell)
+void TexGen::GenerateBentNormalTile(const int2& a_tileOriginCell)
 {
-	if (!bentNormalTileTex)
-		return false;
-
 	const int tileSize = settings.cacheAtlasTileSize;
 	const int cellsPerTile = settings.cacheAtlasTileCells;
-	if (tileSize <= 0 || cellsPerTile <= 0 || bentNormalAtlasSize.x <= 0 || bentNormalAtlasSize.y <= 0)
-		return false;
 
 	// The tile's north west corner in atlas texels; atlas rows run north first, hence the flip.
 	const int tileColumn = (a_tileOriginCell.x - settings.cacheAtlasMinCellX) / cellsPerTile;
 	const int maxOriginCellY = settings.cacheAtlasMinCellY + (settings.cacheAtlasTilesY - 1) * cellsPerTile;
 	const int tileRow = (maxOriginCellY - a_tileOriginCell.y) / cellsPerTile;
 
-	if (!DispatchBentNormalSweep(bentNormalTileTex.get(), int2(tileColumn * tileSize, tileRow * tileSize)))
-		return false;
+	DispatchBentNormalSweep(bentNormalTileTex.get(), int2(tileColumn * tileSize, tileRow * tileSize));
 
 	DirectX::ScratchImage captured;
-	HRESULT hr = DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, bentNormalTileTex->resource.get(), captured);
-	if (FAILED(hr)) {
-		logger::error("[TexGen] Failed to capture bent normal tile {}, {}: {:X}", a_tileOriginCell.x, a_tileOriginCell.y, (uint32_t)hr);
-		return false;
-	}
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, bentNormalTileTex->resource.get(), captured));
 
 	const DirectX::Image* image = captured.GetImages();
 	auto path = GetTilePath(worldspaceID, "_BN", (uint)tileSize, cellsPerTile, a_tileOriginCell);
-
-	if (!SaveMapDDS(*image, path))
-		return false;
-
+	SaveMapDDS(*image, path);
 	logger::info("[TexGen] Saved bent normal tile {}", path.string());
-	return true;
 }
 
 //////////////////////////////////////////////////////////////////////////////////

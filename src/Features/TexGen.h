@@ -168,12 +168,12 @@ public:
 	int GetHeightTileCells() const { return settings.cacheTileCells == 4 ? 4 : 8; }
 	/// @brief Texels per tile edge, sanitised to a supported size (512 or 1024).
 	uint GetHeightTileSize() const { return settings.cacheTileSize == 512 ? 512u : 1024u; }
-	/// @brief (Re)create the staging tile at the given edge size. Returns false on failure.
-	bool EnsureHeightTileTexture(uint a_tileSize);
+	/// @brief (Re)create the staging tile at the given edge size.
+	void EnsureHeightTileTexture(uint a_tileSize);
 	/// @brief Zero the staging tile so cells that fall outside the worldspace stay at zero height.
 	void ClearHeightTile();
 	/// @brief Write the staging tile to "<Worldspace>_H<tileSize>.<cellsPerTile>.<originX>.<originY>.dds".
-	bool SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile);
+	void SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile);
 	/// @brief Copy the staging tile into a viewable texture holding exactly what gets written to disk.
 	void UpdateHeightPreview(const int2& a_tileOriginCell);
 
@@ -187,10 +187,10 @@ public:
 	// from the stitched height atlas so rays still see terrain beyond the tile they belong to.
 
 	/// @brief Run the per texel bent normal march over a UV region of the height atlas.
-	bool DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D* a_outputTex);
+	void DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D* a_outputTex);
 	/// @brief Line sweep bent normals for one tile: one dispatch per azimuth, then a resolve pass.
 	/// @param tileOriginAtlasPx North west corner of the tile in atlas texels.
-	bool DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOriginAtlasPx);
+	void DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOriginAtlasPx);
 	static constexpr int bentNormalAzimuths = 64;  // must match NUM_AZIMUTH in the shader
 	static constexpr int bentNormalHullCapacity = 1024;
 	/// @brief Queue a bent normal tile for every height tile on disk. Tiles are processed one per frame.
@@ -198,7 +198,7 @@ public:
 	/// @brief Process the next queued bent normal tile, if any.
 	void UpdateBentNormalTiles();
 	/// @brief Generate and save the bent normal tile whose grid starts at the given cell.
-	bool GenerateBentNormalTile(const int2& a_tileOriginCell);
+	void GenerateBentNormalTile(const int2& a_tileOriginCell);
 	void StopBentNormalTiles();
 
 	//////////////////////////////////////////////////////////////////////////////////
