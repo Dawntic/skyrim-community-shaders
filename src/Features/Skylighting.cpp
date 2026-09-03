@@ -1,5 +1,6 @@
 #include "Skylighting.h"
 
+#include "Features/IBL.h"
 #include "Features/TexGen.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
@@ -56,7 +57,9 @@ void Skylighting::DrawSettings()
 	static float debugRescale = 1.0f;
 	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
 
-	//BUFFER_VIEWER_NODE_BULLETA(terrainLightingTex->srv.get(), debugRescale);
+	ImGui::BulletText("Relight View");
+	if (terrainLightingTex.get())
+		BUFFER_VIEWER_NODE_BULLETA(terrainLightingTex->srv.get(), debugRescale);
 
 	ImGui::BulletText("Probe View");
 	if (texSparseProbeArray.get())
@@ -455,21 +458,31 @@ void Skylighting::UpdateSparseProbeGrid()
 	ID3D11ShaderResourceView* srvs[] = {
 		HMapSRV,
 		physSky.texSvLut->srv.get(),
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
-		nullptr,
+
+		AMapSRV,
+		BNMapSRV,
+		DOMapSRV,
+		DO2MapSRV,
+		DOMapSRVB,
+		DO2MapSRVB,
+
 		physSky.cloudBaseSRV.get(),  //t8
+
+		NMapSRV,
 	};
 
 	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
+
+	ID3D11ShaderResourceView* skyIBLSRV = globals::features::ibl.skyIBLTexture ? globals::features::ibl.skyIBLTexture->srv.get() : nullptr;
+	context->CSSetShaderResources(77, 1, &skyIBLSRV);
 
 	context->Dispatch((sparseGridSize.x + 7) / 8, (sparseGridSize.y + 7) / 8, 1);
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+
+	skyIBLSRV = nullptr;
+	context->CSSetShaderResources(77, 1, &skyIBLSRV);
 
 	if (globals::state->frameAnnotations)
 		globals::state->EndPerfEvent();

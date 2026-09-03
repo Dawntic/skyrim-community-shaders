@@ -2,8 +2,8 @@
 #include "Common/Math.hlsli"
 #include "Common/SharedData.hlsli"
 #include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
+#include "PhysicalSky/Common.hlsli"
 
-TextureCube<float4> EnvTexture : register(t0);
 RWTexture2D<sh2> IBLTexture : register(u0);
 
 SamplerState LinearSampler : register(s0);
@@ -33,8 +33,7 @@ groupshared sh2 sharedB[TOTAL_SAMPLES];
 	float2 sampleCoord = (float2(az, ze) + 0.5) * rcpAxisSampleCount;
 	float3 rayDir = SH::GetUniformSphereSample(sampleCoord.x, sampleCoord.y);
 
-	// Sample cubemap with optimized direction
-	float3 color = EnvTexture.SampleLevel(LinearSampler, -rayDir, 0).xyz;
+	float3 color = PhysSky::SampleSky(-rayDir, 0.0, LinearSampler);
 
 	// Compute spherical harmonics basis for this direction
 	sh2 sh = SH::Evaluate(rayDir);

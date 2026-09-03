@@ -2,6 +2,7 @@
 
 #include "Deferred.h"
 #include "DynamicCubemaps.h"
+#include "PhysicalSky.h"
 #include "Shadercache.h"
 #include "State.h"
 #include "WeatherVariableRegistry.h"
@@ -207,8 +208,6 @@ void IBL::ReflectionsPrepass()
 	}
 }
 
-#include "PhysicalSky.h"
-
 void IBL::Prepass()
 {
 	if (settings.DisableInInteriors && Util::IsInterior())
@@ -216,9 +215,7 @@ void IBL::Prepass()
 
 	auto context = globals::d3d::context;
 
-	auto& dynamicCubemaps = globals::features::dynamicCubemaps;
-
-	auto& envTexture = dynamicCubemaps.envTexture;
+	auto& physicalSky = globals::features::physicalSky;
 
 	// Unset PS shader resource
 	{
@@ -226,35 +223,26 @@ void IBL::Prepass()
 		context->PSSetShaderResources(76, 2, views);
 	}
 
-	std::array<ID3D11ShaderResourceView*, 1> srvs = { (dynamicCubemaps.loaded && envTexture) ? envTexture->srv.get() : nullptr };
+	std::array<ID3D11ShaderResourceView*, 1> srvs = { physicalSky.texSvLut ? physicalSky.texSvLut->srv.get() : nullptr };
 	std::array<ID3D11UnorderedAccessView*, 1> uavs = { envIBLTexture->uav.get() };
-	std::array<ID3D11SamplerState*, 1> samplers = { Deferred::GetSingleton()->linearSampler };
+	std::array<ID3D11SamplerState*, 1> samplers = { physicalSky.sampSv.get() };
 
-	// IBL - Environment cubemap SH projection (skip for DALC-based modes that don't use EnvIBL)
+	context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
+	context->CSSetShaderResources(62, (uint)srvs.size(), srvs.data());
+	context->CSSetShader(GetDiffuseIBLCS(), nullptr, 0);
+
+	// IBL - Environment SH projection (skip for DALC-based modes that don't use EnvIBL)
 	if (settings.DALCMode < 2) {
-		samplers[0] = Deferred::GetSingleton()->linearSampler;
-
-		context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
-		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-		context->CSSetShader(GetDiffuseIBLCS(), nullptr, 0);
 		globals::profiler->BeginPass("IBL::EnvDiffuseIBL");
 		context->Dispatch(1, 1, 1);
 		globals::profiler->EndPass();
-	} else {
-		// Still need to set sampler and shader for sky IBL dispatch below
-		context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
-		context->CSSetShader(GetDiffuseIBLCS(), nullptr, 0);
 	}
 
-	// IBL with sky (use game's native reflections cubemap directly)
+	// IBL with sky
 	{
-		auto renderer = globals::game::renderer;
-		srvs.at(0) = renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS].SRV;
-		//srvs.at(0) = globals::features::physicalSky.texSvLut->srv.get();
 		uavs.at(0) = skyIBLTexture->uav.get();
 
-		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
 		globals::profiler->BeginPass("IBL::SkyDiffuseIBL");
 		context->Dispatch(1, 1, 1);
@@ -268,7 +256,7 @@ void IBL::Prepass()
 		samplers.fill(nullptr);
 
 		context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
-		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+		context->CSSetShaderResources(62, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
