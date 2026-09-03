@@ -3,7 +3,6 @@
 
 #include "Deferred.h"
 #include "Features/Skylighting.h"
-#include "Features/TerrainShadows.h"
 #include "State.h"
 #include "Utils/D3D.h"
 
@@ -166,11 +165,10 @@ float4 TexGen::GetBentNormalAtlasBounds() const
 	return GetHeightMapBounds();  // the bent normal tiles mirror the height tiles
 }
 
-TexGen::CacheGenCBStruct TexGen::MakeCacheGenCB(const float2& outputSize, const float4& regionOffsetScale) const
+TexGen::CacheGenCBStruct TexGen::MakeCacheGenCB(const float2& outputSize) const
 {
 	CacheGenCBStruct data;
 	data.TexParams = float4(outputSize.x, outputSize.y, heightMapOffset, heightMapScale);
-	data.RegionOffsetScale = regionOffsetScale;
 	data.GridBounds = GetHeightMapBounds();
 	return data;
 }
@@ -227,11 +225,10 @@ bool TexGen::GenerateNormalMap()
 	eastl::unique_ptr<Texture2D> cacheOutputTexN = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> NComputeShader = nullptr;
 
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
 	cacheOutputTexN = eastl::make_unique<Texture2D>(desc, "TexGen::NormalMap");
-	cacheOutputTexN->CreateSRV(nullptr);
 	cacheOutputTexN->CreateUAV(uavDesc);
 
 	NComputeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "NORMALS", "" } }, "cs_5_0")));
@@ -251,9 +248,6 @@ bool TexGen::GenerateNormalMap()
 
 	auto heightSRV = heightMapSRV;
 	context->CSSetShaderResources(0, 1, &heightSRV);
-
-	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
-	context->CSSetSamplers(0, 1, &linSampler);
 
 	auto data = MakeCacheGenCB(float2((float)BNMapSize.x, (float)BNMapSize.y));
 	cacheGenBuffer->Update(data);
@@ -280,7 +274,7 @@ bool TexGen::GenerateNormalMap()
 	return true;
 }
 
-bool TexGen::DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D* a_outputTex, const float4& regionOffsetScale)
+bool TexGen::DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D* a_outputTex)
 {
 	if (!a_computeShader || !a_outputTex)
 		return false;
@@ -304,7 +298,7 @@ bool TexGen::DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D
 	ID3D11SamplerState* linSampler = globals::deferred->linearSampler;
 	context->CSSetSamplers(0, 1, &linSampler);
 
-	auto data = MakeCacheGenCB(float2((float)a_outputTex->desc.Width, (float)a_outputTex->desc.Height), regionOffsetScale);
+	auto data = MakeCacheGenCB(float2((float)a_outputTex->desc.Width, (float)a_outputTex->desc.Height));
 	cacheGenBuffer->Update(data);
 
 	auto buffer = cacheGenBuffer->CB();
@@ -333,18 +327,17 @@ bool TexGen::GenerateBentNormalMap()
 	eastl::unique_ptr<Texture2D> cacheOutputTexBN = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> BNComputeShader = nullptr;
 
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)BNMapSize.x, (uint)BNMapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
 	cacheOutputTexBN = eastl::make_unique<Texture2D>(desc, "TexGen::BentNormalMap");
-	cacheOutputTexBN->CreateSRV(nullptr);
 	cacheOutputTexBN->CreateUAV(uavDesc);
 
-	BNComputeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "CSHADER", "" }, { "BENT_NORMALS", "" } }, "cs_5_0")));
+	BNComputeShader.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "CSHADER", "" } }, "cs_5_0")));
 
 	// Generate map over the whole height map. Never save an output the dispatch did not write:
 	// that would overwrite a good map on disk with the uninitialised target.
-	if (!DispatchBentNormals(BNComputeShader.get(), cacheOutputTexBN.get(), float4(0.0f, 0.0f, 1.0f, 1.0f))) {
+	if (!DispatchBentNormals(BNComputeShader.get(), cacheOutputTexBN.get())) {
 		logger::error("[TexGen] Bent normal generation did not run, nothing written");
 		return false;
 	}
@@ -392,13 +385,12 @@ bool TexGen::GenerateCardinalOcclusionMap()
 	std::array<eastl::unique_ptr<Texture2D>, 6> outputs;
 	winrt::com_ptr<ID3D11ComputeShader> COComputeShader = nullptr;
 
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, COMapSize, COMapSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, COMapSize, COMapSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
 	for (size_t i = 0; i < outputs.size(); ++i) {
 		const auto name = std::format("TexGen::Occlusion{}", outputTags[i]);
 		outputs[i] = eastl::make_unique<Texture2D>(desc, name.c_str());
-		outputs[i]->CreateSRV(nullptr);
 		outputs[i]->CreateUAV(uavDesc);
 	}
 
@@ -459,7 +451,7 @@ bool TexGen::GenerateCardinalOcclusionMap()
 //////////////////////////////////////////////////////////////////////////////////
 
 // needs to support all input texture sizes
-bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath, const std::string& a_mapTag)
+bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 {
 	std::vector<TileInfo> tiles;
 
@@ -478,17 +470,8 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath, const std:
 			continue;
 
 		std::string stem = path.stem().string();
-		if (stem.rfind("tamriel.32.", 0) != 0)
+		if (stem.size() >= 2 && stem[stem.size() - 2] == '_')
 			continue;
-
-		if (stem[stem.size() - 2] == '_' && (a_mapTag.empty() || !stem.ends_with(a_mapTag)))
-			continue;
-
-		if (a_mapTag.empty())
-			if (!stem.ends_with(a_mapTag)) {
-				logger::info("[TexGen] Found Tag");
-				continue;
-			}
 
 		TileInfo ti;
 		if (!ParseLODTile(path, ti.cellX, ti.cellY))
@@ -671,7 +654,6 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 
 	// The atlas is north up with a top left origin, so both the tile order and each tile's rows are
 	// mirrored on the way in: the tiles themselves are stored south to north.
-	std::vector<std::pair<int2, std::string>> placements;  // atlas texel origin -> source tile file
 	size_t blitted = 0;
 	for (const auto& tile : tiles) {
 		ScratchImage tileImage;
@@ -707,7 +689,6 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 			memcpy(dst, src->pixels + (outTileSize - 1 - y) * src->rowPitch, outTileSize * bytesPerTexel);
 		}
 
-		placements.emplace_back(int2((int)dstX, (int)dstY), tile.path.filename().string());
 		blitted++;
 	}
 
@@ -717,7 +698,6 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 	}
 
 	o_result.image = std::move(atlas);
-	o_result.placements = std::move(placements);
 	o_result.minOriginCell = minOrigin;
 	o_result.maxOriginCell = maxOrigin;
 	o_result.tileCounts = int2((int)tilesX, (int)tilesY);
@@ -1175,47 +1155,42 @@ void TexGen::GenerateHeightMap()
 		return;
 	}
 
-	if (!skipTileWrite) {
-		// write heightmap
+	// write heightmap
 
-		D3D11_MAPPED_SUBRESOURCE mapped;
-		HRESULT hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped);
-		if (FAILED(hr) || !mapped.pData) {
-			logger::error("[TexGen] Map failed: {:x}", (uint32_t)hr);
-			return;  // skip this frame, don't deref null
-		}
-
-		const int2 localCell = currentCellXY - currentTile * cellsPerTile;
-		const float2 cellOrigin = float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
-		const float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
-
-		for (int x = 0; x < texelsPerCell; ++x) {
-			for (int y = 0; y < texelsPerCell; ++y) {
-				float2 worldXY = cellOrigin + float2((float)x, (float)y) * worldRes;
-
-				float landHeight;
-				tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
-
-				float groundHeight = 1000;
-				if (!skipRaycast)
-					groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight), 5000);
-
-				groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
-
-				int2 texCoord = localCell * texelsPerCell + int2(x, y);
-				float* tex = (float*)((uint8_t*)mapped.pData + texCoord.y * mapped.RowPitch);
-				tex[texCoord.x] = groundHeight;  // write to tex
-			}
-		}
-		context->Unmap(cacheOutputTexH->resource.get(), 0);
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	HRESULT hr = context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped);
+	if (FAILED(hr) || !mapped.pData) {
+		logger::error("[TexGen] Map failed: {:x}", (uint32_t)hr);
+		return;  // skip this frame, don't deref null
 	}
+
+	const int2 localCell = currentCellXY - currentTile * cellsPerTile;
+	const float2 cellOrigin = float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
+	const float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
+
+	for (int x = 0; x < texelsPerCell; ++x) {
+		for (int y = 0; y < texelsPerCell; ++y) {
+			float2 worldXY = cellOrigin + float2((float)x, (float)y) * worldRes;
+
+			float landHeight;
+			tes->GetLandHeight(RE::NiPoint3(worldXY.x, worldXY.y, 0), landHeight);
+
+			float groundHeight = GetRayIntersectionHeight(float3(worldXY.x, worldXY.y, landHeight), 5000);
+
+			groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
+
+			int2 texCoord = localCell * texelsPerCell + int2(x, y);
+			float* tex = (float*)((uint8_t*)mapped.pData + texCoord.y * mapped.RowPitch);
+			tex[texCoord.x] = groundHeight;  // write to tex
+		}
+	}
+	context->Unmap(cacheOutputTexH->resource.get(), 0);
 
 	cellsDone += 1;
 
 	if (!advanceToNextCell()) {
 		// Tile complete: flush it to disk before moving on.
-		if (!skipTileSave)
-			SaveHeightTile(currentTile * cellsPerTile, cellsPerTile);
+		SaveHeightTile(currentTile * cellsPerTile, cellsPerTile);
 		UpdateHeightPreview(currentTile * cellsPerTile);
 		tilesDone += 1;
 
@@ -1348,31 +1323,6 @@ float TexGen::GetRayIntersectionHeight(float3 a_position, float a_rayOffset)
 	}
 
 	return prevZ;
-}
-
-float TexGen::SampleHeightMap(float2 a_coords)
-{
-	static DirectX::ScratchImage image;
-	static bool init = true;
-	if (init) {
-		std::filesystem::path atlasPath;
-		AtlasCellRange atlasRange;
-		if (FindAtlas(worldspaceID, "_H", atlasPath, atlasRange))
-			DirectX::LoadFromDDSFile(atlasPath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image);
-		init = false;
-	}
-
-	auto& cachedHeightmap = globals::features::terrainShadows.cachedHeightmap;
-	float u = (a_coords.x - cachedHeightmap->pos0.x) / (cachedHeightmap->pos1.x - cachedHeightmap->pos0.x);
-	float v = (a_coords.y - cachedHeightmap->pos0.y) / (cachedHeightmap->pos1.y - cachedHeightmap->pos0.y);
-	auto& img = *image.GetImages();
-	int ix = std::clamp((int)(u * img.width), 0, (int)img.width - 1);
-	int iy = std::clamp((int)(v * img.height), 0, (int)img.height - 1);
-	auto row = reinterpret_cast<const float*>(img.pixels + iy * img.rowPitch);
-	float normalizedHeight = row[ix];
-	logger::trace("height: {}", normalizedHeight);
-
-	return normalizedHeight;
 }
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -1528,13 +1478,12 @@ bool TexGen::StartBentNormalTiles()
 
 	// One output tile, reused for the whole run. The compute shader writes normalised values, so
 	// the float target converts cleanly to the 16 bit storage format on save.
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)tileSize, (uint)tileSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32G32B32A32_FLOAT, (uint)tileSize, (uint)tileSize, 1, 1, D3D11_BIND_UNORDERED_ACCESS);
 	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
 
 	bentNormalTileTex = nullptr;
 	try {
 		bentNormalTileTex = eastl::make_unique<Texture2D>(desc, "TexGen::BentNormalTile");
-		bentNormalTileTex->CreateSRV(nullptr);
 		bentNormalTileTex->CreateUAV(uavDesc);
 	} catch (const std::exception& e) {
 		logger::error("[TexGen] Failed to create bent normal tile target: {}", e.what());
@@ -1694,7 +1643,7 @@ void TexGen::DrawSettings()
 	ImGui::BeginDisabled(settings.dynDOLODPath.empty());
 	if (ImGui::Button("Generate albedo atlas")) {
 		auto outputPath = cachePath / ((worldspaceID.empty() ? std::string("Tamriel") : worldspaceID) + "_A.dds");
-		BuildLODAtlas(outputPath, "");
+		BuildLODAtlas(outputPath);
 	}
 	ImGui::EndDisabled();
 	if (auto _tt = Util::HoverTooltipWrapper())

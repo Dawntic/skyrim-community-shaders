@@ -95,8 +95,6 @@ public:
 		}
 	};
 
-	/// @brief The worldspace the cache is being generated for, kept across interiors.
-	const std::string& GetWorldspaceID() const { return worldspaceID; }
 	/// @brief The parent worldspace the player is currently in, empty when there is none.
 	static std::string GetCurrentWorldspaceID();
 
@@ -136,7 +134,7 @@ public:
 	bool ResolveBentNormalAtlas(const std::string& a_worldspaceID, std::filesystem::path& o_path, bool a_forceRebuild = false);
 
 	/// @brief Stitch xLODGen LOD tiles into one albedo atlas at the given path.
-	bool BuildLODAtlas(const std::filesystem::path& a_outputPath, const std::string& a_mapTag);
+	bool BuildLODAtlas(const std::filesystem::path& a_outputPath);
 	/// @brief Write "<Worldspace>_N.dds" from the height atlas.
 	bool GenerateNormalMap();
 	/// @brief Write the full worldspace bent normal map, named with the height atlas' cell range.
@@ -160,7 +158,6 @@ public:
 	struct TileAtlasResult
 	{
 		DirectX::ScratchImage image;
-		std::vector<std::pair<int2, std::string>> placements;  // atlas texel origin -> source file
 		int2 minOriginCell = int2(0, 0);
 		int2 maxOriginCell = int2(0, 0);
 		int2 tileCounts = int2(0, 0);
@@ -209,7 +206,6 @@ public:
 	float GetRayIntersectionHeight(float3 a_position, float a_rayOffset);
 	void SetWorldPosition(const int2& a_currentCellXY, RE::NiPoint3& o_worldPos);
 	bool IsPositionValid(RE::NiPoint3 a_inputPosition);
-	float SampleHeightMap(float2 a_coords);
 
 	//////////////////////////////////////////////////////////////////////////////////
 	//// LOD bent normal tiles
@@ -218,8 +214,7 @@ public:
 	// from the stitched height atlas so rays still see terrain beyond the tile they belong to.
 
 	/// @brief Run the per texel bent normal march over a UV region of the height atlas.
-	/// @param regionOffsetScale xy uv offset, zw uv scale. (0, 0, 1, 1) covers the whole atlas.
-	bool DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D* a_outputTex, const float4& regionOffsetScale);
+	bool DispatchBentNormals(ID3D11ComputeShader* a_computeShader, Texture2D* a_outputTex);
 	/// @brief Line sweep bent normals for one tile: one dispatch per azimuth, then a resolve pass.
 	/// @param tileOriginAtlasPx North west corner of the tile in atlas texels.
 	bool DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOriginAtlasPx);
@@ -240,15 +235,14 @@ public:
 	struct alignas(16) CacheGenCBStruct
 	{
 		float4 TexParams;
-		float4 RegionOffsetScale = float4(0.0f, 0.0f, 1.0f, 1.0f);  // height map sub rect to process
-		float4 GridBounds;                                          // world xy min/max of the height map
-		float4 SweepDir;                                            // xy: world dir, z: slope, w: major step
-		float4 SweepParams;                                         // x: first line, y: line count, z: transpose, w: units per step
-		float4 SweepRect;                                           // xy: tile origin in atlas texels, z: tile size
+		float4 GridBounds;   // world xy min/max of the height map
+		float4 SweepDir;     // xy: world dir, z: slope, w: major step
+		float4 SweepParams;  // x: first line, y: line count, z: transpose, w: units per step
+		float4 SweepRect;    // xy: tile origin in atlas texels, z: tile size
 	};
 
 	/// @brief Fill the cache gen constants shared by every generator.
-	CacheGenCBStruct MakeCacheGenCB(const float2& outputSize, const float4& regionOffsetScale = float4(0.0f, 0.0f, 1.0f, 1.0f)) const;
+	CacheGenCBStruct MakeCacheGenCB(const float2& outputSize) const;
 
 private:
 	/// @brief Refresh the worldspace the cache is generated for, keeping the last known one indoors.
@@ -281,9 +275,6 @@ private:
 	int heightSettleFrames = 20;            // frames to let terrain stream in after a teleport
 	int cellsDone = 0;
 	int tilesDone = 0;
-	bool skipRaycast = false;    // sample land height only, for timing the walk without collision costs
-	bool skipTileWrite = false;  // walk the worldspace without touching the staging tile
-	bool skipTileSave = false;   // keep the run entirely in memory
 
 	eastl::unique_ptr<Texture2D> cacheOutputTexH = nullptr;
 

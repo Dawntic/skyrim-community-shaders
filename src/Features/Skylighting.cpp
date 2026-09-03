@@ -285,7 +285,7 @@ bool Skylighting::LoadWorldspaceCache()
 
 	{
 		auto path = TexGen::cachePath / (newWorldspaceID + "_A.dds");
-		if (!LoadCacheMap(path, &AMapSRV) && texGen.BuildLODAtlas(path, ""))
+		if (!LoadCacheMap(path, &AMapSRV) && texGen.BuildLODAtlas(path))
 			LoadCacheMap(path, &AMapSRV);
 	}
 

@@ -214,7 +214,7 @@ namespace TexGenHelpers
 	inline bool ParseLODTile(const std::filesystem::path& path, int& cellX, int& cellY)
 	{
 		auto parts = SplitStem(path);
-		if (parts.size() < 4)
+		if (parts.size() < 4 || parts[1] != "32")
 			return false;
 
 		try {
