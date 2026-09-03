@@ -566,7 +566,7 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 		.Basis1 = Basis1,
 
 		.BentNormalTileBounds = bnTileWorldBounds,
-		.BentNormalAtlasBounds = globals::features::texGen.GetBentNormalAtlasBounds(),
+		.BentNormalAtlasBounds = globals::features::texGen.GetAtlasWorldBound(),
 		.HasBentNormalTile = BNTileSRV != nullptr,
 		.HasBentNormalAtlas = BNMapSRV != nullptr,
 	};

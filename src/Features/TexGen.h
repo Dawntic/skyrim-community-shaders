@@ -96,9 +96,7 @@ public:
 	const AtlasCellRange& GetBentNormalAtlasRange() const { return bentNormalAtlasRange; }
 
 	/// @brief World bounds (minX, minY, maxX, maxY) of the cells the height atlas covers.
-	float4 GetHeightMapBounds() const;
-	/// @brief World bounds of the bent normal atlas, which may cover a different range to the height map.
-	float4 GetBentNormalAtlasBounds() const;
+	float4 GetAtlasWorldBound() const;
 
 	//////////////////////////////////////////////////////////////////////////////////
 	//// Consumer entry points
@@ -197,8 +195,6 @@ public:
 	bool StartBentNormalTiles();
 	/// @brief Process the next queued bent normal tile, if any.
 	void UpdateBentNormalTiles();
-	/// @brief Generate and save the bent normal tile whose grid starts at the given cell.
-	void GenerateBentNormalTile(const int2& a_tileOriginCell);
 	void StopBentNormalTiles();
 
 	//////////////////////////////////////////////////////////////////////////////////
