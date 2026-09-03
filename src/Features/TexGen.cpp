@@ -105,10 +105,11 @@ bool TexGen::ResolveHeightAtlas(const std::string& a_worldspaceID, std::filesyst
 
 bool TexGen::ResolveBentNormalAtlas(const std::string& a_worldspaceID, std::filesystem::path& o_path, bool a_forceRebuild)
 {
-	bentNormalAtlasRange = {};
-	EnsureBentNormalAtlas(a_worldspaceID, a_forceRebuild);  // stitch the generated tiles together if it is missing
+	if (!EnsureBentNormalAtlas(a_worldspaceID, a_forceRebuild))
+		return false;
 
-	return FindAtlas(a_worldspaceID, "_BN", o_path, bentNormalAtlasRange);
+	o_path = MakeAtlasPath(cachePath, a_worldspaceID, "_BN", heightAtlasRange.minCell, heightAtlasRange.maxCell);
+	return std::filesystem::exists(o_path);
 }
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -248,10 +249,6 @@ bool TexGen::GenerateBentNormalMap()
 
 	RemoveExistingAtlases(cachePath, worldspaceID, "_BN");
 	SaveMapDDS(*ouputImage.GetImages(), outputPath);
-
-	bentNormalAtlasRange.minCell = minCell;
-	bentNormalAtlasRange.maxCell = maxCell;
-	bentNormalAtlasRange.valid = true;
 
 	NotifyCacheMapsChanged();
 	return true;
@@ -436,7 +433,7 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 //// Tile stitching
 //////////////////////////////////////////////////////////////////////////////////
 
-bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, const float4& unormFill, const float4& floatFill, TileAtlasResult& o_result, float scale)
+bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::string& a_mapTag, const float4& unormFill, const float4& floatFill, TileAtlasResult& o_result, float scale, const AtlasCellRange* a_range)
 {
 	using namespace DirectX;
 
@@ -463,6 +460,16 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 		return false;
 	}
 
+	if (a_range)
+		std::erase_if(tiles, [&](const HeightTileFile& tile) {
+			return tile.tileSize != (uint)settings.cacheAtlasTileSize || tile.cellsPerTile != settings.cacheAtlasTileCells;
+		});
+
+	if (tiles.empty()) {
+		logger::warn("[TexGen] No {}{} tiles match the height atlas layout", a_worldspaceID, a_mapTag);
+		return false;
+	}
+
 	// Tiles from several runs may be present; keep the highest resolution layout and drop the rest,
 	// since tiles of different sizes cannot share one grid.
 	const HeightTileFile* best = &tiles[0];
@@ -477,13 +484,26 @@ bool TexGen::StitchTileAtlas(const std::string& a_worldspaceID, const std::strin
 	const int cellsPerTile = best->cellsPerTile;
 	std::erase_if(tiles, [&](const HeightTileFile& tile) { return tile.tileSize != tileSize || tile.cellsPerTile != cellsPerTile; });
 
-	int2 minOrigin = tiles[0].originCell;
-	int2 maxOrigin = tiles[0].originCell;
-	for (const auto& tile : tiles) {
-		minOrigin.x = std::min(minOrigin.x, tile.originCell.x);
-		minOrigin.y = std::min(minOrigin.y, tile.originCell.y);
-		maxOrigin.x = std::max(maxOrigin.x, tile.originCell.x);
-		maxOrigin.y = std::max(maxOrigin.y, tile.originCell.y);
+	int2 minOrigin;
+	int2 maxOrigin;
+	if (a_range) {
+		minOrigin = a_range->minCell;
+		maxOrigin = a_range->maxCell - int2(cellsPerTile - 1, cellsPerTile - 1);
+		std::erase_if(tiles, [&](const HeightTileFile& tile) {
+			return tile.originCell.x < minOrigin.x || tile.originCell.y < minOrigin.y || tile.originCell.x > maxOrigin.x || tile.originCell.y > maxOrigin.y;
+		});
+	} else {
+		minOrigin = maxOrigin = tiles[0].originCell;
+		for (const auto& tile : tiles) {
+			minOrigin.x = std::min(minOrigin.x, tile.originCell.x);
+			minOrigin.y = std::min(minOrigin.y, tile.originCell.y);
+			maxOrigin.x = std::max(maxOrigin.x, tile.originCell.x);
+			maxOrigin.y = std::max(maxOrigin.y, tile.originCell.y);
+		}
+	}
+	if (tiles.empty()) {
+		logger::warn("[TexGen] No {}{} tiles fall within the height atlas range", a_worldspaceID, a_mapTag);
+		return false;
 	}
 
 	const size_t tilesX = (size_t)((maxOrigin.x - minOrigin.x) / cellsPerTile) + 1;
@@ -613,32 +633,30 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 	if (a_worldspaceID.empty())
 		return false;
 
-	std::filesystem::path existingPath;
-	if (!a_forceRebuild && FindAtlas(a_worldspaceID, "_BN", existingPath, bentNormalAtlasRange))
+	if (!heightAtlasRange.valid) {
+		std::filesystem::path heightPath;
+		if (!FindAtlas(a_worldspaceID, "_H", heightPath, heightAtlasRange))
+			return false;
+	}
+
+	auto atlasPath = MakeAtlasPath(cachePath, a_worldspaceID, "_BN", heightAtlasRange.minCell, heightAtlasRange.maxCell);
+	if (!a_forceRebuild && std::filesystem::exists(atlasPath))
 		return true;
 
 	// Gaps read as an unoccluded surface: normal straight up, encoded, and full visibility.
 	TileAtlasResult result;
-	if (!StitchTileAtlas(a_worldspaceID, "_BN", float4(0.5f, 0.5f, 1.0f, 1.0f), float4(0.5f, 0.5f, 1.0f, 1.0f), result, settings.cacheBentNormalAtlasScale))
+	if (!StitchTileAtlas(a_worldspaceID, "_BN", float4(0.5f, 0.5f, 1.0f, 1.0f), float4(0.5f, 0.5f, 1.0f, 1.0f), result, settings.cacheBentNormalAtlasScale, &heightAtlasRange))
 		return false;
 
 	const Image* atlasImage = result.image.GetImages();
-
-	const int2 minCell = result.minOriginCell;
-	const int2 maxCell = result.maxOriginCell + int2(result.cellsPerTile - 1, result.cellsPerTile - 1);
-	auto atlasPath = MakeAtlasPath(cachePath, a_worldspaceID, "_BN", minCell, maxCell);
 
 	RemoveExistingAtlases(cachePath, a_worldspaceID, "_BN");
 
 	SaveMapDDS(*atlasImage, atlasPath);
 
-	bentNormalAtlasRange.minCell = minCell;
-	bentNormalAtlasRange.maxCell = maxCell;
-	bentNormalAtlasRange.valid = true;
-
 	logger::info("[TexGen] Built bent normal atlas {}: {}x{}, cells {},{} to {},{}",
 		atlasPath.string(), atlasImage->width, atlasImage->height,
-		minCell.x, minCell.y, maxCell.x, maxCell.y);
+		heightAtlasRange.minCell.x, heightAtlasRange.minCell.y, heightAtlasRange.maxCell.x, heightAtlasRange.maxCell.y);
 
 	return true;
 }
@@ -1287,9 +1305,6 @@ void TexGen::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Stitches every bent normal tile into %s_BN.<minX>.<minY>.<maxX>.<maxY>.dds, replacing any earlier one.\nBuilt automatically when the worldspace cache loads and the atlas is missing.",
 				worldspaceID.empty() ? "<Worldspace>" : worldspaceID.c_str());
-
-		if (bentNormalAtlasRange.valid)
-			ImGui::BulletText("BN atlas cells %d,%d to %d,%d", bentNormalAtlasRange.minCell.x, bentNormalAtlasRange.minCell.y, bentNormalAtlasRange.maxCell.x, bentNormalAtlasRange.maxCell.y);
 
 		if (bentNormalTileGen)
 			ImGui::Text("Bent normal tiles: %zu / %zu", bentNormalTileIndex, bentNormalTileQueue.size());

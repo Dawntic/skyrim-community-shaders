@@ -95,10 +95,6 @@ void Skylighting::DrawSettings()
 	if (heightRange.valid)
 		ImGui::BulletText("Height atlas cells %d,%d to %d,%d", heightRange.minCell.x, heightRange.minCell.y, heightRange.maxCell.x, heightRange.maxCell.y);
 
-	const auto& bentNormalRange = texGen.GetBentNormalAtlasRange();
-	if (bentNormalRange.valid)
-		ImGui::BulletText("BN atlas cells %d,%d to %d,%d", bentNormalRange.minCell.x, bentNormalRange.minCell.y, bentNormalRange.maxCell.x, bentNormalRange.maxCell.y);
-
 	if (BNTileSRV)
 		ImGui::BulletText("Streamed BN tile: cell %d, %d (%.0f, %.0f to %.0f, %.0f)",
 			bnTileOriginCell.x, bnTileOriginCell.y,
