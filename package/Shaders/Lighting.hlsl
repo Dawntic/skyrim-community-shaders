@@ -3018,7 +3018,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	GetIndirectLobeWeights(indirectLobeWeights, indirectContext, material, uvOriginal);
 
 #	if defined(SKYLIGHTING)
-	//bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
+	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
 
 	sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz);
 
@@ -3035,25 +3035,27 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), SkyLobe);
 	*/
 
-	// debugging
-	SkyLobe = SH::EvaluateCosineLobe(worldNormal);
+	sh2 denseVisibilitySH = lerp(SH::UnitSH2(), skylightingSH, skylightingFadeOutFactor);
+	denseVisibilitySH = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, denseVisibilitySH);
+	SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), denseVisibilitySH);
 
 	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
 	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
 
-	// Output ambient light only for sake of debugging.
-	SkyIrradiance *= indirectLobeWeights.diffuse;
-	//SkyIrradiance *= material.BaseColor; // use only this or lobe weights - lobe weights are correct
+	// No albedo here. directionalAmbientColor carries an irradiance, matching the vanilla
+	// assignment and the IBL variants above; albedo is applied downstream by
+	// "color.xyz += indirectLobeWeights.diffuse * directionalAmbientColor". Multiplying it in
+	// here as well squared it, crushing dark textures and exaggerating saturation.
 
 #		if defined(TRUE_PBR)
-	SkyIrradiance *= Color::PBRLightingScale;
+	//SkyIrradiance *= Color::PBRLightingScale;
 #		endif
 
 	//SkyIrradiance = Skylighting::TestMap(input.WorldPosition.xyz);
 
-	//if (ApplyIrradiance) {
-	//directionalAmbientColor = Color::IrradianceToGamma(SkyIrradiance);
-	//}
+	if (ApplyIrradiance) {
+		directionalAmbientColor = Color::IrradianceToGamma(SkyIrradiance);
+	}
 #	endif
 
 	//Lighting = float3(0,0,0); //////////////////////////////////////////////////////////////////////
@@ -3145,7 +3147,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3 layerColor = TexLayerSampler.Sample(SampLayerSampler, layerUv).xyz;
 	float mlpBlendFactor = saturate(viewNormalAngle) * (1.0 - baseColor.w);
 #		if defined(SKYLIGHTING)
-	color.xyz = lerp(color.xyz, (Lighting + directionalAmbientColor * skylightingDiffuse) * vertexColor * layerColor, mlpBlendFactor);
+	float mlpDenseVisibility = ApplyIrradiance ? 1.0 : skylightingDiffuse;
+	color.xyz = lerp(color.xyz, (Lighting + directionalAmbientColor * mlpDenseVisibility) * vertexColor * layerColor, mlpBlendFactor);
 #		else
 	color.xyz = lerp(color.xyz, (Lighting + directionalAmbientColor) * vertexColor * layerColor, mlpBlendFactor);
 #		endif
@@ -3199,11 +3202,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	directionalAmbientColor *= outputAlbedo;
 
 #	if defined(SKYLIGHTING)
+	float denseAmbientVisibility = ApplyIrradiance ? 1.0 : skylightingDiffuse;
 #		if defined(IBL)
 	if (!SharedData::iblSettings.EnableIBL)
 #		endif
 	{
-		Skylighting::ApplySkylighting(color.xyz, directionalAmbientColor, outputAlbedo, skylightingDiffuse);
+		Skylighting::ApplySkylighting(color.xyz, directionalAmbientColor, outputAlbedo, denseAmbientVisibility);
 	}
 #	endif
 
@@ -3485,9 +3489,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(SKYLIGHTING)
-	psout.Diffuse.xyz = SkyIrradiance;
+	//psout.Diffuse.xyz = SkyIrradiance;
 #	else
-	psout.Diffuse.xyz = (float3)0;
+	//psout.Diffuse.xyz = (float3)0;
 #	endif
 
 	return psout;

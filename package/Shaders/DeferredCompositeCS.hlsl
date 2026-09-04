@@ -183,7 +183,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
 
 	if (ApplyIrradiance) {
-		directionalAmbientColor = SkyIrradiance;
+		directionalAmbientColor = Color::IrradianceToGamma(SkyIrradiance) * albedo;
 	}
 #	endif
 
