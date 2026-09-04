@@ -276,6 +276,15 @@ namespace SH
 		return sh;
 	}
 
+	sh2vec3 UnpackSH2Vec3(Texture2D<float4> tex)
+	{
+		sh2vec3 sh;
+		sh.x = tex[uint2(0, 0)];
+		sh.y = tex[uint2(1, 0)];
+		sh.z = tex[uint2(2, 0)];
+		return sh;
+	}
+
 	// sh3vec3 -> Texture2DArray with 9 slices, each float4 = (r_i, g_i, b_i, 0).
 	// (Differs from the base PackSH3, which packs ONE channel's 9 coeffs into 3
 	// slices; RGB needs the per-coefficient layout below.)

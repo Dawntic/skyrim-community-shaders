@@ -163,7 +163,6 @@ public:
 	ID3D11ShaderResourceView* DO2MapSRV = nullptr;
 	ID3D11ShaderResourceView* AMapSRV = nullptr;
 	ID3D11ShaderResourceView* NMapSRV = nullptr;
-	//ID3D11ShaderResourceView* NSMapSRV = nullptr;
 	ID3D11ShaderResourceView* HMapSRV = nullptr;
 
 	//// Bent normal tile streaming ////

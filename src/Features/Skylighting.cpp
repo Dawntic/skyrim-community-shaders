@@ -304,8 +304,8 @@ bool Skylighting::LoadWorldspaceCache()
 		static constexpr std::array<const char*, 4> occlusionTags = { "_CO", "_CO2", "_DO", "_DO2" };
 		ID3D11ShaderResourceView** occlusionSRVs[4] = { &COMapSRV, &CO2MapSRV, &DOMapSRV, &DO2MapSRV };
 		for (size_t i = 0; i < occlusionTags.size(); ++i) {
-			const auto path = TexGenHelpers::MakeAtlasPath(TexGen::cachePath, newWorldspaceID, occlusionTags[i], range.minCell, range.maxCell);
-			LoadCacheMap(path, occlusionSRVs[i]);
+			const auto aopath = TexGenHelpers::MakeAtlasPath(TexGen::cachePath, newWorldspaceID, occlusionTags[i], range.minCell, range.maxCell);
+			LoadCacheMap(aopath, occlusionSRVs[i]);
 		}
 	}
 
