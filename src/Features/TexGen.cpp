@@ -393,12 +393,22 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 	const auto downscaledHeightPath = MakeAtlasPath(cachePath, worldspaceID, "_HD", heightAtlasRange.minCell, heightAtlasRange.maxCell);
 	static constexpr std::array<const char*, 5> outputTags = { "_N", "_CO", "_CO2", "_DO", "_DO2" };
 
-	bool rebuild = a_forceRebuild;
+	DirectX::TexMetadata heightMetadata;
+	DX::ThrowIfFailed(DirectX::GetMetadataFromDDSFile(heightAtlasPath.c_str(), DirectX::DDS_FLAGS_NONE, heightMetadata));
+	const uint width = std::max(1u, (uint)std::lround((double)heightMetadata.width * derivedHeightScale));
+	const uint height = std::max(1u, (uint)std::lround((double)heightMetadata.height * derivedHeightScale));
+
+	auto hasExpectedDimensions = [&](const std::filesystem::path& a_path) {
+		DirectX::TexMetadata metadata;
+		return SUCCEEDED(DirectX::GetMetadataFromDDSFile(a_path.c_str(), DirectX::DDS_FLAGS_NONE, metadata)) &&
+		       metadata.width == width && metadata.height == height && metadata.mipLevels == 1;
+	};
+
+	bool rebuild = a_forceRebuild || !hasExpectedDimensions(downscaledHeightPath);
 	std::error_code ec;
-	rebuild = !std::filesystem::exists(downscaledHeightPath, ec) || rebuild;
 	for (const auto* tag : outputTags) {
 		const auto path = MakeAtlasPath(cachePath, worldspaceID, tag, heightAtlasRange.minCell, heightAtlasRange.maxCell);
-		rebuild = !std::filesystem::exists(path, ec) || rebuild;
+		rebuild = !hasExpectedDimensions(path) || rebuild;
 	}
 
 	if (!rebuild) {
@@ -415,8 +425,6 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 		DX::ThrowIfFailed(LoadFromDDSFile(heightAtlasPath.c_str(), DDS_FLAGS_NONE, nullptr, sourceImage));
 
 		const Image* source = sourceImage.GetImages();
-		const uint width = std::max(1u, (uint)std::lround((float)source->width * derivedHeightScale));
-		const uint height = std::max(1u, (uint)std::lround((float)source->height * derivedHeightScale));
 
 		ScratchImage downscaledImage;
 		DX::ThrowIfFailed(Resize(*source, width, height, TEX_FILTER_DEFAULT, downscaledImage));
@@ -578,6 +586,8 @@ bool TexGen::BuildLODAtlas(const std::string& a_worldspaceID)
 
 	TexMetadata heightMetadata;
 	DX::ThrowIfFailed(GetMetadataFromDDSFile(heightAtlasPath.c_str(), DDS_FLAGS_NONE, heightMetadata));
+	const size_t outputWidth = std::max<size_t>(1, std::lround((double)heightMetadata.width * derivedHeightScale));
+	const size_t outputHeight = std::max<size_t>(1, std::lround((double)heightMetadata.height * derivedHeightScale));
 
 	static constexpr int lodCellsPerTile = 32;
 	const int2 atlasMinCell = heightAtlasRange.minCell;
@@ -670,8 +680,8 @@ bool TexGen::BuildLODAtlas(const std::string& a_worldspaceID)
 
 	ScratchImage resizedAtlas;
 	const Image* outputImage = atlasImage;
-	if (sourceWidth != heightMetadata.width || sourceHeight != heightMetadata.height) {
-		DX::ThrowIfFailed(Resize(*atlasImage, heightMetadata.width, heightMetadata.height, TEX_FILTER_DEFAULT, resizedAtlas));
+	if (sourceWidth != outputWidth || sourceHeight != outputHeight) {
+		DX::ThrowIfFailed(Resize(*atlasImage, outputWidth, outputHeight, TEX_FILTER_DEFAULT, resizedAtlas));
 		outputImage = resizedAtlas.GetImages();
 	}
 
@@ -899,6 +909,8 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 
 	TexMetadata heightMetadata;
 	DX::ThrowIfFailed(GetMetadataFromDDSFile(heightPath.c_str(), DDS_FLAGS_NONE, heightMetadata));
+	const size_t outputWidth = std::max<size_t>(1, std::lround((double)heightMetadata.width * derivedHeightScale));
+	const size_t outputHeight = std::max<size_t>(1, std::lround((double)heightMetadata.height * derivedHeightScale));
 
 	if (UpdateAtlasLayout(a_worldspaceID, heightAtlasRange, settings))
 		globals::state->Save();
@@ -907,7 +919,7 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 	if (!a_forceRebuild && std::filesystem::exists(atlasPath)) {
 		TexMetadata bentNormalMetadata;
 		DX::ThrowIfFailed(GetMetadataFromDDSFile(atlasPath.c_str(), DDS_FLAGS_NONE, bentNormalMetadata));
-		if (bentNormalMetadata.width == heightMetadata.width && bentNormalMetadata.height == heightMetadata.height)
+		if (bentNormalMetadata.width == outputWidth && bentNormalMetadata.height == outputHeight && bentNormalMetadata.mipLevels == 1)
 			return true;
 	}
 
@@ -923,10 +935,17 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 		return false;
 	}
 
-	SaveMapDDS(*atlasImage, atlasPath);
+	ScratchImage resizedAtlas;
+	const Image* outputImage = atlasImage;
+	if (atlasImage->width != outputWidth || atlasImage->height != outputHeight) {
+		DX::ThrowIfFailed(Resize(*atlasImage, outputWidth, outputHeight, TEX_FILTER_DEFAULT, resizedAtlas));
+		outputImage = resizedAtlas.GetImages();
+	}
+
+	SaveMapDDS(*outputImage, atlasPath);
 
 	logger::info("[TexGen] Built bent normal atlas {}: {}x{}, cells {},{} to {},{}",
-		atlasPath.string(), atlasImage->width, atlasImage->height,
+		atlasPath.string(), outputImage->width, outputImage->height,
 		heightAtlasRange.minCell.x, heightAtlasRange.minCell.y, heightAtlasRange.maxCell.x, heightAtlasRange.maxCell.y);
 
 	return true;

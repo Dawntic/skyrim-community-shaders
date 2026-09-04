@@ -273,21 +273,25 @@ bool Skylighting::LoadWorldspaceCache()
 		}
 	}
 
-	std::filesystem::path heightPath;
-	if (texGen.ResolveHeightAtlas(newWorldspaceID, heightPath)) {
-		if (!LoadCacheMap(heightPath, &HMapSRV))
-			logger::error("[Skylighting] Failed to load height atlas {}", heightPath.string());
-	} else {
-		logger::error("[Skylighting] No height atlas found for {}", newWorldspaceID);
-	}
-	texGen.SetHeightMapSRV(HMapSRV);
-
 	texGen.BuildDerivedMaps(newWorldspaceID);
 
 	const auto& range = texGen.GetHeightAtlasRange();
 	if (range.valid) {
+		const auto heightPath = TexGenHelpers::MakeAtlasPath(TexGen::cachePath, newWorldspaceID, "_HD", range.minCell, range.maxCell);
+		const bool heightLoaded = LoadCacheMap(heightPath, &HMapSRV);
+		if (!heightLoaded)
+			logger::error("[Skylighting] Failed to load downscaled height atlas {}", heightPath.string());
+		texGen.SetHeightMapSRV(HMapSRV);
+
 		auto path = TexGenHelpers::MakeAtlasPath(TexGen::cachePath, newWorldspaceID, "_A", range.minCell, range.maxCell);
-		if (!LoadCacheMap(path, &AMapSRV) && texGen.BuildLODAtlas(newWorldspaceID))
+		DirectX::TexMetadata heightMetadata{};
+		DirectX::TexMetadata albedoMetadata;
+		const bool heightMetadataLoaded = heightLoaded && SUCCEEDED(DirectX::GetMetadataFromDDSFile(heightPath.c_str(), DirectX::DDS_FLAGS_NONE, heightMetadata));
+		bool albedoMatchesHeight = heightMetadataLoaded && SUCCEEDED(DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, albedoMetadata)) &&
+		                           albedoMetadata.width == heightMetadata.width && albedoMetadata.height == heightMetadata.height && albedoMetadata.mipLevels == 1;
+		if (!albedoMatchesHeight)
+			albedoMatchesHeight = texGen.BuildLODAtlas(newWorldspaceID);
+		if (albedoMatchesHeight)
 			LoadCacheMap(path, &AMapSRV);
 
 		LoadCacheMap(TexGenHelpers::MakeAtlasPath(TexGen::cachePath, newWorldspaceID, "_N", range.minCell, range.maxCell), &NMapSRV);
@@ -298,7 +302,11 @@ bool Skylighting::LoadWorldspaceCache()
 		} else {
 			texGen.ResolveBentNormalAtlas(newWorldspaceID, bentNormalPath);
 		}
-		if (!bentNormalPath.empty() && std::filesystem::exists(bentNormalPath) && !LoadCacheMap(bentNormalPath, &BNMapSRV))
+		DirectX::TexMetadata bentNormalMetadata;
+		const bool bentNormalMatchesHeight = heightMetadataLoaded && !bentNormalPath.empty() &&
+		                                     SUCCEEDED(DirectX::GetMetadataFromDDSFile(bentNormalPath.c_str(), DirectX::DDS_FLAGS_NONE, bentNormalMetadata)) &&
+		                                     bentNormalMetadata.width == heightMetadata.width && bentNormalMetadata.height == heightMetadata.height && bentNormalMetadata.mipLevels == 1;
+		if (bentNormalMatchesHeight && !LoadCacheMap(bentNormalPath, &BNMapSRV))
 			logger::error("[Skylighting] {} exists but failed to load; leaving it untouched", bentNormalPath.string());
 
 		static constexpr std::array<const char*, 4> occlusionTags = { "_CO", "_CO2", "_DO", "_DO2" };
