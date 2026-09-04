@@ -1,4 +1,4 @@
-﻿#include "UnifiedWater.h"
+#include "UnifiedWater.h"
 
 #include "I18n/I18n.h"
 #include "Menu.h"
@@ -120,12 +120,12 @@ void UnifiedWater::DrawOverlay()
 			vOffset = (shaderWin->Pos.y + shaderWin->Size.y) - pos + style.ItemSpacing.y;
 		}
 	}
-	// Also stack below shader blocking overlay if visible
-	if (auto* blockingWin = ImGui::FindWindowByName("ShaderBlockingInfo")) {
-		if (blockingWin->Active) {
-			float blockingBottom = (blockingWin->Pos.y + blockingWin->Size.y) - pos + style.ItemSpacing.y;
-			if (blockingBottom > vOffset)
-				vOffset = blockingBottom;
+	// Also stack below shader blocking and TexGen overlays if visible
+	static constexpr std::array<const char*, 2> stackedWindows = { "ShaderBlockingInfo", "TexGenCacheCreationInfo" };
+	for (const auto* name : stackedWindows) {
+		if (auto* window = ImGui::FindWindowByName(name); window && window->Active) {
+			const float bottom = (window->Pos.y + window->Size.y) - pos + style.ItemSpacing.y;
+			vOffset = std::max(vOffset, bottom);
 		}
 	}
 

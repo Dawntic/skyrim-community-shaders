@@ -3,9 +3,12 @@
 
 #include "Deferred.h"
 #include "Features/Skylighting.h"
+
+#include "Menu/ThemeManager.h"
 #include "State.h"
 #include "Utils/D3D.h"
 
+#include <imgui_internal.h>
 #include <imgui_stdlib.h>
 
 #define I18N_KEY_PREFIX "feature.texgen."
@@ -394,7 +397,7 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 	std::error_code ec;
 	rebuild = !std::filesystem::exists(downscaledHeightPath, ec) || rebuild;
 	for (const auto* tag : outputTags) {
-		const auto path = cachePath / (worldspaceID + tag + ".dds");
+		const auto path = MakeAtlasPath(cachePath, worldspaceID, tag, heightAtlasRange.minCell, heightAtlasRange.maxCell);
 		rebuild = !std::filesystem::exists(path, ec) || rebuild;
 	}
 
@@ -403,44 +406,56 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 		const auto downscaledWriteTime = std::filesystem::last_write_time(downscaledHeightPath, ec);
 		rebuild = sourceWriteTime > downscaledWriteTime;
 	}
-	if (!rebuild)
-		return true;
 
-	using namespace DirectX;
+	bool generated = true;
+	if (rebuild) {
+		using namespace DirectX;
 
-	ScratchImage sourceImage;
-	DX::ThrowIfFailed(LoadFromDDSFile(heightAtlasPath.c_str(), DDS_FLAGS_NONE, nullptr, sourceImage));
+		ScratchImage sourceImage;
+		DX::ThrowIfFailed(LoadFromDDSFile(heightAtlasPath.c_str(), DDS_FLAGS_NONE, nullptr, sourceImage));
 
-	const Image* source = sourceImage.GetImages();
-	const uint width = std::max(1u, (uint)std::lround((float)source->width * derivedHeightScale));
-	const uint height = std::max(1u, (uint)std::lround((float)source->height * derivedHeightScale));
+		const Image* source = sourceImage.GetImages();
+		const uint width = std::max(1u, (uint)std::lround((float)source->width * derivedHeightScale));
+		const uint height = std::max(1u, (uint)std::lround((float)source->height * derivedHeightScale));
 
-	ScratchImage downscaledImage;
-	DX::ThrowIfFailed(Resize(*source, width, height, TEX_FILTER_DEFAULT, downscaledImage));
+		ScratchImage downscaledImage;
+		DX::ThrowIfFailed(Resize(*source, width, height, TEX_FILTER_DEFAULT, downscaledImage));
+		SaveMapDDS(*downscaledImage.GetImages(), downscaledHeightPath);
 
-	SaveMapDDS(*downscaledImage.GetImages(), downscaledHeightPath);
+		winrt::com_ptr<ID3D11Resource> heightResource;
+		DX::ThrowIfFailed(CreateTexture(
+			globals::d3d::device,
+			downscaledImage.GetImages(),
+			downscaledImage.GetImageCount(),
+			downscaledImage.GetMetadata(),
+			heightResource.put()));
 
-	winrt::com_ptr<ID3D11Resource> heightResource;
-	DX::ThrowIfFailed(CreateTexture(
-		globals::d3d::device,
-		downscaledImage.GetImages(),
-		downscaledImage.GetImageCount(),
-		downscaledImage.GetMetadata(),
-		heightResource.put()));
+		winrt::com_ptr<ID3D11ShaderResourceView> downscaledHeightSRV;
+		DX::ThrowIfFailed(globals::d3d::device->CreateShaderResourceView(heightResource.get(), nullptr, downscaledHeightSRV.put()));
 
-	winrt::com_ptr<ID3D11ShaderResourceView> downscaledHeightSRV;
-	DX::ThrowIfFailed(globals::d3d::device->CreateShaderResourceView(heightResource.get(), nullptr, downscaledHeightSRV.put()));
+		auto previousHeightMapSRV = heightMapSRV;
+		heightMapSRV = downscaledHeightSRV.get();
+		const int2 mapSize = int2((int)width, (int)height);
+		generated = GenerateNormalMap(mapSize) && GenerateCardinalOcclusionMaps(mapSize);
+		heightMapSRV = previousHeightMapSRV;
 
-	auto previousHeightMapSRV = heightMapSRV;
-	heightMapSRV = downscaledHeightSRV.get();
-	const int2 mapSize = int2((int)width, (int)height);
-	const bool generated = GenerateNormalMap(mapSize) && GenerateCardinalOcclusionMaps(mapSize);
-	heightMapSRV = previousHeightMapSRV;
-
-	if (generated) {
-		logger::info("[TexGen] Built derived maps at {}x{} from {}", width, height, heightAtlasPath.string());
-		NotifyCacheMapsChanged();
+		if (generated) {
+			logger::info("[TexGen] Built derived maps at {}x{} from {}", width, height, heightAtlasPath.string());
+			NotifyCacheMapsChanged();
+		}
 	}
+
+	const auto bentNormalPath = MakeAtlasPath(cachePath, worldspaceID, "_BN", heightAtlasRange.minCell, heightAtlasRange.maxCell);
+	const auto heightTiles = LoadHeightTileManifest(worldspaceID);
+	const bool bentNormalTilesMissing = std::ranges::any_of(heightTiles, [&](const HeightTileFile& tile) {
+		if (tile.tileSize != (uint)settings.cacheAtlasTileSize || tile.cellsPerTile != settings.cacheAtlasTileCells)
+			return false;
+		return !std::filesystem::exists(GetTilePath(worldspaceID, "_BN", tile.tileSize, tile.cellsPerTile, tile.originCell), ec);
+	});
+
+	if ((a_forceRebuild || !std::filesystem::exists(bentNormalPath, ec) || bentNormalTilesMissing) && !bentNormalTileGen)
+		generated = StartBentNormalTiles() && generated;
+
 	return generated;
 }
 
@@ -483,7 +498,7 @@ bool TexGen::GenerateNormalMap(const int2& a_mapSize)
 
 	DirectX::ScratchImage captured;
 	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, context, output->resource.get(), captured));
-	SaveMapDDS(*captured.GetImages(), cachePath / (worldspaceID + "_N.dds"));
+	SaveMapDDS(*captured.GetImages(), MakeAtlasPath(cachePath, worldspaceID, "_N", heightAtlasRange.minCell, heightAtlasRange.maxCell));
 	return true;
 }
 
@@ -538,7 +553,7 @@ bool TexGen::GenerateCardinalOcclusionMaps(const int2& a_mapSize)
 	DirectX::ScratchImage captured;
 	for (size_t i = 0; i < outputs.size(); ++i) {
 		DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, context, outputs[i]->resource.get(), captured));
-		SaveMapDDS(*captured.GetImages(), cachePath / (worldspaceID + outputTags[i] + ".dds"));
+		SaveMapDDS(*captured.GetImages(), MakeAtlasPath(cachePath, worldspaceID, outputTags[i], heightAtlasRange.minCell, heightAtlasRange.maxCell));
 	}
 	return true;
 }
@@ -548,8 +563,9 @@ bool TexGen::GenerateCardinalOcclusionMaps(const int2& a_mapSize)
 //////////////////////////////////////////////////////////////////////////////////
 
 // needs to support all input texture sizes
-bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
+bool TexGen::BuildLODAtlas(const std::string& a_worldspaceID)
 {
+	worldspaceID = a_worldspaceID;
 	std::vector<TileInfo> tiles;
 
 	using namespace DirectX;
@@ -557,6 +573,8 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 	std::filesystem::path heightAtlasPath;
 	if (!ResolveHeightAtlas(worldspaceID, heightAtlasPath))
 		return false;
+
+	const auto outputPath = MakeAtlasPath(cachePath, worldspaceID, "_A", heightAtlasRange.minCell, heightAtlasRange.maxCell);
 
 	TexMetadata heightMetadata;
 	DX::ThrowIfFailed(GetMetadataFromDDSFile(heightAtlasPath.c_str(), DDS_FLAGS_NONE, heightMetadata));
@@ -569,7 +587,7 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 	const std::filesystem::path lodPath = settings.dynDOLODPath;
 	std::error_code ec;
 	if (!std::filesystem::exists(lodPath, ec)) {
-		logger::error("[TexGen] xLODGen output folder {} not found, cannot build {}", lodPath.string(), a_outputPath.filename().string());
+		logger::error("[TexGen] xLODGen output folder {} not found, cannot build {}", lodPath.string(), outputPath.filename().string());
 		return false;
 	}
 
@@ -657,10 +675,10 @@ bool TexGen::BuildLODAtlas(const std::filesystem::path& a_outputPath)
 		outputImage = resizedAtlas.GetImages();
 	}
 
-	SaveMapDDS(*outputImage, a_outputPath);
+	SaveMapDDS(*outputImage, outputPath);
 
 	logger::info("[TexGen] Built LOD atlas {}: {}x{}, cells {},{} to {},{}",
-		a_outputPath.string(), outputImage->width, outputImage->height,
+		outputPath.string(), outputImage->width, outputImage->height,
 		heightAtlasRange.minCell.x, heightAtlasRange.minCell.y, heightAtlasRange.maxCell.x, heightAtlasRange.maxCell.y);
 
 	NotifyCacheMapsChanged();
@@ -935,7 +953,7 @@ void TexGen::DispatchBentNormalSweep(Texture2D* a_accumTex, const int2& tileOrig
 	const float clearValue[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 	context->ClearUnorderedAccessViewFloat(a_accumTex->uav.get(), clearValue);
 
-	ID3D11ShaderResourceView* heightSRV = heightMapSRV;
+	ID3D11ShaderResourceView* heightSRV = bentNormalHeightSRV.get();
 	context->CSSetShaderResources(0, 1, &heightSRV);
 	context->CSSetShader(bentNormalSweepCS.get(), nullptr, 0);
 
@@ -1015,11 +1033,6 @@ bool TexGen::StartBentNormalTiles()
 		return false;
 	}
 
-	if (!heightMapSRV) {
-		logger::error("[TexGen] No height atlas loaded, build it before generating bent normal tiles");
-		return false;
-	}
-
 	// The atlas dimensions the height tiles were stitched into; the regions are relative to these.
 	std::filesystem::path atlasPath;
 	if (!ResolveHeightAtlas(worldspaceID, atlasPath)) {
@@ -1079,6 +1092,11 @@ bool TexGen::StartBentNormalTiles()
 		logger::error("[TexGen] No height tiles matching the atlas layout, nothing to generate");
 		return false;
 	}
+
+	bentNormalHeightResource = nullptr;
+	bentNormalHeightSRV = nullptr;
+	DX::ThrowIfFailed(LoadDDSLevelZero(
+		globals::d3d::device, atlasPath, bentNormalHeightResource.put(), bentNormalHeightSRV.put()));
 
 	std::ranges::sort(bentNormalTileQueue, [](const int2& a, const int2& b) {
 		return a.y != b.y ? a.y < b.y : a.x < b.x;
@@ -1162,16 +1180,14 @@ void TexGen::UpdateBentNormalTiles()
 
 	if (bentNormalTileIndex >= bentNormalTileQueue.size()) {
 		logger::info("[TexGen] Bent normal tiles complete: {} tiles", bentNormalTileQueue.size());
-		const auto completedTiles = GetAtlasTiles(worldspaceID, "_BN", (uint)settings.cacheAtlasTileSize, settings.cacheAtlasTileCells, heightAtlasRange);
-		if (EnsureBentNormalAtlas(worldspaceID, true)) {
-			const auto removedTiles = DeleteTiles(completedTiles);
-			logger::info("[TexGen] Removed {} temporary bent normal tiles", removedTiles);
-		}
+		EnsureBentNormalAtlas(worldspaceID, true);
 
 		bentNormalTileGen = false;
 		bentNormalTileQueue.clear();
 		bentNormalTileIndex = 0;
 		bentNormalTileTex = nullptr;
+		bentNormalHeightSRV = nullptr;
+		bentNormalHeightResource = nullptr;
 		bentNormalSweepCS = nullptr;
 		bentNormalFinalizeCS = nullptr;
 		bentNormalHullUAV = nullptr;
@@ -1184,6 +1200,38 @@ void TexGen::UpdateBentNormalTiles()
 //////////////////////////////////////////////////////////////////////////////////
 //// Settings UI
 //////////////////////////////////////////////////////////////////////////////////
+
+void TexGen::DrawOverlay()
+{
+	if (!bentNormalTileGen)
+		return;
+
+	const float scale = Util::GetUIScale();
+	const float pos = ThemeManager::Constants::OVERLAY_WINDOW_POSITION * scale;
+	float yPos = pos;
+
+	static constexpr std::array<const char*, 3> stackedWindows = {
+		"ShaderCompilationInfo",
+		"ShaderBlockingInfo",
+		"UWCacheCreationInfo"
+	};
+	for (const auto* name : stackedWindows) {
+		if (auto* window = ImGui::FindWindowByName(name); window && window->Active)
+			yPos = std::max(yPos, window->Pos.y + window->Size.y + ImGui::GetStyle().ItemSpacing.y);
+	}
+
+	const float percent = bentNormalTileQueue.empty() ? 0.0f : (float)bentNormalTileIndex / (float)bentNormalTileQueue.size();
+	const auto progress = fmt::format("{}/{} ({:2.1f}%)", bentNormalTileIndex, bentNormalTileQueue.size(), percent * 100.0f);
+
+	ImGui::SetNextWindowPos(ImVec2(pos, yPos));
+	if (ImGui::Begin("TexGenCacheCreationInfo", nullptr,
+			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize |
+				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings)) {
+		ImGui::TextUnformatted("Generating TexGen Cache: Bent Normals");
+		ImGui::ProgressBar(percent, ImVec2(0.0f, 0.0f), progress.c_str());
+	}
+	ImGui::End();
+}
 
 void TexGen::DrawSettings()
 {
@@ -1216,16 +1264,14 @@ void TexGen::DrawSettings()
 		ImGui::TextWrapped("Select the DynDOLOD terrain-texture folder for the worldspace you want to generate textures for.");
 
 		ImGui::BeginDisabled(settings.dynDOLODPath.empty() || worldspaceID.empty());
-		if (ImGui::Button("Generate albedo atlas")) {
-			auto outputPath = cachePath / (worldspaceID + "_A.dds");
-			BuildLODAtlas(outputPath);
-		}
+		if (ImGui::Button("Generate albedo atlas"))
+			BuildLODAtlas(worldspaceID);
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Stitches the xLODGen LOD tiles in\n%s\ninto one albedo atlas.", settings.dynDOLODPath.c_str());
 
-		ImGui::BeginDisabled(worldspaceID.empty());
-		if (ImGui::Button("Generate Normal and Cardinal AO"))
+		ImGui::BeginDisabled(worldspaceID.empty() || IsGenerating());
+		if (ImGui::Button("Generate Normal, AO and Bent Normal"))
 			BuildDerivedMaps(worldspaceID, true);
 		ImGui::EndDisabled();
 

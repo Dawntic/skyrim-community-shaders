@@ -452,7 +452,7 @@ float GetDirOcclusion(float2 CoordsUV)
 
 	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvEnvRadianceTexSize;
 
-	float WorldHeight = HeightTex.SampleLevel(LinearSampler, float2(CoordsUV.x, 1.0 - CoordsUV.y), 0);
+	float WorldHeight = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0);
 	float3 WorldPos = float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, float2(CoordsUV.x, 1.0 - CoordsUV.y)), WorldHeight);
 
 	float4 BentNormal = BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);

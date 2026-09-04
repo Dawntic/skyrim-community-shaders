@@ -1,5 +1,7 @@
 #pragma once
 
+#include "OverlayFeature.h"
+
 #include <DDSTextureLoader.h>
 #include <DirectXTex.h>
 
@@ -16,7 +18,7 @@
  * Generation is a one-off authoring step, not a per-frame cost: nothing here runs unless a bake has
  * been started from the settings UI or a consumer asked for a missing map.
  */
-struct TexGen : Feature
+struct TexGen : OverlayFeature
 {
 public:
 	virtual inline std::string GetName() override { return "TexGen"; }
@@ -36,6 +38,8 @@ public:
 
 	virtual void RestoreDefaultSettings() override;
 	virtual void DrawSettings() override;
+	virtual void DrawOverlay() override;
+	virtual bool IsOverlayVisible() const override { return bentNormalTileGen; }
 
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
@@ -111,9 +115,9 @@ public:
 	/// @brief Stitch the bent normal atlas if it is missing, then locate it and record its layout.
 	bool ResolveBentNormalAtlas(const std::string& a_worldspaceID, std::filesystem::path& o_path, bool a_forceRebuild = false);
 
-	/// @brief Stitch xLODGen LOD tiles into one albedo atlas at the given path.
-	bool BuildLODAtlas(const std::filesystem::path& a_outputPath);
-	/// @brief Downscale the height atlas and generate the complete normal and cardinal AO set from it.
+	/// @brief Stitch xLODGen LOD tiles into the cell-ranged albedo atlas for this worldspace.
+	bool BuildLODAtlas(const std::string& a_worldspaceID);
+	/// @brief Generate the downscaled height, normal, AO, bent-normal tiles and bent-normal atlas set.
 	/// Existing outputs are reused unless a_forceRebuild is set.
 	bool BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceRebuild = false);
 
@@ -121,6 +125,7 @@ public:
 	bool IsGenerating() const { return heightGenRunning || bentNormalTileGen; }
 	/// @brief Whether the height bake specifically is in flight.
 	bool IsHeightGenRunning() const { return heightGenRunning; }
+	bool IsBentNormalGenerationRunning() const { return bentNormalTileGen; }
 
 	//////////////////////////////////////////////////////////////////////////////////
 	//// Atlas naming and stitching
@@ -242,6 +247,8 @@ private:
 	std::vector<int2> bentNormalTileQueue;
 	int2 bentNormalAtlasSize = int2(0, 0);
 	eastl::unique_ptr<Texture2D> bentNormalTileTex = nullptr;
+	winrt::com_ptr<ID3D11Resource> bentNormalHeightResource = nullptr;
+	winrt::com_ptr<ID3D11ShaderResourceView> bentNormalHeightSRV = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> bentNormalSweepCS = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> bentNormalFinalizeCS = nullptr;
 	winrt::com_ptr<ID3D11Buffer> bentNormalHullBuffer = nullptr;

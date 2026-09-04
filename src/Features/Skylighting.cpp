@@ -218,16 +218,18 @@ void Skylighting::GetCachedWorldspaces()
 {
 	std::error_code ec;
 	for (const auto& entry : std::filesystem::directory_iterator(TexGen::cachePath, ec)) {
-		auto& path = entry.path();
-		if (path.extension() == ".dds") {
-			auto name = path.stem().string();
-			if (name.contains('.'))  // height tiles are "<Worldspace>_H<size>.<cells>.<x>.<y>", not worldspace maps
-				continue;
-			logger::debug("[Skylighting] Found cache: {}", name);
-			if (worldSpaceCachedMapList.contains(name))
-				logger::warn("[Skylighting] Error: {} has multiple maps with same name", name);
-			worldSpaceCachedMapList.insert(name);
-		}
+		const auto& path = entry.path();
+		if (path.extension() != ".dds")
+			continue;
+
+		const auto name = path.stem().string();
+		const auto heightAtlasTag = name.find("_H.");
+		if (heightAtlasTag == std::string::npos)
+			continue;
+
+		const auto worldspace = name.substr(0, heightAtlasTag);
+		logger::debug("[Skylighting] Found cache for {}", worldspace);
+		worldSpaceCachedMapList.insert(worldspace);
 	}
 }
 
@@ -238,7 +240,7 @@ bool Skylighting::LoadCacheMap(const std::filesystem::path& a_path, ID3D11Shader
 		*a_srv = nullptr;
 	}
 
-	auto result = DirectX::CreateDDSTextureFromFile(globals::d3d::device, globals::d3d::context, a_path.c_str(), nullptr, a_srv);
+	auto result = TexGenHelpers::LoadDDSLevelZero(globals::d3d::device, a_path, nullptr, a_srv);
 	if (FAILED(result)) {
 		*a_srv = nullptr;
 		return false;
@@ -258,7 +260,6 @@ bool Skylighting::LoadWorldspaceCache()
 	if (cacheWorldspaceID == newWorldspaceID)
 		return true;
 
-	// The streamed tile belongs to the old worldspace
 	ReleaseBentNormalTileStream();
 
 	logger::info("[Skylighting] Loading cached texture maps...");
@@ -272,52 +273,43 @@ bool Skylighting::LoadWorldspaceCache()
 		}
 	}
 
+	std::filesystem::path heightPath;
+	if (texGen.ResolveHeightAtlas(newWorldspaceID, heightPath)) {
+		if (!LoadCacheMap(heightPath, &HMapSRV))
+			logger::error("[Skylighting] Failed to load height atlas {}", heightPath.string());
+	} else {
+		logger::error("[Skylighting] No height atlas found for {}", newWorldspaceID);
+	}
+	texGen.SetHeightMapSRV(HMapSRV);
+
 	texGen.BuildDerivedMaps(newWorldspaceID);
 
-	{
-		std::filesystem::path path;
-		if (texGen.ResolveHeightAtlas(newWorldspaceID, path)) {
-			if (!LoadCacheMap(path, &HMapSRV))
-				logger::error("[Skylighting] Failed to load height atlas {}", path.string());
-		} else {
-			logger::error("[Skylighting] No height atlas found for {}", newWorldspaceID);
-		}
-
-		texGen.SetHeightMapSRV(HMapSRV);
-	}
-
-	{
-		auto path = TexGen::cachePath / (newWorldspaceID + "_A.dds");
-		if (!LoadCacheMap(path, &AMapSRV) && texGen.BuildLODAtlas(path))
+	const auto& range = texGen.GetHeightAtlasRange();
+	if (range.valid) {
+		auto path = TexGenHelpers::MakeAtlasPath(TexGen::cachePath, newWorldspaceID, "_A", range.minCell, range.maxCell);
+		if (!LoadCacheMap(path, &AMapSRV) && texGen.BuildLODAtlas(newWorldspaceID))
 			LoadCacheMap(path, &AMapSRV);
-	}
 
-	LoadCacheMap(TexGen::cachePath / (newWorldspaceID + "_N.dds"), &NMapSRV);
+		LoadCacheMap(TexGenHelpers::MakeAtlasPath(TexGen::cachePath, newWorldspaceID, "_N", range.minCell, range.maxCell), &NMapSRV);
 
-	{
-		std::filesystem::path path;
-		if (texGen.ResolveBentNormalAtlas(newWorldspaceID, path)) {
-			// A map that exists but will not load is never regenerated over: it is far more likely
-			// to be too large for D3D11 than to be corrupt, and overwriting it would throw away a
-			// bake that took hours.
-			if (!LoadCacheMap(path, &BNMapSRV))
-				logger::error("[Skylighting] {} exists but failed to load; leaving it untouched", path.string());
+		std::filesystem::path bentNormalPath;
+		if (texGen.IsBentNormalGenerationRunning()) {
+			bentNormalPath = TexGenHelpers::MakeAtlasPath(TexGen::cachePath, newWorldspaceID, "_BN", range.minCell, range.maxCell);
+		} else {
+			texGen.ResolveBentNormalAtlas(newWorldspaceID, bentNormalPath);
 		}
-	}
+		if (!bentNormalPath.empty() && std::filesystem::exists(bentNormalPath) && !LoadCacheMap(bentNormalPath, &BNMapSRV))
+			logger::error("[Skylighting] {} exists but failed to load; leaving it untouched", bentNormalPath.string());
 
-	// The TexGen derived-map pass writes the whole set together.
-	{
 		static constexpr std::array<const char*, 4> occlusionTags = { "_CO", "_CO2", "_DO", "_DO2" };
 		ID3D11ShaderResourceView** occlusionSRVs[4] = { &COMapSRV, &CO2MapSRV, &DOMapSRV, &DO2MapSRV };
-
-		for (size_t i = 0; i < occlusionTags.size(); ++i)
-			LoadCacheMap(TexGen::cachePath / (newWorldspaceID + occlusionTags[i] + ".dds"), occlusionSRVs[i]);
+		for (size_t i = 0; i < occlusionTags.size(); ++i) {
+			const auto path = TexGenHelpers::MakeAtlasPath(TexGen::cachePath, newWorldspaceID, occlusionTags[i], range.minCell, range.maxCell);
+			LoadCacheMap(path, occlusionSRVs[i]);
+		}
 	}
 
-	// Recorded last: a generator above asks for a reload by clearing this, and setting it before the
-	// load finished would leave that request satisfied by a load that never saw the new files.
 	cacheWorldspaceID = newWorldspaceID;
-
 	return true;
 }
 

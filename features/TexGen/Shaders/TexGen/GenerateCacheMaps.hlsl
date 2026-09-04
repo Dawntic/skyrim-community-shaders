@@ -22,10 +22,10 @@ RWTexture2D<float4> OutputHorizon2 : register(u2);
 RWTexture2D<float4> OutputHorizon3 : register(u3);
 
 static const float2 CARD[4] = {
-	float2(1, 0), float2(0, 1),   // +X - East, +Y - South
-	float2(-1, 0), float2(0, -1)  // -X - West, -Y - North
+	float2(1, 0), float2(0, -1),  // +X - East, +Y - North
+	float2(-1, 0), float2(0, 1)   // -X - West, -Y - South
 };
-static const float2 DIAG[4] = { float2(0.70710678, 0.70710678), float2(-0.70710678, 0.70710678), float2(-0.70710678, -0.70710678), float2(0.70710678, -0.70710678) };
+static const float2 DIAG[4] = { float2(0.70710678, -0.70710678), float2(-0.70710678, -0.70710678), float2(-0.70710678, 0.70710678), float2(0.70710678, 0.70710678) };
 
 float TexelsToEdge(float2 uv, float2 Dir, float2 Dim)
 {
@@ -57,7 +57,6 @@ float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, f
 		float2 Offset = Dir * step * InvPxSize;
 
 		float2 SampCoords = CoordsUV + Offset;
-		SampCoords.y = 1.0 - SampCoords.y;
 		float Height = HeightTex.SampleLevel(LinearSampler, SampCoords, 0);
 
 		float HDiff = Height - SampleHeight;
@@ -81,9 +80,7 @@ float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, f
 
 	float2 CoordsUV = (ThreadID.xy + 0.5) / OutputTexSize;
 
-	float2 SampCoords = CoordsUV;
-	SampCoords.y = 1.0 - SampCoords.y;
-	float HeightSample = HeightTex.SampleLevel(LinearSampler, SampCoords, 0);
+	float HeightSample = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0);
 
 	uint2 HeightMapPxSize;
 	HeightTex.GetDimensions(HeightMapPxSize.x, HeightMapPxSize.y);
@@ -251,26 +248,23 @@ float LoadHeight(int2 CoordsPx, int2 HeightMapPxSize)
 	if (any(ThreadID.xy >= (uint2)OutputTexSize))
 		return;
 
-	float2 CoordsUV = (ThreadID.xy + 0.5) / OutputTexSize;
-	CoordsUV.y = 1.0 - CoordsUV.y;
-
 	uint2 HeightMapPxSize;
 	HeightTex.GetDimensions(HeightMapPxSize.x, HeightMapPxSize.y);
 
-	int2 CoordsPx = CoordsUV * HeightMapPxSize;
+	int2 CoordsPx = ThreadID.xy;
 
 	// Sobel gradient (8-tap) for a smoother result
 	float hL = LoadHeight(CoordsPx + int2(-1, 0), HeightMapPxSize);
 	float hR = LoadHeight(CoordsPx + int2(1, 0), HeightMapPxSize);
-	float hD = LoadHeight(CoordsPx + int2(0, -1), HeightMapPxSize);
-	float hU = LoadHeight(CoordsPx + int2(0, 1), HeightMapPxSize);
-	float hDL = LoadHeight(CoordsPx + int2(-1, -1), HeightMapPxSize);
-	float hDR = LoadHeight(CoordsPx + int2(1, -1), HeightMapPxSize);
-	float hUL = LoadHeight(CoordsPx + int2(-1, 1), HeightMapPxSize);
-	float hUR = LoadHeight(CoordsPx + int2(1, 1), HeightMapPxSize);
+	float hN = LoadHeight(CoordsPx + int2(0, -1), HeightMapPxSize);
+	float hS = LoadHeight(CoordsPx + int2(0, 1), HeightMapPxSize);
+	float hNW = LoadHeight(CoordsPx + int2(-1, -1), HeightMapPxSize);
+	float hNE = LoadHeight(CoordsPx + int2(1, -1), HeightMapPxSize);
+	float hSW = LoadHeight(CoordsPx + int2(-1, 1), HeightMapPxSize);
+	float hSE = LoadHeight(CoordsPx + int2(1, 1), HeightMapPxSize);
 
-	float dHdx = (hR + hUR + hDR) - (hL + hUL + hDL);
-	float dHdy = (hU + hUL + hUR) - (hD + hDL + hDR);
+	float dHdx = (hR + hNE + hSE) - (hL + hNW + hSW);
+	float dHdy = (hN + hNW + hNE) - (hS + hSW + hSE);
 
 	float2 TexelWorldSize = (GridBounds.zw - GridBounds.xy) / (float2)HeightMapPxSize;
 

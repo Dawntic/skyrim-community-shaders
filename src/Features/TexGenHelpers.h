@@ -10,6 +10,26 @@
 
 namespace TexGenHelpers
 {
+	inline HRESULT LoadDDSLevelZero(
+		ID3D11Device* device,
+		const std::filesystem::path& path,
+		ID3D11Resource** resource,
+		ID3D11ShaderResourceView** srv)
+	{
+		return DirectX::CreateDDSTextureFromFileEx(
+			device,
+			path.c_str(),
+			0,
+			D3D11_USAGE_DEFAULT,
+			D3D11_BIND_SHADER_RESOURCE,
+			0,
+			0,
+			DirectX::DDS_LOADER_IGNORE_MIPS,
+			resource,
+			srv,
+			nullptr);
+	}
+
 	// Every generated LOD map is a single surface: one mip level, one array slice, no cube faces.
 	// Written through explicit metadata so the property is enforced at the call rather than being an
 	// accident of which SaveToDDSFile overload was picked.
