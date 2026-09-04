@@ -267,7 +267,7 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 	const float2 atlasMin = settings.AtlasBounds.xy;
 	const float2 atlasMax = settings.AtlasBounds.zw;
 	const float2 AtlasUVPerWorldUnit = rcp(atlasMax - atlasMin);
-	float3 WorldPos = float3(lerp(atlasMin, atlasMax, float2(CoordsUV.x, 1 - CoordsUV.y)), 0);
+	float3 WorldPos = float3(lerp(atlasMin, atlasMax, CoordsUV), 0);
 
 	float2 AtlasUV = LinearStep(atlasMin, atlasMax, WorldPos.xy);
 
