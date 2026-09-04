@@ -197,7 +197,6 @@ void AzimuthWeights(float2 azDir, out float4 wC, out float4 wD)
 	float4 cC = azDir.xyxy * float2(1.0, -1.0).xxyy;  //float4(azDir.x, azDir.y, -azDir.x, -azDir.y);
 	float4 cD = float4(azDir.x + azDir.y, -azDir.x + azDir.y, -azDir.x - azDir.y, azDir.x - azDir.y) * 0.70710678;
 
-	// cos^8 by squaring; avoids pow()'s log2/exp2 pair and folds cleanly at compile time
 	wC = saturate(cC);
 	wC *= wC;
 	wC *= wC;
@@ -247,7 +246,6 @@ float4 MakeConeWeightD(float i)
 	return wD;
 }
 
-// Expands to exactly SAMPLES entries; keep the nesting in sync with SAMPLES.
 #	define CONE_LUT_1(F, i) F(i)
 #	define CONE_LUT_4(F, i) CONE_LUT_1(F, i), CONE_LUT_1(F, i + 1), CONE_LUT_1(F, i + 2), CONE_LUT_1(F, i + 3)
 #	define CONE_LUT_16(F, i) CONE_LUT_4(F, i), CONE_LUT_4(F, i + 4), CONE_LUT_4(F, i + 8), CONE_LUT_4(F, i + 12)
@@ -268,7 +266,7 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 	// gives correct height values
 	const float2 atlasMin = settings.AtlasBounds.xy;
 	const float2 atlasMax = settings.AtlasBounds.zw;
-	static const float2 AtlasUVPerWorldUnit = rcp(atlasMax - atlasMin);
+	const float2 AtlasUVPerWorldUnit = rcp(atlasMax - atlasMin);
 	float3 WorldPos = float3(lerp(atlasMin, atlasMax, float2(CoordsUV.x, 1 - CoordsUV.y)), 0);
 
 	float2 AtlasUV = LinearStep(atlasMin, atlasMax, WorldPos.xy);
@@ -293,7 +291,6 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 	float SkyAperture = BNSample.w;  // AO
 
 	sh2vec3 SkyAverageSH = SH::UnpackSH2Vec3(IBLSkySHTex);
-	sh2vec3 DirectTermSH = SH::Scale(SkyAverageSH, SkyAperture);  // is this actually needed anymore?
 
 	// Cone Tracing
 	sh2vec3 BounceSH = SH::ZeroSH2Vec3();
@@ -306,8 +303,9 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 		float sinH, OcclDist;
 		InterpAzimuth(ConeWeightCLUT[i], ConeWeightDLUT[i], HData, sinH, OcclDist);
 
-		float3 SkyRadiance = SampleSkyRadiance(RayDir);  // * settings.SkyInfluence;
 		if (GrSin >= sinH) {
+			float3 SkyRadiance = SampleSkyRadiance(RayDir);  // * settings.SkyInfluence;
+
 			//float cloudTr = 1;
 			//float3 cloudInscattering = 0;
 			//RaymarchCloud(RayDir, WorldPos, cloudInscattering, cloudTr);
@@ -319,39 +317,38 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 			continue;
 		}
 
-		// Where the ray meets flat ground; degenerates to MaxSampleDist at/above horizontal.
 		float RayDist = min(WorldHeight * ConeSample.w, MaxSampleDist);
 
 		float DeltaR = min(RayDist, OcclDist > 0.0 ? OcclDist : MaxSampleDist);
 		DeltaR = sqrt(DeltaR * DeltaR + MinSampleDistSq);
 
 		// This gives us first surface pos in dir = RayDir
-		float2 UVOffset = ConeSample.xy * DeltaR * AtlasUVPerWorldUnit;
-		float2 RaySampleUV = AtlasUV + UVOffset;  // does uv offset need 1 - .y ?
+		float2 UVOffset = float2(ConeSample.x, -ConeSample.y) * DeltaR * AtlasUVPerWorldUnit;
+		float2 RaySampleUV = AtlasUV + UVOffset;
 
-		float3 SampleWorldPos = float3(lerp(atlasMin, atlasMax, float2(RaySampleUV.x, 1 - RaySampleUV.y)), 0);  // does 1 - .y need removing here?
+		float3 SampleWorldPos = float3(lerp(atlasMin, atlasMax, RaySampleUV), 0);
 
 		float3 BounceAlbedo = AlbedoTex.SampleLevel(LinearSampler, RaySampleUV, 0).xyz;
 		float4 BounceBN = BentNormalTex.SampleLevel(LinearSampler, RaySampleUV, 0);
 		float BouncedSkyVis = BounceBN.w;
 
+		float3 BounceNormal = NormalTex.SampleLevel(LinearSampler, RaySampleUV, 0).xyz * 2.0 - 1.0;
+
 		// Sky Bounce
-		float3 BounceSkyIrradiance = BouncedSkyVis * Math::PI * SkyRadiance;  //float3(1, 1, 1);
+		float3 BounceSkyIrradiance = BouncedSkyVis * SH::FuncProductIntegral(SkyAverageSH, SH::EvaluateCosineLobe(BounceNormal));
 		float3 SkyBounce = BounceAlbedo * BounceSkyIrradiance * (1.0 / Math::PI);
 
 		// Sun Bounce
-		float3 BounceNormal = NormalTex.SampleLevel(LinearSampler, RaySampleUV, 0).xyz * 2.0 - 1.0;
 		float NdotL = saturate(dot(BounceNormal, SharedData::DirLightDirection.xyz));
 		float SunShadow = TerrainShadows::GetTerrainShadow(SampleWorldPos, LinearSampler);
 		float llDirLightMult = SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear && !SharedData::InInterior ? SharedData::linearLightingSettings.dirLightMult : 1.0;
 		float3 DirLightColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * llDirLightMult;
-		float3 SunBounce = BounceAlbedo * NdotL * SunShadow * DirLightColor;
+		float3 SunBounce = BounceAlbedo * NdotL * SunShadow * DirLightColor * BRDF::Diffuse_Lambert();
 
 		BounceSH = SH::Add(BounceSH, SH::Scale(SH::Evaluate(RayDir), (SkyBounce + SunBounce) * SampleSolidAngle));
 	}
 
 	sh2vec3 ResultSH = SH::ZeroSH2Vec3();
-	ResultSH = SH::Add(ResultSH, DirectTermSH);
 	ResultSH = SH::Add(ResultSH, SkySH);
 	ResultSH = SH::Add(ResultSH, BounceSH);
 
