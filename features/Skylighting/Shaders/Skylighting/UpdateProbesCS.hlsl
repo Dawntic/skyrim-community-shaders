@@ -61,8 +61,7 @@ SamplerComparisonState comparisonSampler : register(s0);
 //SamplerState LinearSampler : register(s0);
 SamplerState LinearWrapSampler : register(s2);
 
-Texture2D HeightTex : register(t0);
-Texture2D SkyViewLUTTex : register(t1);
+Texture2D<float> HeightTex : register(t0);
 Texture2D AlbedoTex : register(t2);
 Texture2D BentNormalTex : register(t3);
 Texture2D CardinalHorizonTex : register(t4);
@@ -81,50 +80,12 @@ RWTexture2DArray<float4> ProbeArray : register(u0);
 #	define SAMPLES (AZIMUTHS * ELEVATIONS)
 #	define CLOUD_RAY_SAMPLES 64  //128
 
-// These matches physical sky
-float2 SkyViewLutUv(float3 rayDir)
-{
-	float azimuth = atan2(rayDir.y, rayDir.x);
-	float u = azimuth * .5 * rcp(Math::PI);  // sampler wraps around so ok
-	float zenith = asin(rayDir.z);
-	float v = 0.5 - 0.5 * sign(zenith) * sqrt(abs(zenith) * 2 * rcp(Math::PI));
-	v = max(v, 0.01);
-	return frac(float2(u, v));
-}
-
-float3 SampleSky(float3 viewDir, SamplerState sampSv)
-{
-	SharedData::PhysSkyData data = SharedData::physSkyData;
-
-	const float2 skyLutUv = SkyViewLutUv(viewDir);
-	float3 skyColor = SkyViewLUTTex.SampleLevel(sampSv, skyLutUv, 0).rgb;
-
-	if (data.tonemapper == 1)
-		skyColor = Color::LLLinearToGamma(skyColor);
-	else if (data.tonemapper == 2)
-		skyColor = skyColor / (1 + skyColor);
-
-	return skyColor;
-}
-
-// Alt method without tonemap
-float3 SampleSkyRadiance(float3 rayDir)
-{
-	float azimuth = atan2(rayDir.y, rayDir.x);
-	float u = azimuth * .5 * (1 / Math::PI);  // sampler wraps around so ok
-	float zenith = asin(rayDir.z);
-	float v = 0.5 - 0.5 * sign(zenith) * sqrt(abs(zenith) * 2 * (1 / Math::PI));
-	v = max(v, 0.01);
-
-	return SkyViewLUTTex.SampleLevel(LinearWrapSampler, frac(float2(u, v)), 0).rgb;
-}
-
 static const float3 CLOUD_AMBIENT = float3(0.4, 0.45, 0.5);  // flat skylight fill into the cloud
 static const float CLOUD_MS_GAIN = 1.8;
 void ComputeLightingV1(float density, float stepLength, float sunVisibility, CloudParticpatingMedium medium, inout float3 Inscattering, inout float Transmittance)
 {
-	float albedo = medium.scattering / medium.extinction;
-	float Extinction = medium.extinction * density;
+	float3 albedo = medium.scattering / medium.extinction;
+	float Extinction = medium.extinction.x * density;
 	float Tr = exp(-Extinction * stepLength);
 
 	float3 Radiance = SharedData::DirLightColor.xyz * medium.phase * sunVisibility;
@@ -273,7 +234,7 @@ static const float2 ConeElevations[ELEVATIONS] = { ELEV_8(0) };
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
 
-	if (ThreadID.x >= settings.GridTexSize.x || ThreadID.y >= settings.GridTexSize.y)
+	if (ThreadID.x >= (uint)settings.GridTexSize.x || ThreadID.y >= (uint)settings.GridTexSize.y)
 		return;
 
 	float2 CoordsUV = (ThreadID.xy + 0.5) * rcp(settings.GridTexSize);
@@ -347,8 +308,8 @@ static const float2 ConeElevations[ELEVATIONS] = { ELEV_8(0) };
 	float HorizonDist[AZIMUTHS] = { HData.WallC[0], HData.WallC[1], HData.WallC[2], HData.WallC[3],
 		HData.WallD[0], HData.WallD[1], HData.WallD[2], HData.WallD[3] };
 
-	for (int i = 0; i < SAMPLES; ++i) {
-		int a = i / ELEVATIONS;
+	for (uint i = 0; i < SAMPLES; ++i) {
+		uint a = i / ELEVATIONS;
 		float2 Azimuth = ConeAzimuths[a];
 		float sinH = HorizonSin[a];
 		float Reach = clamp(HorizonDist[a], MinReach, MaxReach);
@@ -363,7 +324,7 @@ static const float2 ConeElevations[ELEVATIONS] = { ELEV_8(0) };
 		float3 Radiance = 0;
 
 		if (SkyWeight > 0.0) {
-			float3 SkyRadiance = SampleSkyRadiance(RayDir);  // * settings.SkyInfluence;
+			float3 SkyRadiance = PhysSky::SampleSky(RayDir, 0.0, LinearWrapSampler);  // * settings.SkyInfluence;
 
 			//float cloudTr = 1;
 			//float3 cloudInscattering = 0;
@@ -396,7 +357,7 @@ static const float2 ConeElevations[ELEVATIONS] = { ELEV_8(0) };
 		float3 BounceNormal = NormalTex.SampleLevel(LinearSampler, RaySampleUV, 0).xyz * 2.0 - 1.0;
 
 		// Sky Bounce
-		float3 BounceSkyIrradiance = BouncedSkyVis * SH::FuncProductIntegral(SkyAverageSH, SH::EvaluateCosineLobe(BounceNormal));
+		float3 BounceSkyIrradiance = BouncedSkyVis * SH::FuncProductIntegral(SkyAverageSH, SH::EvaluateCosineLobe(-BounceNormal));
 		float3 SkyBounce = BounceAlbedo * BounceSkyIrradiance * (1.0 / Math::PI);
 
 		// Sun Bounce

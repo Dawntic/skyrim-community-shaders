@@ -81,27 +81,7 @@ namespace Skylighting
 	}
 	//#endif
 
-	// Get this to output player world pos - remember probe grid is low rez
-	// TEXTURE can not represent full world span - 65665
-	float3 TestMap(float3 WorldPosition, SamplerState samp)
-	{
-		const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
-
-		float3 output = 0;
-		const float2 atlasMin = settings.AtlasBounds.xy;
-		const float2 atlasMax = settings.AtlasBounds.zw;
-		WorldPosition += FrameBuffer::CameraPosAdjust.xyz;
-
-		if (all(WorldPosition >= atlasMin) && all(WorldPosition < atlasMax)) {
-			float2 uv = (WorldPosition - atlasMin) / (atlasMax - atlasMin);
-			uv.y = 1.0 - uv.y;
-			output = SparseProbeArray.SampleLevel(samp, float3(uv, 0), 0) / 10;
-		}
-
-		return output;
-	}
-
-	sh2vec3 SampleIrradianceProbe(float3 WorldPosition)
+	float2 GetAtlasUV(float3 WorldPosition)
 	{
 		const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
 
@@ -109,12 +89,21 @@ namespace Skylighting
 		const float2 atlasMax = settings.AtlasBounds.zw;
 		WorldPosition += FrameBuffer::CameraPosAdjust.xyz;
 
-		float2 CoordsUV = (WorldPosition - atlasMin) / (atlasMax - atlasMin);
+		float2 CoordsUV = (WorldPosition.xy - atlasMin) / (atlasMax - atlasMin);
 		CoordsUV.y = 1.0 - CoordsUV.y;
 
-		int2 ProbeCoords = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
+		return saturate(CoordsUV);
+	}
 
-		return SH::UnpackSH2Vec3(ProbeCoords, SparseProbeArray);
+	sh2vec3 SampleIrradianceProbe(float3 WorldPosition, SamplerState samp)
+	{
+		float2 CoordsUV = GetAtlasUV(WorldPosition);
+
+		sh2vec3 probe;
+		probe.x = SparseProbeArray.SampleLevel(samp, float3(CoordsUV, 0), 0);
+		probe.y = SparseProbeArray.SampleLevel(samp, float3(CoordsUV, 1), 0);
+		probe.z = SparseProbeArray.SampleLevel(samp, float3(CoordsUV, 2), 0);
+		return probe;
 	}
 
 	sh2 BentNormalToSH(float3 bentNormal, float visibility, bool test)

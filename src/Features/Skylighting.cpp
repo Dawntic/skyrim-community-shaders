@@ -457,7 +457,7 @@ void Skylighting::UpdateSparseProbeGrid()
 
 	ID3D11ShaderResourceView* srvs[] = {
 		HMapSRV,
-		physSky.texSvLut->srv.get(),
+		nullptr,
 
 		AMapSRV,
 		BNMapSRV,

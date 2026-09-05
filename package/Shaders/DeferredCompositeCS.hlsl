@@ -172,14 +172,14 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 	}
 
 #	if defined(SKYLIGHTING)  // TODO: add to prev if statement
-	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
+	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
+	const float2 atlasMin = settings.AtlasBounds.xy;
+	const float2 atlasMax = settings.AtlasBounds.zw;
+	const float2 sparsePositionWS = positionWS.xy + FrameBuffer::CameraPosAdjust.xy;
+	bool ApplyIrradiance = settings.MinSpecularVisibility > 0.2 && settings.WorldHasCache && all(sparsePositionWS >= atlasMin) && all(sparsePositionWS < atlasMax);
 
-	sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(positionWS.xyz);
-	sh2 denseVisibilitySH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(positionWS.xyz));
-	sh2 bentNormalSH = Skylighting::SampleBentNormalSH(positionWS.xyz, LinearSampler, false);
-	sh2 visibilitySH = Skylighting::CombineVisibilitySH(denseVisibilitySH, bentNormalSH, normalWS);
-	visibilitySH = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, visibilitySH);
-	sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(normalWS), visibilitySH);
+	sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(positionWS.xyz, LinearSampler);
+	sh2 SkyLobe = SH::EvaluateCosineLobe(normalWS);
 
 	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
 	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);

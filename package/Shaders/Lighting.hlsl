@@ -3018,9 +3018,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	GetIndirectLobeWeights(indirectLobeWeights, indirectContext, material, uvOriginal);
 
 #	if defined(SKYLIGHTING)
-	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
+	const SharedData::SkylightingSettings sparseSettings = SharedData::skylightingSettings;
+	const float2 sparseAtlasMin = sparseSettings.AtlasBounds.xy;
+	const float2 sparseAtlasMax = sparseSettings.AtlasBounds.zw;
+	const float2 sparsePositionWS = input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy;
+	bool ApplyIrradiance = sparseSettings.MinSpecularVisibility > 0.2;
 
-	sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz);
+	sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz, SampColorSampler);
 
 	sh2 SkyLobe;
 	/*
@@ -3035,23 +3039,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), SkyLobe);
 	*/
 
-	sh2 denseVisibilitySH = lerp(SH::UnitSH2(), skylightingSH, skylightingFadeOutFactor);
-	sh2 bentNormalSH = Skylighting::SampleBentNormalSH(input.WorldPosition.xyz, SampColorSampler, false);
-	sh2 visibilitySH = Skylighting::CombineVisibilitySH(denseVisibilitySH, bentNormalSH, worldNormal);
-	visibilitySH = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, visibilitySH);
-	visibilitySH = SH::UnitSH2();
-	SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), visibilitySH);
+	SkyLobe = SH::EvaluateCosineLobe(worldNormal);
 
 	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
 	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
 
-	//SkyIrradiance = Skylighting::TestMap(input.WorldPosition.xyz);
-
-	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
-	const float2 atlasMin = settings.AtlasBounds.xy;
-	const float2 atlasMax = settings.AtlasBounds.zw;
-	float2 Coord = ((input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz) - atlasMin) / (atlasMax - atlasMin);
-	Coord.y = 1.0 - Coord.y;
+	float2 Coord = GetAtlasUV(input.WorldPosition.xyz);
 	//SkyIrradiance = Skylighting::SparseProbeArray.SampleLevel(SampColorSampler, float3(Coord, 0), 0);
 
 	if (ApplyIrradiance) {
