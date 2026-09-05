@@ -439,7 +439,7 @@ float GetDirOcclusion(float2 AtlasUV)
 	//float2 settings.EnvRadianceTexSize = 1024;  // Fix me later
 	//float2 InvEnvRadianceTexSize = 1 / settings.EnvRadianceTexSize;
 
-	if (ThreadID.x >= settings.EnvRadianceTexSize.x || ThreadID.y >= settings.EnvRadianceTexSize.y)
+	if (ThreadID.x >= (uint)settings.EnvRadianceTexSize.x || ThreadID.y >= (uint)settings.EnvRadianceTexSize.y)
 		return;
 
 	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvEnvRadianceTexSize;
@@ -452,9 +452,14 @@ float GetDirOcclusion(float2 AtlasUV)
 	float2 AtlasUV = LinearStep(atlasMin, atlasMax, WorldPos.xy);
 	AtlasUV.y = 1 - AtlasUV.y;
 
-	float3 NormalWS = NormalTex.SampleLevel(LinearSampler, AtlasUV, 0) * 2.0 - 1.0;
-	float3 Albedo = AlbedoTex.SampleLevel(LinearSampler, AtlasUV, 0) * ALBEDO_MULT;
-	Albedo = Color::ColorToLinear(Albedo);  // * Color::VanillaDiffuseColorMult();
+	float3 NormalWS = NormalTex.SampleLevel(LinearSampler, AtlasUV, 0).xyz * 2.0 - 1.0;
+
+	float3 Albedo = AlbedoTex.SampleLevel(LinearSampler, AtlasUV, 0).rgb;
+	Albedo = Color::ColorToLinear(Albedo) * Color::VanillaDiffuseColorMult();
+#	if defined(LOD_BLENDING)
+	Albedo = pow(abs(Albedo), SharedData::lodBlendingSettings.LODTerrainGamma) * SharedData::lodBlendingSettings.LODTerrainBrightness;
+#	endif
+	Albedo = Color::IrradianceToLinear(Albedo) * ALBEDO_MULT;
 
 	float4 BentNormal = BentNormalTex.SampleLevel(LinearSampler, AtlasUV, 0);
 	//float3 BentNormalDir = BentNormal.xyz * 2.0 - 1.0;
@@ -497,16 +502,17 @@ float GetDirOcclusion(float2 AtlasUV)
 	*/
 
 	sh2vec3 SkyAverageSH = SH::UnpackSH2Vec3(IBLSkySHTex);
-	float3 SkyIrradiance = BentNormal.w * SH::FuncProductIntegral(SkyAverageSH, SH::EvaluateCosineLobe(-NormalWS));
+	float3 SkyIrradiance = BentNormal.w * max(0, SH::FuncProductIntegral(SkyAverageSH, SH::EvaluateCosineLobe(-NormalWS)));
 	float3 AmbientLighting = SkyIrradiance * (1.0 / Math::PI);
 
 	// Direct lighting //
 	float SunShadow = GetDirOcclusion(AtlasUV.xy);
 	float Shadow = SunShadow;  // * max(CloudShadow, 0.5);  // 0.5 lim so cloud doesn't stomp dir light
-	float NdotL = saturate(dot(NormalWS, SharedData::DirLightDirection));
+	float NdotL = saturate(dot(NormalWS, SharedData::DirLightDirection.xyz));
 
 	float llDirLightMult = SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear && !SharedData::InInterior ? SharedData::linearLightingSettings.dirLightMult : 1.0;
 	float3 DirLightColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * llDirLightMult;
+	DirLightColor = Color::IrradianceToLinear(DirLightColor);
 
 	float3 DirLighting = NdotL * Shadow * DirLightColor * BRDF::Diffuse_Lambert();
 

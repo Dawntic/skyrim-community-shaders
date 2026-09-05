@@ -1,6 +1,7 @@
 #include "Skylighting.h"
 
 #include "Features/IBL.h"
+#include "Features/LODBlending.h"
 #include "Features/TexGenHelpers.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
@@ -347,11 +348,15 @@ void Skylighting::CompileComputeShaders()
 		std::vector<std::pair<const char*, const char*>> defines;
 	};
 
+	std::vector<std::pair<const char*, const char*>> terrainRelightDefines = { { "TERRAIN_RELIGHT", "" } };
+	if (globals::features::lodBlending.loaded)
+		terrainRelightDefines.push_back({ "LOD_BLENDING", "" });
+
 	std::vector<ShaderCompileInfo>
 		shaderInfos = {
 			{ &probeUpdateCompute, "UpdateProbesCS.hlsl", { { "DENSE_PROBE_GRID", "" } } },
 			{ &updateSparseGridCS, "UpdateProbesCS.hlsl", { { "SPARSE_PROBE_GRID", "" } } },
-			{ &terrainRelightCS, "UpdateProbesCS.hlsl", { { "TERRAIN_RELIGHT", "" } } },
+			{ &terrainRelightCS, "UpdateProbesCS.hlsl", terrainRelightDefines },
 		};
 
 	for (auto& info : shaderInfos) {

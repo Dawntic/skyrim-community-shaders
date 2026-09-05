@@ -145,7 +145,12 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 	sh2 skylightingSH = Skylighting::Sample(positionMS.xyz, normalWS);
 	float3 skyIrradiance = Skylighting::CalculateAmbientIrradiance(positionWS.xyz, normalWS, skylightingSH, LinearSampler);
 	directionalAmbientColor = Color::IrradianceToGamma(skyIrradiance);
-	useBaseAmbient = false;
+
+	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
+	if (ApplyIrradiance) {
+		useBaseAmbient = false;
+	}
+
 #	elif defined(IBL)
 	[branch] if (SharedData::iblSettings.EnableIBL)
 	{
