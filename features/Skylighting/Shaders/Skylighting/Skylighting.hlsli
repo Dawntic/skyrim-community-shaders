@@ -95,17 +95,6 @@ namespace Skylighting
 		return saturate(CoordsUV);
 	}
 
-	sh2vec3 SampleIrradianceProbe(float3 WorldPosition, SamplerState samp)
-	{
-		float2 CoordsUV = GetAtlasUV(WorldPosition);
-
-		sh2vec3 probe;
-		probe.x = SparseProbeArray.SampleLevel(samp, float3(CoordsUV, 0), 0);
-		probe.y = SparseProbeArray.SampleLevel(samp, float3(CoordsUV, 1), 0);
-		probe.z = SparseProbeArray.SampleLevel(samp, float3(CoordsUV, 2), 0);
-		return probe;
-	}
-
 	sh2 BentNormalToSH(float3 bentNormal, float visibility, bool test)
 	{
 		sh2 result;
@@ -164,11 +153,38 @@ namespace Skylighting
 		return UNIT_SH;
 	}
 
-	sh2 CombineVisibilitySH(sh2 denseSH, sh2 bentSH, float3 normalWS)
+	sh2vec3 SampleIrradianceProbe(float3 WorldPosition, SamplerState samp)
 	{
-		float denseVis = SH::Unproject(denseSH, normalWS);
-		float bentVis = SH::Unproject(bentSH, normalWS);
-		return denseVis < bentVis ? denseSH : bentSH;
+		float2 CoordsUV = GetAtlasUV(WorldPosition);
+
+		sh2vec3 probe;
+		probe.x = SparseProbeArray.SampleLevel(samp, float3(CoordsUV, 0), 0);
+		probe.y = SparseProbeArray.SampleLevel(samp, float3(CoordsUV, 1), 0);
+		probe.z = SparseProbeArray.SampleLevel(samp, float3(CoordsUV, 2), 0);
+		return probe;
+	}
+
+	float3 CalculateAmbientIrradiance(float3 WorldPosition, sh2 skylightingSH, SamplerState Sampler)
+	{
+		const SharedData::SkylightingSettings sparseSettings = SharedData::skylightingSettings;
+
+		sh2vec3 IrradianceProbe = SampleIrradianceProbe(WorldPosition, Sampler);
+
+		skylightingSH = lerp(SH::UnitSH2(), skylightingSH, GetFadeOutFactor(WorldPosition));
+		sh2 bentNormalSH = SampleBentNormalSH(WorldPosition, Sampler, 0);
+
+		float SkyAO = SH::Unproject(skylightingSH, worldNormal);
+		float BentAO = SH::Unproject(bentNormalSH, worldNormal);
+
+		sh2 SkyLobe = SkyAO < BentAO ? skylightingSH : bentNormalSH;  //min(SkyAO, BentAO);
+		SkyLobe = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, SkyLobe);
+		SkyLobe = SH::UnitSH2();
+		SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), SkyLobe);
+
+		float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
+		SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
+
+		return SkyIrradiance;
 	}
 
 	sh2 Sample(float3 positionMS, float3 normalWS)

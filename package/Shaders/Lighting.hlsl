@@ -3018,35 +3018,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	GetIndirectLobeWeights(indirectLobeWeights, indirectContext, material, uvOriginal);
 
 #	if defined(SKYLIGHTING)
-	const SharedData::SkylightingSettings sparseSettings = SharedData::skylightingSettings;
-	const float2 sparseAtlasMin = sparseSettings.AtlasBounds.xy;
-	const float2 sparseAtlasMax = sparseSettings.AtlasBounds.zw;
-	const float2 sparsePositionWS = input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy;
-	bool ApplyIrradiance = sparseSettings.MinSpecularVisibility > 0.2;
-
-	sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz, SampColorSampler);
-
-	sh2 SkyLobe;
-	/*
-	skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(input.WorldPosition.xyz));
-	sh2 bentNormalSH = Skylighting::SampleBentNormalSH(input.WorldPosition.xyz, SampColorSampler, 0);
-
-	float SkyAO = SH::Unproject(skylightingSH, worldNormal);
-	float BentAO = SH::Unproject(bentNormalSH, worldNormal);
-
-	SkyLobe = SkyAO < BentAO ? skylightingSH : bentNormalSH; //min(SkyAO, BentAO);
-	SkyLobe = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, SkyLobe);
-	SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), SkyLobe);
-	*/
-
-	SkyLobe = SH::EvaluateCosineLobe(worldNormal);
-
-	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
-	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
+	float3 SkyIrradiance = CalculateAmbientIrradiance(input.WorldPosition.xyz, skylightingSH, SampColorSampler);
 
 	float2 Coord = GetAtlasUV(input.WorldPosition.xyz);
 	//SkyIrradiance = Skylighting::SparseProbeArray.SampleLevel(SampColorSampler, float3(Coord, 0), 0);
 
+	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
 	if (ApplyIrradiance) {
 		directionalAmbientColor = Color::IrradianceToGamma(SkyIrradiance);
 	}
