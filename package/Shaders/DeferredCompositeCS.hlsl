@@ -139,33 +139,35 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 	float3 directionalAmbientColor = 0;
 
+	bool useBaseAmbient = true;
 #	if defined(SKYLIGHTING)
 	float3 positionMS = positionWS.xyz;
 	sh2 skylightingSH = Skylighting::Sample(positionMS.xyz, normalWS);
 	float3 skyIrradiance = Skylighting::CalculateAmbientIrradiance(positionWS.xyz, normalWS, skylightingSH, LinearSampler);
-	directionalAmbientColor = Color::IrradianceToGamma(skyIrradiance) * albedo;
-#	else
-#		if defined(IBL)
-	if (SharedData::iblSettings.EnableIBL) {
+	directionalAmbientColor = Color::IrradianceToGamma(skyIrradiance);
+	useBaseAmbient = false;
+#	elif defined(IBL)
+	[branch] if (SharedData::iblSettings.EnableIBL)
+	{
 		float3 vanillaDALC = Color::Ambient(max(0, SharedData::GetAmbient(normalWS)));
-		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(vanillaDALC, -normalWS) * albedo;
-
-		directionalAmbientColor = Color::RGBToYCoCg(directionalAmbientColor);
-		directionalAmbientColor.x = MasksTexture[dispatchID.xy].z;
-		directionalAmbientColor = Color::YCoCgToRGB(directionalAmbientColor);
-		directionalAmbientColor = max(0, directionalAmbientColor);
-	} else
-#		endif  // IBL
+#		if defined(SKYLIGHTING)
+		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBLOccluded(vanillaDALC, -normalWS, skylightingDiffuse);
+#		else
+		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(vanillaDALC, -normalWS);
+#		endif  // SKYLIGHTING
+		useBaseAmbient = false;
+	}
+#	endif      // IBL
+	[branch] if (useBaseAmbient)
 	{
 		directionalAmbientColor = Color::Ambient(max(0, SharedData::GetAmbient(normalWS)));
-		directionalAmbientColor *= albedo;
-
-		directionalAmbientColor = Color::RGBToYCoCg(directionalAmbientColor);
-		directionalAmbientColor.x = MasksTexture[dispatchID.xy].z;
-		directionalAmbientColor = Color::YCoCgToRGB(directionalAmbientColor);
-		directionalAmbientColor = max(0, directionalAmbientColor);
 	}
-#	endif
+
+	directionalAmbientColor *= albedo;
+	directionalAmbientColor = Color::RGBToYCoCg(directionalAmbientColor);
+	directionalAmbientColor.x = MasksTexture[dispatchID.xy].z;
+	directionalAmbientColor = Color::YCoCgToRGB(directionalAmbientColor);
+	directionalAmbientColor = max(0, directionalAmbientColor);
 
 	{
 		float maxScale = 1.0;
