@@ -3018,9 +3018,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	GetIndirectLobeWeights(indirectLobeWeights, indirectContext, material, uvOriginal);
 
 #	if defined(SKYLIGHTING)
-	float3 SkyIrradiance = CalculateAmbientIrradiance(input.WorldPosition.xyz, skylightingSH, SampColorSampler);
+	float3 SkyIrradiance = Skylighting::CalculateAmbientIrradiance(input.WorldPosition.xyz, worldNormal, skylightingSH, SampColorSampler);
 
-	float2 Coord = GetAtlasUV(input.WorldPosition.xyz);
+	float2 Coord = Skylighting::GetAtlasUV(input.WorldPosition.xyz);
 	//SkyIrradiance = Skylighting::SparseProbeArray.SampleLevel(SampColorSampler, float3(Coord, 0), 0);
 
 	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;

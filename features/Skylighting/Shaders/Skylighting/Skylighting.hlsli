@@ -164,7 +164,7 @@ namespace Skylighting
 		return probe;
 	}
 
-	float3 CalculateAmbientIrradiance(float3 WorldPosition, sh2 skylightingSH, SamplerState Sampler)
+	float3 CalculateAmbientIrradiance(float3 WorldPosition, float3 worldNormal, sh2 skylightingSH, SamplerState Sampler)
 	{
 		const SharedData::SkylightingSettings sparseSettings = SharedData::skylightingSettings;
 

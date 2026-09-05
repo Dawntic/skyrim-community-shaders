@@ -142,25 +142,20 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 #	if defined(SKYLIGHTING)
 	float3 positionMS = positionWS.xyz;
 	sh2 skylightingSH = Skylighting::Sample(positionMS.xyz, normalWS);
-	float skylightingDiffuse = Skylighting::EvaluateDiffuse(skylightingSH, normalWS);
-#	endif
-
-#	if defined(IBL)
+	float3 skyIrradiance = Skylighting::CalculateAmbientIrradiance(positionWS.xyz, normalWS, skylightingSH, LinearSampler);
+	directionalAmbientColor = Color::IrradianceToGamma(skyIrradiance) * albedo;
+#	else
+#		if defined(IBL)
 	if (SharedData::iblSettings.EnableIBL) {
 		float3 vanillaDALC = Color::Ambient(max(0, SharedData::GetAmbient(normalWS)));
-
-#		if defined(SKYLIGHTING)
-		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBLOccluded(vanillaDALC, -normalWS, skylightingDiffuse) * albedo;
-#		else
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(vanillaDALC, -normalWS) * albedo;
-#		endif  // SKYLIGHTING
 
 		directionalAmbientColor = Color::RGBToYCoCg(directionalAmbientColor);
 		directionalAmbientColor.x = MasksTexture[dispatchID.xy].z;
 		directionalAmbientColor = Color::YCoCgToRGB(directionalAmbientColor);
 		directionalAmbientColor = max(0, directionalAmbientColor);
 	} else
-#	endif  // IBL
+#		endif  // IBL
 	{
 		directionalAmbientColor = Color::Ambient(max(0, SharedData::GetAmbient(normalWS)));
 		directionalAmbientColor *= albedo;
@@ -169,14 +164,6 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		directionalAmbientColor.x = MasksTexture[dispatchID.xy].z;
 		directionalAmbientColor = Color::YCoCgToRGB(directionalAmbientColor);
 		directionalAmbientColor = max(0, directionalAmbientColor);
-	}
-
-#	if defined(SKYLIGHTING)  // TODO: add to prev if statement
-	float3 SkyIrradiance = CalculateAmbientIrradiance(input.WorldPosition.xyz, skylightingSH, SampColorSampler);
-
-	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
-	if (ApplyIrradiance) {
-		directionalAmbientColor = Color::IrradianceToGamma(SkyIrradiance) * albedo;
 	}
 #	endif
 
