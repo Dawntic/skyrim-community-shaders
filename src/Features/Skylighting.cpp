@@ -418,6 +418,12 @@ void Skylighting::UpdateTerrainLighting()
 
 	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
+	ID3D11ShaderResourceView* skyViewSRV = globals::features::physicalSky.texSvLut->srv.get();
+	context->CSSetShaderResources(62, 1, &skyViewSRV);
+
+	ID3D11ShaderResourceView* skyIBLSRV = globals::features::ibl.skyIBLTexture ? globals::features::ibl.skyIBLTexture->srv.get() : nullptr;
+	context->CSSetShaderResources(77, 1, &skyIBLSRV);
+
 	context->Dispatch((terrainMapSize.x + 7) / 8, (terrainMapSize.y + 7) / 8, 1);
 
 	ID3D11UnorderedAccessView* nullUAVs[2] = { nullptr, nullptr };
@@ -468,6 +474,9 @@ void Skylighting::UpdateSparseProbeGrid()
 
 	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
+	ID3D11ShaderResourceView* skyViewSRV = physSky.texSvLut->srv.get();
+	context->CSSetShaderResources(62, 1, &skyViewSRV);
+
 	ID3D11ShaderResourceView* skyIBLSRV = globals::features::ibl.skyIBLTexture ? globals::features::ibl.skyIBLTexture->srv.get() : nullptr;
 	context->CSSetShaderResources(77, 1, &skyIBLSRV);
 
@@ -475,9 +484,6 @@ void Skylighting::UpdateSparseProbeGrid()
 
 	ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
-
-	skyIBLSRV = nullptr;
-	context->CSSetShaderResources(77, 1, &skyIBLSRV);
 
 	if (globals::state->frameAnnotations)
 		globals::state->EndPerfEvent();

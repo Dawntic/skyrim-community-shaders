@@ -432,35 +432,9 @@ Texture2D CardinalOcclusionDiagTex : register(t4);
 Texture2D AlbedoTex : register(t5);
 Texture2D NormalTex : register(t6);
 Texture2D TexTrLut : register(t7);
+Texture2D IBLSkySHTex : register(t77);
 
 RWTexture2D<float4> TerrainRelight : register(u0);
-
-float3 SampleSkyRadiance(float3 rayDir)
-{
-	float azimuth = atan2(rayDir.y, rayDir.x);
-	float u = azimuth * .5 * (1 / Math::PI);  // sampler wraps around so ok
-	float zenith = asin(rayDir.z);
-	float v = 0.5 - 0.5 * sign(zenith) * sqrt(abs(zenith) * 2 * (1 / Math::PI));
-	v = max(v, 0.01);
-
-	return SkyViewLUTTex.SampleLevel(LinearWrapSampler, frac(float2(u, v)), 0).rgb;
-}
-
-float3 SampleTr(float3 sunDir)
-{
-	SharedData::PhysSkyData data = SharedData::physSkyData;
-
-	if (data.trMix < 1e-8)
-		return 1;
-
-	const float2 lutUv = PhysSky::TrLutUv(data.zCameraPlanet, sunDir.z);
-	float3 tr = TexTrLut.SampleLevel(LinearWrapSampler, lutUv, 0).rgb;
-	if (sunDir.z <= -0.414)
-		tr = 0;
-	tr = lerp(1, tr, data.trMix);
-
-	return tr;
-}
 
 float GetDirOcclusion(float2 CoordsUV)
 {
@@ -544,6 +518,10 @@ float GetDirOcclusion(float2 CoordsUV)
 	float mult = MIN_AMBIENT_LUM / lum;
 	//AmbientLighting *= max(1, mult);
 
+	sh2vec3 SkyAverageSH = SH::UnpackSH2Vec3(IBLSkySHTex);
+	float3 BounceSkyIrradiance = BentNormalAO * SH::FuncProductIntegral(SkyAverageSH, SH::EvaluateCosineLobe(-NormalWS));
+	float3 SkyBounce = BounceSkyIrradiance * (1.0 / Math::PI);
+
 	// Direct lighting //
 	float SunShadow = GetDirOcclusion(CoordsUV.xy);
 	float Shadow = SunShadow * max(CloudShadow, 0.5);  // 0.5 lim so cloud doesn't stomp dir light
@@ -554,11 +532,11 @@ float GetDirOcclusion(float2 CoordsUV)
 	//DirLightColor *= SampleTr(normalize(SharedData::DirLightDirection.xyz));
 	//DirLightColor = clamp(DirLightColor, 0, 3);
 
-	DirLightColor = float3(1, 1, 1) * 3;  // Not const is inconsisent - fix later
-	DirLightColor *= SampleTr(normalize(SharedData::DirLightDirection.xyz));
-	DirLightColor *= DIR_LIGHT_MULT;
+	//DirLightColor = float3(1, 1, 1) * 3;  // Not const is inconsisent - fix later
+	//DirLightColor *= SampleTr(normalize(SharedData::DirLightDirection.xyz));
+	//DirLightColor *= DIR_LIGHT_MULT;
 
-	float3 DirLighting = DirLightColor * Shadow * NdotL * BRDF::Diffuse_Lambert();
+	float3 DirLighting = NdotL * Shadow * DirLightColor * BRDF::Diffuse_Lambert();
 
 	float3 Lighting = (AmbientLighting + DirLighting);
 	Lighting *= Albedo;
