@@ -134,7 +134,7 @@ public:
 	float4 OcclusionDir;
 	uint frameCount = 0;
 
-	bool updateTerrainLighting = false;
+	bool updateTerrainLighting = true;
 	bool runSparse = true;  /////////////
 
 	// Sparse grid

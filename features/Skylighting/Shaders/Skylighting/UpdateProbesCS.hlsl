@@ -62,6 +62,7 @@ SamplerComparisonState comparisonSampler : register(s0);
 SamplerState LinearWrapSampler : register(s2);
 
 Texture2D<float> HeightTex : register(t0);
+Texture2D TerrainRelight : register(t1);
 Texture2D AlbedoTex : register(t2);
 Texture2D BentNormalTex : register(t3);
 Texture2D CardinalHorizonTex : register(t4);
@@ -347,7 +348,8 @@ static const float2 ConeElevations[ELEVATIONS] = { ELEV_8(0) };
 		float2 UVOffset = Azimuth * DeltaR * AtlasUVPerWorldUnit;
 		float2 RaySampleUV = AtlasUV + UVOffset;
 
-		float BounceHeight = HeightTex.SampleLevel(LinearSampler, RaySampleUV, 0);
+		/*
+		float BounceHeight = HeightTex.SampleLevel(LinearSampler, RaySampleUV, 0).x;
 		float3 SampleWorldPos = float3(lerp(atlasMin, atlasMax, float2(RaySampleUV.x, 1 - RaySampleUV.y)), BounceHeight);
 
 		float3 BounceAlbedo = AlbedoTex.SampleLevel(LinearSampler, RaySampleUV, 0).xyz;
@@ -368,6 +370,9 @@ static const float2 ConeElevations[ELEVATIONS] = { ELEV_8(0) };
 		float3 SunBounce = BounceAlbedo * NdotL * SunShadow * DirLightColor * BRDF::Diffuse_Lambert();
 
 		Radiance += (SkyBounce + SunBounce) * (1.0 - SkyWeight);
+		*/
+
+		Radiance += TerrainRelight.SampleLevel(LinearSampler, RaySampleUV, 0).xyz * (1.0 - SkyWeight);  //
 
 		ResultSH = SH::Add(ResultSH, SH::Scale(SH::Evaluate(RayDir), Radiance * SampleSolidAngle));
 
@@ -397,14 +402,14 @@ Texture2D IBLSkySHTex : register(t77);
 
 RWTexture2D<float4> TerrainRelight : register(u0);
 
-float GetDirOcclusion(float2 CoordsUV)
+float GetDirOcclusion(float2 AtlasUV)
 {
 	float Visibility;
 
 	//float4 Card = CardinalOcclusionTex[PxCoords];
 	//float4 Diag = CardinalOcclusionDiagTex[PxCoords];
-	float4 Card = CardinalOcclusionTex.SampleLevel(LinearSampler, CoordsUV, 0);
-	float4 Diag = CardinalOcclusionDiagTex.SampleLevel(LinearSampler, CoordsUV, 0);
+	float4 Card = CardinalOcclusionTex.SampleLevel(LinearSampler, AtlasUV, 0);
+	float4 Diag = CardinalOcclusionDiagTex.SampleLevel(LinearSampler, AtlasUV, 0);
 
 	// Horizon height in sun direction
 	float4 basis0 = SharedData::skylightingSettings.Basis0;
@@ -422,7 +427,7 @@ float GetDirOcclusion(float2 CoordsUV)
 
 #	define DIR_LIGHT_MULT 1  // 0.2
 #	define SKY_MULT 1
-#	define ALBEDO_MULT 1.9  //account for dark tex - can maybe remove later
+#	define ALBEDO_MULT 1.0  //1.9  //account for dark tex - can maybe remove later
 
 #	define AO_SCALE 1
 #	define MIN_AMBIENT_LUM 0.3  // without this the contrast at dawn and dusk is just too high
@@ -439,19 +444,29 @@ float GetDirOcclusion(float2 CoordsUV)
 
 	float2 CoordsUV = (ThreadID.xy + 0.5) * settings.InvEnvRadianceTexSize;
 
-	float WorldHeight = HeightTex.SampleLevel(LinearSampler, CoordsUV, 0);
-	float3 WorldPos = float3(lerp(settings.GridBounds.xy, settings.GridBounds.zw, float2(CoordsUV.x, 1.0 - CoordsUV.y)), WorldHeight);
+	const float2 atlasMin = settings.AtlasBounds.xy;
+	const float2 atlasMax = settings.AtlasBounds.zw;
+	const float2 AtlasUVPerWorldUnit = rcp(atlasMax - atlasMin);
+	float3 WorldPos = float3(lerp(atlasMin, atlasMax, float2(CoordsUV.x, 1.0 - CoordsUV.y)), 0);
 
-	float4 BentNormal = BentNormalTex.SampleLevel(LinearSampler, CoordsUV, 0);
+	float2 AtlasUV = LinearStep(atlasMin, atlasMax, WorldPos.xy);
+	AtlasUV.y = 1 - AtlasUV.y;
+
+	float3 NormalWS = NormalTex.SampleLevel(LinearSampler, AtlasUV, 0) * 2.0 - 1.0;
+	float3 Albedo = AlbedoTex.SampleLevel(LinearSampler, AtlasUV, 0) * ALBEDO_MULT;
+	Albedo = Color::ColorToLinear(Albedo);  // * Color::VanillaDiffuseColorMult();
+
+	float4 BentNormal = BentNormalTex.SampleLevel(LinearSampler, AtlasUV, 0);
 	//float3 BentNormalDir = BentNormal.xyz * 2.0 - 1.0;
-	float BentNormalAO = BentNormal.w;
-	float SkyAO = pow(BentNormalAO, AO_SCALE);
+
+	/*
+	float WorldHeight = HeightTex.SampleLevel(LinearSampler, AtlasUV, 0);
+
+	float SkyAO = pow(BentNormal.w, AO_SCALE);
 	float3 SkySampleDir = float3(0, 0, 1);  // looks better than using bent normal
 
-	float3 NormalWS = NormalTex.SampleLevel(LinearSampler, CoordsUV, 0) * 2 - 1;
-	float3 Albedo = AlbedoTex.SampleLevel(LinearSampler, CoordsUV, 0) * ALBEDO_MULT;
 	//Albedo = Color::SkyrimGammaToLinear(Albedo) * Color::VanillaDiffuseColorMult(); // looks weird - surely lod isnt linear tho
-	float3 EnvAlbedo = AlbedoTex.SampleLevel(LinearSampler, CoordsUV, 4) * ALBEDO_MULT;
+	float3 EnvAlbedo = AlbedoTex.SampleLevel(LinearSampler, AtlasUV, 4) * ALBEDO_MULT;
 	//EnvAlbedo = Color::SkyrimGammaToLinear(EnvAlbedo) * Color::VanillaDiffuseColorMult();
 
 	// Ambient lighting //
@@ -460,7 +475,7 @@ float GetDirOcclusion(float2 CoordsUV)
 	// Sky
 	float SkyWeight = NormalWeight * SkyAO;
 
-	float3 SkyRadiance = SampleSkyRadiance(SkySampleDir);
+	float3 SkyRadiance = PhysSky::SampleSky(SkySampleDir, 0.0, LinearWrapSampler);
 	float3 CloudRadiance = float3(0.5, 0.5, 0.5);  // no fast src for this yet
 	float CloudShadow = 1;                         //CloudShadows::GetCloudShadowMult(WorldPos, LinearSampler);
 	float3 SkyAmbient = lerp(CloudRadiance, SkyRadiance, CloudShadow);
@@ -468,7 +483,7 @@ float GetDirOcclusion(float2 CoordsUV)
 	float3 SkyLight = SkyAmbient * SkyWeight;
 
 	// Ground multi bounce approx
-	float BounceWeight = 1.0;  //(1.0 + 1.0 - BentNormalAO);
+	float BounceWeight = 1.0;  //(1.0 + 1.0 - BentNormal.w);
 	BounceWeight += 1.0 - NormalWeight;
 	BounceWeight *= saturate(Color::RGBToLuminance(SkyRadiance * SkyAO * Math::PI));  // approx sky irradiance otherwise ground is always lit
 
@@ -479,23 +494,19 @@ float GetDirOcclusion(float2 CoordsUV)
 	float mult = MIN_AMBIENT_LUM / lum;
 	//AmbientLighting *= max(1, mult);
 
+	*/
+
 	sh2vec3 SkyAverageSH = SH::UnpackSH2Vec3(IBLSkySHTex);
-	float3 BounceSkyIrradiance = BentNormalAO * SH::FuncProductIntegral(SkyAverageSH, SH::EvaluateCosineLobe(-NormalWS));
-	float3 SkyBounce = BounceSkyIrradiance * (1.0 / Math::PI);
+	float3 SkyIrradiance = BentNormal.w * SH::FuncProductIntegral(SkyAverageSH, SH::EvaluateCosineLobe(-NormalWS));
+	float3 AmbientLighting = SkyIrradiance * (1.0 / Math::PI);
 
 	// Direct lighting //
-	float SunShadow = GetDirOcclusion(CoordsUV.xy);
-	float Shadow = SunShadow * max(CloudShadow, 0.5);  // 0.5 lim so cloud doesn't stomp dir light
+	float SunShadow = GetDirOcclusion(AtlasUV.xy);
+	float Shadow = SunShadow;  // * max(CloudShadow, 0.5);  // 0.5 lim so cloud doesn't stomp dir light
 	float NdotL = saturate(dot(NormalWS, SharedData::DirLightDirection));
 
 	float llDirLightMult = SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear && !SharedData::InInterior ? SharedData::linearLightingSettings.dirLightMult : 1.0;
 	float3 DirLightColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * llDirLightMult;
-	//DirLightColor *= SampleTr(normalize(SharedData::DirLightDirection.xyz));
-	//DirLightColor = clamp(DirLightColor, 0, 3);
-
-	//DirLightColor = float3(1, 1, 1) * 3;  // Not const is inconsisent - fix later
-	//DirLightColor *= SampleTr(normalize(SharedData::DirLightDirection.xyz));
-	//DirLightColor *= DIR_LIGHT_MULT;
 
 	float3 DirLighting = NdotL * Shadow * DirLightColor * BRDF::Diffuse_Lambert();
 
