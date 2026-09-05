@@ -40,18 +40,18 @@ float TexelsToEdge(float2 uv, float2 Dir, float2 Dim)
 	return min(Cos.x, Cos.y);
 }
 
-// March one ray; return sin(elevation) of the highest occluder (>= 0 = flat).
-float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, float2 Dir, out float MeanHitDist)
+float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, float2 Dir, out float VisibleDist)
 {
 	float2 InvPxSize = 1.0 / HeightMapPxSize;
 	float MaxHeight = 0.0;
-	float WeightedDist = 0.0;
+	float Horizon = -1.0;
 
 	float StepCount = TexelsToEdge(CoordsUV, Dir, HeightMapPxSize);
 	float2 TexelWorldSize = (GridBounds.zw - GridBounds.xy) / (float2)HeightMapPxSize;
 	float StepDist = length(Dir * TexelWorldSize);
 
 	float PosOffset = StepDist;
+	VisibleDist = 0.0;
 	[loop] for (int step = 1; step < StepCount; ++step)
 	{
 		float2 Offset = Dir * step * InvPxSize;
@@ -62,15 +62,17 @@ float MarchHorizon(float2 CoordsUV, float SampleHeight, uint2 HeightMapPxSize, f
 		float HDiff = Height - SampleHeight;
 		float Hypot = sqrt(PosOffset * PosOffset + HDiff * HDiff);
 		float SinElevation = HDiff / Hypot;
-		if (SinElevation > MaxHeight) {
-			WeightedDist += (SinElevation - MaxHeight) * PosOffset;
-			MaxHeight = SinElevation;
+
+		MaxHeight = max(MaxHeight, SinElevation);
+
+		if (SinElevation >= Horizon - 1e-4) {
+			Horizon = max(Horizon, SinElevation);
+			VisibleDist = PosOffset;
 		}
 
 		PosOffset += StepDist;
 	}
 
-	MeanHitDist = MaxHeight > 1e-4 ? WeightedDist / MaxHeight : 0.0;
 	return max(MaxHeight, 0.0);
 }
 
