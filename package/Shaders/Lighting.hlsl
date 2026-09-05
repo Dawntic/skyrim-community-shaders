@@ -3039,6 +3039,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	sh2 bentNormalSH = Skylighting::SampleBentNormalSH(input.WorldPosition.xyz, SampColorSampler, false);
 	sh2 visibilitySH = Skylighting::CombineVisibilitySH(denseVisibilitySH, bentNormalSH, worldNormal);
 	visibilitySH = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, visibilitySH);
+	visibilitySH = SH::UnitSH2();
 	SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), visibilitySH);
 
 	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
@@ -3051,7 +3052,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	const float2 atlasMax = settings.AtlasBounds.zw;
 	float2 Coord = ((input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz) - atlasMin) / (atlasMax - atlasMin);
 	Coord.y = 1.0 - Coord.y;
-	SkyIrradiance = Skylighting::SparseProbeArray.SampleLevel(SampColorSampler, float3(Coord, 0), 0);
+	//SkyIrradiance = Skylighting::SparseProbeArray.SampleLevel(SampColorSampler, float3(Coord, 0), 0);
 
 	if (ApplyIrradiance) {
 		directionalAmbientColor = Color::IrradianceToGamma(SkyIrradiance);
@@ -3489,9 +3490,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(SKYLIGHTING)
-	psout.Diffuse.xyz = SkyIrradiance;
+	//psout.Diffuse.xyz = SkyIrradiance;// + psout.Diffuse.xyz * 0.5;
 #	else
-	psout.Diffuse.xyz = (float3)0;
+	//psout.Diffuse.xyz = (float3)0;
 #	endif
 
 	return psout;

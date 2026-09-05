@@ -76,7 +76,9 @@ Texture2D IBLSkySHTex : register(t77);
 
 RWTexture2DArray<float4> ProbeArray : register(u0);
 
-#	define SAMPLES 64            //256
+#	define AZIMUTHS 8
+#	define ELEVATIONS 8
+#	define SAMPLES (AZIMUTHS * ELEVATIONS)
 #	define CLOUD_RAY_SAMPLES 64  //128
 
 // These matches physical sky
@@ -249,14 +251,24 @@ float4 MakeConeWeightD(float i)
 	return wD;
 }
 
-#	define CONE_LUT_1(F, i) F(i)
-#	define CONE_LUT_4(F, i) CONE_LUT_1(F, i), CONE_LUT_1(F, i + 1), CONE_LUT_1(F, i + 2), CONE_LUT_1(F, i + 3)
-#	define CONE_LUT_16(F, i) CONE_LUT_4(F, i), CONE_LUT_4(F, i + 4), CONE_LUT_4(F, i + 8), CONE_LUT_4(F, i + 12)
-#	define CONE_LUT_64(F) CONE_LUT_16(F, 0), CONE_LUT_16(F, 16), CONE_LUT_16(F, 32), CONE_LUT_16(F, 48)
+// Atlas space, matching the CARD then DIAG bin order in TexGen/GenerateCacheMaps.hlsl
+static const float2 ConeAzimuths[AZIMUTHS] = {
+	float2(1, 0), float2(0, -1), float2(-1, 0), float2(0, 1),
+	float2(0.70710678, -0.70710678), float2(-0.70710678, -0.70710678),
+	float2(-0.70710678, 0.70710678), float2(0.70710678, 0.70710678)
+};
 
-static const float4 ConeSampleLUT[SAMPLES] = { CONE_LUT_64(MakeConeSample) };
-static const float4 ConeWeightCLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightC) };
-static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
+float2 MakeConeElevation(float k)
+{
+	float GrSin = 1.0 - 2.0 * (k + 0.5) / ELEVATIONS;
+	return float2(GrSin, sqrt(saturate(1.0 - GrSin * GrSin)));
+}
+
+#	define ELEV_1(k) MakeConeElevation(k)
+#	define ELEV_4(k) ELEV_1(k), ELEV_1(k + 1), ELEV_1(k + 2), ELEV_1(k + 3)
+#	define ELEV_8(k) ELEV_4(k), ELEV_4(k + 4)
+
+static const float2 ConeElevations[ELEVATIONS] = { ELEV_8(0) };
 
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
@@ -273,10 +285,10 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 	float3 WorldPos = float3(lerp(atlasMin, atlasMax, float2(CoordsUV.x, 1 - CoordsUV.y)), 0);
 
 	// debug
-	WorldPos.xy = FrameBuffer::CameraPosAdjust.xy;
+	//WorldPos.xy = FrameBuffer::CameraPosAdjust.xy;
 	if (any(ThreadID.xyz != 0)) {
-		ProbeArray[uint3(ThreadID.xyz)] = 0.0.xxxx;
-		return;
+		//ProbeArray[uint3(ThreadID.xyz)] = 0.0.xxxx;
+		//return;
 	}
 
 	float2 AtlasUV = LinearStep(atlasMin, atlasMax, WorldPos.xy);
@@ -330,13 +342,21 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 
 	// Cone Tracing
 	sh2vec3 ResultSH = SH::ZeroSH2Vec3();
-	for (int i = 0; i < SAMPLES; ++i) {
-		float4 ConeSample = ConeSampleLUT[i];
-		float3 RayDir = float3(ConeSample.x * ConeSample.w, -ConeSample.y * ConeSample.w, ConeSample.z);
-		float GrSin = ConeSample.z;
+	float HorizonSin[AZIMUTHS] = { HData.SinC[0], HData.SinC[1], HData.SinC[2], HData.SinC[3],
+		HData.SinD[0], HData.SinD[1], HData.SinD[2], HData.SinD[3] };
+	float HorizonDist[AZIMUTHS] = { HData.WallC[0], HData.WallC[1], HData.WallC[2], HData.WallC[3],
+		HData.WallD[0], HData.WallD[1], HData.WallD[2], HData.WallD[3] };
 
-		float sinH, OcclDist;
-		InterpAzimuth(ConeWeightCLUT[i], ConeWeightDLUT[i], HData, sinH, OcclDist);
+	for (int i = 0; i < SAMPLES; ++i) {
+		int a = i / ELEVATIONS;
+		float2 Azimuth = ConeAzimuths[a];
+		float sinH = HorizonSin[a];
+		float Reach = clamp(HorizonDist[a], MinReach, MaxReach);
+
+		float2 ConeElevation = ConeElevations[i % ELEVATIONS];
+		float GrSin = ConeElevation.x;
+		float GrCos = ConeElevation.y;
+		float3 RayDir = float3(Azimuth.x * GrCos, -Azimuth.y * GrCos, GrSin);
 
 		float SkyWeight = smoothstep(-HorizonBand, HorizonBand, GrSin - sinH + HorizonBias);
 
@@ -359,13 +379,11 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 			continue;
 		}
 
-		float Reach = clamp(OcclDist, MinReach, MaxReach);
-
 		float t = saturate((sinH - GrSin) / (sinH + 1.0));
 		float DeltaR = Reach * sqrt(1.0 - t);
 
 		// This gives us first surface pos in dir = RayDir
-		float2 UVOffset = ConeSample.xy * DeltaR * AtlasUVPerWorldUnit;
+		float2 UVOffset = Azimuth * DeltaR * AtlasUVPerWorldUnit;
 		float2 RaySampleUV = AtlasUV + UVOffset;
 
 		float BounceHeight = HeightTex.SampleLevel(LinearSampler, RaySampleUV, 0);
@@ -393,11 +411,11 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 		ResultSH = SH::Add(ResultSH, SH::Scale(SH::Evaluate(RayDir), Radiance * SampleSolidAngle));
 
 		// debug
-		ProbeArray[int3((RaySampleUV)*settings.GridTexSize.xy, 0)] = float4(1.0.xxx, 1);
+		//ProbeArray[int3((RaySampleUV)*settings.GridTexSize.xy, 0)] = float4(1.0.xxx, 1);
 	}
 
 	//ProbeArray[uint3(ThreadID.xyz)] = SkyAperture.xxxx * 0.5;
-	//SH::PackSH2Vec3(ResultSH, ThreadID.xy, ProbeArray);
+	SH::PackSH2Vec3(ResultSH, ThreadID.xy, ProbeArray);
 }
 #endif
 
