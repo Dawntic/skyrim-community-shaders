@@ -3036,22 +3036,22 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	*/
 
 	sh2 denseVisibilitySH = lerp(SH::UnitSH2(), skylightingSH, skylightingFadeOutFactor);
-	denseVisibilitySH = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, denseVisibilitySH);
-	SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), denseVisibilitySH);
+	sh2 bentNormalSH = Skylighting::SampleBentNormalSH(input.WorldPosition.xyz, SampColorSampler, false);
+	sh2 visibilitySH = Skylighting::CombineVisibilitySH(denseVisibilitySH, bentNormalSH, worldNormal);
+	visibilitySH = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, visibilitySH);
+	SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), visibilitySH);
 
 	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
 	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
 
-	// No albedo here. directionalAmbientColor carries an irradiance, matching the vanilla
-	// assignment and the IBL variants above; albedo is applied downstream by
-	// "color.xyz += indirectLobeWeights.diffuse * directionalAmbientColor". Multiplying it in
-	// here as well squared it, crushing dark textures and exaggerating saturation.
-
-#		if defined(TRUE_PBR)
-	//SkyIrradiance *= Color::PBRLightingScale;
-#		endif
-
 	//SkyIrradiance = Skylighting::TestMap(input.WorldPosition.xyz);
+
+	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
+	const float2 atlasMin = settings.AtlasBounds.xy;
+	const float2 atlasMax = settings.AtlasBounds.zw;
+	float2 Coord = ((input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz) - atlasMin) / (atlasMax - atlasMin);
+	Coord.y = 1.0 - Coord.y;
+	SkyIrradiance = Skylighting::SparseProbeArray.SampleLevel(SampColorSampler, float3(Coord, 0), 0);
 
 	if (ApplyIrradiance) {
 		directionalAmbientColor = Color::IrradianceToGamma(SkyIrradiance);
@@ -3489,9 +3489,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(SKYLIGHTING)
-	//psout.Diffuse.xyz = SkyIrradiance;
+	psout.Diffuse.xyz = SkyIrradiance;
 #	else
-	//psout.Diffuse.xyz = (float3)0;
+	psout.Diffuse.xyz = (float3)0;
 #	endif
 
 	return psout;

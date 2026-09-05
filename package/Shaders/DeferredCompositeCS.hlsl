@@ -30,9 +30,9 @@ Texture2D<unorm float> DepthTexture : register(t4);
 Texture2D<float3> ReflectanceTexture : register(t5);
 TextureCube<float3> EnvTexture : register(t6);
 TextureCube<float3> EnvReflectionsTexture : register(t7);
+#endif
 
 SamplerState LinearSampler : register(s0);
-#endif
 
 #if defined(SKYLIGHTING)
 #	define SKYLIGHTING_PROBE_REGISTER t8
@@ -175,9 +175,11 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
 
 	sh2vec3 IrradianceProbe = Skylighting::SampleIrradianceProbe(positionWS.xyz);
-	skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(positionWS.xyz));
-	skylightingSH = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, skylightingSH);
-	sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(normalWS), skylightingSH);
+	sh2 denseVisibilitySH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(positionWS.xyz));
+	sh2 bentNormalSH = Skylighting::SampleBentNormalSH(positionWS.xyz, LinearSampler, false);
+	sh2 visibilitySH = Skylighting::CombineVisibilitySH(denseVisibilitySH, bentNormalSH, normalWS);
+	visibilitySH = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, visibilitySH);
+	sh2 SkyLobe = SH::Product(SH::EvaluateCosineLobe(normalWS), visibilitySH);
 
 	float3 SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
 	SkyIrradiance = max(SkyIrradiance / Math::PI, 0);

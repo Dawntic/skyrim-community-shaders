@@ -372,7 +372,7 @@ void Deferred::DeferredPasses()
 		};
 
 		ID3D11SamplerState* samplers[]{
-			dynamicCubemaps.loaded ? linearSampler : nullptr,
+			linearSampler,
 			physSky.loaded ? physSky.sampSv.get() : nullptr,
 		};
 		context->CSSetSamplers(0, ARRAYSIZE(samplers), samplers);

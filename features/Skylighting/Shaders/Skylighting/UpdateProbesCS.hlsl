@@ -226,10 +226,9 @@ float4 MakeConeSample(float i)
 {
 	float3 RayDir = ConeSampleDir(i);
 
-	float GrSin = RayDir.z;
-	float GrCos = sqrt(1 - GrSin * GrSin);
+	float GrCos = sqrt(1 - RayDir.z * RayDir.z);
 
-	return float4(RayDir.x, -RayDir.y, GrSin, GrCos / max(-GrSin, 1e-6));
+	return float4(RayDir.x, -RayDir.y, RayDir.z, GrCos / max(-RayDir.z, 1e-6));
 }
 
 float4 MakeConeWeightC(float i)
@@ -267,23 +266,53 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 	const float2 atlasMin = settings.AtlasBounds.xy;
 	const float2 atlasMax = settings.AtlasBounds.zw;
 	const float2 AtlasUVPerWorldUnit = rcp(atlasMax - atlasMin);
-	float3 WorldPos = float3(lerp(atlasMin, atlasMax, CoordsUV), 0);
+	float3 WorldPos = float3(lerp(atlasMin, atlasMax, float2(CoordsUV.x, 1 - CoordsUV.y)), 0);
+
+	// debug
+	//WorldPos.xy = FrameBuffer::CameraPosAdjust.xy;
+	if (any(ThreadID.xyz != 0)) {
+		//	ProbeArray[uint3(ThreadID.xyz)] = 0.0.xxxx;
+		//	return;
+	}
 
 	float2 AtlasUV = LinearStep(atlasMin, atlasMax, WorldPos.xy);
+	AtlasUV.y = 1 - AtlasUV.y;
 
 	float WorldHeight = HeightTex.SampleLevel(LinearSampler, AtlasUV, 0);
 	WorldPos.z = WorldHeight;
 
+	static const float2 HorizonTaps[4] = {
+		float2(-0.25, -0.25), float2(0.25, -0.25), float2(-0.25, 0.25), float2(0.25, 0.25)
+	};
+	const float2 ProbeFootprintUV = rcp((float2)settings.GridTexSize);
+
 	HorizonData HData;
-	HData.SinC = CardinalHorizonTex.SampleLevel(LinearSampler, AtlasUV, 0);
-	HData.SinD = DiagonalHorizonTex.SampleLevel(LinearSampler, AtlasUV, 0);
-	HData.WallC = CardinalWallDistTex.SampleLevel(LinearSampler, AtlasUV, 0);
-	HData.WallD = DiagonalWallDistTex.SampleLevel(LinearSampler, AtlasUV, 0);
+	HData.SinC = 0;
+	HData.SinD = 0;
+	HData.WallC = 0;
+	HData.WallD = 0;
+	[unroll] for (int tap = 0; tap < 4; ++tap)
+	{
+		float2 TapUV = AtlasUV + HorizonTaps[tap] * ProbeFootprintUV;
+		HData.SinC += CardinalHorizonTex.SampleLevel(LinearSampler, TapUV, 0);
+		HData.SinD += DiagonalHorizonTex.SampleLevel(LinearSampler, TapUV, 0);
+		HData.WallC += CardinalWallDistTex.SampleLevel(LinearSampler, TapUV, 0);
+		HData.WallD += DiagonalWallDistTex.SampleLevel(LinearSampler, TapUV, 0);
+	}
+	HData.SinC *= 0.25;
+	HData.SinD *= 0.25;
+	HData.WallC *= 0.25;
+	HData.WallD *= 0.25;
 
 	//static const float ProbeHeightOffset = 100;  // world units
 	//float ProbeHeight = WorldHeight + ProbeHeightOffset;
-	static const float MaxSampleDist = 25000;
-	static const float MinSampleDistSq = 5000;
+	static const float MaxSampleDist = 50000;
+	static const float MinSampleTexels = 80;
+
+	uint2 BentNormalPxSize;
+	BentNormalTex.GetDimensions(BentNormalPxSize.x, BentNormalPxSize.y);
+	const float2 WorldUnitsPerBNTexel = (atlasMax - atlasMin) / (float2)BentNormalPxSize;
+	const float MinSampleDist = max(WorldUnitsPerBNTexel.x, WorldUnitsPerBNTexel.y) * MinSampleTexels;
 	static const float SampleSolidAngle = 4.0 * Math::PI / SAMPLES;
 
 	float4 BNSample = BentNormalTex.SampleLevel(LinearSampler, AtlasUV, 0);
@@ -292,9 +321,11 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 
 	sh2vec3 SkyAverageSH = SH::UnpackSH2Vec3(IBLSkySHTex);
 
+	const float HorizonBand = max(settings.HorizonBand, 1e-5);
+	const float HorizonBias = settings.HorizonBias;
+
 	// Cone Tracing
-	sh2vec3 BounceSH = SH::ZeroSH2Vec3();
-	sh2vec3 SkySH = SH::ZeroSH2Vec3();
+	sh2vec3 ResultSH = SH::ZeroSH2Vec3();
 	for (int i = 0; i < SAMPLES; ++i) {
 		float4 ConeSample = ConeSampleLUT[i];
 		float3 RayDir = float3(ConeSample.x, -ConeSample.y, ConeSample.z);
@@ -303,7 +334,11 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 		float sinH, OcclDist;
 		InterpAzimuth(ConeWeightCLUT[i], ConeWeightDLUT[i], HData, sinH, OcclDist);
 
-		if (GrSin >= sinH) {
+		float SkyWeight = smoothstep(-HorizonBand, HorizonBand, GrSin - sinH + HorizonBias);
+
+		float3 Radiance = 0;
+
+		if (SkyWeight > 0.0) {
 			float3 SkyRadiance = SampleSkyRadiance(RayDir);  // * settings.SkyInfluence;
 
 			//float cloudTr = 1;
@@ -312,21 +347,26 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 
 			//SkyRadiance = SkyRadiance * cloudTr + cloudInscattering;
 
-			SkySH = SH::Add(SkySH, SH::Scale(SH::Evaluate(RayDir), SkyRadiance * SampleSolidAngle));
+			Radiance += SkyRadiance * SkyWeight;
+		}
 
+		if (SkyWeight >= 1.0) {
+			ResultSH = SH::Add(ResultSH, SH::Scale(SH::Evaluate(RayDir), Radiance * SampleSolidAngle));
 			continue;
 		}
 
 		float RayDist = min(WorldHeight * ConeSample.w, MaxSampleDist);
 
 		float DeltaR = min(RayDist, OcclDist > 0.0 ? OcclDist : MaxSampleDist);
-		DeltaR = sqrt(DeltaR * DeltaR + MinSampleDistSq);
+		DeltaR = sqrt(DeltaR * DeltaR + MinSampleDist * MinSampleDist);
+		DeltaR = min(DeltaR, MaxSampleDist);
 
 		// This gives us first surface pos in dir = RayDir
-		float2 UVOffset = float2(ConeSample.x, -ConeSample.y) * DeltaR * AtlasUVPerWorldUnit;
+		float2 UVOffset = RayDir.xy * DeltaR * AtlasUVPerWorldUnit;
 		float2 RaySampleUV = AtlasUV + UVOffset;
 
-		float3 SampleWorldPos = float3(lerp(atlasMin, atlasMax, RaySampleUV), 0);
+		float BounceHeight = HeightTex.SampleLevel(LinearSampler, RaySampleUV, 0);
+		float3 SampleWorldPos = float3(lerp(atlasMin, atlasMax, float2(RaySampleUV.x, 1 - RaySampleUV.y)), BounceHeight);
 
 		float3 BounceAlbedo = AlbedoTex.SampleLevel(LinearSampler, RaySampleUV, 0).xyz;
 		float4 BounceBN = BentNormalTex.SampleLevel(LinearSampler, RaySampleUV, 0);
@@ -345,14 +385,15 @@ static const float4 ConeWeightDLUT[SAMPLES] = { CONE_LUT_64(MakeConeWeightD) };
 		float3 DirLightColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * llDirLightMult;
 		float3 SunBounce = BounceAlbedo * NdotL * SunShadow * DirLightColor * BRDF::Diffuse_Lambert();
 
-		BounceSH = SH::Add(BounceSH, SH::Scale(SH::Evaluate(RayDir), (SkyBounce + SunBounce) * SampleSolidAngle));
+		Radiance += (SkyBounce + SunBounce) * (1.0 - SkyWeight);
+
+		ResultSH = SH::Add(ResultSH, SH::Scale(SH::Evaluate(RayDir), Radiance * SampleSolidAngle));
+
+		// debug
+		//ProbeArray[int3((RaySampleUV) * settings.GridTexSize.xy, 0)] = float4(1.0.xxx, 1);
 	}
 
-	sh2vec3 ResultSH = SH::ZeroSH2Vec3();
-	ResultSH = SH::Add(ResultSH, SkySH);
-	ResultSH = SH::Add(ResultSH, BounceSH);
-
-	//ProbeArray[uint3(ThreadID.xyz)] = BNSample;
+	//ProbeArray[uint3(ThreadID.xyz)] = SkyAperture.xxxx * 0.5;
 	SH::PackSH2Vec3(ResultSH, ThreadID.xy, ProbeArray);
 }
 #endif

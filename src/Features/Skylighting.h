@@ -60,6 +60,8 @@ public:
 		float MinSpecularVisibility = 0.1f;
 		float SkyInfluence = 4.0f;
 		float EnvInfluence = 1.0f;
+		float HorizonBand = 0.15f;
+		float HorizonBias = 0.0f;
 
 		uint toggleLighting = true;
 		uint toggleTrees = true;
@@ -107,7 +109,8 @@ public:
 		float4 BentNormalAtlasBounds;  // xy: min, zw: max world XY the atlas covers
 		uint HasBentNormalTile;
 		uint HasBentNormalAtlas;
-		uint _pad1[2];
+		float HorizonBand;
+		float HorizonBias;
 	};
 	static_assert(sizeof(SkylightingCB) % 16 == 0);
 

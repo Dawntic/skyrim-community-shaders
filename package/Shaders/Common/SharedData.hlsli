@@ -168,7 +168,8 @@ namespace SharedData
 		float4 AtlasBounds;           // xy: min, zw: max world XY the atlas covers
 		uint HasBentNormalTile;
 		uint HasBentNormalAtlas;
-		uint2 pad1;
+		float HorizonBand;
+		float HorizonBias;
 	};
 
 	struct CloudShadowsSettings

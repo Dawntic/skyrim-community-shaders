@@ -90,7 +90,6 @@ namespace Skylighting
 		float3 output = 0;
 		const float2 atlasMin = settings.AtlasBounds.xy;
 		const float2 atlasMax = settings.AtlasBounds.zw;
-
 		WorldPosition += FrameBuffer::CameraPosAdjust.xyz;
 
 		if (all(WorldPosition >= atlasMin) && all(WorldPosition < atlasMax)) {
@@ -108,15 +107,14 @@ namespace Skylighting
 
 		const float2 atlasMin = settings.AtlasBounds.xy;
 		const float2 atlasMax = settings.AtlasBounds.zw;
-		WorldPosition += FrameBuffer::CameraPosAdjust.xyz;  // new
+		WorldPosition += FrameBuffer::CameraPosAdjust.xyz;
 
-		//float2 CoordsUV = (WorldPosition.xy - settings.GridMinCornerWS) * settings.InvGridSpan;
 		float2 CoordsUV = (WorldPosition - atlasMin) / (atlasMax - atlasMin);
+		CoordsUV.y = 1.0 - CoordsUV.y;
 
-		CoordsUV = float2(CoordsUV.x, 1 - CoordsUV.y);
-		int2 Probe = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
-		sh2vec3 probeSample = SH::UnpackSH2Vec3(Probe, SparseProbeArray);
-		return probeSample;
+		int2 ProbeCoords = clamp(int2(CoordsUV * (float2)settings.GridTexSize), 0, settings.GridTexSize - 1);
+
+		return SH::UnpackSH2Vec3(ProbeCoords, SparseProbeArray);
 	}
 
 	sh2 BentNormalToSH(float3 bentNormal, float visibility, bool test)
@@ -175,6 +173,13 @@ namespace Skylighting
 		}
 
 		return UNIT_SH;
+	}
+
+	sh2 CombineVisibilitySH(sh2 denseSH, sh2 bentSH, float3 normalWS)
+	{
+		float denseVis = SH::Unproject(denseSH, normalWS);
+		float bentVis = SH::Unproject(bentSH, normalWS);
+		return denseVis < bentVis ? denseSH : bentSH;
 	}
 
 	sh2 Sample(float3 positionMS, float3 normalWS)

@@ -15,7 +15,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MinDiffuseVisibility,
 	MinSpecularVisibility,
 	SkyInfluence,
-	EnvInfluence)
+	EnvInfluence,
+	HorizonBand,
+	HorizonBias)
 
 void Skylighting::LoadSettings(json& o_json)
 {
@@ -50,6 +52,9 @@ void Skylighting::DrawSettings()
 
 	ImGui::SliderFloat("Sky Influence", &settings.SkyInfluence, 0.01f, 5.0f);
 	ImGui::SliderFloat("Environment Influence", &settings.EnvInfluence, 0.01f, 5.0f);
+
+	ImGui::SliderFloat("Horizon Band", &settings.HorizonBand, 0.0f, 0.3f, "%.3f");
+	ImGui::SliderFloat("Horizon Bias", &settings.HorizonBias, -0.2f, 0.2f, "%.3f");
 
 	ImGui::Checkbox("Terrain Lighting Map", &updateTerrainLighting);
 	ImGui::Checkbox("Sparse Probe Map", &runSparse);
@@ -287,8 +292,7 @@ bool Skylighting::LoadWorldspaceCache()
 		DirectX::TexMetadata heightMetadata{};
 		DirectX::TexMetadata albedoMetadata;
 		const bool heightMetadataLoaded = heightLoaded && SUCCEEDED(DirectX::GetMetadataFromDDSFile(heightPath.c_str(), DirectX::DDS_FLAGS_NONE, heightMetadata));
-		bool albedoMatchesHeight = heightMetadataLoaded && SUCCEEDED(DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, albedoMetadata)) &&
-		                           albedoMetadata.width == heightMetadata.width && albedoMetadata.height == heightMetadata.height && albedoMetadata.mipLevels == 1;
+		bool albedoMatchesHeight = heightMetadataLoaded && SUCCEEDED(DirectX::GetMetadataFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, albedoMetadata)) && albedoMetadata.width == heightMetadata.width && albedoMetadata.height == heightMetadata.height && albedoMetadata.mipLevels == 1;
 		if (!albedoMatchesHeight)
 			albedoMatchesHeight = texGen.BuildLODAtlas(newWorldspaceID);
 		if (albedoMatchesHeight)
@@ -302,10 +306,9 @@ bool Skylighting::LoadWorldspaceCache()
 		} else {
 			texGen.ResolveBentNormalAtlas(newWorldspaceID, bentNormalPath);
 		}
+
 		DirectX::TexMetadata bentNormalMetadata;
-		const bool bentNormalMatchesHeight = heightMetadataLoaded && !bentNormalPath.empty() &&
-		                                     SUCCEEDED(DirectX::GetMetadataFromDDSFile(bentNormalPath.c_str(), DirectX::DDS_FLAGS_NONE, bentNormalMetadata)) &&
-		                                     bentNormalMetadata.width == heightMetadata.width && bentNormalMetadata.height == heightMetadata.height && bentNormalMetadata.mipLevels == 1;
+		const bool bentNormalMatchesHeight = heightMetadataLoaded && !bentNormalPath.empty() && SUCCEEDED(DirectX::GetMetadataFromDDSFile(bentNormalPath.c_str(), DirectX::DDS_FLAGS_NONE, bentNormalMetadata)) && bentNormalMetadata.width == heightMetadata.width && bentNormalMetadata.height == heightMetadata.height && bentNormalMetadata.mipLevels == 1;
 		if (bentNormalMatchesHeight && !LoadCacheMap(bentNormalPath, &BNMapSRV))
 			logger::error("[Skylighting] {} exists but failed to load; leaving it untouched", bentNormalPath.string());
 
@@ -561,6 +564,8 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 		.BentNormalAtlasBounds = globals::features::texGen.GetAtlasWorldBound(),
 		.HasBentNormalTile = BNTileSRV != nullptr,
 		.HasBentNormalAtlas = BNMapSRV != nullptr,
+		.HorizonBand = settings.HorizonBand,
+		.HorizonBias = settings.HorizonBias,
 	};
 }
 
