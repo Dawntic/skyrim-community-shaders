@@ -10,6 +10,8 @@ cbuffer CacheGenBuffer : register(b0)
 	float4 SweepDir;           // xy: world direction, z: minor per major slope, w: major step
 	float4 SweepParams;        // x: first line offset, y: line count, z: transpose, w: world units per step
 	float4 SweepRect;          // xy: tile origin in atlas texels, z: tile size
+	float4 SmoothParams;       // xy: filter axis in texels, z: radius, w: spatial sigma in texels
+	float4 SmoothRange;        // x: range sigma, y: preserve threshold, zw: height clamp, all game units
 };
 
 //// Bent Normal and Cardinal AO Map ////////////////////////////////////////////////////
@@ -336,6 +338,119 @@ float LoadHeight(int2 CoordsPx, int2 HeightMapPxSize)
 	float3 N = normalize(float3(-dHdx, -dHdy, 1.0));
 
 	OutputNormal[ThreadID.xy] = float4(N * 0.5 + 0.5, 1.0);
+}
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
+
+//// Height Smoothing ///////////////////////////////////////////////////////////////////
+// Flattens the fine relief out of the height atlas without moving the terrain it belongs
+// to: the 8 unit quantisation steps of the 16 bit export, LOD stair stepping and small
+// bumps all go, while cliffs and mountain fronts stay where they are.
+//
+// The kernel is a bilateral one. Its spatial term is a plain Gaussian over the radius; its
+// range term weights a neighbour by how far its height is from the centre, so a neighbour
+// within SmoothRange.x game units averages in and one across a cliff does not. Small relief
+// sits well inside that window and is averaged flat; large relief sits outside it and
+// survives with its edge intact.
+//
+// Run separably, one dispatch per axis, ping ponging between two targets. A separable
+// bilateral is an approximation - the true kernel is not the product of two 1D kernels -
+// but two 2R tap passes cost a fraction of one R*R tap pass, and iterating cheap passes
+// flattens more than one wide pass does. Short dispatches also keep a full atlas bake well
+// clear of the driver timeout.
+//
+// Heights are decoded to game units on load, so the range sigma, the preserve threshold and
+// the clamp are all in game units whether the atlas on disk is 16 bit or float. Intermediate
+// targets are already decoded and are dispatched with an identity decode.
+
+#ifdef HEIGHT_SMOOTH
+Texture2D<float> HeightTex : register(t0);
+RWTexture2D<float> OutputHeight : register(u0);
+
+// Decoded height in game units, clamped to the range a worldspace can hold. The clamp is what keeps
+// one bad texel from dragging its whole neighbourhood with it: a value far outside the range would
+// otherwise carry a huge range distance into every tap that reads it. clamp is min/max, which per
+// the D3D spec return the other operand for a NaN, so a NaN lands on the floor rather than spreading.
+float LoadHeightUnits(int2 CoordsPx, int2 HeightMapPxSize)
+{
+	CoordsPx = clamp(CoordsPx, 0, HeightMapPxSize - 1);  // the atlas does not wrap, so edges repeat
+	float Height = (HeightTex[CoordsPx] - HeightMapOffsetScale.x) * HeightMapOffsetScale.y;
+	return clamp(Height, SmoothRange.z, SmoothRange.w);
+}
+
+[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	if (any(ThreadID.xy >= OutputTexSize))
+		return;
+
+	uint2 HeightMapPxSize;
+	HeightTex.GetDimensions(HeightMapPxSize.x, HeightMapPxSize.y);
+
+	const int2 MapPxSize = (int2)HeightMapPxSize;
+	const int2 CoordsPx = (int2)ThreadID.xy;
+	const int2 Axis = (int2)SmoothParams.xy;  // (1, 0) or (0, 1)
+	const int Radius = (int)SmoothParams.z;
+
+	const float Centre = LoadHeightUnits(CoordsPx, MapPxSize);
+
+	// Both terms are exp(-d^2 / 2 sigma^2), so the two exponents add into one exp per tap.
+	const float SpatialFalloff = -0.5 / max(SmoothParams.w * SmoothParams.w, 1e-6);
+	const float RangeFalloff = -0.5 / max(SmoothRange.x * SmoothRange.x, 1e-6);
+
+	// The centre tap weighs 1: it is at no spatial and no range distance from itself.
+	float Sum = Centre;
+	float WeightSum = 1.0;
+
+	[loop] for (int Tap = 1; Tap <= Radius; ++Tap)
+	{
+		const float Spatial = SpatialFalloff * (float)(Tap * Tap);
+
+		[unroll] for (int Side = 0; Side < 2; ++Side)
+		{
+			const float Height = LoadHeightUnits(CoordsPx + Axis * (Side == 0 ? Tap : -Tap), MapPxSize);
+			const float Delta = Height - Centre;
+			const float Weight = exp(Spatial + RangeFalloff * Delta * Delta);
+
+			Sum += Height * Weight;
+			WeightSum += Weight;
+		}
+	}
+
+	OutputHeight[ThreadID.xy] = Sum / WeightSum;
+}
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
+
+//// Height Smoothing Resolve ///////////////////////////////////////////////////////////
+// Final pass of the smoothing chain: hands back the relief that was never meant to go, then
+// clamps to the worldspace height range so what lands on disk is always a value the map can
+// legitimately hold.
+
+#ifdef HEIGHT_SMOOTH_RESOLVE
+Texture2D<float> HeightTex : register(t0);    // source atlas, still in its on disk encoding
+Texture2D<float> SmoothedTex : register(t1);  // filtered result, already in game units
+RWTexture2D<float> OutputHeight : register(u0);
+
+[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	if (any(ThreadID.xy >= OutputTexSize))
+		return;
+
+	const int2 CoordsPx = (int2)ThreadID.xy;
+
+	const float Source = clamp((HeightTex[CoordsPx] - HeightMapOffsetScale.x) * HeightMapOffsetScale.y, SmoothRange.z, SmoothRange.w);
+	const float Base = SmoothedTex[CoordsPx];
+
+	// Coring on the residual. Relief the filter took out returns only once it is tall enough to
+	// be terrain rather than detail: below the threshold it is dropped outright, above twice it
+	// the source height is restored exactly, so a ridge the range term still rounded off is not
+	// left half flattened. A zero threshold leaves the smoothed result untouched.
+	float Height = Base;
+	const float Threshold = SmoothRange.y;
+	if (Threshold > 0.0) {
+		const float Residual = Source - Base;
+		Height += Residual * smoothstep(Threshold, 2.0 * Threshold, abs(Residual));
+	}
+
+	OutputHeight[ThreadID.xy] = clamp(Height, SmoothRange.z, SmoothRange.w);
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////

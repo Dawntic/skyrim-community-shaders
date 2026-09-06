@@ -23,7 +23,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	cacheAtlasTileCells,
 	cacheAtlasTilesX,
 	cacheAtlasTilesY,
-	cacheBentNormalAtlasScale)
+	cacheBentNormalAtlasScale,
+	smoothRadius,
+	smoothSpatialSigma,
+	smoothRangeSigma,
+	smoothIterations,
+	smoothPreserveThreshold)
 
 // Every generated LOD map is a single surface: one mip level, one array slice, no cube faces.
 // Written through explicit metadata so the property is enforced at the call rather than being an
@@ -46,6 +51,27 @@ static bool SaveMapDDS(const DirectX::Image& image, const std::filesystem::path&
 	}
 
 	return true;
+}
+
+// Dimensions of the texture behind a shader resource view. The height atlas is loaded and owned by
+// its consumer, so its size is only reachable through the view it hands over.
+static bool GetSRVTextureSize(ID3D11ShaderResourceView* a_srv, int2& o_size)
+{
+	if (!a_srv)
+		return false;
+
+	winrt::com_ptr<ID3D11Resource> resource;
+	a_srv->GetResource(resource.put());
+
+	winrt::com_ptr<ID3D11Texture2D> texture;
+	if (!resource || FAILED(resource->QueryInterface(__uuidof(ID3D11Texture2D), texture.put_void())))
+		return false;
+
+	D3D11_TEXTURE2D_DESC desc{};
+	texture->GetDesc(&desc);
+	o_size = int2((int)desc.Width, (int)desc.Height);
+
+	return desc.Width > 0 && desc.Height > 0;
 }
 
 // Floor division; the tile grid is anchored to the worldspace cell grid, so negative cell
@@ -563,6 +589,175 @@ bool TexGen::GenerateBentNormalMap()
 	bentNormalAtlasRange.valid = true;
 
 	NotifyCacheMapsChanged();
+	return true;
+}
+
+TexGen::CacheGenCBStruct TexGen::MakeSmoothCB(const float2& outputSize, const int2& a_axis, bool a_sourceEncoded) const
+{
+	auto data = MakeCacheGenCB(outputSize);
+
+	// An intermediate target already holds decoded game units, so it is dispatched with an identity
+	// decode instead of the atlas' own; everything past the first pass reads one of those.
+	if (!a_sourceEncoded) {
+		data.TexParams.z = 0.0f;
+		data.TexParams.w = 1.0f;
+	}
+
+	data.SmoothParams = float4((float)a_axis.x, (float)a_axis.y,
+		(float)std::clamp(settings.smoothRadius, 1, smoothMaxRadius),
+		std::max(settings.smoothSpatialSigma, 0.01f));
+
+	// A zero based atlas stores heights relative to cacheAtlasMinHeight, so the absolute range the
+	// clamp is expressed in has to be shifted into the space the decode actually produces.
+	const float heightBias = settings.cacheAtlasZeroBase ? settings.cacheAtlasMinHeight : 0.0f;
+	data.SmoothRange = float4(
+		std::max(settings.smoothRangeSigma, 0.01f),
+		std::max(settings.smoothPreserveThreshold, 0.0f),
+		heightRangeMin - heightBias,
+		heightRangeMax - heightBias);
+
+	return data;
+}
+
+void TexGen::DispatchHeightSmoothPass(ID3D11ComputeShader* a_computeShader, ID3D11ShaderResourceView* a_source, Texture2D* a_target, const int2& a_axis, bool a_sourceEncoded)
+{
+	auto context = globals::d3d::context;
+
+	context->CSSetShader(a_computeShader, nullptr, 0);
+
+	ID3D11UnorderedAccessView* uav = a_target->uav.get();
+	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+	context->CSSetShaderResources(0, 1, &a_source);
+
+	const uint width = a_target->desc.Width;
+	const uint height = a_target->desc.Height;
+
+	auto data = MakeSmoothCB(float2((float)width, (float)height), a_axis, a_sourceEncoded);
+	cacheGenBuffer->Update(data);
+
+	auto buffer = cacheGenBuffer->CB();
+	context->CSSetConstantBuffers(0, 1, &buffer);
+
+	context->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+
+	// Unbind before the next pass swaps the two targets around: the texture written here is the one
+	// read next, and D3D silently drops an SRV that is still bound as a UAV.
+	ID3D11UnorderedAccessView* nullUAV = nullptr;
+	context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
+	ID3D11ShaderResourceView* nullSRV = nullptr;
+	context->CSSetShaderResources(0, 1, &nullSRV);
+}
+
+bool TexGen::GenerateSmoothedHeightMap()
+{
+	UpdateWorldspaceID();  // callable straight from a consumer's load path, before Prepass has run
+
+	if (!heightMapSRV) {
+		logger::error("[TexGen] No height map loaded, skipping height smoothing");
+		return false;
+	}
+
+	if (worldspaceID.empty()) {
+		logger::error("[TexGen] No worldspace known, skipping height smoothing");
+		return false;
+	}
+
+	int2 atlasSize = int2(0, 0);
+	if (!GetSRVTextureSize(heightMapSRV, atlasSize)) {
+		logger::error("[TexGen] Could not read the height atlas dimensions, skipping height smoothing");
+		return false;
+	}
+
+	// Two full size targets to ping pong between. Single channel float, so the filter works in game
+	// units throughout and the result needs no re-encode on the way to disk.
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32_FLOAT, (uint)atlasSize.x, (uint)atlasSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
+
+	eastl::unique_ptr<Texture2D> smoothTexA = nullptr;
+	eastl::unique_ptr<Texture2D> smoothTexB = nullptr;
+	try {
+		smoothTexA = eastl::make_unique<Texture2D>(desc, "TexGen::SmoothedHeightA");
+		smoothTexB = eastl::make_unique<Texture2D>(desc, "TexGen::SmoothedHeightB");
+	} catch (const std::exception& e) {
+		logger::error("[TexGen] Failed to create the {}x{} height smoothing targets: {}", atlasSize.x, atlasSize.y, e.what());
+		return false;
+	}
+
+	CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, desc.Format);
+	for (auto* tex : { smoothTexA.get(), smoothTexB.get() }) {
+		tex->CreateSRV(srvDesc);
+		tex->CreateUAV(uavDesc);
+	}
+
+	winrt::com_ptr<ID3D11ComputeShader> smoothCS = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> resolveCS = nullptr;
+	smoothCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "HEIGHT_SMOOTH", "" } }, "cs_5_0")));
+	resolveCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "HEIGHT_SMOOTH_RESOLVE", "" } }, "cs_5_0")));
+	if (!smoothCS || !resolveCS) {
+		logger::error("[TexGen] Failed to compile the height smoothing shaders");
+		return false;
+	}
+
+	EnsureCacheGenBuffer();
+
+	// Each iteration is a horizontal pass followed by a vertical one, so a pair always lands back in
+	// A: the first pass reads the atlas and writes B, the second reads B and writes A, and every
+	// later pass reads whichever of the two the pass before it wrote. A is only ever read after it
+	// has been written, so neither target needs clearing.
+	const int iterations = std::clamp(settings.smoothIterations, 1, smoothMaxIterations);
+	for (int i = 0; i < iterations; ++i) {
+		auto* source = i == 0 ? heightMapSRV : smoothTexA->srv.get();
+		DispatchHeightSmoothPass(smoothCS.get(), source, smoothTexB.get(), int2(1, 0), i == 0);
+		DispatchHeightSmoothPass(smoothCS.get(), smoothTexB->srv.get(), smoothTexA.get(), int2(0, 1), false);
+	}
+
+	// Resolve against the untouched atlas, into the target the last pass left free.
+	{
+		auto context = globals::d3d::context;
+
+		context->CSSetShader(resolveCS.get(), nullptr, 0);
+
+		ID3D11UnorderedAccessView* uav = smoothTexB->uav.get();
+		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+
+		ID3D11ShaderResourceView* srvs[2] = { heightMapSRV, smoothTexA->srv.get() };
+		context->CSSetShaderResources(0, 2, srvs);
+
+		auto data = MakeSmoothCB(float2((float)atlasSize.x, (float)atlasSize.y), int2(0, 0), true);
+		cacheGenBuffer->Update(data);
+
+		auto buffer = cacheGenBuffer->CB();
+		context->CSSetConstantBuffers(0, 1, &buffer);
+
+		context->Dispatch(((uint)atlasSize.x + 7) / 8, ((uint)atlasSize.y + 7) / 8, 1);
+
+		ID3D11UnorderedAccessView* nullUAV = nullptr;
+		context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
+		ID3D11ShaderResourceView* nullSRVs[2] = { nullptr, nullptr };
+		context->CSSetShaderResources(0, 2, nullSRVs);
+	}
+
+	// Save output. The pass covers exactly what the height map covers, so it carries that cell range
+	// and is found by the same lookup as a stitched atlas.
+	const float4 bounds = GetHeightMapBounds();
+	const int2 minCell = int2((int)std::floor(bounds.x / worldCellSize), (int)std::floor(bounds.y / worldCellSize));
+	const int2 maxCell = int2((int)std::floor(bounds.z / worldCellSize) - 1, (int)std::floor(bounds.w / worldCellSize) - 1);
+	auto outputPath = MakeAtlasPath(cachePath, worldspaceID, "_HS", minCell, maxCell);
+
+	DirectX::ScratchImage outputImage;
+	DX::ThrowIfFailed(DirectX::CaptureTexture(globals::d3d::device, globals::d3d::context, smoothTexB->resource.get(), outputImage));
+
+	RemoveExistingAtlases(cachePath, worldspaceID, "_HS");
+	if (!SaveMapDDS(*outputImage.GetImages(), outputPath))
+		return false;
+
+	logger::info("[TexGen] Smoothed height map {}: {}x{}, radius {}, {} iterations, range sigma {} game units",
+		outputPath.string(), atlasSize.x, atlasSize.y,
+		std::clamp(settings.smoothRadius, 1, smoothMaxRadius), iterations, settings.smoothRangeSigma);
+
+	// No NotifyCacheMapsChanged here: nothing renders with the smoothed map yet, so telling the
+	// consumers to reload would only make them re-read the maps they already hold. Whoever wires
+	// _HS into a feature adds the call along with the load.
 	return true;
 }
 
@@ -1919,6 +2114,52 @@ void TexGen::DrawSettings()
 
 	if (ImGui::Button("Generate Normal"))
 		GenerateNormalMap();
+
+	if (ImGui::Button("Generate Smoothed Height"))
+		GenerateSmoothedHeightMap();
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text(
+			"Writes %s_HS.<minX>.<minY>.<maxX>.<maxY>.dds: the loaded height atlas with its fine relief\n"
+			"flattened, as 32 bit float game units clamped to %.0f..%.0f.\n"
+			"Needs the height atlas loaded.",
+			worldspaceID.empty() ? "<Worldspace>" : worldspaceID.c_str(), heightRangeMin, heightRangeMax);
+
+	ImGui::SliderInt("Smooth Radius", &settings.smoothRadius, 1, smoothMaxRadius);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("Taps either side of centre in each single axis pass. Cost is linear in this.");
+
+	ImGui::SliderFloat("Smooth Spatial Sigma", &settings.smoothSpatialSigma, 0.5f, 32.0f, "%.1f texels");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("Gaussian falloff across the radius. Around a third of the radius uses the whole kernel;\nlower concentrates the weight near the centre and smooths less.");
+
+	ImGui::SliderFloat("Smooth Range Sigma", &settings.smoothRangeSigma, 1.0f, 2000.0f, "%.0f units", ImGuiSliderFlags_Logarithmic);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text(
+			"The height difference a neighbour may have and still be averaged in. This is the line between\n"
+			"detail and terrain: relief shorter than it is flattened, relief taller than it keeps its edge.\n"
+			"The 16 bit export quantises to %g units per step, so anything above that removes the terracing.",
+			heightExportScale);
+
+	ImGui::SliderInt("Smooth Iterations", &settings.smoothIterations, 1, smoothMaxIterations);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("Horizontal plus vertical pass pairs. Repeating a small kernel flattens more than one\nwide pass and keeps every dispatch short.");
+
+	ImGui::SliderFloat("Smooth Preserve Threshold", &settings.smoothPreserveThreshold, 0.0f, 4000.0f, "%.0f units");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text(
+			"Relief the filter removed is handed back once it is at least this tall, so a ridge the range\n"
+			"term still rounded off comes back at full height. 0 leaves the smoothed result as it is.");
+
+	{
+		const int radius = std::clamp(settings.smoothRadius, 1, smoothMaxRadius);
+		const int iterations = std::clamp(settings.smoothIterations, 1, smoothMaxIterations);
+		const int tileSize = settings.cacheAtlasTileSize;
+		const float unitsPerTexel = tileSize > 0 ? worldCellSize * (float)settings.cacheAtlasTileCells / (float)tileSize : 0.0f;
+		if (unitsPerTexel > 0.0f)
+			ImGui::Text("%d passes, reach %.0f units per pass", iterations * 2, (float)radius * unitsPerTexel);
+		else
+			ImGui::Text("%d passes, reach %d texels per pass", iterations * 2, radius);
+	}
 
 	ImGui::BeginDisabled(heightGenRunning);  // the tile layout is latched for the duration of a run
 

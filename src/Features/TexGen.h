@@ -62,6 +62,13 @@ public:
 		int cacheAtlasTilesY = 0;     // tile rows, needed to flip texel Y into cell space
 
 		float cacheBentNormalAtlasScale = 1.0f;  // downscale factor applied when stitching the BN atlas
+
+		// Height smoothing pass. Radius and spatial sigma are texels, everything else is game units.
+		int smoothRadius = 8;                  // taps either side of centre, per separable pass
+		float smoothSpatialSigma = 4.0f;       // Gaussian falloff across that radius
+		float smoothRangeSigma = 96.0f;        // height difference a neighbour may have and still average in
+		int smoothIterations = 3;              // horizontal plus vertical pass pairs run back to back
+		float smoothPreserveThreshold = 0.0f;  // relief taller than this is handed back afterwards, 0 keeps the pass purely smoothing
 	} settings;
 
 	//////////////////////////////////////////////////////////////////////////////////
@@ -75,6 +82,12 @@ public:
 	// per 8 game units. Decode with height = (encoded - heightExportOffset) * heightExportScale.
 	static constexpr float heightExportOffset = 32767.0f;
 	static constexpr float heightExportScale = 8.0f;
+
+	// The height range a worldspace can hold, in game units. The smoothing pass clamps everything it
+	// reads and writes to it, so one stray texel cannot drag its neighbourhood with it and nothing a
+	// height map could not legitimately store reaches disk.
+	static constexpr float heightRangeMin = -14500.0f;
+	static constexpr float heightRangeMax = 40000.0f;
 
 	/// @brief The worldspace cell range a stitched atlas covers, carried in its file name so the
 	/// extent always describes the file on disk rather than whatever the settings last recorded.
@@ -142,6 +155,9 @@ public:
 	bool GenerateBentNormalMap();
 	/// @brief Write the six cardinal and diagonal occlusion maps in one pass.
 	bool GenerateCardinalOcclusionMap();
+	/// @brief Write "<Worldspace>_HS.<minX>.<minY>.<maxX>.<maxY>.dds": the height atlas with its fine
+	/// relief flattened, as 32 bit float game units. Needs the height atlas loaded.
+	bool GenerateSmoothedHeightMap();
 
 	/// @brief Whether a bake is in flight, during which the player is teleported around.
 	bool IsGenerating() const { return heightGenRunning || bentNormalTileGen; }
@@ -233,6 +249,25 @@ public:
 	void StopBentNormalTiles();
 
 	//////////////////////////////////////////////////////////////////////////////////
+	//// Height smoothing
+	//////////////////////////////////////////////////////////////////////////////////
+	// An edge aware blur over the height atlas: relief smaller than the range sigma is averaged
+	// away, relief larger than it keeps its edge. Separable, so a full smooth is a run of cheap
+	// single axis dispatches rather than one long quadratic one.
+
+	// Caps on what the UI and a hand edited config may ask for. A pass costs 2R taps per texel and
+	// a run is 2N of them, so these bound one bake to something that stays well inside the driver
+	// timeout even on a worldspace sized atlas.
+	static constexpr int smoothMaxRadius = 64;
+	static constexpr int smoothMaxIterations = 8;
+
+	/// @brief Run one axis of the bilateral filter from a_source into a_target.
+	/// @param a_axis Texel step the taps walk, (1, 0) or (0, 1).
+	/// @param a_sourceEncoded Whether a_source still carries the atlas' on disk encoding. False for
+	/// an intermediate target, which already holds game units and needs no decode.
+	void DispatchHeightSmoothPass(ID3D11ComputeShader* a_computeShader, ID3D11ShaderResourceView* a_source, Texture2D* a_target, const int2& a_axis, bool a_sourceEncoded);
+
+	//////////////////////////////////////////////////////////////////////////////////
 	//// Generation state
 	//////////////////////////////////////////////////////////////////////////////////
 
@@ -244,10 +279,16 @@ public:
 		float4 SweepDir;                                            // xy: world dir, z: slope, w: major step
 		float4 SweepParams;                                         // x: first line, y: line count, z: transpose, w: units per step
 		float4 SweepRect;                                           // xy: tile origin in atlas texels, z: tile size
+		float4 SmoothParams;                                        // xy: filter axis, z: radius, w: spatial sigma, in texels
+		float4 SmoothRange;                                         // x: range sigma, y: preserve threshold, zw: height clamp, game units
 	};
 
 	/// @brief Fill the cache gen constants shared by every generator.
 	CacheGenCBStruct MakeCacheGenCB(const float2& outputSize, const float4& regionOffsetScale = float4(0.0f, 0.0f, 1.0f, 1.0f)) const;
+	/// @brief The cache gen constants plus the smoothing pass' own, for a dispatch of the given size.
+	/// @param a_axis Texel step the taps walk; (0, 0) for the resolve pass, which has no axis.
+	/// @param a_sourceEncoded False to dispatch with an identity decode, for an already decoded source.
+	CacheGenCBStruct MakeSmoothCB(const float2& outputSize, const int2& a_axis, bool a_sourceEncoded) const;
 
 private:
 	/// @brief Refresh the worldspace the cache is generated for, keeping the last known one indoors.
