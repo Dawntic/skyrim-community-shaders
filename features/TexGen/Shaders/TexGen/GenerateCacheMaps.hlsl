@@ -8,6 +8,8 @@ cbuffer CacheGenBuffer : register(b0)
 	float4 SweepDir;     // xy: world direction, z: minor per major slope, w: major step
 	float4 SweepParams;  // x: first line offset, y: line count, z: transpose, w: world units per step
 	float4 SweepRect;    // xy: tile origin in atlas texels, z: tile size
+	float4 SmoothParams;
+	float4 SmoothRange;
 };
 
 //// Cardinal AO Map ///////////////////////////////////////////////////////////////////
@@ -230,6 +232,59 @@ RWTexture2D<float4> OutputAccum : register(u0);
 	const float3 BentNormal = LenSq > 1e-12 ? Accum.xyz * rsqrt(LenSq) : float3(0, 0, 1);
 
 	OutputAccum[ThreadID.xy] = float4(BentNormal * 0.5 + 0.5, AO);
+}
+#endif
+/////////////////////////////////////////////////////////////////////////////////////////
+
+#ifdef HEIGHT_SMOOTH
+Texture2D<float> HeightTex : register(t0);
+RWTexture2D<float> OutputHeight : register(u0);
+
+float LoadHeightUnits(int2 CoordsPx, int2 HeightMapPxSize)
+{
+	CoordsPx = clamp(CoordsPx, 0, HeightMapPxSize - 1);
+	return clamp(HeightTex[CoordsPx], SmoothRange.z, SmoothRange.w);
+}
+
+[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	if (any(ThreadID.xy >= (uint2)OutputTexSize))
+		return;
+
+	uint2 HeightMapPxSize;
+	HeightTex.GetDimensions(HeightMapPxSize.x, HeightMapPxSize.y);
+
+	const int2 MapPxSize = (int2)HeightMapPxSize;
+	const int2 CoordsPx = (int2)ThreadID.xy;
+	const int2 Axis = (int2)SmoothParams.xy;
+	const int Radius = (int)SmoothParams.z;
+
+	const float Centre = LoadHeightUnits(CoordsPx, MapPxSize);
+
+	const float Sigma = max(SmoothParams.z * 0.5, 0.5);
+	const float SpatialFalloff = -0.5 / (Sigma * Sigma);
+
+	const float FlattenHeight = SmoothRange.x;
+	const float RolloffHeight = max(SmoothRange.x * SmoothRange.y, SmoothRange.x + 1e-3);
+
+	float Sum = Centre;
+	float WeightSum = 1.0;
+
+	[loop] for (int Tap = 1; Tap <= Radius; ++Tap)
+	{
+		const float Spatial = exp(SpatialFalloff * (float)(Tap * Tap));
+
+		[unroll] for (int Side = 0; Side < 2; ++Side)
+		{
+			const float Height = LoadHeightUnits(CoordsPx + Axis * (Side == 0 ? Tap : -Tap), MapPxSize);
+			const float Delta = abs(Height - Centre);
+			const float Weight = Spatial * (1.0 - smoothstep(FlattenHeight, RolloffHeight, Delta));
+
+			Sum += Height * Weight;
+			WeightSum += Weight;
+		}
+	}
+
+	OutputHeight[ThreadID.xy] = Sum / WeightSum;
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////

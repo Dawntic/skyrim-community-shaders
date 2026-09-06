@@ -63,6 +63,11 @@ public:
 		int cacheAtlasTilesY = 0;     // tile rows, needed to flip texel Y into cell space
 
 		std::string dynDOLODPath;
+
+		int smoothRadius = 16;
+		float smoothFlattenHeight = 100.0f;
+		float smoothRolloff = 2.0f;
+		int smoothIterations = 4;
 	} settings;
 
 	//////////////////////////////////////////////////////////////////////////////////
@@ -71,6 +76,9 @@ public:
 
 	static constexpr float worldCellSize = 4096.0f;  // world units per worldspace cell edge
 	static inline const std::filesystem::path cachePath = L"Data\\textures\\SkylightingCache\\";
+
+	static constexpr float heightRangeMin = -14500.0f;
+	static constexpr float heightRangeMax = 40000.0f;
 
 	/// @brief The worldspace cell range a stitched atlas covers, carried in its file name so the
 	/// extent always describes the file on disk rather than whatever the settings last recorded.
@@ -119,7 +127,9 @@ public:
 	bool BuildLODAtlas(const std::string& a_worldspaceID);
 	/// @brief Generate the downscaled height, normal, AO, bent-normal tiles and bent-normal atlas set.
 	/// Existing outputs are reused unless a_forceRebuild is set.
-	bool BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceRebuild = false);
+	/// @param a_smoothHeight Derive the normal and occlusion maps from a flattened copy of the
+	/// downscaled height map. The flattened copy is never written to disk.
+	bool BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceRebuild = false, bool a_smoothHeight = false);
 
 	/// @brief Whether a bake is in flight, during which the player is teleported around.
 	bool IsGenerating() const { return heightGenRunning || bentNormalTileGen; }
@@ -193,16 +203,25 @@ public:
 	void UpdateBentNormalTiles();
 
 	//////////////////////////////////////////////////////////////////////////////////
+	//// Height smoothing
+	//////////////////////////////////////////////////////////////////////////////////
+
+	static constexpr int smoothMaxRadius = 64;
+	static constexpr int smoothMaxIterations = 8;
+
+	//////////////////////////////////////////////////////////////////////////////////
 	//// Generation state
 	//////////////////////////////////////////////////////////////////////////////////
 
 	struct alignas(16) CacheGenCBStruct
 	{
 		float4 TexParams;
-		float4 GridBounds;   // world xy min/max of the height map
-		float4 SweepDir;     // xy: world dir, z: slope, w: major step
-		float4 SweepParams;  // x: first line, y: line count, z: transpose, w: units per step
-		float4 SweepRect;    // xy: tile origin in atlas texels, z: tile size
+		float4 GridBounds;    // world xy min/max of the height map
+		float4 SweepDir;      // xy: world dir, z: slope, w: major step
+		float4 SweepParams;   // x: first line, y: line count, z: transpose, w: units per step
+		float4 SweepRect;     // xy: tile origin in atlas texels, z: tile size
+		float4 SmoothParams;  // xy: filter axis, z: radius, in texels
+		float4 SmoothRange;   // x: flatten height, y: rolloff multiple, zw: height clamp
 	};
 
 private:
@@ -214,6 +233,11 @@ private:
 	bool GenerateNormalMap(const int2& a_mapSize);
 	/// @brief Write the cardinal and diagonal AO set at exactly the downscaled height map dimensions.
 	bool GenerateCardinalOcclusionMaps(const int2& a_mapSize);
+
+	/// @brief Run one axis of the bilateral filter from a_source into a_target.
+	void DispatchHeightSmoothPass(ID3D11ComputeShader* a_computeShader, ID3D11ShaderResourceView* a_source, Texture2D* a_target, const int2& a_axis);
+	/// @brief Flatten a height map into a fresh R32_FLOAT texture holding game units.
+	eastl::unique_ptr<Texture2D> SmoothHeightMap(ID3D11ShaderResourceView* a_source, const int2& a_mapSize);
 
 	std::string worldspaceID = "";
 

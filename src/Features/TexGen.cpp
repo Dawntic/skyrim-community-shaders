@@ -27,7 +27,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	cacheAtlasTileCells,
 	cacheAtlasTilesX,
 	cacheAtlasTilesY,
-	dynDOLODPath)
+	dynDOLODPath,
+	smoothRadius,
+	smoothFlattenHeight,
+	smoothRolloff,
+	smoothIterations)
 
 //////////////////////////////////////////////////////////////////////////////////
 //// Height cache tiles
@@ -382,7 +386,7 @@ bool TexGen::ResolveBentNormalAtlas(const std::string& a_worldspaceID, std::file
 //////////////////////////////////////////////////////////////////////////////////
 //// GPU generators
 //////////////////////////////////////////////////////////////////////////////////
-bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceRebuild)
+bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceRebuild, bool a_smoothHeight)
 {
 	worldspaceID = a_worldspaceID;
 
@@ -444,11 +448,23 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 		auto previousHeightMapSRV = heightMapSRV;
 		heightMapSRV = downscaledHeightSRV.get();
 		const int2 mapSize = int2((int)width, (int)height);
+
+		eastl::unique_ptr<Texture2D> smoothedHeight;
+		if (a_smoothHeight) {
+			smoothedHeight = SmoothHeightMap(downscaledHeightSRV.get(), mapSize);
+			if (!smoothedHeight) {
+				heightMapSRV = previousHeightMapSRV;
+				return false;
+			}
+			heightMapSRV = smoothedHeight->srv.get();
+		}
+
 		generated = GenerateNormalMap(mapSize) && GenerateCardinalOcclusionMaps(mapSize);
 		heightMapSRV = previousHeightMapSRV;
 
 		if (generated) {
-			logger::info("[TexGen] Built derived maps at {}x{} from {}", width, height, heightAtlasPath.string());
+			logger::info("[TexGen] Built derived maps at {}x{} from {}{}", width, height, heightAtlasPath.string(),
+				a_smoothHeight ? " (flattened)" : "");
 			NotifyCacheMapsChanged();
 		}
 	}
@@ -564,6 +580,79 @@ bool TexGen::GenerateCardinalOcclusionMaps(const int2& a_mapSize)
 		SaveMapDDS(*captured.GetImages(), MakeAtlasPath(cachePath, worldspaceID, outputTags[i], heightAtlasRange.minCell, heightAtlasRange.maxCell));
 	}
 	return true;
+}
+
+//////////////////////////////////////////////////////////////////////////////////
+//// Height smoothing
+//////////////////////////////////////////////////////////////////////////////////
+
+void TexGen::DispatchHeightSmoothPass(ID3D11ComputeShader* a_computeShader, ID3D11ShaderResourceView* a_source, Texture2D* a_target, const int2& a_axis)
+{
+	auto context = globals::d3d::context;
+
+	context->CSSetShader(a_computeShader, nullptr, 0);
+
+	ID3D11UnorderedAccessView* uav = a_target->uav.get();
+	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+	context->CSSetShaderResources(0, 1, &a_source);
+
+	const uint width = a_target->desc.Width;
+	const uint height = a_target->desc.Height;
+
+	CacheGenCBStruct data = {
+		.TexParams = float4((float)width, (float)height, 0.0f, 0.0f),
+		.GridBounds = GetAtlasWorldBound(),
+		.SmoothParams = float4((float)a_axis.x, (float)a_axis.y, (float)std::clamp(settings.smoothRadius, 1, smoothMaxRadius), 0.0f),
+		.SmoothRange = float4(std::max(settings.smoothFlattenHeight, 0.01f), std::max(settings.smoothRolloff, 1.0f), heightRangeMin, heightRangeMax)
+	};
+	cacheGenBuffer->Update(data);
+
+	auto buffer = cacheGenBuffer->CB();
+	context->CSSetConstantBuffers(0, 1, &buffer);
+
+	context->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+
+	// The texture written here is the one read next, and D3D silently drops an SRV still bound as a UAV.
+	ID3D11UnorderedAccessView* nullUAV = nullptr;
+	context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
+	ID3D11ShaderResourceView* nullSRV = nullptr;
+	context->CSSetShaderResources(0, 1, &nullSRV);
+}
+
+eastl::unique_ptr<Texture2D> TexGen::SmoothHeightMap(ID3D11ShaderResourceView* a_source, const int2& a_mapSize)
+{
+	winrt::com_ptr<ID3D11ComputeShader> smoothCS;
+	smoothCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "HEIGHT_SMOOTH", "" } }, "cs_5_0")));
+	if (!smoothCS) {
+		logger::error("[TexGen] Failed to compile the height smoothing shader");
+		return nullptr;
+	}
+
+	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32_FLOAT, (uint)a_mapSize.x, (uint)a_mapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+	CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, desc.Format);
+	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
+
+	auto smoothTexA = eastl::make_unique<Texture2D>(desc, "TexGen::SmoothedHeightA");
+	auto smoothTexB = eastl::make_unique<Texture2D>(desc, "TexGen::SmoothedHeightB");
+	for (auto* tex : { smoothTexA.get(), smoothTexB.get() }) {
+		tex->CreateSRV(srvDesc);
+		tex->CreateUAV(uavDesc);
+	}
+
+	if (!cacheGenBuffer)
+		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
+
+	// Horizontal then vertical, so a pair always lands back in A and neither target needs clearing.
+	const int iterations = std::clamp(settings.smoothIterations, 1, smoothMaxIterations);
+	for (int i = 0; i < iterations; ++i) {
+		DispatchHeightSmoothPass(smoothCS.get(), i == 0 ? a_source : smoothTexA->srv.get(), smoothTexB.get(), int2(1, 0));
+		DispatchHeightSmoothPass(smoothCS.get(), smoothTexB->srv.get(), smoothTexA.get(), int2(0, 1));
+	}
+
+	logger::info("[TexGen] Flattened the {}x{} height map: up to {:.0f} game units, radius {} x {} iterations",
+		a_mapSize.x, a_mapSize.y, settings.smoothFlattenHeight, std::clamp(settings.smoothRadius, 1, smoothMaxRadius), iterations);
+
+	return smoothTexA;
 }
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -1293,6 +1382,39 @@ void TexGen::DrawSettings()
 		if (ImGui::Button("Generate Normal, AO and Bent Normal"))
 			BuildDerivedMaps(worldspaceID, true);
 		ImGui::EndDisabled();
+
+		ImGui::BeginDisabled(worldspaceID.empty() || IsGenerating());
+		if (ImGui::Button("Generate Normal, AO and Bent Normal (Flattened)"))
+			BuildDerivedMaps(worldspaceID, true, true);
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"The same set, derived from a flattened copy of the downscaled height map, so the normals and\n"
+				"the occlusion set lose the fine relief while keeping cliffs and mountain fronts.\n"
+				"The flattened map is never written to disk; %s_HD keeps the unflattened heights.",
+				worldspaceID.empty() ? "<Worldspace>" : worldspaceID.c_str());
+
+		ImGui::SliderFloat("Flatten Height", &settings.smoothFlattenHeight, 1.0f, 2000.0f, "%.0f units", ImGuiSliderFlags_Logarithmic);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"The height difference the filter flattens outright. A neighbour within this many game units of\n"
+				"a texel is averaged in at full weight, so relief up to this tall is removed rather than merely\n"
+				"softened; the weight then rolls off, and relief past Preserve Above keeps its edge.");
+
+		ImGui::SliderFloat("Preserve Above", &settings.smoothRolloff, 1.0f, 8.0f, "%.1fx flatten height");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"Where the range gate closes, as a multiple of the flatten height: relief at least this tall is\n"
+				"never averaged across. At %.1fx that is %.0f game units.",
+				settings.smoothRolloff, settings.smoothFlattenHeight * settings.smoothRolloff);
+
+		ImGui::SliderInt("Smooth Radius", &settings.smoothRadius, 1, smoothMaxRadius);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Taps either side of centre in each single axis pass, in texels of the downscaled map.\nSets both the cost and how far the filter reaches.");
+
+		ImGui::SliderInt("Smooth Iterations", &settings.smoothIterations, 1, smoothMaxIterations);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("Horizontal plus vertical pass pairs. Reach only grows as the square root of this, so\nraise the radius first and use iterations to push past what one pass can reach.");
 
 		ImGui::BeginDisabled(heightGenRunning);  // the tile layout is latched for the duration of a run
 
