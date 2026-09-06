@@ -154,6 +154,45 @@ namespace SH
 		return max(0, Irradiance(sh, N) / Math::PI);
 	}
 
+	// Adds a directional lobe along the function's own dominant axis, so the reconstruction
+	// is less flat. The added lobe carries enough DC that Irradiance() cannot fall for any N:
+	// it is a boost everywhere, exactly break-even opposite the axis. Fades out as the axis
+	// becomes ill-conditioned, so a near-isotropic function is left alone rather than having
+	// a full-magnitude lobe pointed down a direction that is numerically arbitrary.
+	sh2vec3 Sharpen(sh2vec3 sh, float amount)
+	{
+		const float3 LUMA_WEIGHTS = float3(0.2125, 0.7154, 0.0721);
+		const float SQRT_4PI = 3.5449077;
+		const float ADDITIVE_DC_PER_L1 = 1.1547005;
+		const float DELTA_L1_OVER_DC = 1.7320508;
+		const float AXIS_CONFIDENCE_KNEE = 0.1;
+
+		sh2 luma = sh.x * LUMA_WEIGHTS.r + sh.y * LUMA_WEIGHTS.g + sh.z * LUMA_WEIGHTS.b;
+
+		float3 axis = float3(-luma.w, -luma.y, luma.z);
+		float axisLenSq = dot(axis, axis);
+		if (axisLenSq < 1e-12)
+			return sh;
+
+		float axisLen = sqrt(axisLenSq);
+		float anisotropy = axisLen / max(DELTA_L1_OVER_DC * luma.x, 1e-6);
+		float strength = max(amount, 0.0) * smoothstep(0.0, AXIS_CONFIDENCE_KNEE, anisotropy);
+
+		float3 dc = max(float3(sh.x.x, sh.y.x, sh.z.x), 0.0);
+		sh2vec3 delta = Scale(Evaluate(axis / axisLen), dc * SQRT_4PI);
+
+		sh2vec3 gain;
+		gain.x = delta.x - sh.x;
+		gain.y = delta.y - sh.y;
+		gain.z = delta.z - sh.z;
+
+		gain.x.x = ADDITIVE_DC_PER_L1 * length(gain.x.yzw);
+		gain.y.x = ADDITIVE_DC_PER_L1 * length(gain.y.yzw);
+		gain.z.x = ADDITIVE_DC_PER_L1 * length(gain.z.yzw);
+
+		return Add(sh, Scale(gain, strength));
+	}
+
 	// ------------------------------------------------------------------ //
 	// Order 3 (sh3vec3)                                                    //
 	// ------------------------------------------------------------------ //

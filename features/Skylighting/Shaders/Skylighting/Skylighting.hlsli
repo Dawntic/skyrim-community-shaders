@@ -164,11 +164,14 @@ namespace Skylighting
 		return probe;
 	}
 
+	static const float PROBE_SHARPEN = 0.25;
+
 	float3 CalculateAmbientIrradiance(float3 WorldPosition, float3 worldNormal, sh2 skylightingSH, SamplerState Sampler)
 	{
 		const SharedData::SkylightingSettings sparseSettings = SharedData::skylightingSettings;
 
 		sh2vec3 IrradianceProbe = SampleIrradianceProbe(WorldPosition, Sampler);
+		IrradianceProbe = SH::Sharpen(IrradianceProbe, PROBE_SHARPEN);
 
 		skylightingSH = lerp(SH::UnitSH2(), skylightingSH, GetFadeOutFactor(WorldPosition));
 		sh2 bentNormalSH = SampleBentNormalSH(WorldPosition, Sampler, 0);
