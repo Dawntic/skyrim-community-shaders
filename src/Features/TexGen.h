@@ -63,11 +63,12 @@ public:
 
 		float cacheBentNormalAtlasScale = 1.0f;  // downscale factor applied when stitching the BN atlas
 
-		// Height smoothing pass. Radius and spatial sigma are texels, everything else is game units.
-		int smoothRadius = 8;                  // taps either side of centre, per separable pass
-		float smoothSpatialSigma = 4.0f;       // Gaussian falloff across that radius
-		float smoothRangeSigma = 96.0f;        // height difference a neighbour may have and still average in
-		int smoothIterations = 3;              // horizontal plus vertical pass pairs run back to back
+		// Height smoothing pass. Radius and spatial sigma are texels, heights are game units.
+		int smoothRadius = 64;                 // taps either side of centre, per separable pass
+		float smoothSpatialSigma = 32.0f;      // Gaussian falloff across that radius
+		float smoothFlattenHeight = 100.0f;    // height difference fully averaged away; the detail/terrain line
+		float smoothRolloff = 2.0f;            // multiple of the flatten height at which relief is fully kept
+		int smoothIterations = 4;              // horizontal plus vertical pass pairs run back to back
 		float smoothPreserveThreshold = 0.0f;  // relief taller than this is handed back afterwards, 0 keeps the pass purely smoothing
 	} settings;
 
@@ -251,15 +252,24 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////
 	//// Height smoothing
 	//////////////////////////////////////////////////////////////////////////////////
-	// An edge aware blur over the height atlas: relief smaller than the range sigma is averaged
-	// away, relief larger than it keeps its edge. Separable, so a full smooth is a run of cheap
-	// single axis dispatches rather than one long quadratic one.
+	// An edge aware blur over the height atlas. Its range gate is flat topped, so a height
+	// difference up to smoothFlattenHeight is averaged away in full while anything past the
+	// rolloff keeps its edge. Separable, so a full smooth is a run of cheap single axis
+	// dispatches rather than one long quadratic one.
+	//
+	// Two limits decide whether a feature survives, and they are independent: its height against
+	// smoothFlattenHeight, and its width against the kernel's reach. Relief far wider than the
+	// reach is a landform rather than detail and is left alone however short it is.
 
 	// Caps on what the UI and a hand edited config may ask for. A pass costs 2R taps per texel and
 	// a run is 2N of them, so these bound one bake to something that stays well inside the driver
 	// timeout even on a worldspace sized atlas.
-	static constexpr int smoothMaxRadius = 64;
+	static constexpr int smoothMaxRadius = 128;
 	static constexpr int smoothMaxIterations = 8;
+
+	/// @brief Texels the kernel reaches over a whole run: linear in the radius, sqrt in the
+	/// iteration count, so radius is the cheaper way to buy reach.
+	float GetSmoothReachTexels() const;
 
 	/// @brief Run one axis of the bilateral filter from a_source into a_target.
 	/// @param a_axis Texel step the taps walk, (1, 0) or (0, 1).
@@ -280,7 +290,8 @@ public:
 		float4 SweepParams;                                         // x: first line, y: line count, z: transpose, w: units per step
 		float4 SweepRect;                                           // xy: tile origin in atlas texels, z: tile size
 		float4 SmoothParams;                                        // xy: filter axis, z: radius, w: spatial sigma, in texels
-		float4 SmoothRange;                                         // x: range sigma, y: preserve threshold, zw: height clamp, game units
+		float4 SmoothRange;                                         // x: flatten height, y: rolloff multiple, zw: height clamp
+		float4 SmoothResolve;                                       // x: preserve threshold, game units
 	};
 
 	/// @brief Fill the cache gen constants shared by every generator.

@@ -26,7 +26,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	cacheBentNormalAtlasScale,
 	smoothRadius,
 	smoothSpatialSigma,
-	smoothRangeSigma,
+	smoothFlattenHeight,
+	smoothRolloff,
 	smoothIterations,
 	smoothPreserveThreshold)
 
@@ -592,6 +593,17 @@ bool TexGen::GenerateBentNormalMap()
 	return true;
 }
 
+float TexGen::GetSmoothReachTexels() const
+{
+	// Each pass is a Gaussian of sigma smoothSpatialSigma truncated at the radius, and variances
+	// add across the passes that share an axis - one per iteration. So the reach along an axis is
+	// sigma * sqrt(iterations), capped by what the radius can actually see in one pass.
+	const float sigma = std::min(std::max(settings.smoothSpatialSigma, 0.01f), (float)std::clamp(settings.smoothRadius, 1, smoothMaxRadius));
+	const int iterations = std::clamp(settings.smoothIterations, 1, smoothMaxIterations);
+
+	return sigma * std::sqrt((float)iterations);
+}
+
 TexGen::CacheGenCBStruct TexGen::MakeSmoothCB(const float2& outputSize, const int2& a_axis, bool a_sourceEncoded) const
 {
 	auto data = MakeCacheGenCB(outputSize);
@@ -611,10 +623,11 @@ TexGen::CacheGenCBStruct TexGen::MakeSmoothCB(const float2& outputSize, const in
 	// clamp is expressed in has to be shifted into the space the decode actually produces.
 	const float heightBias = settings.cacheAtlasZeroBase ? settings.cacheAtlasMinHeight : 0.0f;
 	data.SmoothRange = float4(
-		std::max(settings.smoothRangeSigma, 0.01f),
-		std::max(settings.smoothPreserveThreshold, 0.0f),
+		std::max(settings.smoothFlattenHeight, 0.01f),
+		std::max(settings.smoothRolloff, 1.0f),
 		heightRangeMin - heightBias,
 		heightRangeMax - heightBias);
+	data.SmoothResolve = float4(std::max(settings.smoothPreserveThreshold, 0.0f), 0.0f, 0.0f, 0.0f);
 
 	return data;
 }
@@ -751,9 +764,9 @@ bool TexGen::GenerateSmoothedHeightMap()
 	if (!SaveMapDDS(*outputImage.GetImages(), outputPath))
 		return false;
 
-	logger::info("[TexGen] Smoothed height map {}: {}x{}, radius {}, {} iterations, range sigma {} game units",
-		outputPath.string(), atlasSize.x, atlasSize.y,
-		std::clamp(settings.smoothRadius, 1, smoothMaxRadius), iterations, settings.smoothRangeSigma);
+	logger::info("[TexGen] Smoothed height map {}: {}x{}, flattening up to {} game units, radius {} x {} iterations ({:.0f} texel reach)",
+		outputPath.string(), atlasSize.x, atlasSize.y, settings.smoothFlattenHeight,
+		std::clamp(settings.smoothRadius, 1, smoothMaxRadius), iterations, GetSmoothReachTexels());
 
 	// No NotifyCacheMapsChanged here: nothing renders with the smoothed map yet, so telling the
 	// consumers to reload would only make them re-read the maps they already hold. Whoever wires
@@ -2124,41 +2137,59 @@ void TexGen::DrawSettings()
 			"Needs the height atlas loaded.",
 			worldspaceID.empty() ? "<Worldspace>" : worldspaceID.c_str(), heightRangeMin, heightRangeMax);
 
-	ImGui::SliderInt("Smooth Radius", &settings.smoothRadius, 1, smoothMaxRadius);
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Taps either side of centre in each single axis pass. Cost is linear in this.");
-
-	ImGui::SliderFloat("Smooth Spatial Sigma", &settings.smoothSpatialSigma, 0.5f, 32.0f, "%.1f texels");
-	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Gaussian falloff across the radius. Around a third of the radius uses the whole kernel;\nlower concentrates the weight near the centre and smooths less.");
-
-	ImGui::SliderFloat("Smooth Range Sigma", &settings.smoothRangeSigma, 1.0f, 2000.0f, "%.0f units", ImGuiSliderFlags_Logarithmic);
+	ImGui::SliderFloat("Flatten Height", &settings.smoothFlattenHeight, 1.0f, 2000.0f, "%.0f units", ImGuiSliderFlags_Logarithmic);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text(
-			"The height difference a neighbour may have and still be averaged in. This is the line between\n"
-			"detail and terrain: relief shorter than it is flattened, relief taller than it keeps its edge.\n"
+			"The height difference the pass flattens outright. A neighbour within this many game units of\n"
+			"a texel is averaged in at full weight, so relief up to this tall is removed rather than merely\n"
+			"softened; the weight then rolls off, and relief past Preserve Above keeps its edge intact.\n"
 			"The 16 bit export quantises to %g units per step, so anything above that removes the terracing.",
 			heightExportScale);
 
+	ImGui::SliderFloat("Preserve Above", &settings.smoothRolloff, 1.0f, 8.0f, "%.1fx flatten height");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text(
+			"Where the range gate closes, as a multiple of the flatten height: relief at least this tall is\n"
+			"never averaged across. At %.1fx that is %.0f game units. Lower is a harder line between detail\n"
+			"and terrain, higher blends the two over a wider band.",
+			settings.smoothRolloff, settings.smoothFlattenHeight * settings.smoothRolloff);
+
+	ImGui::SliderInt("Smooth Radius", &settings.smoothRadius, 1, smoothMaxRadius);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("Taps either side of centre in each single axis pass. Cost is linear in this, and so is\nreach, which makes it the cheaper of the two ways to reach further.");
+
+	ImGui::SliderFloat("Smooth Spatial Sigma", &settings.smoothSpatialSigma, 0.5f, (float)smoothMaxRadius, "%.1f texels");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("Gaussian falloff across the radius. Half the radius uses most of the kernel;\nlower concentrates the weight near the centre and reaches less far.");
+
 	ImGui::SliderInt("Smooth Iterations", &settings.smoothIterations, 1, smoothMaxIterations);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("Horizontal plus vertical pass pairs. Repeating a small kernel flattens more than one\nwide pass and keeps every dispatch short.");
+		ImGui::Text("Horizontal plus vertical pass pairs. Reach only grows as the square root of this, so\nraise the radius first and use iterations to push past what one pass can reach.");
 
 	ImGui::SliderFloat("Smooth Preserve Threshold", &settings.smoothPreserveThreshold, 0.0f, 4000.0f, "%.0f units");
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text(
 			"Relief the filter removed is handed back once it is at least this tall, so a ridge the range\n"
-			"term still rounded off comes back at full height. 0 leaves the smoothed result as it is.");
+			"gate still rounded off comes back at full height. 0 leaves the smoothed result as it is.");
 
 	{
-		const int radius = std::clamp(settings.smoothRadius, 1, smoothMaxRadius);
-		const int iterations = std::clamp(settings.smoothIterations, 1, smoothMaxIterations);
+		// Both limits, in the units the terrain is authored in, so the two are comparable at a glance.
+		const float reachTexels = GetSmoothReachTexels();
 		const int tileSize = settings.cacheAtlasTileSize;
 		const float unitsPerTexel = tileSize > 0 ? worldCellSize * (float)settings.cacheAtlasTileCells / (float)tileSize : 0.0f;
+		const int passes = std::clamp(settings.smoothIterations, 1, smoothMaxIterations) * 2;
+
 		if (unitsPerTexel > 0.0f)
-			ImGui::Text("%d passes, reach %.0f units per pass", iterations * 2, (float)radius * unitsPerTexel);
+			ImGui::Text("%d passes: flattens relief up to %.0f units tall, out to a %.0f unit reach",
+				passes, settings.smoothFlattenHeight, reachTexels * unitsPerTexel);
 		else
-			ImGui::Text("%d passes, reach %d texels per pass", iterations * 2, radius);
+			ImGui::Text("%d passes: flattens relief up to %.0f units tall, out to a %.0f texel reach",
+				passes, settings.smoothFlattenHeight, reachTexels);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"Relief well inside the reach goes almost entirely; relief about as wide as it is only\n"
+				"halved, and anything much wider is treated as a landform and left alone. Raise the radius\n"
+				"to reach further.");
 	}
 
 	ImGui::BeginDisabled(heightGenRunning);  // the tile layout is latched for the duration of a run

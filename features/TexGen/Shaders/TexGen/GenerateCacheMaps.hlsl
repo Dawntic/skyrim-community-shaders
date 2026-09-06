@@ -11,7 +11,8 @@ cbuffer CacheGenBuffer : register(b0)
 	float4 SweepParams;        // x: first line offset, y: line count, z: transpose, w: world units per step
 	float4 SweepRect;          // xy: tile origin in atlas texels, z: tile size
 	float4 SmoothParams;       // xy: filter axis in texels, z: radius, w: spatial sigma in texels
-	float4 SmoothRange;        // x: range sigma, y: preserve threshold, zw: height clamp, all game units
+	float4 SmoothRange;        // x: flatten height, y: rolloff multiple, zw: height clamp, game units
+	float4 SmoothResolve;      // x: preserve threshold in game units
 };
 
 //// Bent Normal and Cardinal AO Map ////////////////////////////////////////////////////
@@ -344,22 +345,36 @@ float LoadHeight(int2 CoordsPx, int2 HeightMapPxSize)
 
 //// Height Smoothing ///////////////////////////////////////////////////////////////////
 // Flattens the fine relief out of the height atlas without moving the terrain it belongs
-// to: the 8 unit quantisation steps of the 16 bit export, LOD stair stepping and small
-// bumps all go, while cliffs and mountain fronts stay where they are.
+// to: the 8 unit quantisation steps of the 16 bit export, LOD stair stepping and bumps up
+// to the flatten height all go, while cliffs and mountain fronts stay where they are.
 //
 // The kernel is a bilateral one. Its spatial term is a plain Gaussian over the radius; its
-// range term weights a neighbour by how far its height is from the centre, so a neighbour
-// within SmoothRange.x game units averages in and one across a cliff does not. Small relief
-// sits well inside that window and is averaged flat; large relief sits outside it and
-// survives with its edge intact.
+// range term gates a neighbour on how far its height is from the centre. That gate is flat
+// topped rather than Gaussian: a neighbour within SmoothRange.x game units of the centre
+// weighs a full 1, and the weight only then rolls off, reaching 0 at SmoothRange.x *
+// SmoothRange.y. So "flatten differences up to X units" is exact - everything inside X is
+// averaged as if the range term were not there, and anything past the rolloff is untouchable.
+// A Gaussian would instead half-include a difference of X, flattening it only partly.
+//
+// The height a feature must exceed to survive is therefore SmoothRange.x; how *wide* a feature
+// has to be to survive is set by the kernel's reach, radius * sqrt(iterations) texels. Relief
+// much wider than that reach is a landform, not detail, and stays whatever its height.
+//
+// The gate measures against the centre texel, so ground sloping by more than the flatten height
+// over the radius puts its own far taps outside the window. That shortens the reach on steep
+// terrain by itself, which is what keeps a mountainside from being averaged against its own
+// distant parts - the filter is gentler exactly where averaging would move real terrain.
 //
 // Run separably, one dispatch per axis, ping ponging between two targets. A separable
 // bilateral is an approximation - the true kernel is not the product of two 1D kernels -
-// but two 2R tap passes cost a fraction of one R*R tap pass, and iterating cheap passes
-// flattens more than one wide pass does. Short dispatches also keep a full atlas bake well
-// clear of the driver timeout.
+// but two 2R tap passes cost a fraction of one R*R tap pass, and each stays short enough to
+// keep a full atlas bake well clear of the driver timeout.
 //
-// Heights are decoded to game units on load, so the range sigma, the preserve threshold and
+// Reach is worth spending on the radius rather than on iterations: reach grows linearly with
+// the radius but only as sqrt of the iteration count, so one wide pass beats several narrow
+// ones for the same tap budget. Iterations are there to push past what one radius can reach.
+//
+// Heights are decoded to game units on load, so the flatten height, the preserve threshold and
 // the clamp are all in game units whether the atlas on disk is 16 bit or float. Intermediate
 // targets are already decoded and are dispatched with an identity decode.
 
@@ -392,9 +407,12 @@ float LoadHeightUnits(int2 CoordsPx, int2 HeightMapPxSize)
 
 	const float Centre = LoadHeightUnits(CoordsPx, MapPxSize);
 
-	// Both terms are exp(-d^2 / 2 sigma^2), so the two exponents add into one exp per tap.
 	const float SpatialFalloff = -0.5 / max(SmoothParams.w * SmoothParams.w, 1e-6);
-	const float RangeFalloff = -0.5 / max(SmoothRange.x * SmoothRange.x, 1e-6);
+
+	// The height band the gate spans. RolloffHeight is kept strictly above FlattenHeight so
+	// smoothstep never sees a degenerate edge pair.
+	const float FlattenHeight = SmoothRange.x;
+	const float RolloffHeight = max(SmoothRange.x * SmoothRange.y, SmoothRange.x + 1e-3);
 
 	// The centre tap weighs 1: it is at no spatial and no range distance from itself.
 	float Sum = Centre;
@@ -402,13 +420,14 @@ float LoadHeightUnits(int2 CoordsPx, int2 HeightMapPxSize)
 
 	[loop] for (int Tap = 1; Tap <= Radius; ++Tap)
 	{
-		const float Spatial = SpatialFalloff * (float)(Tap * Tap);
+		const float Spatial = exp(SpatialFalloff * (float)(Tap * Tap));
 
 		[unroll] for (int Side = 0; Side < 2; ++Side)
 		{
 			const float Height = LoadHeightUnits(CoordsPx + Axis * (Side == 0 ? Tap : -Tap), MapPxSize);
-			const float Delta = Height - Centre;
-			const float Weight = exp(Spatial + RangeFalloff * Delta * Delta);
+			// Flat topped range gate: 1 inside FlattenHeight, 0 past the rolloff, smooth between.
+			const float Delta = abs(Height - Centre);
+			const float Weight = Spatial * (1.0 - smoothstep(FlattenHeight, RolloffHeight, Delta));
 
 			Sum += Height * Weight;
 			WeightSum += Weight;
@@ -444,7 +463,7 @@ RWTexture2D<float> OutputHeight : register(u0);
 	// the source height is restored exactly, so a ridge the range term still rounded off is not
 	// left half flattened. A zero threshold leaves the smoothed result untouched.
 	float Height = Base;
-	const float Threshold = SmoothRange.y;
+	const float Threshold = SmoothResolve.x;
 	if (Threshold > 0.0) {
 		const float Residual = Source - Base;
 		Height += Residual * smoothstep(Threshold, 2.0 * Threshold, abs(Residual));
