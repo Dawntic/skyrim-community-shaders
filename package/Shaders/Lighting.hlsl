@@ -3021,7 +3021,28 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3 SkyIrradiance = Skylighting::CalculateAmbientIrradiance(input.WorldPosition.xyz, worldNormal, skylightingSH, SampColorSampler);
 
 	float2 Coord = Skylighting::GetAtlasUV(input.WorldPosition.xyz);
-	//SkyIrradiance = Skylighting::SparseProbeArray.SampleLevel(SampColorSampler, float3(Coord, 0), 0);
+	SkyIrradiance = Skylighting::SparseProbeArray.SampleLevel(SampColorSampler, float3(Coord, 0), 0);
+
+	sh2vec3 IrradianceProbe = SH::UnpackSH2Vec3(Coord * SharedData::skylightingSettings.GridTexSize.xy, Skylighting::SparseProbeArray);
+
+	IrradianceProbe = Skylighting::SampleIrradianceProbe(input.WorldPosition.xyz, SampColorSampler);
+	//IrradianceProbe = SH::Sharpen(IrradianceProbe, PROBE_SHARPEN);
+
+	skylightingSH = lerp(SH::UnitSH2(), skylightingSH, Skylighting::GetFadeOutFactor(input.WorldPosition.xyz));
+	sh2 bentNormalSH = Skylighting::SampleBentNormalSH(input.WorldPosition.xyz, SampColorSampler, 0);
+
+	float SkyAO = SH::Unproject(skylightingSH, worldNormal);
+	float BentAO = SH::Unproject(bentNormalSH, worldNormal);
+
+	sh2 SkyLobe = SkyAO < BentAO ? skylightingSH : bentNormalSH;  //min(SkyAO, BentAO);
+	SkyLobe = SH::LerpSH2(SharedData::skylightingSettings.MinDiffuseVisibility, 1.0, SkyLobe);
+	//SkyLobe = SH::UnitSH2();
+	SkyLobe = SH::Product(SH::EvaluateCosineLobe(worldNormal), SkyLobe);
+
+	if (SharedData::skylightingSettings.MinDiffuseVisibility != 1.0) {
+		SkyIrradiance = SH::FuncProductIntegral(IrradianceProbe, SkyLobe);
+		SkyIrradiance = max(SkyIrradiance / Math::PI, 0);
+	}
 
 	bool ApplyIrradiance = SharedData::skylightingSettings.MinSpecularVisibility > 0.2;
 	if (ApplyIrradiance) {
@@ -3476,7 +3497,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(SKYLIGHTING)
-	//psout.Diffuse.xyz = SkyIrradiance;// + psout.Diffuse.xyz * 0.5;
+	if (SharedData::skylightingSettings.MinDiffuseVisibility == 1.5)
+		psout.Diffuse.xyz = SkyIrradiance;  // + psout.Diffuse.xyz * 0.5;
 #	else
 	//psout.Diffuse.xyz = (float3)0;
 #	endif

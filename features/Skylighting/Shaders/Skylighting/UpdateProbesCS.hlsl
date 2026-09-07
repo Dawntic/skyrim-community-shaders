@@ -55,7 +55,6 @@ SamplerComparisonState comparisonSampler : register(s0);
 	}
 }
 #endif
-
 #ifdef SPARSE_PROBE_GRID
 
 //SamplerState LinearSampler : register(s0);
@@ -246,10 +245,12 @@ float2 MakeConeElevation(uint k)
 	float3 WorldPos = float3(lerp(atlasMin, atlasMax, float2(CoordsUV.x, 1 - CoordsUV.y)), 0);
 
 	// debug
-	//WorldPos.xy = FrameBuffer::CameraPosAdjust.xy;
-	if (any(ThreadID.xyz != 0)) {
-		//ProbeArray[uint3(ThreadID.xyz)] = 0.0.xxxx;
-		//return;
+	if (settings.MinDiffuseVisibility == 1.0) {
+		WorldPos.xy = FrameBuffer::CameraPosAdjust.xy;
+		if (any(ThreadID.xyz != 0)) {
+			ProbeArray[uint3(ThreadID.xyz)] = 0.0.xxxx;
+			return;
+		}
 	}
 
 	float2 AtlasUV = LinearStep(atlasMin, atlasMax, WorldPos.xy);
@@ -339,7 +340,7 @@ float2 MakeConeElevation(uint k)
 			float3 Radiance = 0;
 
 			if (SkyWeight > 0.0) {
-				float3 SkyRadiance = PhysSky::SampleSky(RayDir, 0.0, LinearWrapSampler);  // * settings.SkyInfluence;
+				float3 SkyRadiance = PhysSky::SampleSky(RayDir, 0.0, LinearWrapSampler) * settings.SkyInfluence;
 
 				//float cloudTr = 1;
 				//float3 cloudInscattering = 0;
@@ -390,12 +391,15 @@ float2 MakeConeElevation(uint k)
 			ResultSH = SH::Add(ResultSH, SH::Scale(SH::Evaluate(RayDir), Radiance * SampleSolidAngle));
 
 			// debug
-			//ProbeArray[int3((RaySampleUV)*settings.GridTexSize.xy, 0)] = float4(1.0.xxx, 1);
+			if (settings.MinDiffuseVisibility == 1.0)
+				ProbeArray[int3((RaySampleUV)*settings.GridTexSize.xy, 0)] = float4(1.0.xxx, 1);
 		}
 	}
 
 	//ProbeArray[uint3(ThreadID.xyz)] = SkyAperture.xxxx * 0.5;
-	SH::PackSH2Vec3(ResultSH, ThreadID.xy, ProbeArray);
+
+	if (settings.MinDiffuseVisibility != 1.0)
+		SH::PackSH2Vec3(ResultSH, ThreadID.xy, ProbeArray);
 }
 #endif
 
@@ -527,6 +531,7 @@ float GetDirOcclusion(float2 AtlasUV)
 	float llDirLightMult = SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear && !SharedData::InInterior ? SharedData::linearLightingSettings.dirLightMult : 1.0;
 	float3 DirLightColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * llDirLightMult;
 	DirLightColor = Color::IrradianceToLinear(DirLightColor);
+	//DirLightColor = 9;//
 
 	float3 DirLighting = NdotL * Shadow * DirLightColor * BRDF::Diffuse_Lambert();
 
