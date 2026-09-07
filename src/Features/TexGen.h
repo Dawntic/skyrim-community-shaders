@@ -224,7 +224,7 @@ public:
 		float4 SweepParams;   // x: first line, y: line count, z: transpose, w: units per step
 		float4 SweepRect;     // xy: tile origin in atlas texels, z: tile size
 		float4 SmoothParams;  // xy: filter axis, z: radius, in texels
-		float4 SmoothRange;   // x: flatten height, y: rolloff multiple, zw: height clamp
+		float4 SmoothRange;   // x: flatten height, y: preserve multiple, zw: height clamp
 	};
 
 private:
@@ -237,8 +237,9 @@ private:
 	/// @brief Write the cardinal and diagonal AO set at exactly the downscaled height map dimensions.
 	bool GenerateCardinalOcclusionMaps(const int2& a_mapSize);
 
-	/// @brief Run one axis of the bilateral filter from a_source into a_target.
-	void DispatchHeightSmoothPass(ID3D11ComputeShader* a_computeShader, ID3D11ShaderResourceView* a_source, Texture2D* a_target, const int2& a_axis);
+	/// @brief Run one axis of one guided filter stage from a_source into a_target. a_height is the
+	/// unfiltered height the apply stage fits against, and is null for the stages that do not read it.
+	void DispatchHeightSmoothPass(ID3D11ComputeShader* a_computeShader, ID3D11ShaderResourceView* a_source, ID3D11ShaderResourceView* a_height, Texture2D* a_target, const int2& a_axis);
 	/// @brief Flatten a height map into a fresh R32_FLOAT texture holding game units.
 	eastl::unique_ptr<Texture2D> SmoothHeightMap(ID3D11ShaderResourceView* a_source, const int2& a_mapSize);
 

@@ -236,55 +236,129 @@ RWTexture2D<float4> OutputAccum : register(u0);
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////
 
-#ifdef HEIGHT_SMOOTH
-Texture2D<float> HeightTex : register(t0);
-RWTexture2D<float> OutputHeight : register(u0);
+//// Guided Height Flattening //////////////////////////////////////////////////////////
+// Self guided filter: every output is a * h + b with a and b box averaged over the window.
+// Heights are carried relative to the middle of the clamp range so squaring them for the
+// moments stays clear of the float steps that would swamp the variance.
 
-float LoadHeightUnits(int2 CoordsPx, int2 HeightMapPxSize)
+#if defined(GUIDED_MOMENTS) || defined(GUIDED_COEFF) || defined(GUIDED_BLUR) || defined(GUIDED_APPLY)
+
+float HeightOffset()
 {
-	CoordsPx = clamp(CoordsPx, 0, HeightMapPxSize - 1);
-	return clamp(HeightTex[CoordsPx], SmoothRange.z, SmoothRange.w);
+	return 0.5 * (SmoothRange.z + SmoothRange.w);
 }
+
+float LoadHeightCentred(Texture2D<float> a_tex, int2 a_coordsPx, int2 a_mapSize)
+{
+	a_coordsPx = clamp(a_coordsPx, 0, a_mapSize - 1);
+	return clamp(a_tex[a_coordsPx], SmoothRange.z, SmoothRange.w) - HeightOffset();
+}
+
+#endif
+
+#ifdef GUIDED_MOMENTS
+Texture2D<float> HeightTex : register(t0);
+RWTexture2D<float4> OutputMoments : register(u0);
 
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	if (any(ThreadID.xy >= (uint2)OutputTexSize))
 		return;
 
-	uint2 HeightMapPxSize;
-	HeightTex.GetDimensions(HeightMapPxSize.x, HeightMapPxSize.y);
-
-	const int2 MapPxSize = (int2)HeightMapPxSize;
-	const int2 CoordsPx = (int2)ThreadID.xy;
+	const int2 MapSize = (int2)OutputTexSize;
 	const int2 Axis = (int2)SmoothParams.xy;
 	const int Radius = (int)SmoothParams.z;
 
-	const float Centre = LoadHeightUnits(CoordsPx, MapPxSize);
-
-	const float Sigma = max(SmoothParams.z * 0.5, 0.5);
-	const float SpatialFalloff = -0.5 / (Sigma * Sigma);
-
-	const float FlattenHeight = SmoothRange.x;
-	const float RolloffHeight = max(SmoothRange.x * SmoothRange.y, SmoothRange.x + 1e-3);
-
-	float Sum = Centre;
-	float WeightSum = 1.0;
-
-	[loop] for (int Tap = 1; Tap <= Radius; ++Tap)
+	float2 Sum = 0.0;
+	[loop] for (int Tap = -Radius; Tap <= Radius; ++Tap)
 	{
-		const float Spatial = exp(SpatialFalloff * (float)(Tap * Tap));
-
-		[unroll] for (int Side = 0; Side < 2; ++Side)
-		{
-			const float Height = LoadHeightUnits(CoordsPx + Axis * (Side == 0 ? Tap : -Tap), MapPxSize);
-			const float Delta = abs(Height - Centre);
-			const float Weight = Spatial * (1.0 - smoothstep(FlattenHeight, RolloffHeight, Delta));
-
-			Sum += Height * Weight;
-			WeightSum += Weight;
-		}
+		const float H = LoadHeightCentred(HeightTex, (int2)ThreadID.xy + Axis * Tap, MapSize);
+		Sum += float2(H, H * H);
 	}
 
-	OutputHeight[ThreadID.xy] = Sum / WeightSum;
+	OutputMoments[ThreadID.xy] = float4(Sum / (2 * Radius + 1), 0.0, 0.0);
+}
+#endif
+
+#ifdef GUIDED_COEFF
+Texture2D<float4> MomentsTex : register(t0);
+RWTexture2D<float4> OutputCoeff : register(u0);
+
+[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	if (any(ThreadID.xy >= (uint2)OutputTexSize))
+		return;
+
+	const int2 MapSize = (int2)OutputTexSize;
+	const int2 Axis = (int2)SmoothParams.xy;
+	const int Radius = (int)SmoothParams.z;
+
+	float2 Sum = 0.0;
+	[loop] for (int Tap = -Radius; Tap <= Radius; ++Tap)
+	{
+		const int2 Px = clamp((int2)ThreadID.xy + Axis * Tap, 0, MapSize - 1);
+		Sum += MomentsTex[Px].xy;
+	}
+
+	const float2 Moments = Sum / (2 * Radius + 1);
+	const float Variance = max(0.0, Moments.y - Moments.x * Moments.x);
+
+	// Half the relief is kept where it matches the flatten height and 95% at the preserve
+	// multiple, as a logistic in log variance so the exponent cannot overflow.
+	const float Flatten = max(SmoothRange.x, 1e-3);
+	const float Knee = log(19.0) / (2.0 * log(max(SmoothRange.y, 1.05)));
+	const float Ratio = Variance / (Flatten * Flatten);
+	const float Keep = rcp(1.0 + exp(-clamp(Knee * log(max(Ratio, 1e-20)), -60.0, 60.0)));
+
+	OutputCoeff[ThreadID.xy] = float4(Keep, Moments.x * (1.0 - Keep), 0.0, 0.0);
+}
+#endif
+
+#ifdef GUIDED_BLUR
+Texture2D<float4> CoeffTex : register(t0);
+RWTexture2D<float4> OutputCoeff : register(u0);
+
+[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	if (any(ThreadID.xy >= (uint2)OutputTexSize))
+		return;
+
+	const int2 MapSize = (int2)OutputTexSize;
+	const int2 Axis = (int2)SmoothParams.xy;
+	const int Radius = (int)SmoothParams.z;
+
+	float2 Sum = 0.0;
+	[loop] for (int Tap = -Radius; Tap <= Radius; ++Tap)
+	{
+		const int2 Px = clamp((int2)ThreadID.xy + Axis * Tap, 0, MapSize - 1);
+		Sum += CoeffTex[Px].xy;
+	}
+
+	OutputCoeff[ThreadID.xy] = float4(Sum / (2 * Radius + 1), 0.0, 0.0);
+}
+#endif
+
+#ifdef GUIDED_APPLY
+Texture2D<float4> CoeffTex : register(t0);
+Texture2D<float> HeightTex : register(t1);
+RWTexture2D<float> OutputHeight : register(u0);
+
+[numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	if (any(ThreadID.xy >= (uint2)OutputTexSize))
+		return;
+
+	const int2 MapSize = (int2)OutputTexSize;
+	const int2 Axis = (int2)SmoothParams.xy;
+	const int Radius = (int)SmoothParams.z;
+
+	float2 Sum = 0.0;
+	[loop] for (int Tap = -Radius; Tap <= Radius; ++Tap)
+	{
+		const int2 Px = clamp((int2)ThreadID.xy + Axis * Tap, 0, MapSize - 1);
+		Sum += CoeffTex[Px].xy;
+	}
+
+	const float2 Coeff = Sum / (2 * Radius + 1);
+	const float H = LoadHeightCentred(HeightTex, (int2)ThreadID.xy, MapSize);
+
+	OutputHeight[ThreadID.xy] = Coeff.x * H + Coeff.y + HeightOffset();
 }
 #endif
 /////////////////////////////////////////////////////////////////////////////////////////

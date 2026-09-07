@@ -591,7 +591,7 @@ bool TexGen::GenerateCardinalOcclusionMaps(const int2& a_mapSize)
 //// Height smoothing
 //////////////////////////////////////////////////////////////////////////////////
 
-void TexGen::DispatchHeightSmoothPass(ID3D11ComputeShader* a_computeShader, ID3D11ShaderResourceView* a_source, Texture2D* a_target, const int2& a_axis)
+void TexGen::DispatchHeightSmoothPass(ID3D11ComputeShader* a_computeShader, ID3D11ShaderResourceView* a_source, ID3D11ShaderResourceView* a_height, Texture2D* a_target, const int2& a_axis)
 {
 	auto context = globals::d3d::context;
 
@@ -599,7 +599,9 @@ void TexGen::DispatchHeightSmoothPass(ID3D11ComputeShader* a_computeShader, ID3D
 
 	ID3D11UnorderedAccessView* uav = a_target->uav.get();
 	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
-	context->CSSetShaderResources(0, 1, &a_source);
+
+	ID3D11ShaderResourceView* srvs[2] = { a_source, a_height };
+	context->CSSetShaderResources(0, 2, srvs);
 
 	const uint width = a_target->desc.Width;
 	const uint height = a_target->desc.Height;
@@ -608,7 +610,7 @@ void TexGen::DispatchHeightSmoothPass(ID3D11ComputeShader* a_computeShader, ID3D
 		.TexParams = float4((float)width, (float)height, 0.0f, 0.0f),
 		.GridBounds = GetAtlasWorldBound(),
 		.SmoothParams = float4((float)a_axis.x, (float)a_axis.y, (float)std::clamp(settings.smoothRadius, 1, smoothMaxRadius), 0.0f),
-		.SmoothRange = float4(std::max(settings.smoothFlattenHeight, 0.01f), std::max(settings.smoothRolloff, 1.0f), heightRangeMin, heightRangeMax)
+		.SmoothRange = float4(std::max(settings.smoothFlattenHeight, 0.01f), std::max(settings.smoothRolloff, 1.05f), heightRangeMin, heightRangeMax)
 	};
 	cacheGenBuffer->Update(data);
 
@@ -620,44 +622,68 @@ void TexGen::DispatchHeightSmoothPass(ID3D11ComputeShader* a_computeShader, ID3D
 	// The texture written here is the one read next, and D3D silently drops an SRV still bound as a UAV.
 	ID3D11UnorderedAccessView* nullUAV = nullptr;
 	context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
-	ID3D11ShaderResourceView* nullSRV = nullptr;
-	context->CSSetShaderResources(0, 1, &nullSRV);
+	ID3D11ShaderResourceView* nullSRVs[2] = { nullptr, nullptr };
+	context->CSSetShaderResources(0, 2, nullSRVs);
 }
 
 eastl::unique_ptr<Texture2D> TexGen::SmoothHeightMap(ID3D11ShaderResourceView* a_source, const int2& a_mapSize)
 {
-	winrt::com_ptr<ID3D11ComputeShader> smoothCS;
-	smoothCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { "HEIGHT_SMOOTH", "" } }, "cs_5_0")));
-	if (!smoothCS) {
-		logger::error("[TexGen] Failed to compile the height smoothing shader");
-		return nullptr;
+	// One iteration is moments along x, the coefficient fit along y, then the coefficients
+	// box averaged back over the window and applied to the source height.
+	static constexpr std::array<const char*, 4> stageDefines = { "GUIDED_MOMENTS", "GUIDED_COEFF", "GUIDED_BLUR", "GUIDED_APPLY" };
+	std::array<winrt::com_ptr<ID3D11ComputeShader>, 4> stages;
+	for (size_t i = 0; i < stages.size(); ++i) {
+		stages[i].attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TexGen\\GenerateCacheMaps.hlsl", { { stageDefines[i], "" } }, "cs_5_0")));
+		if (!stages[i]) {
+			logger::error("[TexGen] Failed to compile the height flattening shader ({})", stageDefines[i]);
+			return nullptr;
+		}
 	}
 
-	CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R32_FLOAT, (uint)a_mapSize.x, (uint)a_mapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
-	CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, desc.Format);
-	CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, desc.Format);
+	auto makeTexture = [&](DXGI_FORMAT a_format, const char* a_name) {
+		CD3D11_TEXTURE2D_DESC desc(a_format, (uint)a_mapSize.x, (uint)a_mapSize.y, 1, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, a_format);
+		CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2D, a_format);
 
-	auto smoothTexA = eastl::make_unique<Texture2D>(desc, "TexGen::SmoothedHeightA");
-	auto smoothTexB = eastl::make_unique<Texture2D>(desc, "TexGen::SmoothedHeightB");
-	for (auto* tex : { smoothTexA.get(), smoothTexB.get() }) {
-		tex->CreateSRV(srvDesc);
-		tex->CreateUAV(uavDesc);
-	}
+		auto texture = eastl::make_unique<Texture2D>(desc, a_name);
+		texture->CreateSRV(srvDesc);
+		texture->CreateUAV(uavDesc);
+		return texture;
+	};
+
+	// R32G32B32A32 rather than R32G32: only the four channel float formats are guaranteed for
+	// typed UAV writes, and the pair has to survive squared worldspace heights.
+	auto coeffA = makeTexture(DXGI_FORMAT_R32G32B32A32_FLOAT, "TexGen::GuidedCoeffA");
+	auto coeffB = makeTexture(DXGI_FORMAT_R32G32B32A32_FLOAT, "TexGen::GuidedCoeffB");
+	auto heightA = makeTexture(DXGI_FORMAT_R32_FLOAT, "TexGen::SmoothedHeightA");
+	auto heightB = makeTexture(DXGI_FORMAT_R32_FLOAT, "TexGen::SmoothedHeightB");
 
 	if (!cacheGenBuffer)
 		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
 
-	// Horizontal then vertical, so a pair always lands back in A and neither target needs clearing.
+	const int2 alongX = int2(1, 0);
+	const int2 alongY = int2(0, 1);
+
 	const int iterations = std::clamp(settings.smoothIterations, 1, smoothMaxIterations);
+	ID3D11ShaderResourceView* source = a_source;
+	Texture2D* result = nullptr;
 	for (int i = 0; i < iterations; ++i) {
-		DispatchHeightSmoothPass(smoothCS.get(), i == 0 ? a_source : smoothTexA->srv.get(), smoothTexB.get(), int2(1, 0));
-		DispatchHeightSmoothPass(smoothCS.get(), smoothTexB->srv.get(), smoothTexA.get(), int2(0, 1));
+		Texture2D* target = (i % 2 == 0) ? heightA.get() : heightB.get();
+
+		DispatchHeightSmoothPass(stages[0].get(), source, nullptr, coeffA.get(), alongX);
+		DispatchHeightSmoothPass(stages[1].get(), coeffA->srv.get(), nullptr, coeffB.get(), alongY);
+		DispatchHeightSmoothPass(stages[2].get(), coeffB->srv.get(), nullptr, coeffA.get(), alongX);
+		DispatchHeightSmoothPass(stages[3].get(), coeffA->srv.get(), source, target, alongY);
+
+		source = target->srv.get();
+		result = target;
 	}
 
-	logger::info("[TexGen] Flattened the {}x{} height map: up to {:.0f} game units, radius {} x {} iterations",
-		a_mapSize.x, a_mapSize.y, settings.smoothFlattenHeight, std::clamp(settings.smoothRadius, 1, smoothMaxRadius), iterations);
+	logger::info("[TexGen] Flattened the {}x{} height map: up to {:.0f} game units, preserved past {:.1f}x, radius {} x {} iterations",
+		a_mapSize.x, a_mapSize.y, settings.smoothFlattenHeight, std::max(settings.smoothRolloff, 1.05f),
+		std::clamp(settings.smoothRadius, 1, smoothMaxRadius), iterations);
 
-	return smoothTexA;
+	return result == heightA.get() ? std::move(heightA) : std::move(heightB);
 }
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -1413,15 +1439,15 @@ void TexGen::DrawSettings()
 		ImGui::SliderFloat("Flatten Height", &settings.smoothFlattenHeight, 1.0f, 2000.0f, "%.0f units", ImGuiSliderFlags_Logarithmic);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text(
-				"The height difference the filter flattens outright. A neighbour within this many game units of\n"
-				"a texel is averaged in at full weight, so relief up to this tall is removed rather than merely\n"
-				"softened; the weight then rolls off, and relief past Preserve Above keeps its edge.");
+				"The relief the filter flattens outright. Where the height varies by less than this many game\n"
+				"units across the window the texel is replaced by the local average, so relief up to this tall\n"
+				"is removed rather than merely softened; taller relief is kept in proportion.");
 
-		ImGui::SliderFloat("Preserve Above", &settings.smoothRolloff, 1.0f, 8.0f, "%.1fx flatten height");
+		ImGui::SliderFloat("Preserve Above", &settings.smoothRolloff, 1.1f, 8.0f, "%.1fx flatten height");
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text(
-				"Where the range gate closes, as a multiple of the flatten height: relief at least this tall is\n"
-				"never averaged across. At %.1fx that is %.0f game units.",
+				"Where relief is kept intact, as a multiple of the flatten height: relief this tall keeps 95%%\n"
+				"of its shape. At %.1fx that is %.0f game units.",
 				settings.smoothRolloff, settings.smoothFlattenHeight * settings.smoothRolloff);
 
 		ImGui::SliderInt("Smooth Radius", &settings.smoothRadius, 1, smoothMaxRadius);
