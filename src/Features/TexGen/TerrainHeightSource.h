@@ -108,12 +108,20 @@ namespace TexGenLand
 	/// heuristic rather than a fact about the record; see IsExcludedModelPath.
 	bool IsHeightContributingBase(const RE::TESForm* a_base);
 
+	/// @brief The form type half of IsHeightContributingBase, so a rejection can be attributed to
+	/// the filter that actually made it rather than to whichever test ran first.
+	bool IsWhitelistedFormType(const RE::TESForm* a_base);
+
 	/// @brief Whether a model path names something that is not solid geometry.
 	///
 	/// Bethesda keeps editor markers, effect planes and plants in their own directories, and mod
-	/// authors follow the same layout closely enough for this to be worth doing. It is still only a
-	/// naming convention: the reliable test is whether the loaded mesh has any lighting shaded
-	/// geometry at all, which costs a mesh load and so belongs after this rather than instead of it.
+	/// authors follow the same layout closely enough for this to be worth doing. Markers are also
+	/// matched on the file name, because they are not confined to one directory: critter spawn
+	/// markers ship as Statics under Critters as well as under Markers.
+	///
+	/// It is still only a naming convention. The reliable test is whether the loaded mesh has any
+	/// lighting shaded geometry at all, which costs a mesh load and so belongs after this rather
+	/// than instead of it.
 	bool IsExcludedModelPath(const char* a_modelPath);
 
 	/// @brief Largest object bound extent in game units, from OBND. Zero when the form has no bounds.

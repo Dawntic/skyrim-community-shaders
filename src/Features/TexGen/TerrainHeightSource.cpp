@@ -301,9 +301,9 @@ namespace TexGenLand
 		if (!a_modelPath || !*a_modelPath)
 			return true;  // nothing to rasterise
 
-		// Leading directory only, matched case insensitively against how the game stores paths.
+		// Leading directory, matched case insensitively against how the game stores paths.
 		static constexpr std::array<std::string_view, 3> excludedRoots = {
-			"markers\\",  // critter and editor markers, invisible and collisionless
+			"markers\\",  // editor and critter markers, invisible and collisionless
 			"effects\\",  // mist, fog and other ambient planes
 			"plants\\",   // nirnroot and friends, placed as Activators
 		};
@@ -316,10 +316,17 @@ namespace TexGenLand
 			if (path.starts_with(root))
 				return true;
 
+		// Markers are not confined to one directory: critter spawn markers ship as Statics under
+		// Critters, and were reaching the contributing set from there.
+		const auto lastSlash = path.find_last_of('\\');
+		const std::string_view fileName = lastSlash == std::string::npos ? std::string_view(path) : std::string_view(path).substr(lastSlash + 1);
+		if (fileName.find("marker") != std::string_view::npos)
+			return true;
+
 		return false;
 	}
 
-	bool IsHeightContributingBase(const RE::TESForm* a_base)
+	bool IsWhitelistedFormType(const RE::TESForm* a_base)
 	{
 		if (!a_base)
 			return false;
@@ -338,6 +345,14 @@ namespace TexGenLand
 		default:
 			return false;
 		}
+
+		return true;
+	}
+
+	bool IsHeightContributingBase(const RE::TESForm* a_base)
+	{
+		if (!IsWhitelistedFormType(a_base))
+			return false;
 
 		auto* model = skyrim_cast<const RE::TESModel*>(const_cast<RE::TESForm*>(a_base));
 		return model && !IsExcludedModelPath(model->GetModel());
@@ -381,6 +396,7 @@ namespace TexGenLand
 		size_t tooSmall = 0;
 		size_t rejectedByPath = 0;
 		float largestExtent = 0.0f;
+		std::string largestModel;
 
 		for (const auto& reference : references) {
 			if (reference.IsHidden())
@@ -392,13 +408,16 @@ namespace TexGenLand
 			visibleTypes[typeName]++;
 
 			if (!IsHeightContributingBase(base)) {
-				auto* model = base ? skyrim_cast<const RE::TESModel*>(base) : nullptr;
-				const bool byPath = model && IsExcludedModelPath(model->GetModel());
-				if (byPath) {
-					++rejectedByPath;
-					logger::info("[TexGen]     excluded by path: {} {}", typeName, model->GetModel());
-				} else {
+				// Attribute to whichever filter actually decided. The type whitelist runs first, so
+				// a Flora in the Plants directory is a type rejection, not evidence that the path
+				// heuristic is carrying the work.
+				if (!IsWhitelistedFormType(base)) {
 					rejectedTypes[typeName]++;
+				} else {
+					++rejectedByPath;
+					auto* model = base ? skyrim_cast<const RE::TESModel*>(base) : nullptr;
+					const char* modelPath = model ? model->GetModel() : nullptr;
+					logger::info("[TexGen]     excluded by path: {} {}", typeName, modelPath && *modelPath ? modelPath : "<no model>");
 				}
 				continue;
 			}
@@ -410,7 +429,12 @@ namespace TexGenLand
 			}
 
 			++contributing;
-			largestExtent = std::max(largestExtent, extent);
+			if (extent > largestExtent) {
+				largestExtent = extent;
+				auto* model = skyrim_cast<const RE::TESModel*>(base);
+				const char* modelPath = model ? model->GetModel() : nullptr;
+				largestModel = modelPath && *modelPath ? modelPath : "<none>";
+			}
 		}
 
 		auto describe = [](const std::map<std::string, int>& a_counts) {
@@ -423,8 +447,8 @@ namespace TexGenLand
 		logger::info("[TexGen]   {} visible by base type: {}", visible, describe(visibleTypes));
 		logger::info("[TexGen]   rejected by type: {}", describe(rejectedTypes));
 		logger::info("[TexGen]   rejected by model path: {}", rejectedByPath);
-		logger::info("[TexGen]   {} contributing references, {} skipped as smaller than {:.0f} units, largest extent {:.0f}",
-			contributing, tooSmall, minimumReferenceExtent, largestExtent);
+		logger::info("[TexGen]   {} contributing references, {} skipped as smaller than {:.0f} units", contributing, tooSmall, minimumReferenceExtent);
+		logger::info("[TexGen]   largest contributor {:.0f} units: {}", largestExtent, largestModel.empty() ? "<none>" : largestModel);
 
 		size_t shown = 0;
 		for (const auto& reference : references) {
