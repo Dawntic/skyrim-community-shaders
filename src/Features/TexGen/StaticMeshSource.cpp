@@ -246,15 +246,29 @@ namespace TexGenStatics
 
 		MeshGeometry geometry;
 
+		// Every model handed to Demand stays in the game's resource database, so the count is what
+		// bounds memory, not the cache here. Past the limit the run keeps placing what it already
+		// holds rather than loading anything new.
+		if (ReachedDemandLimit())
+			return nullptr;
+
 		RE::NiPointer<RE::NiNode> model;
 
-		// Only the vertices are wanted here, and the default texture load level pulls every texture
-		// the model references into the game's own resource cache, where it stays. Demanding a
-		// worldspace worth of models that way exhausted memory outright.
-		RE::BSModelDB::DBTraits::ArgsType args{};
-		args.texLoadLevel = 0;
+		// texLoadLevel is left at its default. Setting it to 0 on the theory that it would skip
+		// textures made a full run fail sooner rather than later, so 0 is the more detailed end of
+		// that scale, not the cheaper one.
+		const RE::BSModelDB::DBTraits::ArgsType args{};
 
+		++stats.demanded;
 		const auto result = RE::BSModelDB::Demand(a_modelPath, model, args);
+
+		// Nudge the game to release what it can. Whether this reaches the model database is not
+		// documented anywhere reachable, but it is the only release lever exposed and it costs one
+		// call per batch of models.
+		if (stats.demanded % 64 == 0) {
+			if (auto* tes = RE::TES::GetSingleton())
+				tes->PurgeBufferedCells();
+		}
 
 		if (result != RE::BSResource::ErrorCode::kNone || !model) {
 			++stats.demandFailed;

@@ -676,6 +676,9 @@ void TexGen::GenerateHeightTiles()
 		logger::info("[TexGen]   statics: {} placements raised {} texels, {} models loaded, {} could not be read, {} held nothing solid",
 			landRunInstances, landRunRaisedTexels, meshStats.loaded, meshStats.demandFailed, meshStats.noGeometry);
 		logger::info("[TexGen]   mesh cache ended at {} models, {:.0f} MB", staticMeshes.Size(), (double)staticMeshes.ApproximateBytes() / (1024.0 * 1024.0));
+		logger::info("[TexGen]   {} distinct models were demanded of the game's resource database", meshStats.demanded);
+		if (staticMeshes.ReachedDemandLimit())
+			logger::warn("[TexGen]   the model limit was reached, so later tiles carry only the statics already loaded");
 		if (landRunInstances > 0 && landRunRaisedTexels == 0)
 			logger::error("[TexGen]   statics were submitted but raised nothing - the raster is not reaching the tile");
 	}
@@ -1943,6 +1946,7 @@ void TexGen::DrawSettings()
 				lastRasterStats.instances, lastRasterStats.models, lastRasterStats.raisedTexels, lastRasterStats.greatestRise);
 			ImGui::BulletText("Mesh cache: %zu models, %.0f MB of %.0f MB budget",
 				staticMeshes.Size(), (double)staticMeshes.ApproximateBytes() / (1024.0 * 1024.0), (double)staticMeshBudgetBytes / (1024.0 * 1024.0));
+			ImGui::BulletText("Models demanded: %zu of %zu allowed", staticMeshes.Stats().demanded, TexGenStatics::maximumDemandedModels);
 		}
 
 		ImGui::Checkbox("Skip Bent Normal Tiles", &settings.skipBentNormalTiles);

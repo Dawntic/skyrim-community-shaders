@@ -40,7 +40,16 @@ namespace TexGenStatics
 		size_t noGeometry = 0;       // resolved, but nothing lit to rasterise
 		size_t noRawVertexData = 0;  // geometry present, but its CPU side copy was released
 		size_t triangles = 0;
+		size_t demanded = 0;  // distinct models handed to BSModelDB, which retains all of them
 	};
+
+	/// @brief Distinct models a run may ask BSModelDB for before it gives up on new geometry.
+	///
+	/// Demand caches every model it resolves in the game's own resource database, and
+	/// CommonLibSSE-NG exposes no way to release one: every IEntryDB virtual is unnamed. So the
+	/// only lever is how many are ever asked for. A run that exceeds this keeps placing the models
+	/// it already holds and stops loading new ones, which loses some statics but finishes.
+	inline constexpr size_t maximumDemandedModels = 6000;
 
 	/**
 	 * @brief Model path to geometry, loaded once per distinct path.
@@ -73,6 +82,9 @@ namespace TexGenStatics
 
 		size_t Size() const { return cache.size(); }
 		const MeshLoadStats& Stats() const { return stats; }
+
+		/// @brief Whether the run has asked BSModelDB for as many models as it is allowed to.
+		bool ReachedDemandLimit() const { return stats.demanded >= maximumDemandedModels; }
 
 	private:
 		std::unordered_map<std::string, MeshGeometry> cache;
