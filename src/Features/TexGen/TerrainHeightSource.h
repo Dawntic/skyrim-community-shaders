@@ -101,7 +101,20 @@ namespace TexGenLand
 	/// sit on kTrees and the raycast passed straight through them, so rasterising their canopies
 	/// would add occlusion the baked height map never had. On a vanilla Tamriel cell they are also
 	/// the single largest group, so including them by accident would be very visible.
+	///
+	/// Form type alone is not enough. Critter spawn markers and ambient mist planes are Activators
+	/// and MovableStatics with no collision whatsoever, and on the cell measured the largest
+	/// candidate of all was a 2470 unit fog plane. Those are caught by model path, which is a
+	/// heuristic rather than a fact about the record; see IsExcludedModelPath.
 	bool IsHeightContributingBase(const RE::TESForm* a_base);
+
+	/// @brief Whether a model path names something that is not solid geometry.
+	///
+	/// Bethesda keeps editor markers, effect planes and plants in their own directories, and mod
+	/// authors follow the same layout closely enough for this to be worth doing. It is still only a
+	/// naming convention: the reliable test is whether the loaded mesh has any lighting shaded
+	/// geometry at all, which costs a mesh load and so belongs after this rather than instead of it.
+	bool IsExcludedModelPath(const char* a_modelPath);
 
 	/// @brief Largest object bound extent in game units, from OBND. Zero when the form has no bounds.
 	/// Read off the base form, so clutter can be rejected without loading its mesh.

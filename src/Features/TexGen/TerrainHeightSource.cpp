@@ -296,26 +296,51 @@ namespace TexGenLand
 		return o_out.size();
 	}
 
+	bool IsExcludedModelPath(const char* a_modelPath)
+	{
+		if (!a_modelPath || !*a_modelPath)
+			return true;  // nothing to rasterise
+
+		// Leading directory only, matched case insensitively against how the game stores paths.
+		static constexpr std::array<std::string_view, 3> excludedRoots = {
+			"markers\\",  // critter and editor markers, invisible and collisionless
+			"effects\\",  // mist, fog and other ambient planes
+			"plants\\",   // nirnroot and friends, placed as Activators
+		};
+
+		std::string path(a_modelPath);
+		std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+		std::replace(path.begin(), path.end(), '/', '\\');
+
+		for (const auto& root : excludedRoots)
+			if (path.starts_with(root))
+				return true;
+
+		return false;
+	}
+
 	bool IsHeightContributingBase(const RE::TESForm* a_base)
 	{
 		if (!a_base)
 			return false;
 
 		switch (a_base->GetFormType()) {
-		// Placed world geometry that sits on kStatic, which is what the raycast accepted.
+		// Placed world geometry that sits on kStatic, which is what the raycast accepted. Containers,
+		// furniture and doors are left out: they are solid, but none of them are large enough to
+		// register once the derived maps flatten relief below 250 units.
 		case RE::FormType::Static:
 		case RE::FormType::MovableStatic:
 		case RE::FormType::Activator:
-		case RE::FormType::Container:
-		case RE::FormType::Furniture:
-		case RE::FormType::Door:
-			return true;
+			break;
 
 		// Everything else is either kTrees, has no collision worth rasterising, or is not scenery:
 		// trees, flora, lights, markers, actors, items.
 		default:
 			return false;
 		}
+
+		auto* model = skyrim_cast<const RE::TESModel*>(const_cast<RE::TESForm*>(a_base));
+		return model && !IsExcludedModelPath(model->GetModel());
 	}
 
 	float BaseBoundExtent(const RE::TESForm* a_base)
@@ -354,6 +379,7 @@ namespace TexGenLand
 		size_t visible = 0;
 		size_t contributing = 0;
 		size_t tooSmall = 0;
+		size_t rejectedByPath = 0;
 		float largestExtent = 0.0f;
 
 		for (const auto& reference : references) {
@@ -366,7 +392,14 @@ namespace TexGenLand
 			visibleTypes[typeName]++;
 
 			if (!IsHeightContributingBase(base)) {
-				rejectedTypes[typeName]++;
+				auto* model = base ? skyrim_cast<const RE::TESModel*>(base) : nullptr;
+				const bool byPath = model && IsExcludedModelPath(model->GetModel());
+				if (byPath) {
+					++rejectedByPath;
+					logger::info("[TexGen]     excluded by path: {} {}", typeName, model->GetModel());
+				} else {
+					rejectedTypes[typeName]++;
+				}
 				continue;
 			}
 
@@ -388,7 +421,8 @@ namespace TexGenLand
 		};
 
 		logger::info("[TexGen]   {} visible by base type: {}", visible, describe(visibleTypes));
-		logger::info("[TexGen]   rejected as non contributing: {}", describe(rejectedTypes));
+		logger::info("[TexGen]   rejected by type: {}", describe(rejectedTypes));
+		logger::info("[TexGen]   rejected by model path: {}", rejectedByPath);
 		logger::info("[TexGen]   {} contributing references, {} skipped as smaller than {:.0f} units, largest extent {:.0f}",
 			contributing, tooSmall, minimumReferenceExtent, largestExtent);
 
