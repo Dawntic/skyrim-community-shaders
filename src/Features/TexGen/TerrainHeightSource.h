@@ -54,9 +54,11 @@ namespace TexGenLand
 	};
 
 	/// @brief Worldspace cell extent, inclusive on both corners.
-	/// Prefers MNAM's map bounds, falls back to NAM0/NAM9, then to the cell map's own keys.
+	/// Prefers the worldspace's own NAM0/NAM9 corners, then MNAM, then the cell map's keys.
 	/// @param o_source Names which of those answered, for logging and the settings UI.
-	bool ResolveCellBounds(RE::TESWorldSpace* a_worldSpace, int2& o_minCell, int2& o_maxCell, const char*& o_source);
+	/// @param a_log Report every candidate. Off by default: the settings UI calls this each frame,
+	/// and the cell map scan behind the last candidate is not free.
+	bool ResolveCellBounds(RE::TESWorldSpace* a_worldSpace, int2& o_minCell, int2& o_maxCell, const char*& o_source, bool a_log = false);
 
 	/// @brief Touch every source plugin's cell offset table once from the calling thread.
 	/// SeekCell consults a per-file table on the worldspace; if the engine builds it lazily then

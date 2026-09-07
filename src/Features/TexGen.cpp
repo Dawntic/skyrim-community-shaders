@@ -446,7 +446,7 @@ bool TexGen::StartLandHeightRun(bool a_singleTile, const int2& a_targetCell)
 	}
 
 	const char* boundsSource = "none";
-	if (!TexGenLand::ResolveCellBounds(worldspace, landRunMinCell, landRunMaxCell, boundsSource)) {
+	if (!TexGenLand::ResolveCellBounds(worldspace, landRunMinCell, landRunMaxCell, boundsSource, true)) {
 		logger::error("[TexGen] Could not resolve cell bounds for {}", worldspace->GetFormEditorID());
 		return false;
 	}

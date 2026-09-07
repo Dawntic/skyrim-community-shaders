@@ -126,7 +126,7 @@ namespace TexGenLand
 		return o_out.hasLand;
 	}
 
-	bool ResolveCellBounds(RE::TESWorldSpace* a_worldSpace, int2& o_minCell, int2& o_maxCell, const char*& o_source)
+	bool ResolveCellBounds(RE::TESWorldSpace* a_worldSpace, int2& o_minCell, int2& o_maxCell, const char*& o_source, bool a_log)
 	{
 		o_source = "none";
 		if (!a_worldSpace || a_worldSpace->flags.any(RE::TESWorldSpace::Flag::kNoLandscape))
@@ -139,41 +139,48 @@ namespace TexGenLand
 		};
 
 		// NAM0/NAM9 are the worldspace's own corners in world units, and the maximum is exclusive.
+		// For Tamriel this gives -57,-43 to 61,50, the extent DynDOLOD and the shipped terrain
+		// heightmaps also use.
 		std::int32_t minX = 0, minY = 0, maxX = 0, maxY = 0;
 		Util::WorldToCell(a_worldSpace->minimumCoords, minX, minY);
 		Util::WorldToCell(a_worldSpace->maximumCoords, maxX, maxY);
 		const int2 boundsMin{ minX, minY };
 		const int2 boundsMax{ maxX - 1, maxY - 1 };
 
-		// MNAM is the *world map* extent, which is the region the map screen draws rather than the
-		// region that has terrain. For Tamriel it reports -30,-40 to 40,15 against a real extent of
-		// -57,-43 to 61,50, so it is a last resort rather than the preferred answer.
+		// MNAM is the *world map* extent, the region the map screen draws rather than the region
+		// that has terrain. For Tamriel it reports -30,-40 to 40,15, barely half the worldspace, so
+		// it is a fallback rather than the preferred answer.
 		const auto& map = a_worldSpace->worldMapData;
 		const int2 mapMin{ map.nwCellX, map.seCellY };
 		const int2 mapMax{ map.seCellX, map.nwCellY };
 
 		// The cells the plugins actually defined. Only the ones the engine has instantiated appear,
-		// so this can under-report and is kept behind the record derived answers.
+		// so this under-reports and is scanned last, and only when something needs it.
 		int2 cellMapMin{ 0, 0 };
 		int2 cellMapMax{ 0, 0 };
 		bool anyCells = false;
-		for (const auto& [key, cell] : a_worldSpace->cellMap) {
-			const int2 coords{ key.x, key.y };
-			if (!anyCells) {
-				cellMapMin = cellMapMax = coords;
-				anyCells = true;
-				continue;
+		auto scanCellMap = [&]() {
+			for (const auto& [key, cell] : a_worldSpace->cellMap) {
+				const int2 coords{ key.x, key.y };
+				if (!anyCells) {
+					cellMapMin = cellMapMax = coords;
+					anyCells = true;
+					continue;
+				}
+				cellMapMin = int2{ std::min(cellMapMin.x, coords.x), std::min(cellMapMin.y, coords.y) };
+				cellMapMax = int2{ std::max(cellMapMax.x, coords.x), std::max(cellMapMax.y, coords.y) };
 			}
-			cellMapMin = int2{ std::min(cellMapMin.x, coords.x), std::min(cellMapMin.y, coords.y) };
-			cellMapMax = int2{ std::max(cellMapMax.x, coords.x), std::max(cellMapMax.y, coords.y) };
-		}
+		};
 
-		logger::info("[TexGen] Bounds for {}: NAM0/NAM9 {},{} to {},{} | MNAM {},{} to {},{} | cellMap {},{} to {},{} ({} cells known)",
-			a_worldSpace->GetFormEditorID(),
-			boundsMin.x, boundsMin.y, boundsMax.x, boundsMax.y,
-			mapMin.x, mapMin.y, mapMax.x, mapMax.y,
-			cellMapMin.x, cellMapMin.y, cellMapMax.x, cellMapMax.y,
-			a_worldSpace->cellMap.size());
+		if (a_log) {
+			scanCellMap();
+			logger::info("[TexGen] Bounds for {}: NAM0/NAM9 {},{} to {},{} | MNAM {},{} to {},{} | cellMap {},{} to {},{} ({} cells known)",
+				a_worldSpace->GetFormEditorID(),
+				boundsMin.x, boundsMin.y, boundsMax.x, boundsMax.y,
+				mapMin.x, mapMin.y, mapMax.x, mapMax.y,
+				cellMapMin.x, cellMapMin.y, cellMapMax.x, cellMapMax.y,
+				a_worldSpace->cellMap.size());
+		}
 
 		if (plausible(boundsMin, boundsMax)) {
 			o_minCell = boundsMin;
@@ -188,6 +195,9 @@ namespace TexGenLand
 			o_source = "MNAM";
 			return true;
 		}
+
+		if (!anyCells)
+			scanCellMap();
 
 		if (anyCells && plausible(cellMapMin, cellMapMax)) {
 			o_minCell = cellMapMin;
