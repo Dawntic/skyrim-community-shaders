@@ -94,7 +94,25 @@ namespace TexGenLand
 	/// and the cell map scan behind the last candidate is not free.
 	bool ResolveCellBounds(RE::TESWorldSpace* a_worldSpace, int2& o_minCell, int2& o_maxCell, const char*& o_source, bool a_log = false);
 
-	/// @brief Log a cell's merged reference set, with the per-plugin contributions that produced it.
+	/// @brief Whether a base form places the kind of world geometry the height map should contain.
+	///
+	/// The raycast this replaces accepted only the kTerrain, kGround and kStatic collision layers,
+	/// so the static layer has to match that set. Trees and flora are the notable exclusions: they
+	/// sit on kTrees and the raycast passed straight through them, so rasterising their canopies
+	/// would add occlusion the baked height map never had. On a vanilla Tamriel cell they are also
+	/// the single largest group, so including them by accident would be very visible.
+	bool IsHeightContributingBase(const RE::TESForm* a_base);
+
+	/// @brief Largest object bound extent in game units, from OBND. Zero when the form has no bounds.
+	/// Read off the base form, so clutter can be rejected without loading its mesh.
+	float BaseBoundExtent(const RE::TESForm* a_base);
+
+	/// @brief Extent below which a reference cannot register on the height map, in game units.
+	/// One texel of the height atlas at the default layout, so anything smaller has nowhere to land.
+	inline constexpr float minimumReferenceExtent = 32.0f;
+
+	/// @brief Log a cell's merged reference set, the per-plugin contributions behind it, and what
+	/// survives filtering down to height contributing geometry.
 	size_t SpikeDumpCellReferences(RE::TESWorldSpace* a_worldSpace, int a_cellX, int a_cellY);
 
 	/// @brief Touch every source plugin's cell offset table once from the calling thread.

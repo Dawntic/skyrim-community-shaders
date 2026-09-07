@@ -296,6 +296,41 @@ namespace TexGenLand
 		return o_out.size();
 	}
 
+	bool IsHeightContributingBase(const RE::TESForm* a_base)
+	{
+		if (!a_base)
+			return false;
+
+		switch (a_base->GetFormType()) {
+		// Placed world geometry that sits on kStatic, which is what the raycast accepted.
+		case RE::FormType::Static:
+		case RE::FormType::MovableStatic:
+		case RE::FormType::Activator:
+		case RE::FormType::Container:
+		case RE::FormType::Furniture:
+		case RE::FormType::Door:
+			return true;
+
+		// Everything else is either kTrees, has no collision worth rasterising, or is not scenery:
+		// trees, flora, lights, markers, actors, items.
+		default:
+			return false;
+		}
+	}
+
+	float BaseBoundExtent(const RE::TESForm* a_base)
+	{
+		auto* bound = a_base ? skyrim_cast<const RE::TESBoundObject*>(a_base) : nullptr;
+		if (!bound)
+			return 0.0f;
+
+		const auto& bounds = bound->boundData;
+		const float extentX = (float)(bounds.boundMax.x - bounds.boundMin.x);
+		const float extentY = (float)(bounds.boundMax.y - bounds.boundMin.y);
+		const float extentZ = (float)(bounds.boundMax.z - bounds.boundMin.z);
+		return std::max({ extentX, extentY, extentZ });
+	}
+
 	size_t SpikeDumpCellReferences(RE::TESWorldSpace* a_worldSpace, int a_cellX, int a_cellY)
 	{
 		if (!a_worldSpace)
@@ -312,24 +347,50 @@ namespace TexGenLand
 		std::vector<CellReference> references;
 		files.ReadCellReferences(a_cellX, a_cellY, references, true);
 
-		// What survives the merge, by base form type. Trees are called out separately because the
-		// raycast rejected the kTrees collision layer, so the static layer must skip them too or it
-		// would add canopies the old height map never had.
-		std::map<std::string, int> typeCounts;
+		// Account for the merge in stages, so it is clear what each filter removes rather than only
+		// what comes out the end.
+		std::map<std::string, int> visibleTypes;
+		std::map<std::string, int> rejectedTypes;
 		size_t visible = 0;
+		size_t contributing = 0;
+		size_t tooSmall = 0;
+		float largestExtent = 0.0f;
+
 		for (const auto& reference : references) {
 			if (reference.IsHidden())
 				continue;
 			++visible;
 
 			auto* base = RE::TESForm::LookupByID(reference.runtimeBaseID);
-			typeCounts[base ? std::string(magic_enum::enum_name(base->GetFormType())) : std::string("<unresolved>")]++;
+			const std::string typeName = base ? std::string(magic_enum::enum_name(base->GetFormType())) : std::string("<unresolved>");
+			visibleTypes[typeName]++;
+
+			if (!IsHeightContributingBase(base)) {
+				rejectedTypes[typeName]++;
+				continue;
+			}
+
+			const float extent = BaseBoundExtent(base) * reference.scale;
+			if (extent < minimumReferenceExtent) {
+				++tooSmall;
+				continue;
+			}
+
+			++contributing;
+			largestExtent = std::max(largestExtent, extent);
 		}
 
-		std::string breakdown;
-		for (const auto& [name, count] : typeCounts)
-			breakdown += fmt::format("{}x{} ", name, count);
-		logger::info("[TexGen]   {} visible references by base type: {}", visible, breakdown);
+		auto describe = [](const std::map<std::string, int>& a_counts) {
+			std::string text;
+			for (const auto& [name, count] : a_counts)
+				text += fmt::format("{}x{} ", name, count);
+			return text;
+		};
+
+		logger::info("[TexGen]   {} visible by base type: {}", visible, describe(visibleTypes));
+		logger::info("[TexGen]   rejected as non contributing: {}", describe(rejectedTypes));
+		logger::info("[TexGen]   {} contributing references, {} skipped as smaller than {:.0f} units, largest extent {:.0f}",
+			contributing, tooSmall, minimumReferenceExtent, largestExtent);
 
 		size_t shown = 0;
 		for (const auto& reference : references) {
@@ -337,12 +398,23 @@ namespace TexGenLand
 				continue;
 
 			auto* base = RE::TESForm::LookupByID(reference.runtimeBaseID);
-			logger::info("[TexGen]     ref {:08X} base {:08X} {} at {:.0f},{:.0f},{:.0f} scale {:.2f}",
+			if (!IsHeightContributingBase(base))
+				continue;
+
+			const float extent = BaseBoundExtent(base) * reference.scale;
+			if (extent < minimumReferenceExtent)
+				continue;
+
+			auto* model = base ? skyrim_cast<const RE::TESModel*>(base) : nullptr;
+			const char* modelPath = model ? model->GetModel() : nullptr;
+
+			logger::info("[TexGen]     ref {:08X} {} extent {:.0f} at {:.0f},{:.0f},{:.0f} scale {:.2f} model {}",
 				reference.runtimeRefID,
-				reference.runtimeBaseID,
 				base ? std::string(magic_enum::enum_name(base->GetFormType())) : std::string("<unresolved>"),
+				extent,
 				reference.position.x, reference.position.y, reference.position.z,
-				reference.scale);
+				reference.scale,
+				modelPath && *modelPath ? modelPath : "<none>");
 			++shown;
 		}
 
