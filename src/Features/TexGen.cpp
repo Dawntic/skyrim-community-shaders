@@ -449,8 +449,10 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 		heightMapSRV = downscaledHeightSRV.get();
 		const int2 mapSize = int2((int)width, (int)height);
 
+		generated = GenerateNormalMap(mapSize);
+
 		eastl::unique_ptr<Texture2D> smoothedHeight;
-		if (a_smoothHeight) {
+		if (generated && a_smoothHeight) {
 			smoothedHeight = SmoothHeightMap(downscaledHeightSRV.get(), mapSize);
 			if (!smoothedHeight) {
 				heightMapSRV = previousHeightMapSRV;
@@ -459,12 +461,12 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 			heightMapSRV = smoothedHeight->srv.get();
 		}
 
-		generated = GenerateNormalMap(mapSize) && GenerateCardinalOcclusionMaps(mapSize);
+		generated = generated && GenerateCardinalOcclusionMaps(mapSize);
 		heightMapSRV = previousHeightMapSRV;
 
 		if (generated) {
 			logger::info("[TexGen] Built derived maps at {}x{} from {}{}", width, height, heightAtlasPath.string(),
-				a_smoothHeight ? " (flattened)" : "");
+				a_smoothHeight ? " (flattened occlusion)" : "");
 			NotifyCacheMapsChanged();
 		}
 	}
@@ -1392,8 +1394,9 @@ void TexGen::DrawSettings()
 
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text(
-				"The same set, derived from a flattened copy of the downscaled height map, so the normals and\n"
-				"the occlusion set lose the fine relief while keeping cliffs and mountain fronts.\n"
+				"The same set, with the occlusion maps derived from a flattened copy of the downscaled height\n"
+				"map, so they lose the fine relief while keeping cliffs and mountain fronts. The normal map is\n"
+				"always built from the unflattened heights.\n"
 				"The flattened map is never written to disk; %s_HD keeps the unflattened heights.",
 				worldspaceID.empty() ? "<Worldspace>" : worldspaceID.c_str());
 

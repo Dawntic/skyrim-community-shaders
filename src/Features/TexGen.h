@@ -127,8 +127,9 @@ public:
 	bool BuildLODAtlas(const std::string& a_worldspaceID);
 	/// @brief Generate the downscaled height, normal, AO, bent-normal tiles and bent-normal atlas set.
 	/// Existing outputs are reused unless a_forceRebuild is set.
-	/// @param a_smoothHeight Derive the normal and occlusion maps from a flattened copy of the
-	/// downscaled height map. The flattened copy is never written to disk.
+	/// @param a_smoothHeight Derive the occlusion maps from a flattened copy of the downscaled
+	/// height map. The normal map always comes from the unflattened heights, and the flattened
+	/// copy is never written to disk.
 	bool BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceRebuild = false, bool a_smoothHeight = false);
 
 	/// @brief Whether a bake is in flight, during which the player is teleported around.
