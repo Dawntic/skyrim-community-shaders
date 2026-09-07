@@ -341,11 +341,10 @@ static const float2 ConeElevations[ELEVATIONS] = { ELEV_8(0) };
 			continue;
 		}
 
-		float t = saturate((sinH - GrSin) / (sinH + 1.0));
-		float DeltaR = Reach * sqrt(1.0 - t);
+		float RayPolarScale = Reach * sqrt(1.0 - saturate((sinH - GrSin) / (sinH + 1.0)));
 
 		// This gives us first surface pos in dir = RayDir
-		float2 UVOffset = Azimuth * DeltaR * AtlasUVPerWorldUnit;
+		float2 UVOffset = Azimuth * RayPolarScale * AtlasUVPerWorldUnit;
 		float2 RaySampleUV = AtlasUV + UVOffset;
 
 		/*

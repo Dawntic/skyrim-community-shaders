@@ -248,7 +248,7 @@ private:
 	ConstantBuffer* cacheGenBuffer = nullptr;
 
 	//// Cache gen resources ////
-	static constexpr float derivedHeightScale = 0.25f;
+	float derivedHeightScale = 1.0f / 8.0f;  //0.25f;
 
 	//// Height bake state ////
 	bool heightGenRunning = false;

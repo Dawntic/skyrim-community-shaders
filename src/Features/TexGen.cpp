@@ -1387,6 +1387,9 @@ void TexGen::DrawSettings()
 		if (ImGui::Button("Generate Normal, AO and Bent Normal (Flattened)"))
 			BuildDerivedMaps(worldspaceID, true, true);
 		ImGui::EndDisabled();
+
+		ImGui::SliderFloat("Map Scale down from 16k", &derivedHeightScale, 0.01, 1.0);
+
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text(
 				"The same set, derived from a flattened copy of the downscaled height map, so the normals and\n"
