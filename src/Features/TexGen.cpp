@@ -31,7 +31,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	smoothRadius,
 	smoothFlattenHeight,
 	smoothRolloff,
-	smoothIterations)
+	smoothIterations,
+	skipBentNormalTiles)
 
 //////////////////////////////////////////////////////////////////////////////////
 //// Height cache tiles
@@ -471,16 +472,18 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 		}
 	}
 
-	const auto bentNormalPath = MakeAtlasPath(cachePath, worldspaceID, "_BN", heightAtlasRange.minCell, heightAtlasRange.maxCell);
-	const auto heightTiles = LoadHeightTileManifest(worldspaceID);
-	const bool bentNormalTilesMissing = std::ranges::any_of(heightTiles, [&](const HeightTileFile& tile) {
-		if (tile.tileSize != (uint)settings.cacheAtlasTileSize || tile.cellsPerTile != settings.cacheAtlasTileCells)
-			return false;
-		return !std::filesystem::exists(GetTilePath(worldspaceID, "_BN", tile.tileSize, tile.cellsPerTile, tile.originCell), ec);
-	});
+	if (!settings.skipBentNormalTiles) {
+		const auto bentNormalPath = MakeAtlasPath(cachePath, worldspaceID, "_BN", heightAtlasRange.minCell, heightAtlasRange.maxCell);
+		const auto heightTiles = LoadHeightTileManifest(worldspaceID);
+		const bool bentNormalTilesMissing = std::ranges::any_of(heightTiles, [&](const HeightTileFile& tile) {
+			if (tile.tileSize != (uint)settings.cacheAtlasTileSize || tile.cellsPerTile != settings.cacheAtlasTileCells)
+				return false;
+			return !std::filesystem::exists(GetTilePath(worldspaceID, "_BN", tile.tileSize, tile.cellsPerTile, tile.originCell), ec);
+		});
 
-	if ((a_forceRebuild || !std::filesystem::exists(bentNormalPath, ec) || bentNormalTilesMissing) && !bentNormalTileGen)
-		generated = StartBentNormalTiles() && generated;
+		if ((a_forceRebuild || !std::filesystem::exists(bentNormalPath, ec) || bentNormalTilesMissing) && !bentNormalTileGen)
+			generated = StartBentNormalTiles() && generated;
+	}
 
 	return generated;
 }
@@ -1389,6 +1392,13 @@ void TexGen::DrawSettings()
 		if (ImGui::Button("Generate Normal, AO and Bent Normal (Flattened)"))
 			BuildDerivedMaps(worldspaceID, true, true);
 		ImGui::EndDisabled();
+
+		ImGui::Checkbox("Skip Bent Normal Tiles", &settings.skipBentNormalTiles);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"Leave the bent normal tiles and atlas untouched when the buttons above rebuild the derived maps.\n"
+				"They are the slowest part of the bake, so this keeps normal and occlusion iteration quick.\n"
+				"Use \"Generate Bent Normal Tiles\" below to rebuild them explicitly.");
 
 		ImGui::SliderFloat("Map Scale down from 16k", &derivedHeightScale, 0.01, 1.0);
 

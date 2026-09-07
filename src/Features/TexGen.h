@@ -68,6 +68,8 @@ public:
 		float smoothFlattenHeight = 250.0f;
 		float smoothRolloff = 2.0f;
 		int smoothIterations = 4;
+
+		bool skipBentNormalTiles = true;
 	} settings;
 
 	//////////////////////////////////////////////////////////////////////////////////

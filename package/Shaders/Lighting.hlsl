@@ -3178,7 +3178,23 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	if (!SharedData::iblSettings.EnableIBL)
 #		endif
 	{
-		Skylighting::ApplySkylighting(color.xyz, directionalAmbientColor, outputAlbedo, denseAmbientVisibility);
+		//Skylighting::ApplySkylighting(color.xyz, directionalAmbientColor, outputAlbedo, denseAmbientVisibility);
+		float maxScale = 1.0;
+		if (directionalAmbientColor.x > 0.0)
+			maxScale = min(maxScale, color.x / directionalAmbientColor.x);
+		if (directionalAmbientColor.y > 0.0)
+			maxScale = min(maxScale, color.y / directionalAmbientColor.y);
+		if (directionalAmbientColor.z > 0.0)
+			maxScale = min(maxScale, color.z / directionalAmbientColor.z);
+		directionalAmbientColor *= maxScale;
+
+		color.xyz = max(0.0, color.xyz - directionalAmbientColor);
+
+		float3 linAmbient = Color::IrradianceToLinear(directionalAmbientColor);
+		float3 multiBounceSkylighting = 1;  //MultiBounceAO(outputAlbedo, denseAmbientVisibility);
+		directionalAmbientColor = Color::IrradianceToGamma(linAmbient * multiBounceSkylighting);
+
+		color.xyz += directionalAmbientColor;
 	}
 #	endif
 
