@@ -65,7 +65,7 @@ public:
 		std::string dynDOLODPath;
 
 		int smoothRadius = 16;
-		float smoothFlattenHeight = 100.0f;
+		float smoothFlattenHeight = 250.0f;
 		float smoothRolloff = 2.0f;
 		int smoothIterations = 4;
 	} settings;

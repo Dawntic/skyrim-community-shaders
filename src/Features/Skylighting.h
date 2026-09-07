@@ -138,7 +138,7 @@ public:
 	bool runSparse = true;  /////////////
 
 	// Sparse grid
-	static constexpr int2 sparseGridSize = int2(119 * 2, 94 * 2);  //int2(1024, 1024);  //int2(256, 256);  //int2(119 * 4, 94 * 4);
+	int2 sparseGridSize = int2(119 * 2, 94 * 2);  //int2(1024, 1024);  //int2(256, 256);  //int2(119 * 4, 94 * 4);
 	eastl::unique_ptr<Texture2D> texSparseProbeArray = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> updateSparseGridCS = nullptr;
 

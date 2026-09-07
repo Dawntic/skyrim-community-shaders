@@ -60,6 +60,24 @@ void Skylighting::DrawSettings()
 	ImGui::Checkbox("Terrain Lighting Map", &updateTerrainLighting);
 	ImGui::Checkbox("Sparse Probe Map", &runSparse);
 
+	static int pendingGridWidth = sparseGridSize.x;
+	ImGui::DragInt("Sparse Probe Grid Size", &pendingGridWidth, 1, 32, 4096);
+	int2 pendingGridSize = int2(pendingGridWidth, (pendingGridWidth * 94 + 59) / 119);  // worldspace cell aspect
+	ImGui::SameLine();
+	ImGui::Text("x %d", pendingGridSize.y);
+	ImGui::SameLine();
+	if (ImGui::Button("Apply##SparseGrid")) {
+		CD3D11_TEXTURE2D_DESC texDesc(DXGI_FORMAT_R16G16B16A16_FLOAT, pendingGridSize.x, pendingGridSize.y, 3, 1, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+		CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2DARRAY, texDesc.Format, 0, 1, 0, 3);
+		CD3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc(D3D11_UAV_DIMENSION_TEXTURE2DARRAY, texDesc.Format, 0, 0, 3);
+
+		texSparseProbeArray.reset();
+		texSparseProbeArray = eastl::make_unique<Texture2D>(texDesc);
+		texSparseProbeArray->CreateSRV(srvDesc);
+		texSparseProbeArray->CreateUAV(uavDesc);
+		sparseGridSize = pendingGridSize;
+	}
+
 	static float debugRescale = 1.0f;
 	ImGui::SliderFloat("View Resize", &debugRescale, 0.0f, 10.0f);
 
