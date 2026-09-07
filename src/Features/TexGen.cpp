@@ -34,7 +34,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	smoothFlattenHeight,
 	smoothRolloff,
 	smoothIterations,
-	skipBentNormalTiles)
+	skipBentNormalTiles,
+	includeStatics)
 
 //////////////////////////////////////////////////////////////////////////////////
 //// Height cache tiles
@@ -477,8 +478,15 @@ bool TexGen::StartLandHeightRun(bool a_singleTile, const int2& a_targetCell)
 	landRunCurrentTile = landRunMinTile;
 	landRunTileTotal = (landRunMaxTile.x - landRunMinTile.x + 1) * (landRunMaxTile.y - landRunMinTile.y + 1);
 	landRunSeamMismatches = 0;
+	landRunRaisedTexels = 0;
+	landRunInstances = 0;
 	cellsDone = 0;
 	tilesDone = 0;
+
+	// Meshes and cell reads are cached for the run, not across runs: a bake should pick up whatever
+	// the load order says now rather than what it said last time.
+	staticMeshes.Clear();
+	cellReferenceCache.clear();
 
 	// SeekCell consults a per-file cell offset table. Touching every plugin once from here keeps a
 	// later move onto worker threads off a table that may be built lazily.
@@ -503,6 +511,29 @@ bool TexGen::StartLandHeightRun(bool a_singleTile, const int2& a_targetCell)
 		texelsPerCell, worldCellSize / (float)texelsPerCell, worldCellSize / (float)(TexGenLand::landGridEdge - 1));
 
 	return true;
+}
+
+void TexGen::GatherTileReferences(const int2& a_tileOriginCell, int a_cellsPerTile, TexGenLand::LandFileSet& a_files, std::vector<TexGenLand::CellReference>& o_references)
+{
+	o_references.clear();
+
+	// One cell of ring. Nothing in the game reaches further than a cell from where it stands, and
+	// widening it costs a full plugin walk per extra cell.
+	for (int y = -1; y <= a_cellsPerTile; ++y) {
+		for (int x = -1; x <= a_cellsPerTile; ++x) {
+			const int2 cell = a_tileOriginCell + int2(x, y);
+			const int64_t key = ((int64_t)cell.x << 32) | (uint32_t)cell.y;
+
+			auto found = cellReferenceCache.find(key);
+			if (found == cellReferenceCache.end()) {
+				std::vector<TexGenLand::CellReference> cellReferences;
+				a_files.ReadCellReferences(cell.x, cell.y, cellReferences);
+				found = cellReferenceCache.emplace(key, std::move(cellReferences)).first;
+			}
+
+			o_references.insert(o_references.end(), found->second.begin(), found->second.end());
+		}
+	}
 }
 
 void TexGen::FillHeightTileFromLand(const int2& a_tileOriginCell, TexGenLand::LandFileSet& a_files, bool a_clipToWorldspace, std::vector<uint16_t>& o_pixels)
@@ -583,6 +614,19 @@ void TexGen::FillHeightTileFromLand(const int2& a_tileOriginCell, TexGenLand::La
 			++cellsDone;
 		}
 	}
+
+	if (!settings.includeStatics)
+		return;
+
+	// Statics go on top of the finished terrain, raising texels and never lowering them.
+	std::vector<CellReference> references;
+	GatherTileReferences(a_tileOriginCell, cellsPerTile, a_files, references);
+
+	const float2 worldOrigin = float2((float)a_tileOriginCell.x, (float)a_tileOriginCell.y) * worldCellSize;
+	if (staticRasteriser.RasteriseTile(worldOrigin, worldRes, tileSize, references, staticMeshes, o_pixels, lastRasterStats)) {
+		landRunRaisedTexels += lastRasterStats.raisedTexels;
+		landRunInstances += lastRasterStats.instances;
+	}
 }
 
 void TexGen::GenerateHeightTiles()
@@ -614,6 +658,13 @@ void TexGen::GenerateHeightTiles()
 		return;
 
 	logger::info("[TexGen] Land height run complete: {} tiles, {} cells, {} seam mismatches", tilesDone, cellsDone, landRunSeamMismatches);
+	if (settings.includeStatics) {
+		const auto& meshStats = staticMeshes.Stats();
+		logger::info("[TexGen]   statics: {} placements raised {} texels, {} models loaded, {} could not be read, {} held nothing solid",
+			landRunInstances, landRunRaisedTexels, meshStats.loaded, meshStats.demandFailed, meshStats.noGeometry);
+		if (landRunInstances > 0 && landRunRaisedTexels == 0)
+			logger::error("[TexGen]   statics were submitted but raised nothing - the raster is not reaching the tile");
+	}
 	if (landRunSeamMismatches > 0)
 		logger::warn("[TexGen] {} cells disagree with their west neighbour on the shared edge; expect a one texel seam there", landRunSeamMismatches);
 
@@ -621,6 +672,7 @@ void TexGen::GenerateHeightTiles()
 	landGenRunning = false;
 	landRunFiles.reset();
 	landRunWorldspace = nullptr;
+	cellReferenceCache.clear();
 
 	if (!wasSingleTile)
 		FinalizeHeightTiles();
@@ -1865,6 +1917,16 @@ void TexGen::DrawSettings()
 		if (ImGui::Button("Generate Normal, AO and Bent Normal (Flattened)"))
 			BuildDerivedMaps(worldspaceID, true, true);
 		ImGui::EndDisabled();
+
+		ImGui::Checkbox("Include Statics", &settings.includeStatics);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"Rasterise placed statics over the terrain. The raycast bake included them, so with\n"
+				"this off the height map is bare terrain and loses every building, rock and bridge.");
+
+		if (lastRasterStats.instances > 0)
+			ImGui::BulletText("Last tile: %zu placements, %zu models, raised %zu texels by up to %.0f units",
+				lastRasterStats.instances, lastRasterStats.models, lastRasterStats.raisedTexels, lastRasterStats.greatestRise);
 
 		ImGui::Checkbox("Skip Bent Normal Tiles", &settings.skipBentNormalTiles);
 		if (auto _tt = Util::HoverTooltipWrapper())

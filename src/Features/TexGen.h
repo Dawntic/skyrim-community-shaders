@@ -2,6 +2,7 @@
 
 #include "OverlayFeature.h"
 
+#include "TexGen/StaticRasteriser.h"
 #include "TexGen/TerrainHeightSource.h"
 
 #include <DDSTextureLoader.h>
@@ -72,6 +73,10 @@ public:
 		int smoothIterations = 4;
 
 		bool skipBentNormalTiles = true;
+
+		/// Rasterise placed statics over the terrain. The raycast bake included them, so leaving
+		/// this off produces bare terrain and loses every building, rock and bridge.
+		bool includeStatics = true;
 	} settings;
 
 	//////////////////////////////////////////////////////////////////////////////////
@@ -204,6 +209,16 @@ public:
 	/// @param a_clipToWorldspace Leave cells outside the worldspace extent at zero.
 	void FillHeightTileFromLand(const int2& a_tileOriginCell, TexGenLand::LandFileSet& a_files, bool a_clipToWorldspace, std::vector<uint16_t>& o_pixels);
 
+	/// @brief Collect the references that can reach a tile, its own cells plus a ring around it.
+	///
+	/// A reference is recorded in the cell it stands in, but its mesh does not stop at the cell
+	/// boundary, so a cliff placed just outside a tile still covers part of it. Without the ring
+	/// those objects would be cut off exactly at tile edges.
+	///
+	/// Reads are cached for the run: the ring makes each cell fall inside several tiles, and a cell
+	/// read walks every plugin that defines it.
+	void GatherTileReferences(const int2& a_tileOriginCell, int a_cellsPerTile, TexGenLand::LandFileSet& a_files, std::vector<TexGenLand::CellReference>& o_references);
+
 	/// @brief Compare a freshly read LAND tile against the tile already on disk, and log the spread.
 	/// Used against a raycast baked tile: the disagreement should be near zero over open terrain and
 	/// one sided wherever a static stands, so its shape says whether the LAND path is right.
@@ -314,6 +329,14 @@ private:
 	int2 landRunCurrentTile = int2(0, 0);
 	int landRunTileTotal = 0;
 	int landRunSeamMismatches = 0;  // cells whose west edge disagrees with their neighbour's east
+
+	//// Static layer ////
+	TexGenStatics::MeshCache staticMeshes;
+	TexGenStatics::StaticRasteriser staticRasteriser;
+	std::unordered_map<int64_t, std::vector<TexGenLand::CellReference>> cellReferenceCache;
+	TexGenStatics::RasterStats lastRasterStats;
+	size_t landRunRaisedTexels = 0;
+	size_t landRunInstances = 0;
 
 	eastl::unique_ptr<Texture2D> heightPreviewTex = nullptr;
 	int2 heightPreviewOrigin = int2(0, 0);
