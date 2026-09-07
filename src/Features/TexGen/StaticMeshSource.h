@@ -78,11 +78,25 @@ namespace TexGenStatics
 	/// @return Number of references whose mesh loaded and held solid geometry.
 	size_t SpikeDumpCellMeshes(RE::TESWorldSpace* a_worldSpace, int a_cellX, int a_cellY);
 
-	/// @brief Bytes per vertex for a geometry's vertex layout.
+	/// @brief How a geometry's vertices are packed in rawVertexData.
+	struct VertexLayout
+	{
+		std::uint32_t stride = 0;        // bytes per vertex
+		std::uint32_t positionSize = 0;  // bytes the position block occupies, including its bitangent
+		bool positionIsFloat = false;    // three floats rather than three halves
+		bool Valid() const { return stride > 0 && positionSize > 0; }
+	};
+
+	/// @brief Work out a geometry's vertex packing from its attribute offsets.
 	///
-	/// Not BSGraphics::VertexDesc::GetSize: that always bills position as four floats, but a mesh
-	/// without VF_FULLPREC stores it as three halves plus a half, which is eight bytes rather than
-	/// sixteen. Most Skyrim SE meshes are in that case, so using GetSize unadjusted walks the buffer
-	/// at the wrong stride and yields garbage.
-	std::uint32_t GetVertexStride(RE::BSGraphics::VertexDesc& a_desc);
+	/// The offsets are the authority here, not VF_FULLPREC. rawVertexData holds the engine's runtime
+	/// layout rather than the compressed layout the NIF was stored in, and the two disagree: meshes
+	/// come through with the flag clear while carrying three float positions. Trusting the flag
+	/// reads every vertex at the wrong stride and produces coordinates in the tens of thousands
+	/// along with NaN, which is how this was found.
+	///
+	/// Since UV follows position immediately, the UV offset is the size of the position block: 16
+	/// bytes for three floats plus a bitangent, 8 for three halves plus one. Normal serves the same
+	/// purpose when a mesh has no UVs.
+	VertexLayout GetVertexLayout(RE::BSGraphics::VertexDesc& a_desc);
 }

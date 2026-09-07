@@ -10,8 +10,11 @@ namespace
 	// size rather than an offset, so there is nothing to look up.
 	constexpr std::uint32_t kPositionOffset = 0;
 
-	// GetSize bills position as four floats. Without VF_FULLPREC it is three halves plus a half.
-	constexpr std::uint32_t kHalfPrecisionPositionSaving = 8;
+	// What GetSize assumes the position block costs. Correcting by the real figure is what turns it
+	// into a usable stride.
+	constexpr std::uint32_t kAssumedPositionSize = 16;
+	constexpr std::uint32_t kFloatPositionSize = 16;  // three floats plus a bitangent
+	constexpr std::uint32_t kHalfPositionSize = 8;    // three halves plus a bitangent
 
 	// How many geometries still owe a layout dump. The vertex layout is guessed from a bitfield
 	// CommonLibSSE-NG does not fully expose, so when the decoded positions come out wrong the raw
@@ -30,8 +33,10 @@ namespace
 	{
 		auto& desc = a_geometry->GetGeometryRuntimeData().vertexDesc;
 
-		logger::info("[TexGen]   layout: flags {:04X} GetSize {} computedStride {} fullPrec {}",
-			(std::uint16_t)desc.GetFlags(), desc.GetSize(), a_stride, desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_FULLPREC));
+		const auto layout = TexGenStatics::GetVertexLayout(desc);
+		logger::info("[TexGen]   layout: flags {:04X} GetSize {} stride {} positionSize {} float {} (VF_FULLPREC says {})",
+			(std::uint16_t)desc.GetFlags(), desc.GetSize(), layout.stride, layout.positionSize, layout.positionIsFloat,
+			desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_FULLPREC));
 		logger::info("[TexGen]   offsets: POSITION {} TEXCOORD0 {} NORMAL {} COLOR {}",
 			desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION),
 			desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0),
@@ -106,16 +111,17 @@ namespace
 		if (vertexCount == 0 || triangleCount == 0)
 			return false;
 
-		const std::uint32_t stride = TexGenStatics::GetVertexStride(runtime.vertexDesc);
-		if (stride == 0)
+		const TexGenStatics::VertexLayout layout = TexGenStatics::GetVertexLayout(runtime.vertexDesc);
+		if (!layout.Valid())
 			return false;
+		const std::uint32_t stride = layout.stride;
 
 		if (g_vertexLayoutDumpsRemaining > 0) {
 			--g_vertexLayoutDumpsRemaining;
 			DumpVertexLayout(a_geometry, renderer, vertexCount, stride);
 		}
 
-		const bool fullPrecision = runtime.vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_FULLPREC);
+		const bool fullPrecision = layout.positionIsFloat;
 		const auto baseVertex = static_cast<std::uint32_t>(o_out.vertices.size());
 		bool firstPoint = o_out.vertices.empty();
 
@@ -180,16 +186,37 @@ namespace
 
 namespace TexGenStatics
 {
-	std::uint32_t GetVertexStride(RE::BSGraphics::VertexDesc& a_desc)
+	VertexLayout GetVertexLayout(RE::BSGraphics::VertexDesc& a_desc)
 	{
+		using Attribute = RE::BSGraphics::Vertex::Attribute;
+		using Flags = RE::BSGraphics::Vertex::Flags;
+
+		VertexLayout layout;
+
 		const std::uint32_t billed = a_desc.GetSize();
 		if (billed == 0)
-			return 0;
+			return layout;
 
-		if (a_desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_FULLPREC))
-			return billed;
+		// Whatever attribute comes first after position tells us how much room position was given.
+		if (a_desc.HasFlag(Flags::VF_UV))
+			layout.positionSize = a_desc.GetAttributeOffset(Attribute::VA_TEXCOORD0);
+		else if (a_desc.HasFlag(Flags::VF_NORMAL))
+			layout.positionSize = a_desc.GetAttributeOffset(Attribute::VA_NORMAL);
 
-		return billed > kHalfPrecisionPositionSaving ? billed - kHalfPrecisionPositionSaving : 0;
+		// Nothing follows position, so fall back to the flag. It is the weaker signal, but with no
+		// second attribute there is nothing to measure against.
+		if (layout.positionSize == 0)
+			layout.positionSize = a_desc.HasFlag(Flags::VF_FULLPREC) ? kFloatPositionSize : kHalfPositionSize;
+
+		layout.positionIsFloat = layout.positionSize >= kFloatPositionSize;
+
+		// GetSize is right about every other attribute, so swapping its assumed position block for
+		// the measured one gives the true stride.
+		if (billed + layout.positionSize < kAssumedPositionSize)
+			return VertexLayout{};
+
+		layout.stride = billed - kAssumedPositionSize + layout.positionSize;
+		return layout;
 	}
 
 	bool ExtractGeometry(RE::NiAVObject* a_root, MeshGeometry& o_out, MeshLoadStats& io_stats)
