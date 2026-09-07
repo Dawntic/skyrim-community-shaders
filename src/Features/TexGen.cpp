@@ -618,15 +618,28 @@ void TexGen::FillHeightTileFromLand(const int2& a_tileOriginCell, TexGenLand::La
 	if (!settings.includeStatics)
 		return;
 
-	// Statics go on top of the finished terrain, raising texels and never lowering them.
-	std::vector<CellReference> references;
-	GatherTileReferences(a_tileOriginCell, cellsPerTile, a_files, references);
+	// A tile's geometry is the largest thing this allocates, and running out of memory there should
+	// cost the static layer rather than the whole bake. The terrain already in o_pixels stands.
+	try {
+		// Statics go on top of the finished terrain, raising texels and never lowering them.
+		std::vector<CellReference> references;
+		GatherTileReferences(a_tileOriginCell, cellsPerTile, a_files, references);
 
-	const float2 worldOrigin = float2((float)a_tileOriginCell.x, (float)a_tileOriginCell.y) * worldCellSize;
-	if (staticRasteriser.RasteriseTile(worldOrigin, worldRes, tileSize, references, staticMeshes, o_pixels, lastRasterStats)) {
-		landRunRaisedTexels += lastRasterStats.raisedTexels;
-		landRunInstances += lastRasterStats.instances;
+		const float2 worldOrigin = float2((float)a_tileOriginCell.x, (float)a_tileOriginCell.y) * worldCellSize;
+		if (staticRasteriser.RasteriseTile(worldOrigin, worldRes, tileSize, references, staticMeshes, o_pixels, lastRasterStats)) {
+			landRunRaisedTexels += lastRasterStats.raisedTexels;
+			landRunInstances += lastRasterStats.instances;
+		}
+	} catch (const std::bad_alloc&) {
+		logger::error("[TexGen] Ran out of memory placing statics on tile {}, {}; continuing with terrain only",
+			a_tileOriginCell.x, a_tileOriginCell.y);
+		staticMeshes.Clear();
+		cellReferenceCache.clear();
+		settings.includeStatics = false;
 	}
+
+	// Between tiles, where every pointer the rasteriser was handed has been finished with.
+	staticMeshes.Trim(staticMeshBudgetBytes);
 }
 
 void TexGen::GenerateHeightTiles()
@@ -662,6 +675,7 @@ void TexGen::GenerateHeightTiles()
 		const auto& meshStats = staticMeshes.Stats();
 		logger::info("[TexGen]   statics: {} placements raised {} texels, {} models loaded, {} could not be read, {} held nothing solid",
 			landRunInstances, landRunRaisedTexels, meshStats.loaded, meshStats.demandFailed, meshStats.noGeometry);
+		logger::info("[TexGen]   mesh cache ended at {} models, {:.0f} MB", staticMeshes.Size(), (double)staticMeshes.ApproximateBytes() / (1024.0 * 1024.0));
 		if (landRunInstances > 0 && landRunRaisedTexels == 0)
 			logger::error("[TexGen]   statics were submitted but raised nothing - the raster is not reaching the tile");
 	}
@@ -1924,9 +1938,12 @@ void TexGen::DrawSettings()
 				"Rasterise placed statics over the terrain. The raycast bake included them, so with\n"
 				"this off the height map is bare terrain and loses every building, rock and bridge.");
 
-		if (lastRasterStats.instances > 0)
+		if (lastRasterStats.instances > 0) {
 			ImGui::BulletText("Last tile: %zu placements, %zu models, raised %zu texels by up to %.0f units",
 				lastRasterStats.instances, lastRasterStats.models, lastRasterStats.raisedTexels, lastRasterStats.greatestRise);
+			ImGui::BulletText("Mesh cache: %zu models, %.0f MB of %.0f MB budget",
+				staticMeshes.Size(), (double)staticMeshes.ApproximateBytes() / (1024.0 * 1024.0), (double)staticMeshBudgetBytes / (1024.0 * 1024.0));
+		}
 
 		ImGui::Checkbox("Skip Bent Normal Tiles", &settings.skipBentNormalTiles);
 		if (auto _tt = Util::HoverTooltipWrapper())

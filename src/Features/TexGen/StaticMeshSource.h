@@ -58,11 +58,26 @@ namespace TexGenStatics
 
 		void Clear();
 
+		/// @brief Drop the oldest entries until the cache fits the budget.
+		///
+		/// A worldspace holds far more distinct models than any bake needs at once, and keeping
+		/// every one alive for the length of a run is what exhausted memory. Tiles are walked in
+		/// row order so their models repeat heavily, which makes oldest first a good enough
+		/// eviction order without tracking use.
+		///
+		/// Call this only between tiles. Pointers handed out by Get stay valid until it runs.
+		void Trim(size_t a_budgetBytes);
+
+		/// @brief Roughly what the cached geometry occupies, for reporting and for Trim.
+		size_t ApproximateBytes() const { return approximateBytes; }
+
 		size_t Size() const { return cache.size(); }
 		const MeshLoadStats& Stats() const { return stats; }
 
 	private:
 		std::unordered_map<std::string, MeshGeometry> cache;
+		std::deque<std::string> insertionOrder;  // eviction order for Trim
+		size_t approximateBytes = 0;
 		MeshLoadStats stats;
 	};
 

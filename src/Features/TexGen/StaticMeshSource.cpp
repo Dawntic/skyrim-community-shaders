@@ -247,7 +247,13 @@ namespace TexGenStatics
 		MeshGeometry geometry;
 
 		RE::NiPointer<RE::NiNode> model;
-		const RE::BSModelDB::DBTraits::ArgsType args{};
+
+		// Only the vertices are wanted here, and the default texture load level pulls every texture
+		// the model references into the game's own resource cache, where it stays. Demanding a
+		// worldspace worth of models that way exhausted memory outright.
+		RE::BSModelDB::DBTraits::ArgsType args{};
+		args.texLoadLevel = 0;
+
 		const auto result = RE::BSModelDB::Demand(a_modelPath, model, args);
 
 		if (result != RE::BSResource::ErrorCode::kNone || !model) {
@@ -263,7 +269,10 @@ namespace TexGenStatics
 		}
 
 		++stats.loaded;
-		auto [it, inserted] = cache.emplace(std::move(key), std::move(geometry));
+		const size_t bytes = geometry.vertices.size() * sizeof(RE::NiPoint3) + geometry.indices.size() * sizeof(std::uint32_t);
+		auto [it, inserted] = cache.emplace(key, std::move(geometry));
+		insertionOrder.push_back(std::move(key));
+		approximateBytes += bytes;
 		return &it->second;
 	}
 
@@ -439,6 +448,22 @@ namespace TexGenStatics
 	void MeshCache::Clear()
 	{
 		cache.clear();
+		insertionOrder.clear();
+		approximateBytes = 0;
 		stats = {};
+	}
+
+	void MeshCache::Trim(size_t a_budgetBytes)
+	{
+		while (approximateBytes > a_budgetBytes && !insertionOrder.empty()) {
+			const auto& oldest = insertionOrder.front();
+
+			if (auto it = cache.find(oldest); it != cache.end()) {
+				approximateBytes -= it->second.vertices.size() * sizeof(RE::NiPoint3) + it->second.indices.size() * sizeof(std::uint32_t);
+				cache.erase(it);
+			}
+
+			insertionOrder.pop_front();
+		}
 	}
 }

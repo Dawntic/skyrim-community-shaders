@@ -134,7 +134,10 @@ namespace TexGenStatics
 		// many times is uploaded once and the transforms do the rest.
 		std::vector<RasterTriangle> triangles;
 		std::vector<RasterInstance> instances;
-		std::unordered_map<const MeshGeometry*, std::pair<std::uint32_t, std::uint32_t>> modelRanges;
+
+		// Keyed by model path rather than by the cached geometry's address, so a cache eviction
+		// between tiles cannot leave a stale pointer that happens to match a newly allocated one.
+		std::unordered_map<std::string, std::pair<std::uint32_t, std::uint32_t>> modelRanges;
 
 		for (const auto& reference : a_references) {
 			if (reference.IsHidden())
@@ -157,11 +160,15 @@ namespace TexGenStatics
 				continue;
 
 			auto* model = skyrim_cast<const RE::TESModel*>(base);
-			const auto* geometry = a_meshes.Get(model ? model->GetModel() : nullptr);
+			const char* modelPath = model ? model->GetModel() : nullptr;
+			if (!modelPath || !*modelPath)
+				continue;
+
+			const auto* geometry = a_meshes.Get(modelPath);
 			if (!geometry || geometry->Empty())
 				continue;
 
-			auto found = modelRanges.find(geometry);
+			auto found = modelRanges.find(modelPath);
 			if (found == modelRanges.end()) {
 				const auto first = (std::uint32_t)triangles.size();
 				const size_t triangleCount = geometry->indices.size() / 3;
@@ -180,7 +187,7 @@ namespace TexGenStatics
 					triangles.push_back(triangle);
 				}
 
-				found = modelRanges.emplace(geometry, std::make_pair(first, (std::uint32_t)triangleCount)).first;
+				found = modelRanges.emplace(modelPath, std::make_pair(first, (std::uint32_t)triangleCount)).first;
 				++o_stats.models;
 			}
 

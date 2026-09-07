@@ -331,6 +331,10 @@ private:
 	int landRunSeamMismatches = 0;  // cells whose west edge disagrees with their neighbour's east
 
 	//// Static layer ////
+	/// @brief How much cached mesh geometry a run may hold. Exceeding it evicts oldest first
+	/// between tiles rather than growing until the process runs out of memory.
+	static constexpr size_t staticMeshBudgetBytes = 512ull * 1024 * 1024;
+
 	TexGenStatics::MeshCache staticMeshes;
 	TexGenStatics::StaticRasteriser staticRasteriser;
 	std::unordered_map<int64_t, std::vector<TexGenLand::CellReference>> cellReferenceCache;
