@@ -1,6 +1,6 @@
 #include "StaticRasteriser.h"
 
-#include "../TexGen.h"
+#include "Features/TexGen.h"
 #include "Utils/D3D.h"
 
 #include <DirectXPackedVector.h>
