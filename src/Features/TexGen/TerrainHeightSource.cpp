@@ -138,47 +138,60 @@ namespace TexGenLand
 			return width > 0 && height > 0 && width <= kMaxWorldspaceCells && height <= kMaxWorldspaceCells;
 		};
 
-		// MNAM names the map's corners. North west carries the minimum X but the *maximum* Y, so the
-		// two corners cross over; reading them straight through mirrors the whole worldspace.
-		const auto& map = a_worldSpace->worldMapData;
-		int2 minCell{ map.nwCellX, map.seCellY };
-		int2 maxCell{ map.seCellX, map.nwCellY };
-		if (plausible(minCell, maxCell)) {
-			o_minCell = minCell;
-			o_maxCell = maxCell;
-			o_source = "MNAM";
-			return true;
-		}
-
-		// NAM0/NAM9 are world units, and the maximum is the exclusive corner.
+		// NAM0/NAM9 are the worldspace's own corners in world units, and the maximum is exclusive.
 		std::int32_t minX = 0, minY = 0, maxX = 0, maxY = 0;
 		Util::WorldToCell(a_worldSpace->minimumCoords, minX, minY);
 		Util::WorldToCell(a_worldSpace->maximumCoords, maxX, maxY);
-		minCell = int2{ minX, minY };
-		maxCell = int2{ maxX - 1, maxY - 1 };
-		if (plausible(minCell, maxCell)) {
-			o_minCell = minCell;
-			o_maxCell = maxCell;
+		const int2 boundsMin{ minX, minY };
+		const int2 boundsMax{ maxX - 1, maxY - 1 };
+
+		// MNAM is the *world map* extent, which is the region the map screen draws rather than the
+		// region that has terrain. For Tamriel it reports -30,-40 to 40,15 against a real extent of
+		// -57,-43 to 61,50, so it is a last resort rather than the preferred answer.
+		const auto& map = a_worldSpace->worldMapData;
+		const int2 mapMin{ map.nwCellX, map.seCellY };
+		const int2 mapMax{ map.seCellX, map.nwCellY };
+
+		// The cells the plugins actually defined. Only the ones the engine has instantiated appear,
+		// so this can under-report and is kept behind the record derived answers.
+		int2 cellMapMin{ 0, 0 };
+		int2 cellMapMax{ 0, 0 };
+		bool anyCells = false;
+		for (const auto& [key, cell] : a_worldSpace->cellMap) {
+			const int2 coords{ key.x, key.y };
+			if (!anyCells) {
+				cellMapMin = cellMapMax = coords;
+				anyCells = true;
+				continue;
+			}
+			cellMapMin = int2{ std::min(cellMapMin.x, coords.x), std::min(cellMapMin.y, coords.y) };
+			cellMapMax = int2{ std::max(cellMapMax.x, coords.x), std::max(cellMapMax.y, coords.y) };
+		}
+
+		logger::info("[TexGen] Bounds for {}: NAM0/NAM9 {},{} to {},{} | MNAM {},{} to {},{} | cellMap {},{} to {},{} ({} cells known)",
+			a_worldSpace->GetFormEditorID(),
+			boundsMin.x, boundsMin.y, boundsMax.x, boundsMax.y,
+			mapMin.x, mapMin.y, mapMax.x, mapMax.y,
+			cellMapMin.x, cellMapMin.y, cellMapMax.x, cellMapMax.y,
+			a_worldSpace->cellMap.size());
+
+		if (plausible(boundsMin, boundsMax)) {
+			o_minCell = boundsMin;
+			o_maxCell = boundsMax;
 			o_source = "NAM0/NAM9";
 			return true;
 		}
 
-		// Last resort: the extent of whatever cells the plugins actually defined.
-		bool any = false;
-		for (const auto& [key, cell] : a_worldSpace->cellMap) {
-			const int2 coords{ key.x, key.y };
-			if (!any) {
-				minCell = maxCell = coords;
-				any = true;
-				continue;
-			}
-			minCell = int2{ std::min(minCell.x, coords.x), std::min(minCell.y, coords.y) };
-			maxCell = int2{ std::max(maxCell.x, coords.x), std::max(maxCell.y, coords.y) };
+		if (plausible(mapMin, mapMax)) {
+			o_minCell = mapMin;
+			o_maxCell = mapMax;
+			o_source = "MNAM";
+			return true;
 		}
 
-		if (any && plausible(minCell, maxCell)) {
-			o_minCell = minCell;
-			o_maxCell = maxCell;
+		if (anyCells && plausible(cellMapMin, cellMapMax)) {
+			o_minCell = cellMapMin;
+			o_maxCell = cellMapMax;
 			o_source = "cellMap";
 			return true;
 		}

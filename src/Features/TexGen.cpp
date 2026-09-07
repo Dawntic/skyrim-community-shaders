@@ -289,7 +289,8 @@ void TexGen::VerifyLandDecode()
 
 	auto* player = RE::PlayerCharacter::GetSingleton();
 	auto* cell = player ? player->GetParentCell() : nullptr;
-	if (!cell || cell->IsInteriorCell()) {
+	auto* tes = RE::TES::GetSingleton();
+	if (!cell || cell->IsInteriorCell() || !tes) {
 		logger::error("[TexGen] Land decode check needs the player in an exterior cell");
 		return;
 	}
@@ -298,8 +299,7 @@ void TexGen::VerifyLandDecode()
 	auto* coords = cell->GetCoordinates();
 	auto* land = cell->GetRuntimeData().cellLand;
 	if (!worldspace || !coords || !land || !land->loadedData) {
-		logger::error("[TexGen] Land decode check: cell {} has no loaded LAND to compare against",
-			cell->GetFormEditorID() ? cell->GetFormEditorID() : "<unnamed>");
+		logger::error("[TexGen] Land decode check: no loaded LAND to compare against");
 		return;
 	}
 
@@ -318,14 +318,54 @@ void TexGen::VerifyLandDecode()
 		return;
 	}
 
-	// The engine stores the 33x33 surface as four overlapping 17x17 quads. Which corner each quad
-	// covers, and whether its 289 entries run row major or column major, are the two things worth
-	// resolving empirically - so score every combination and let the zero come out on top.
+	// Test one: against the absolute world Z the engine reports at the player's own position. This
+	// is the check that actually matters, because the tiles must hold absolute heights, and it does
+	// not care how LoadedLandData happens to be laid out.
+	const auto playerPos = player->GetPosition();
+	float engineHeight = 0.0f;
+	const bool haveEngineHeight = tes->GetLandHeight(playerPos, engineHeight);
+
+	const float localX = playerPos.x - (float)cellX * worldCellSize;
+	const float localY = playerPos.y - (float)cellY * worldCellSize;
+	const float vertexStep = worldCellSize / (float)(landGridEdge - 1);
+	const int col0 = std::clamp((int)(localX / vertexStep), 0, landGridEdge - 2);
+	const int row0 = std::clamp((int)(localY / vertexStep), 0, landGridEdge - 2);
+	const float fx = localX / vertexStep - (float)col0;
+	const float fy = localY / vertexStep - (float)row0;
+
+	const int i00 = row0 * landGridEdge + col0;
+	const float south = decoded.heights[i00] + (decoded.heights[i00 + 1] - decoded.heights[i00]) * fx;
+	const float north = decoded.heights[i00 + landGridEdge] + (decoded.heights[i00 + landGridEdge + 1] - decoded.heights[i00 + landGridEdge]) * fx;
+	const float mineHere = south + (north - south) * fy;
+
+	auto [decodedMin, decodedMax] = std::minmax_element(decoded.heights.begin(), decoded.heights.end());
+	const auto extents = land->loadedData->heightExtents;
+
+	logger::info("[TexGen] Land decode check: cell {}, {} in {}", cellX, cellY, worldspace->GetFormEditorID());
+	logger::info("[TexGen]   decoded range {:.1f}..{:.1f}, engine heightExtents {:.1f}..{:.1f}, water {:.1f}",
+		*decodedMin, *decodedMax, extents.x, extents.y, decoded.waterHeight);
+
+	if (haveEngineHeight) {
+		logger::info("[TexGen]   at player {:.1f},{:.1f}: decoded {:.1f} vs GetLandHeight {:.1f} - difference {:.1f}",
+			playerPos.x, playerPos.y, mineHere, engineHeight, mineHere - engineHeight);
+		if (std::abs(mineHere - engineHeight) < 1.0f)
+			logger::info("[TexGen]   ABSOLUTE HEIGHT MATCHES - the decode is correct in world space");
+		else
+			logger::error("[TexGen]   ABSOLUTE HEIGHT WRONG by {:.1f}", mineHere - engineHeight);
+	} else {
+		logger::warn("[TexGen]   GetLandHeight failed at the player's position");
+	}
+
+	// Test two: against LoadedLandData's per-quad grids. The engine builds four quad meshes, so
+	// these may be local to each quad rather than absolute. Scoring the raw residual alongside one
+	// with each quad's mean difference removed separates "wrong shape" from "right shape, different
+	// base" - if the compensated residual collapses to zero, the decode is fine and only the space
+	// differs.
 	static constexpr int quadEdge = 17;
 	struct Candidate
 	{
 		const char* name;
-		bool quadXFromLowBit;  // quad index bit 0 selects the column half rather than the row half
+		bool quadXFromLowBit;
 		bool rowMajorInQuad;
 	};
 	static constexpr std::array<Candidate, 4> candidates = {
@@ -336,45 +376,57 @@ void TexGen::VerifyLandDecode()
 	};
 
 	const Candidate* best = nullptr;
-	float bestError = FLT_MAX;
+	float bestCompensated = FLT_MAX;
+	float bestRaw = FLT_MAX;
+	std::array<float, 4> bestQuadOffsets{};
 
 	for (const auto& candidate : candidates) {
-		float maxError = 0.0f;
+		float rawMax = 0.0f;
+		float compensatedMax = 0.0f;
+		std::array<float, 4> quadOffsets{};
+
 		for (int quad = 0; quad < 4; ++quad) {
 			const int quadX = candidate.quadXFromLowBit ? (quad & 1) : (quad >> 1);
 			const int quadY = candidate.quadXFromLowBit ? (quad >> 1) : (quad & 1);
 
+			double sum = 0.0;
 			for (int i = 0; i < quadEdge * quadEdge; ++i) {
 				const int inRow = candidate.rowMajorInQuad ? i / quadEdge : i % quadEdge;
 				const int inCol = candidate.rowMajorInQuad ? i % quadEdge : i / quadEdge;
+				const int row = quadY * (quadEdge - 1) + inRow;
+				const int col = quadX * (quadEdge - 1) + inCol;
+				sum += decoded.heights[row * landGridEdge + col] - land->loadedData->heights[quad][i];
+			}
+			quadOffsets[quad] = (float)(sum / (double)(quadEdge * quadEdge));
 
+			for (int i = 0; i < quadEdge * quadEdge; ++i) {
+				const int inRow = candidate.rowMajorInQuad ? i / quadEdge : i % quadEdge;
+				const int inCol = candidate.rowMajorInQuad ? i % quadEdge : i / quadEdge;
 				const int row = quadY * (quadEdge - 1) + inRow;
 				const int col = quadX * (quadEdge - 1) + inCol;
 
-				const float mine = decoded.heights[row * landGridEdge + col];
-				const float theirs = land->loadedData->heights[quad][i];
-				maxError = std::max(maxError, std::abs(mine - theirs));
+				const float difference = decoded.heights[row * landGridEdge + col] - land->loadedData->heights[quad][i];
+				rawMax = std::max(rawMax, std::abs(difference));
+				compensatedMax = std::max(compensatedMax, std::abs(difference - quadOffsets[quad]));
 			}
 		}
 
-		logger::info("[TexGen] Land decode check: {} -> max error {:.4f}", candidate.name, maxError);
-		if (maxError < bestError) {
-			bestError = maxError;
+		logger::info("[TexGen]   {}: raw {:.2f}, per-quad offset removed {:.2f}", candidate.name, rawMax, compensatedMax);
+		if (compensatedMax < bestCompensated) {
+			bestCompensated = compensatedMax;
+			bestRaw = rawMax;
 			best = &candidate;
+			bestQuadOffsets = quadOffsets;
 		}
 	}
 
-	const auto extents = land->loadedData->heightExtents;
-	logger::info("[TexGen] Land decode check: cell {}, {} in {} - engine extents {:.1f}..{:.1f}, water {:.1f}",
-		cellX, cellY, worldspace->GetFormEditorID(), extents.x, extents.y, decoded.waterHeight);
-
-	if (bestError == 0.0f) {
-		logger::info("[TexGen] Land decode check PASSED exactly under \"{}\"", best->name);
+	if (bestCompensated < 1.0f) {
+		logger::info("[TexGen]   Shape matches under \"{}\" (residual {:.2f}); quad offsets {:.1f}, {:.1f}, {:.1f}, {:.1f}",
+			best->name, bestCompensated, bestQuadOffsets[0], bestQuadOffsets[1], bestQuadOffsets[2], bestQuadOffsets[3]);
+		if (bestRaw >= 1.0f)
+			logger::info("[TexGen]   LoadedLandData is quad local, not absolute - it is not a usable oracle, trust the GetLandHeight result above");
 	} else {
-		logger::error(
-			"[TexGen] Land decode check FAILED - best was \"{}\" at {:.4f}. A gradient in the residual "
-			"means the row order is wrong; a constant offset means the base height is.",
-			best->name, bestError);
+		logger::error("[TexGen]   Shape does NOT match under any ordering (best residual {:.2f} under \"{}\")", bestCompensated, best->name);
 	}
 }
 
