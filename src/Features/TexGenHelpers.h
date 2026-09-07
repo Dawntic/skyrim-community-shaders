@@ -260,6 +260,10 @@ namespace TexGenHelpers
 		return removed;
 	}
 
+	// The atlas is trimmed to the cells that hold data, which does not land on a tile boundary, so
+	// the layout is recorded a cell at a time: one "tile" of one cell, as many as the atlas spans.
+	// AtlasTexelToCell reads texels per cell as tileSize / tileCells and the cell extent as
+	// tiles * tileCells, so both still come out right and the mapping needs no special case.
 	inline bool UpdateAtlasLayout(const std::string& worldspaceID, const TexGen::AtlasCellRange& range, TexGen::Settings& settings)
 	{
 		auto tiles = LoadHeightTileManifest(worldspaceID);
@@ -270,25 +274,119 @@ namespace TexGenHelpers
 		const auto cellsPerTile = tiles.front().cellsPerTile;
 		if (!std::ranges::all_of(tiles, [&](const HeightTileFile& tile) { return tile.tileSize == tileSize && tile.cellsPerTile == cellsPerTile; }))
 			return false;
+		if (cellsPerTile <= 0)
+			return false;
 
+		const int texelsPerCell = (int)tileSize / cellsPerTile;
 		const int2 cellExtent = range.maxCell - range.minCell + int2(1, 1);
-		if (cellExtent.x % cellsPerTile != 0 || cellExtent.y % cellsPerTile != 0)
+		if (cellExtent.x <= 0 || cellExtent.y <= 0)
 			return false;
 
 		const bool changed = settings.cacheAtlasMinCellX != range.minCell.x ||
 		                     settings.cacheAtlasMinCellY != range.minCell.y ||
-		                     settings.cacheAtlasTileSize != (int)tileSize ||
-		                     settings.cacheAtlasTileCells != cellsPerTile ||
-		                     settings.cacheAtlasTilesX != cellExtent.x / cellsPerTile ||
-		                     settings.cacheAtlasTilesY != cellExtent.y / cellsPerTile;
+		                     settings.cacheAtlasTileSize != texelsPerCell ||
+		                     settings.cacheAtlasTileCells != 1 ||
+		                     settings.cacheAtlasTilesX != cellExtent.x ||
+		                     settings.cacheAtlasTilesY != cellExtent.y;
 
 		settings.cacheAtlasMinCellX = range.minCell.x;
 		settings.cacheAtlasMinCellY = range.minCell.y;
-		settings.cacheAtlasTileSize = (int)tileSize;
-		settings.cacheAtlasTileCells = cellsPerTile;
-		settings.cacheAtlasTilesX = cellExtent.x / cellsPerTile;
-		settings.cacheAtlasTilesY = cellExtent.y / cellsPerTile;
+		settings.cacheAtlasTileSize = texelsPerCell;
+		settings.cacheAtlasTileCells = 1;
+		settings.cacheAtlasTilesX = cellExtent.x;
+		settings.cacheAtlasTilesY = cellExtent.y;
 		return changed;
+	}
+
+	/// @brief Cell bounds of everything in a stitched height atlas that is not empty.
+	///
+	/// Tiles cover whole tiles of cells, so an atlas always reaches past the worldspace: Tamriel's
+	/// cells stop at -57 but its tiles start at -64, leaving a border of seven empty cells on one
+	/// side and two on another. Cells the worldspace never defined are left at zero height, so the
+	/// filled area is found rather than assumed, which also drops empty ocean cells inside the
+	/// nominal bounds.
+	///
+	/// Whole cells only: a partly filled cell is kept in full.
+	/// @return False when the atlas is empty end to end.
+	inline bool FindFilledCellBounds(const DirectX::Image& image, const int2& atlasMinCell, const int2& atlasMaxCell, int texelsPerCell, int2& o_minCell, int2& o_maxCell)
+	{
+		if (texelsPerCell <= 0 || image.format != DXGI_FORMAT_R16_FLOAT)
+			return false;
+
+		const int cellsX = atlasMaxCell.x - atlasMinCell.x + 1;
+		const int cellsY = atlasMaxCell.y - atlasMinCell.y + 1;
+		if (cellsX <= 0 || cellsY <= 0)
+			return false;
+
+		std::vector<bool> columnFilled((size_t)cellsX, false);
+		std::vector<bool> rowFilled((size_t)cellsY, false);
+
+		for (size_t y = 0; y < image.height; ++y) {
+			const auto* row = (const uint16_t*)(image.pixels + y * image.rowPitch);
+			const int cellRow = (int)(y / (size_t)texelsPerCell);
+
+			for (size_t x = 0; x < image.width; ++x) {
+				// Both signed zeroes read as empty; every unsampled texel is written as plain zero.
+				if ((row[x] & 0x7FFF) == 0)
+					continue;
+
+				columnFilled[x / (size_t)texelsPerCell] = true;
+				rowFilled[cellRow] = true;
+			}
+		}
+
+		int firstColumn = -1, lastColumn = -1, firstRow = -1, lastRow = -1;
+		for (int i = 0; i < cellsX; ++i)
+			if (columnFilled[i]) {
+				if (firstColumn < 0)
+					firstColumn = i;
+				lastColumn = i;
+			}
+		for (int i = 0; i < cellsY; ++i)
+			if (rowFilled[i]) {
+				if (firstRow < 0)
+					firstRow = i;
+				lastRow = i;
+			}
+
+		if (firstColumn < 0 || firstRow < 0)
+			return false;
+
+		// Image rows run north to south while cells count northward, so the row range flips.
+		o_minCell = int2(atlasMinCell.x + firstColumn, atlasMaxCell.y - lastRow);
+		o_maxCell = int2(atlasMinCell.x + lastColumn, atlasMaxCell.y - firstRow);
+		return true;
+	}
+
+	/// @brief Copy the cells of a stitched atlas that fall inside a smaller cell range.
+	inline bool CropAtlasToCells(const DirectX::Image& image, const int2& atlasMinCell, const int2& atlasMaxCell, const int2& cropMinCell, const int2& cropMaxCell, int texelsPerCell, DirectX::ScratchImage& o_cropped)
+	{
+		if (texelsPerCell <= 0)
+			return false;
+		if (cropMinCell.x < atlasMinCell.x || cropMinCell.y < atlasMinCell.y || cropMaxCell.x > atlasMaxCell.x || cropMaxCell.y > atlasMaxCell.y)
+			return false;
+
+		const size_t bytesPerPixel = DirectX::BitsPerPixel(image.format) / 8;
+		if (bytesPerPixel == 0)
+			return false;
+
+		const size_t width = (size_t)(cropMaxCell.x - cropMinCell.x + 1) * texelsPerCell;
+		const size_t height = (size_t)(cropMaxCell.y - cropMinCell.y + 1) * texelsPerCell;
+
+		if (FAILED(o_cropped.Initialize2D(image.format, width, height, 1, 1)))
+			return false;
+
+		// Left edge counts up from the atlas' west cell; the top edge counts down from its north.
+		const size_t offsetX = (size_t)(cropMinCell.x - atlasMinCell.x) * texelsPerCell;
+		const size_t offsetY = (size_t)(atlasMaxCell.y - cropMaxCell.y) * texelsPerCell;
+
+		const DirectX::Image* target = o_cropped.GetImages();
+		for (size_t y = 0; y < height; ++y) {
+			const auto* source = image.pixels + (offsetY + y) * image.rowPitch + offsetX * bytesPerPixel;
+			memcpy(target->pixels + y * target->rowPitch, source, width * bytesPerPixel);
+		}
+
+		return true;
 	}
 	inline bool FindAtlas(const std::string& worldspaceID, const std::string& mapTag, std::filesystem::path& o_path, TexGen::AtlasCellRange& o_range)
 	{
