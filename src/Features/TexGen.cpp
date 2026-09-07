@@ -2025,6 +2025,15 @@ void TexGen::DrawSettings()
 		ImGui::SameLine();
 		if (ImGui::Button("Diff Tile Against Disk"))
 			DiffHeightTileAgainstDisk(int2(cellCoords[0], cellCoords[1]));
+		ImGui::SameLine();
+		if (ImGui::Button("Dump Cell References")) {
+			if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+				auto* worldspace = player->GetWorldspace();
+				while (worldspace && worldspace->parentWorld && worldspace->parentUseFlags.any(RE::TESWorldSpace::ParentUseFlag::kUseLandData))
+					worldspace = worldspace->parentWorld;
+				TexGenLand::SpikeDumpCellReferences(worldspace, cellCoords[0], cellCoords[1]);
+			}
+		}
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text(

@@ -60,6 +60,28 @@ namespace TexGenLand
 	/// and the cell map scan behind the last candidate is not free.
 	bool ResolveCellBounds(RE::TESWorldSpace* a_worldSpace, int2& o_minCell, int2& o_maxCell, const char*& o_source, bool a_log = false);
 
+	/// @brief One reference read out of a cell's children, before any filtering.
+	struct CellReference
+	{
+		RE::FormID rawBaseID = 0;      // as written in the plugin
+		RE::FormID runtimeBaseID = 0;  // mapped through the load order
+		RE::NiPoint3 position;
+		RE::NiPoint3 rotation;  // radians
+		float scale = 1.0f;
+		std::uint32_t recordFlags = 0;
+	};
+
+	/// @brief Walk a cell's child records and report what the walk actually finds.
+	///
+	/// Whether SeekNextForm stops at the end of a cell's children, or runs on into the next cell, is
+	/// not documented anywhere in the headers, and every later piece of the static layer depends on
+	/// the answer. So this logs the record sequence rather than assuming a bound: it stops at the
+	/// next CELL, and reports whether it got there or ran out of forms first.
+	///
+	/// @param a_maxForms Hard cap on records walked, so a wrong assumption cannot spin.
+	/// @return Number of references collected.
+	size_t SpikeDumpCellReferences(RE::TESWorldSpace* a_worldSpace, int a_cellX, int a_cellY, int a_maxForms = 4096);
+
 	/// @brief Touch every source plugin's cell offset table once from the calling thread.
 	/// SeekCell consults a per-file table on the worldspace; if the engine builds it lazily then
 	/// first touch from several workers at once races on it. Priming costs one seek per plugin.
