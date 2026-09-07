@@ -1,4 +1,5 @@
 #include "TexGen.h"
+#include "TexGen/StaticMeshSource.h"
 #include "TexGen/TerrainHeightSource.h"
 #include "TexGenHelpers.h"
 
@@ -2032,6 +2033,15 @@ void TexGen::DrawSettings()
 				while (worldspace && worldspace->parentWorld && worldspace->parentUseFlags.any(RE::TESWorldSpace::ParentUseFlag::kUseLandData))
 					worldspace = worldspace->parentWorld;
 				TexGenLand::SpikeDumpCellReferences(worldspace, cellCoords[0], cellCoords[1]);
+			}
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Dump Cell Meshes")) {
+			if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+				auto* worldspace = player->GetWorldspace();
+				while (worldspace && worldspace->parentWorld && worldspace->parentUseFlags.any(RE::TESWorldSpace::ParentUseFlag::kUseLandData))
+					worldspace = worldspace->parentWorld;
+				TexGenStatics::SpikeDumpCellMeshes(worldspace, cellCoords[0], cellCoords[1]);
 			}
 		}
 		ImGui::EndDisabled();
