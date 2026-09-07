@@ -2,6 +2,8 @@
 
 #include "OverlayFeature.h"
 
+#include "TexGen/TerrainHeightSource.h"
+
 #include <DDSTextureLoader.h>
 #include <DirectXTex.h>
 
@@ -134,10 +136,10 @@ public:
 	/// copy is never written to disk.
 	bool BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceRebuild = false, bool a_smoothHeight = false);
 
-	/// @brief Whether a bake is in flight, during which the player is teleported around.
-	bool IsGenerating() const { return heightGenRunning || bentNormalTileGen; }
-	/// @brief Whether the height bake specifically is in flight.
-	bool IsHeightGenRunning() const { return heightGenRunning; }
+	/// @brief Whether a bake is in flight. The raycast walk teleports the player; the LAND run does not.
+	bool IsGenerating() const { return heightGenRunning || landGenRunning || bentNormalTileGen; }
+	/// @brief Whether a height bake of either kind is in flight.
+	bool IsHeightGenRunning() const { return heightGenRunning || landGenRunning; }
 	bool IsBentNormalGenerationRunning() const { return bentNormalTileGen; }
 
 	//////////////////////////////////////////////////////////////////////////////////
@@ -177,15 +179,42 @@ public:
 	int GetHeightTileCells() const { return settings.cacheTileCells == 4 ? 4 : 8; }
 	/// @brief Texels per tile edge, sanitised to a supported size (512 or 1024).
 	uint GetHeightTileSize() const { return settings.cacheTileSize == 512 ? 512u : 1024u; }
-	/// @brief Zero the staging tile so cells that fall outside the worldspace stay at zero height.
-	void ClearHeightTile();
+	/// @brief Size and zero the staging tile so cells outside the worldspace stay at zero height.
+	void ClearHeightTile(uint a_tileSize);
 	/// @brief Write the staging tile to "<Worldspace>_H<tileSize>.<cellsPerTile>.<originX>.<originY>.dds".
 	void SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile);
 	/// @brief Copy the staging tile into a viewable texture holding exactly what gets written to disk.
 	void UpdateHeightPreview(const int2& a_tileOriginCell);
 
 	/// @brief Sample one cell of terrain into the staging tile, advancing the run by one cell.
+	/// Teleports the player and raycasts Havok; kept only as the reference the LAND path is checked
+	/// against, and removed once that check passes.
 	void GenerateHeightMap();
+
+	/// @brief Fill one whole tile from LAND records, then advance the run by one tile.
+	/// Needs neither the player nor a loaded cell, so a full worldspace is a few seconds of file
+	/// reads rather than a walk across the map.
+	void GenerateHeightTiles();
+
+	/// @brief Latch the tile layout and worldspace bounds, then start a LAND driven run.
+	/// @param a_singleTile Generate only the tile holding a_targetCell and stop.
+	bool StartLandHeightRun(bool a_singleTile, const int2& a_targetCell);
+
+	/// @brief Rasterise one tile's worth of cells from LAND records into o_pixels. Writes nothing.
+	/// @param a_clipToWorldspace Leave cells outside the worldspace extent at zero.
+	void FillHeightTileFromLand(const int2& a_tileOriginCell, TexGenLand::LandFileSet& a_files, bool a_clipToWorldspace, std::vector<uint16_t>& o_pixels);
+
+	/// @brief Compare a freshly read LAND tile against the tile already on disk, and log the spread.
+	/// Used against a raycast baked tile: the disagreement should be near zero over open terrain and
+	/// one sided wherever a static stands, so its shape says whether the LAND path is right.
+	void DiffHeightTileAgainstDisk(const int2& a_cell);
+
+	/// @brief Check the plugin VHGT decode against the engine's own for the player's current cell.
+	/// The engine keeps the same surface in TESObjectLAND::LoadedLandData::heights while the cell is
+	/// loaded, so an exact match proves the decode before anything is built on top of it. Results go
+	/// to the log; the quad and in-quad orderings are resolved by trying each and reporting the
+	/// residual rather than by assuming one.
+	void VerifyLandDecode();
 	/// @brief Stitch a completed height run, preserve its tile names, then remove its temporary tiles.
 	bool FinalizeHeightTiles();
 
@@ -262,7 +291,24 @@ private:
 	int cellsDone = 0;
 	int tilesDone = 0;
 
-	eastl::unique_ptr<Texture2D> cacheOutputTexH = nullptr;
+	// Staging tile, exactly what gets written to disk. Both bakes fill this.
+	std::vector<uint16_t> heightTilePixels;
+	uint heightTileSize = 0;
+
+	//// LAND height run state ////
+	// Latched when a run starts so changing the settings mid-run cannot desync the tile layout.
+	bool landGenRunning = false;
+	RE::TESWorldSpace* landRunWorldspace = nullptr;
+	std::unique_ptr<TexGenLand::LandFileSet> landRunFiles;
+	int landRunCellsPerTile = 8;
+	uint landRunTileSize = 1024;
+	int2 landRunMinCell = int2(0, 0);  // worldspace extent, inclusive
+	int2 landRunMaxCell = int2(0, 0);
+	int2 landRunMinTile = int2(0, 0);  // tile grid covering that extent, inclusive
+	int2 landRunMaxTile = int2(0, 0);
+	int2 landRunCurrentTile = int2(0, 0);
+	int landRunTileTotal = 0;
+	int landRunSeamMismatches = 0;  // cells whose west edge disagrees with their neighbour's east
 
 	eastl::unique_ptr<Texture2D> heightPreviewTex = nullptr;
 	int2 heightPreviewOrigin = int2(0, 0);

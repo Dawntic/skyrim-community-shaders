@@ -1,4 +1,5 @@
 #include "TexGen.h"
+#include "TexGen/TerrainHeightSource.h"
 #include "TexGenHelpers.h"
 
 #include "Deferred.h"
@@ -38,38 +39,29 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 //// Height cache tiles
 //////////////////////////////////////////////////////////////////////////////////
 
-void TexGen::ClearHeightTile()
+void TexGen::ClearHeightTile(uint a_tileSize)
 {
-	auto context = globals::d3d::context;
-	const uint tileSize = cacheOutputTexH->desc.Width;
-
-	D3D11_MAPPED_SUBRESOURCE mapped;
-	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_WRITE, 0, &mapped));
-
-	// Texels belonging to cells outside the worldspace are never sampled and stay at zero height.
-	for (uint y = 0; y < tileSize; ++y)
-		memset((uint8_t*)mapped.pData + y * mapped.RowPitch, 0, tileSize * sizeof(uint16_t));
-
-	context->Unmap(cacheOutputTexH->resource.get(), 0);
+	heightTileSize = a_tileSize;
+	heightTilePixels.assign((size_t)a_tileSize * a_tileSize, uint16_t(0));
 }
 
 void TexGen::SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile)
 {
-	auto context = globals::d3d::context;
-	const uint tileSize = cacheOutputTexH->desc.Width;
+	const uint tileSize = heightTileSize;
+	if (heightTilePixels.size() != (size_t)tileSize * tileSize) {
+		logger::error("[TexGen] Height tile buffer is {} texels, expected {}", heightTilePixels.size(), (size_t)tileSize * tileSize);
+		return;
+	}
+
 	auto path = GetTilePath(worldspaceID, "_H", tileSize, a_cellsPerTile, a_tileOriginCell);
 
 	DirectX::ScratchImage outputImage;
 	DX::ThrowIfFailed(outputImage.Initialize2D(DXGI_FORMAT_R16_FLOAT, tileSize, tileSize, 1, 1));
 
-	D3D11_MAPPED_SUBRESOURCE mapped;
-	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &mapped));
-
 	const DirectX::Image* image = outputImage.GetImages();
 	for (uint y = 0; y < tileSize; ++y)
-		memcpy(image->pixels + y * image->rowPitch, (const uint8_t*)mapped.pData + y * mapped.RowPitch, tileSize * sizeof(uint16_t));
+		memcpy(image->pixels + y * image->rowPitch, heightTilePixels.data() + (size_t)y * tileSize, tileSize * sizeof(uint16_t));
 
-	context->Unmap(cacheOutputTexH->resource.get(), 0);
 	SaveMapDDS(*image, path);
 	logger::info("[TexGen] Saved height tile {}", path.string());
 }
@@ -78,8 +70,11 @@ void TexGen::SaveHeightTile(const int2& a_tileOriginCell, int a_cellsPerTile)
 void TexGen::UpdateHeightPreview(const int2& a_tileOriginCell)
 {
 	auto context = globals::d3d::context;
-	const uint tileSize = cacheOutputTexH->desc.Width;
+	const uint tileSize = heightTileSize;
 	const DXGI_FORMAT format = DXGI_FORMAT_R16_FLOAT;
+
+	if (tileSize == 0 || heightTilePixels.size() != (size_t)tileSize * tileSize)
+		return;
 
 	// The preview holds exactly what the DDS holds, in the same format, unmodified.
 	if (!heightPreviewTex || heightPreviewTex->desc.Width != tileSize || heightPreviewTex->desc.Format != format) {
@@ -91,17 +86,13 @@ void TexGen::UpdateHeightPreview(const int2& a_tileOriginCell)
 		heightPreviewTex->CreateSRV(srvDesc);
 	}
 
-	D3D11_MAPPED_SUBRESOURCE src;
-	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ, 0, &src));
-
 	D3D11_MAPPED_SUBRESOURCE dst;
 	DX::ThrowIfFailed(context->Map(heightPreviewTex->resource.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &dst));
 
 	for (uint y = 0; y < tileSize; ++y)
-		memcpy((uint8_t*)dst.pData + y * dst.RowPitch, (const uint8_t*)src.pData + y * src.RowPitch, tileSize * sizeof(uint16_t));
+		memcpy((uint8_t*)dst.pData + y * dst.RowPitch, heightTilePixels.data() + (size_t)y * tileSize, tileSize * sizeof(uint16_t));
 
 	context->Unmap(heightPreviewTex->resource.get(), 0);
-	context->Unmap(cacheOutputTexH->resource.get(), 0);
 
 	heightPreviewOrigin = a_tileOriginCell;
 	heightPreviewValid = true;
@@ -113,7 +104,6 @@ void TexGen::GenerateHeightMap()
 	static constexpr int2 startCell = int2(-57, -43);  // same as dyndolod
 	static constexpr int2 endCell = int2(61, 50);      // same as dyndolod, exclusive
 
-	auto context = globals::d3d::context;
 	auto tes = RE::TES::GetSingleton();
 	auto player = RE::PlayerCharacter::GetSingleton();
 	auto worldSpace = player ? player->GetWorldspace() : nullptr;
@@ -179,7 +169,7 @@ void TexGen::GenerateHeightMap()
 		while (true) {
 			cellIndexInTile = -1;
 			if (advanceToNextCell()) {
-				ClearHeightTile();
+				ClearHeightTile(tileSize);
 				return true;
 			}
 			if (!advanceToNextTile())
@@ -198,10 +188,8 @@ void TexGen::GenerateHeightMap()
 		tilesDone = 0;
 		settleFrames = 0;
 
-		if (!cacheOutputTexH || cacheOutputTexH->desc.Width != tileSize || cacheOutputTexH->desc.Height != tileSize) {
-			CD3D11_TEXTURE2D_DESC desc(DXGI_FORMAT_R16_FLOAT, tileSize, tileSize, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ);
-			cacheOutputTexH = eastl::make_unique<Texture2D>(desc, "TexGen::HeightCacheTile");
-		}
+		// Size the staging tile up front: beginTile only clears it when it finds a cell to sample.
+		ClearHeightTile(tileSize);
 
 		if (heightGenSingleTile) {
 			// Whichever tile holds the requested cell, unclamped so it also works outside the
@@ -237,9 +225,6 @@ void TexGen::GenerateHeightMap()
 
 	// write heightmap
 
-	D3D11_MAPPED_SUBRESOURCE mapped;
-	DX::ThrowIfFailed(context->Map(cacheOutputTexH->resource.get(), 0, D3D11_MAP_READ_WRITE, 0, &mapped));
-
 	const int2 localCell = currentCellXY - currentTile * cellsPerTile;
 	const float2 cellOrigin = float2((float)currentCellXY.x, (float)currentCellXY.y) * CELL;
 	const float waterHeight = tes->GetWaterHeight(RE::NiPoint3(), player->GetParentCell());
@@ -256,11 +241,9 @@ void TexGen::GenerateHeightMap()
 			groundHeight += (waterHeight - groundHeight) * float(groundHeight < waterHeight);
 
 			int2 texCoord = localCell * texelsPerCell + int2(x, y);
-			uint16_t* tex = (uint16_t*)((uint8_t*)mapped.pData + texCoord.y * mapped.RowPitch);
-			tex[texCoord.x] = DirectX::PackedVector::XMConvertFloatToHalf(groundHeight);
+			heightTilePixels[(size_t)texCoord.y * tileSize + texCoord.x] = DirectX::PackedVector::XMConvertFloatToHalf(groundHeight);
 		}
 	}
-	context->Unmap(cacheOutputTexH->resource.get(), 0);
 
 	cellsDone += 1;
 
@@ -300,6 +283,372 @@ void TexGen::GenerateHeightMap()
 	settleFrames = heightSettleFrames;  // let terrain settle
 }
 
+void TexGen::VerifyLandDecode()
+{
+	using namespace TexGenLand;
+
+	auto* player = RE::PlayerCharacter::GetSingleton();
+	auto* cell = player ? player->GetParentCell() : nullptr;
+	if (!cell || cell->IsInteriorCell()) {
+		logger::error("[TexGen] Land decode check needs the player in an exterior cell");
+		return;
+	}
+
+	auto* worldspace = player->GetWorldspace();
+	auto* coords = cell->GetCoordinates();
+	auto* land = cell->GetRuntimeData().cellLand;
+	if (!worldspace || !coords || !land || !land->loadedData) {
+		logger::error("[TexGen] Land decode check: cell {} has no loaded LAND to compare against",
+			cell->GetFormEditorID() ? cell->GetFormEditorID() : "<unnamed>");
+		return;
+	}
+
+	const int cellX = coords->cellX;
+	const int cellY = coords->cellY;
+
+	LandFileSet files(worldspace);
+	if (!files.Valid()) {
+		logger::error("[TexGen] Land decode check: no source files for worldspace {}", worldspace->GetFormEditorID());
+		return;
+	}
+
+	CellHeights decoded;
+	if (!files.ReadCell(cellX, cellY, decoded)) {
+		logger::error("[TexGen] Land decode check: no VHGT for cell {}, {} (hasCell {})", cellX, cellY, decoded.hasCell);
+		return;
+	}
+
+	// The engine stores the 33x33 surface as four overlapping 17x17 quads. Which corner each quad
+	// covers, and whether its 289 entries run row major or column major, are the two things worth
+	// resolving empirically - so score every combination and let the zero come out on top.
+	static constexpr int quadEdge = 17;
+	struct Candidate
+	{
+		const char* name;
+		bool quadXFromLowBit;  // quad index bit 0 selects the column half rather than the row half
+		bool rowMajorInQuad;
+	};
+	static constexpr std::array<Candidate, 4> candidates = {
+		Candidate{ "quadX=bit0, in-quad row major", true, true },
+		Candidate{ "quadX=bit0, in-quad column major", true, false },
+		Candidate{ "quadX=bit1, in-quad row major", false, true },
+		Candidate{ "quadX=bit1, in-quad column major", false, false },
+	};
+
+	const Candidate* best = nullptr;
+	float bestError = FLT_MAX;
+
+	for (const auto& candidate : candidates) {
+		float maxError = 0.0f;
+		for (int quad = 0; quad < 4; ++quad) {
+			const int quadX = candidate.quadXFromLowBit ? (quad & 1) : (quad >> 1);
+			const int quadY = candidate.quadXFromLowBit ? (quad >> 1) : (quad & 1);
+
+			for (int i = 0; i < quadEdge * quadEdge; ++i) {
+				const int inRow = candidate.rowMajorInQuad ? i / quadEdge : i % quadEdge;
+				const int inCol = candidate.rowMajorInQuad ? i % quadEdge : i / quadEdge;
+
+				const int row = quadY * (quadEdge - 1) + inRow;
+				const int col = quadX * (quadEdge - 1) + inCol;
+
+				const float mine = decoded.heights[row * landGridEdge + col];
+				const float theirs = land->loadedData->heights[quad][i];
+				maxError = std::max(maxError, std::abs(mine - theirs));
+			}
+		}
+
+		logger::info("[TexGen] Land decode check: {} -> max error {:.4f}", candidate.name, maxError);
+		if (maxError < bestError) {
+			bestError = maxError;
+			best = &candidate;
+		}
+	}
+
+	const auto extents = land->loadedData->heightExtents;
+	logger::info("[TexGen] Land decode check: cell {}, {} in {} - engine extents {:.1f}..{:.1f}, water {:.1f}",
+		cellX, cellY, worldspace->GetFormEditorID(), extents.x, extents.y, decoded.waterHeight);
+
+	if (bestError == 0.0f) {
+		logger::info("[TexGen] Land decode check PASSED exactly under \"{}\"", best->name);
+	} else {
+		logger::error(
+			"[TexGen] Land decode check FAILED - best was \"{}\" at {:.4f}. A gradient in the residual "
+			"means the row order is wrong; a constant offset means the base height is.",
+			best->name, bestError);
+	}
+}
+
+bool TexGen::StartLandHeightRun(bool a_singleTile, const int2& a_targetCell)
+{
+	auto* player = RE::PlayerCharacter::GetSingleton();
+	auto* worldspace = player ? player->GetWorldspace() : nullptr;
+
+	// A child worldspace that borrows its parent's land carries no LAND records of its own, so the
+	// records live wherever the land data does.
+	while (worldspace && worldspace->parentWorld && worldspace->parentUseFlags.any(RE::TESWorldSpace::ParentUseFlag::kUseLandData))
+		worldspace = worldspace->parentWorld;
+
+	if (!worldspace) {
+		logger::error("[TexGen] Land height run needs an exterior worldspace");
+		return false;
+	}
+
+	const char* boundsSource = "none";
+	if (!TexGenLand::ResolveCellBounds(worldspace, landRunMinCell, landRunMaxCell, boundsSource)) {
+		logger::error("[TexGen] Could not resolve cell bounds for {}", worldspace->GetFormEditorID());
+		return false;
+	}
+
+	landRunCellsPerTile = GetHeightTileCells();
+	landRunTileSize = GetHeightTileSize();
+	landRunWorldspace = worldspace;
+
+	// The tile grid is anchored to the worldspace cell grid and rounded outward, because the atlas
+	// layout requires the cell extent to divide evenly by the tile size.
+	landRunMinTile = int2(FloorDiv(landRunMinCell.x, landRunCellsPerTile), FloorDiv(landRunMinCell.y, landRunCellsPerTile));
+	landRunMaxTile = int2(FloorDiv(landRunMaxCell.x, landRunCellsPerTile), FloorDiv(landRunMaxCell.y, landRunCellsPerTile));
+
+	if (a_singleTile)
+		landRunMinTile = landRunMaxTile = int2(FloorDiv(a_targetCell.x, landRunCellsPerTile), FloorDiv(a_targetCell.y, landRunCellsPerTile));
+
+	landRunCurrentTile = landRunMinTile;
+	landRunTileTotal = (landRunMaxTile.x - landRunMinTile.x + 1) * (landRunMaxTile.y - landRunMinTile.y + 1);
+	landRunSeamMismatches = 0;
+	cellsDone = 0;
+	tilesDone = 0;
+
+	// SeekCell consults a per-file cell offset table. Touching every plugin once from here keeps a
+	// later move onto worker threads off a table that may be built lazily.
+	TexGenLand::PrimeFileTables(worldspace, landRunMinCell.x, landRunMinCell.y);
+
+	landRunFiles = std::make_unique<TexGenLand::LandFileSet>(worldspace);
+	if (!landRunFiles->Valid()) {
+		logger::error("[TexGen] No source plugins for worldspace {}", worldspace->GetFormEditorID());
+		landRunFiles.reset();
+		landRunWorldspace = nullptr;
+		return false;
+	}
+
+	heightGenSingleTile = a_singleTile;
+	landGenRunning = true;
+
+	const int texelsPerCell = (int)landRunTileSize / landRunCellsPerTile;
+	logger::info("[TexGen] Land height run: {} tiles of {}x{} cells at {} texels, cells {},{} to {},{} (bounds from {})",
+		landRunTileTotal, landRunCellsPerTile, landRunCellsPerTile, landRunTileSize,
+		landRunMinCell.x, landRunMinCell.y, landRunMaxCell.x, landRunMaxCell.y, boundsSource);
+	logger::info("[TexGen] {} texels per cell, {:.0f} units per texel, LAND vertices every {:.0f} units",
+		texelsPerCell, worldCellSize / (float)texelsPerCell, worldCellSize / (float)(TexGenLand::landGridEdge - 1));
+
+	return true;
+}
+
+void TexGen::FillHeightTileFromLand(const int2& a_tileOriginCell, TexGenLand::LandFileSet& a_files, bool a_clipToWorldspace, std::vector<uint16_t>& o_pixels)
+{
+	using namespace TexGenLand;
+
+	const int cellsPerTile = landRunCellsPerTile;
+	const uint tileSize = landRunTileSize;
+	const int texelsPerCell = (int)tileSize / cellsPerTile;
+	const float worldRes = worldCellSize / (float)texelsPerCell;         // world units per texel
+	const float vertexStep = worldCellSize / (float)(landGridEdge - 1);  // 128 units between LAND vertices
+
+	o_pixels.assign((size_t)tileSize * tileSize, uint16_t(0));
+
+	CellHeights cell;
+	CellHeights westNeighbour;
+	bool haveWestNeighbour = false;
+
+	for (int localY = 0; localY < cellsPerTile; ++localY) {
+		haveWestNeighbour = false;
+
+		for (int localX = 0; localX < cellsPerTile; ++localX) {
+			const int2 cellXY = a_tileOriginCell + int2(localX, localY);
+
+			const bool inWorldspace = cellXY.x >= landRunMinCell.x && cellXY.x <= landRunMaxCell.x &&
+			                          cellXY.y >= landRunMinCell.y && cellXY.y <= landRunMaxCell.y;
+			if (a_clipToWorldspace && !inWorldspace) {
+				haveWestNeighbour = false;
+				continue;
+			}
+
+			a_files.ReadCell(cellXY.x, cellXY.y, cell);
+			if (!cell.hasCell) {
+				// No plugin defines this cell, so its texels stay at zero as an unsampled tile
+				// region always has.
+				haveWestNeighbour = false;
+				continue;
+			}
+
+			// Adjacent cells each carry their own copy of the shared seam. Vanilla agrees on it; a
+			// mismatch means a malformed patch, and is worth naming rather than averaging away.
+			if (haveWestNeighbour) {
+				for (int row = 0; row < landGridEdge; ++row) {
+					if (cell.heights[row * landGridEdge] != westNeighbour.heights[row * landGridEdge + landGridEdge - 1]) {
+						++landRunSeamMismatches;
+						break;
+					}
+				}
+			}
+
+			for (int ty = 0; ty < texelsPerCell; ++ty) {
+				// Texels sample from the cell's south west corner in worldRes steps and never reach
+				// the far edge, so the enclosing quad always lies inside this cell's own grid.
+				const float vy = (float)ty * worldRes / vertexStep;
+				const int row0 = std::min((int)vy, landGridEdge - 2);
+				const float fy = vy - (float)row0;
+
+				for (int tx = 0; tx < texelsPerCell; ++tx) {
+					const float vx = (float)tx * worldRes / vertexStep;
+					const int col0 = std::min((int)vx, landGridEdge - 2);
+					const float fx = vx - (float)col0;
+
+					const int i00 = row0 * landGridEdge + col0;
+					const float south = cell.heights[i00] + (cell.heights[i00 + 1] - cell.heights[i00]) * fx;
+					const float north = cell.heights[i00 + landGridEdge] + (cell.heights[i00 + landGridEdge + 1] - cell.heights[i00 + landGridEdge]) * fx;
+
+					float height = south + (north - south) * fy;
+					height = std::max(height, cell.waterHeight);  // lakes and sea read as flat surfaces
+
+					const int texX = localX * texelsPerCell + tx;
+					const int texY = localY * texelsPerCell + ty;
+					o_pixels[(size_t)texY * tileSize + texX] = DirectX::PackedVector::XMConvertFloatToHalf(height);
+				}
+			}
+
+			westNeighbour = cell;
+			haveWestNeighbour = true;
+			++cellsDone;
+		}
+	}
+}
+
+void TexGen::GenerateHeightTiles()
+{
+	if (!landRunFiles || !landRunWorldspace) {
+		landGenRunning = false;
+		return;
+	}
+
+	const int2 tileOriginCell = landRunCurrentTile * landRunCellsPerTile;
+
+	heightTileSize = landRunTileSize;
+	FillHeightTileFromLand(tileOriginCell, *landRunFiles, !heightGenSingleTile, heightTilePixels);
+
+	SaveHeightTile(tileOriginCell, landRunCellsPerTile);
+	UpdateHeightPreview(tileOriginCell);
+	++tilesDone;
+
+	// West to east, south to north, matching the order the tiles stitch in.
+	bool finished = heightGenSingleTile;
+	if (!finished) {
+		if (++landRunCurrentTile.x > landRunMaxTile.x) {
+			landRunCurrentTile.x = landRunMinTile.x;
+			finished = ++landRunCurrentTile.y > landRunMaxTile.y;
+		}
+	}
+
+	if (!finished)
+		return;
+
+	logger::info("[TexGen] Land height run complete: {} tiles, {} cells, {} seam mismatches", tilesDone, cellsDone, landRunSeamMismatches);
+	if (landRunSeamMismatches > 0)
+		logger::warn("[TexGen] {} cells disagree with their west neighbour on the shared edge; expect a one texel seam there", landRunSeamMismatches);
+
+	const bool wasSingleTile = heightGenSingleTile;
+	landGenRunning = false;
+	landRunFiles.reset();
+	landRunWorldspace = nullptr;
+
+	if (!wasSingleTile)
+		FinalizeHeightTiles();
+}
+
+void TexGen::DiffHeightTileAgainstDisk(const int2& a_cell)
+{
+	// The raycast walk is the only path that sees statics, so the shape of the disagreement is the
+	// real test: near zero over open terrain, one sided and positive wherever a static stands.
+	if (!StartLandHeightRun(true, a_cell)) {
+		logger::error("[TexGen] Tile diff: could not resolve the worldspace");
+		return;
+	}
+
+	// Borrow the run's latched layout and file set, then stand it back down; nothing is written.
+	const int2 tileOriginCell = landRunCurrentTile * landRunCellsPerTile;
+	const uint tileSize = landRunTileSize;
+	const auto path = GetTilePath(worldspaceID, "_H", tileSize, landRunCellsPerTile, tileOriginCell);
+
+	std::vector<uint16_t> landPixels;
+	FillHeightTileFromLand(tileOriginCell, *landRunFiles, false, landPixels);
+
+	landGenRunning = false;
+	landRunFiles.reset();
+	landRunWorldspace = nullptr;
+
+	std::error_code ec;
+	if (!std::filesystem::exists(path, ec)) {
+		logger::error("[TexGen] Tile diff: {} is not on disk. Generate it with the raycast reference first.", path.string());
+		return;
+	}
+
+	DirectX::ScratchImage reference;
+	if (FAILED(DirectX::LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, reference))) {
+		logger::error("[TexGen] Tile diff: failed to load {}", path.string());
+		return;
+	}
+
+	const DirectX::Image* image = reference.GetImages();
+	if (!image || image->width != tileSize || image->height != tileSize || image->format != DXGI_FORMAT_R16_FLOAT) {
+		logger::error("[TexGen] Tile diff: {} is not a {}x{} R16_FLOAT tile", path.string(), tileSize, tileSize);
+		return;
+	}
+
+	std::vector<float> differences;
+	differences.reserve((size_t)tileSize * tileSize);
+	double signedSum = 0.0;
+	float worst = 0.0f;
+	int2 worstAt = int2(0, 0);
+
+	for (uint y = 0; y < tileSize; ++y) {
+		const uint16_t* row = (const uint16_t*)(image->pixels + (size_t)y * image->rowPitch);
+		for (uint x = 0; x < tileSize; ++x) {
+			const float referenceHeight = DirectX::PackedVector::XMConvertHalfToFloat(row[x]);
+			const float landHeight = DirectX::PackedVector::XMConvertHalfToFloat(landPixels[(size_t)y * tileSize + x]);
+
+			// Texels neither side sampled sit at exactly zero in both; counting them would bury the
+			// signal under a mass of perfect matches.
+			if (referenceHeight == 0.0f && landHeight == 0.0f)
+				continue;
+
+			const float difference = referenceHeight - landHeight;
+			signedSum += difference;
+			differences.push_back(std::abs(difference));
+
+			if (std::abs(difference) > worst) {
+				worst = std::abs(difference);
+				worstAt = int2((int)x, (int)y);
+			}
+		}
+	}
+
+	if (differences.empty()) {
+		logger::warn("[TexGen] Tile diff: both tiles are empty at cell {}, {}", tileOriginCell.x, tileOriginCell.y);
+		return;
+	}
+
+	std::sort(differences.begin(), differences.end());
+	const float median = differences[differences.size() / 2];
+	const float p95 = differences[(size_t)((double)differences.size() * 0.95)];
+	const double mean = signedSum / (double)differences.size();
+
+	logger::info("[TexGen] Tile diff at cell {}, {} against {}", tileOriginCell.x, tileOriginCell.y, path.filename().string());
+	logger::info("[TexGen]   {} compared texels: p50 {:.1f}, p95 {:.1f}, max {:.1f} at texel {}, {}",
+		differences.size(), median, p95, worst, worstAt.x, worstAt.y);
+	logger::info(
+		"[TexGen]   mean signed difference (reference minus LAND) {:.1f} - a positive mean is expected, "
+		"it is the statics the raycast saw and LAND does not carry",
+		mean);
+}
+
 bool TexGen::FinalizeHeightTiles()
 {
 	if (!EnsureHeightAtlas(worldspaceID, true))
@@ -335,6 +684,9 @@ void TexGen::Prepass()
 	// driver timeout and the height walk has to let terrain stream in between teleports.
 	if (heightGenRunning)
 		GenerateHeightMap();
+
+	if (landGenRunning)
+		GenerateHeightTiles();
 
 	UpdateBentNormalTiles();
 }
@@ -1352,13 +1704,28 @@ void TexGen::DrawSettings()
 		return;
 
 	if (ImGui::BeginTabItem("Generation")) {
-		ImGui::BeginDisabled(!heightGenRunning && worldspaceID.empty());
-		if (ImGui::Button(heightGenRunning ? "Stop Height Generation" : "Generate Height Map")) {
-			heightGenRunning = !heightGenRunning;
-			heightGenSingleTile = false;
-			heightGenInit = true;
-		}
+		ImGui::BeginDisabled(IsGenerating() || worldspaceID.empty());
+		if (ImGui::Button("Generate Height Map"))
+			StartLandHeightRun(false, int2(0, 0));
 		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"Reads terrain heights straight from the plugin LAND records and writes the height\n"
+				"tiles for the whole worldspace. The player is not moved and no cell has to be loaded.");
+
+		if (landGenRunning) {
+			ImGui::SameLine();
+			if (ImGui::Button("Stop")) {
+				landGenRunning = false;
+				landRunFiles.reset();
+				landRunWorldspace = nullptr;
+			}
+
+			const float percent = landRunTileTotal > 0 ? (float)tilesDone / (float)landRunTileTotal : 0.0f;
+			ImGui::ProgressBar(percent, ImVec2(0.0f, 0.0f), fmt::format("{}/{} tiles", tilesDone, landRunTileTotal).c_str());
+			ImGui::Text("Tile at cell %d, %d - %d cells read", landRunCurrentTile.x * landRunCellsPerTile, landRunCurrentTile.y * landRunCellsPerTile, cellsDone);
+		}
+
 		ImGui::EndTabItem();
 	}
 
@@ -1372,6 +1739,49 @@ void TexGen::DrawSettings()
 		ImGui::Separator();
 
 		ImGui::Text("Worldspace: %s", worldspaceID.empty() ? "N/A" : worldspaceID.c_str());
+
+		if (auto* worldspace = RE::PlayerCharacter::GetSingleton() ? RE::PlayerCharacter::GetSingleton()->GetWorldspace() : nullptr) {
+			int2 minCell, maxCell;
+			const char* boundsSource = "none";
+			if (TexGenLand::ResolveCellBounds(worldspace, minCell, maxCell, boundsSource))
+				ImGui::BulletText("Cell bounds %d,%d to %d,%d (from %s)", minCell.x, minCell.y, maxCell.x, maxCell.y, boundsSource);
+			else
+				ImGui::BulletText("Cell bounds unresolved");
+		}
+
+		if (ImGui::Button("Check LAND Decode"))
+			VerifyLandDecode();
+		ImGui::SameLine();
+		ImGui::BeginDisabled(IsGenerating() || worldspaceID.empty());
+		if (ImGui::Button("Generate Tile At Player (LAND)")) {
+			if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+				auto playerPos = player->GetPosition();
+				StartLandHeightRun(true, WorldToCell(playerPos.x, playerPos.y));
+			}
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"Rebuilds just the tile under the player from LAND records. Pair it with the raycast\n"
+				"button below on the same tile to diff the two.");
+
+		ImGui::BeginDisabled(IsGenerating() && !heightGenRunning);
+		if (ImGui::Button(heightGenRunning ? "Stop Raycast Walk" : "Generate Height Map (raycast reference)")) {
+			heightGenRunning = !heightGenRunning;
+			heightGenSingleTile = false;
+			heightGenInit = true;
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"The original bake: teleports the player cell by cell and raycasts Havok collision.\n"
+				"Hours to run, but it is the only path that sees statics, so it stays as the reference\n"
+				"the LAND output is checked against.");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"Decodes the player's cell straight from the plugins and compares all 1089 vertices\n"
+				"against the copy the engine loaded. Results go to the log; an exact match proves the\n"
+				"decode. Needs the player standing in an exterior cell.");
 
 		ImGui::InputText("DynDOLOD Worldspace Directory", &settings.dynDOLODPath);
 		ImGui::TextWrapped("Select the DynDOLOD terrain-texture folder for the worldspace you want to generate textures for.");
@@ -1556,6 +1966,21 @@ void TexGen::DrawSettings()
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("Generates the tile containing this cell, teleporting the player through it.\nDoes not touch the progress of a full run.");
+
+		ImGui::BeginDisabled(IsGenerating() || worldspaceID.empty());
+		if (ImGui::Button("Generate Tile At Cell (LAND)"))
+			StartLandHeightRun(true, int2(cellCoords[0], cellCoords[1]));
+		ImGui::SameLine();
+		if (ImGui::Button("Diff Tile Against Disk"))
+			DiffHeightTileAgainstDisk(int2(cellCoords[0], cellCoords[1]));
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"Reads this tile from LAND records and compares it against the tile already written to\n"
+				"disk, writing nothing. Bake the tile with the raycast reference first, then diff:\n"
+				"the difference should be near zero over open terrain and one sided wherever a static\n"
+				"stands. A gradient across the tile means a coordinate or row order bug; noise means a\n"
+				"decode bug. Results go to the log.");
 
 		// Atlas texel to cell, using the layout the last atlas build recorded
 		static int texelCoords[2] = { 0, 0 };
