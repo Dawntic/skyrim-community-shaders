@@ -431,6 +431,16 @@ void TexGen::VerifyLandDecode()
 	}
 }
 
+ID3D11Buffer* TexGen::UploadCacheGenBuffer(const CacheGenCBStruct& a_data)
+{
+	if (!cacheGenBuffer)
+		cacheGenBuffer = new ConstantBuffer(ConstantBufferDesc<CacheGenCBStruct>());
+
+	CacheGenCBStruct data = a_data;
+	cacheGenBuffer->Update(data);
+	return cacheGenBuffer->CB();
+}
+
 bool TexGen::StartLandHeightRun(bool a_singleTile, const int2& a_targetCell)
 {
 	auto* player = RE::PlayerCharacter::GetSingleton();

@@ -256,6 +256,11 @@ public:
 		float4 SmoothRange;   // x: flatten height, y: rolloff multiple, zw: height clamp
 	};
 
+	/// @brief Fill the cache gen constant buffer and hand back the buffer bound with it.
+	/// The generators here all drive one shader file through one constant buffer, and the static
+	/// raster is another of them rather than a reason for a second.
+	ID3D11Buffer* UploadCacheGenBuffer(const CacheGenCBStruct& a_data);
+
 private:
 	/// @brief Refresh the worldspace the cache is generated for, keeping the last known one indoors.
 	void UpdateWorldspaceID();

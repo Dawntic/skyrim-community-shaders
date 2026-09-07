@@ -333,3 +333,117 @@ float LoadHeight(int2 CoordsPx, int2 HeightMapPxSize)
 	OutputNormal[ThreadID.xy] = float4(N * 0.5 + 0.5, 1.0);
 }
 #endif
+
+//// Static Geometry Raster /////////////////////////////////////////////////////////////
+// Places the meshes a cell's references carry on top of the terrain tile. The terrain is
+// already in the target when this runs, and geometry may only ever raise a texel, which is
+// what the Havok raycast this replaces produced: the topmost terrain, ground or static hit.
+
+#ifdef STATIC_RASTER
+
+struct RasterTriangle
+{
+	float3 v0;
+	float3 v1;
+	float3 v2;
+};
+
+struct RasterInstance
+{
+	float4 rotationScale0;  // xyz: first row of rotation times scale, w: translation x
+	float4 rotationScale1;
+	float4 rotationScale2;
+	uint firstTriangle;
+	uint triangleCount;
+	uint2 pad;
+};
+
+StructuredBuffer<RasterTriangle> Triangles : register(t0);
+StructuredBuffer<RasterInstance> Instances : register(t1);
+
+// Heights are held as a sortable unsigned so InterlockedMax can run on them; a raster with no
+// fixed submission order has no other way to keep the topmost surface.
+RWTexture2D<uint> OutputHeight : register(u0);
+
+// SweepRect.xy: tile origin in world units, .z: world units per texel, .w: tile size in texels.
+
+float3 TransformPoint(RasterInstance Instance, float3 P)
+{
+	return float3(
+		dot(Instance.rotationScale0.xyz, P) + Instance.rotationScale0.w,
+		dot(Instance.rotationScale1.xyz, P) + Instance.rotationScale1.w,
+		dot(Instance.rotationScale2.xyz, P) + Instance.rotationScale2.w);
+}
+
+// IEEE floats do not order correctly when reinterpreted as unsigned, because the sign bit reads
+// as the largest magnitude. Flipping every bit of a negative and only the sign bit of a positive
+// makes the unsigned comparison agree with the float one, which is what lets InterlockedMax work
+// on terrain heights that go below zero.
+uint HeightToSortable(float H)
+{
+	uint U = asuint(H);
+	return (U & 0x80000000u) ? ~U : (U | 0x80000000u);
+}
+
+void RasteriseTriangle(float3 P0, float3 P1, float3 P2)
+{
+	float2 Origin = SweepRect.xy;
+	float UnitsPerTexel = SweepRect.z;
+	float TileSize = SweepRect.w;
+
+	// Into texel space. Row zero is the southern edge, matching how the terrain fill lays the
+	// tile out and how the tiles later stitch.
+	float2 T0 = (P0.xy - Origin) / UnitsPerTexel;
+	float2 T1 = (P1.xy - Origin) / UnitsPerTexel;
+	float2 T2 = (P2.xy - Origin) / UnitsPerTexel;
+
+	float2 MinT = min(T0, min(T1, T2));
+	float2 MaxT = max(T0, max(T1, T2));
+
+	int2 MinPx = (int2)max(floor(MinT), 0.0);
+	int2 MaxPx = (int2)min(ceil(MaxT), TileSize - 1.0);
+	if (any(MinPx > MaxPx))
+		return;  // entirely outside this tile
+
+	// Edge functions in texel space. A degenerate triangle covers nothing.
+	float Area = (T1.x - T0.x) * (T2.y - T0.y) - (T2.x - T0.x) * (T1.y - T0.y);
+	if (abs(Area) < 1e-6)
+		return;
+	float InvArea = 1.0 / Area;
+
+	for (int y = MinPx.y; y <= MaxPx.y; ++y) {
+		for (int x = MinPx.x; x <= MaxPx.x; ++x) {
+			float2 P = float2(x, y) + 0.5;
+
+			float W0 = ((T1.x - P.x) * (T2.y - P.y) - (T2.x - P.x) * (T1.y - P.y)) * InvArea;
+			float W1 = ((T2.x - P.x) * (T0.y - P.y) - (T0.x - P.x) * (T2.y - P.y)) * InvArea;
+			float W2 = 1.0 - W0 - W1;
+
+			if (W0 < 0.0 || W1 < 0.0 || W2 < 0.0)
+				continue;
+
+			float Height = W0 * P0.z + W1 * P1.z + W2 * P2.z;
+
+			uint Previous;
+			InterlockedMax(OutputHeight[int2(x, y)], HeightToSortable(Height), Previous);
+		}
+	}
+}
+
+// One group per instance, its threads sharing that instance's triangles. Dispatching this way
+// needs no per triangle work list, which for a tile's worth of placements would be larger than
+// the geometry it indexes.
+[numthreads(64, 1, 1)] void main(uint3 GroupID : SV_GroupID, uint3 ThreadID : SV_GroupThreadID) {
+	RasterInstance Instance = Instances[GroupID.x];
+
+	for (uint t = ThreadID.x; t < Instance.triangleCount; t += 64) {
+		RasterTriangle Tri = Triangles[Instance.firstTriangle + t];
+
+		float3 P0 = TransformPoint(Instance, Tri.v0);
+		float3 P1 = TransformPoint(Instance, Tri.v1);
+		float3 P2 = TransformPoint(Instance, Tri.v2);
+
+		RasteriseTriangle(P0, P1, P2);
+	}
+}
+#endif
