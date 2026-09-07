@@ -213,24 +213,23 @@ float4 MakeConeWeightD(float i)
 	return wD;
 }
 
-// Atlas space, matching the CARD then DIAG bin order in TexGen/GenerateCacheMaps.hlsl
-static const float2 ConeAzimuths[AZIMUTHS] = {
-	float2(1, 0), float2(0, -1), float2(-1, 0), float2(0, 1),
-	float2(0.70710678, -0.70710678), float2(-0.70710678, -0.70710678),
-	float2(-0.70710678, 0.70710678), float2(0.70710678, 0.70710678)
-};
+// The bake supplies 8 azimuth bins 45 deg apart; by angle they interleave as
+// CARD[0], DIAG[0], CARD[1], ... (see TexGen/GenerateCacheMaps.hlsl)
+#	define HORIZON_BINS 8
 
-float2 MakeConeElevation(float k)
+// Atlas space, clockwise from +X to match the bin ordering above
+float2 MakeConeAzimuth(uint a)
+{
+	float s, c;
+	sincos(-Math::TAU * a / AZIMUTHS, s, c);
+	return float2(c, s);
+}
+
+float2 MakeConeElevation(uint k)
 {
 	float GrSin = 1.0 - 2.0 * (k + 0.5) / ELEVATIONS;
 	return float2(GrSin, sqrt(saturate(1.0 - GrSin * GrSin)));
 }
-
-#	define ELEV_1(k) MakeConeElevation(k)
-#	define ELEV_4(k) ELEV_1(k), ELEV_1(k + 1), ELEV_1(k + 2), ELEV_1(k + 3)
-#	define ELEV_8(k) ELEV_4(k), ELEV_4(k + 4)
-
-static const float2 ConeElevations[ELEVATIONS] = { ELEV_8(0) };
 
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
 	const SharedData::SkylightingSettings settings = SharedData::skylightingSettings;
@@ -304,50 +303,65 @@ static const float2 ConeElevations[ELEVATIONS] = { ELEV_8(0) };
 
 	// Cone Tracing
 	sh2vec3 ResultSH = SH::ZeroSH2Vec3();
-	float HorizonSin[AZIMUTHS] = { HData.SinC[0], HData.SinC[1], HData.SinC[2], HData.SinC[3],
-		HData.SinD[0], HData.SinD[1], HData.SinD[2], HData.SinD[3] };
-	float HorizonDist[AZIMUTHS] = { HData.WallC[0], HData.WallC[1], HData.WallC[2], HData.WallC[3],
-		HData.WallD[0], HData.WallD[1], HData.WallD[2], HData.WallD[3] };
+	float HorizonSin[HORIZON_BINS] = { HData.SinC[0], HData.SinD[0], HData.SinC[1], HData.SinD[1],
+		HData.SinC[2], HData.SinD[2], HData.SinC[3], HData.SinD[3] };
+	float HorizonDist[HORIZON_BINS] = { HData.WallC[0], HData.WallD[0], HData.WallC[1], HData.WallD[1],
+		HData.WallC[2], HData.WallD[2], HData.WallC[3], HData.WallD[3] };
 
-	for (uint i = 0; i < SAMPLES; ++i) {
-		uint a = i / ELEVATIONS;
-		float2 Azimuth = ConeAzimuths[a];
-		float sinH = HorizonSin[a];
-		float Reach = clamp(HorizonDist[a], MinReach, MaxReach);
+	[unroll] for (uint a = 0; a < AZIMUTHS; ++a)
+	{
+		float2 Azimuth = MakeConeAzimuth(a);
 
-		float2 ConeElevation = ConeElevations[i % ELEVATIONS];
-		float GrSin = ConeElevation.x;
-		float GrCos = ConeElevation.y;
-		float3 RayDir = float3(Azimuth.x * GrCos, -Azimuth.y * GrCos, GrSin);
+		float BinCoord = (float)a * HORIZON_BINS / AZIMUTHS;
+		uint Bin0 = (uint)BinCoord % HORIZON_BINS;
+		uint Bin1 = (Bin0 + 1) % HORIZON_BINS;
+		float BinFrac = BinCoord - floor(BinCoord);
 
-		float SkyWeight = smoothstep(-HorizonBand, HorizonBand, GrSin - sinH + HorizonBias);
+		float sinH = lerp(HorizonSin[Bin0], HorizonSin[Bin1], BinFrac);
 
-		float3 Radiance = 0;
+		float Dist0 = HorizonDist[Bin0];
+		float Dist1 = HorizonDist[Bin1];
+		float DistWeight0 = step(1e-4, Dist0) * (1.0 - BinFrac);
+		float DistWeight1 = step(1e-4, Dist1) * BinFrac;
+		float DistWeightSum = DistWeight0 + DistWeight1;
+		float Reach = DistWeightSum > 0.0 ? (Dist0 * DistWeight0 + Dist1 * DistWeight1) / DistWeightSum : 0.0;
+		Reach = clamp(Reach, MinReach, MaxReach);
 
-		if (SkyWeight > 0.0) {
-			float3 SkyRadiance = PhysSky::SampleSky(RayDir, 0.0, LinearWrapSampler);  // * settings.SkyInfluence;
+		[loop] for (uint k = 0; k < ELEVATIONS; ++k)
+		{
+			float2 ConeElevation = MakeConeElevation(k);
+			float GrSin = ConeElevation.x;
+			float GrCos = ConeElevation.y;
+			float3 RayDir = float3(Azimuth.x * GrCos, -Azimuth.y * GrCos, GrSin);
 
-			//float cloudTr = 1;
-			//float3 cloudInscattering = 0;
-			//RaymarchCloud(RayDir, WorldPos, cloudInscattering, cloudTr);
+			float SkyWeight = smoothstep(-HorizonBand, HorizonBand, GrSin - sinH + HorizonBias);
 
-			//SkyRadiance = SkyRadiance * cloudTr + cloudInscattering;
+			float3 Radiance = 0;
 
-			Radiance += SkyRadiance * SkyWeight;
-		}
+			if (SkyWeight > 0.0) {
+				float3 SkyRadiance = PhysSky::SampleSky(RayDir, 0.0, LinearWrapSampler);  // * settings.SkyInfluence;
 
-		if (SkyWeight >= 1.0) {
-			ResultSH = SH::Add(ResultSH, SH::Scale(SH::Evaluate(RayDir), Radiance * SampleSolidAngle));
-			continue;
-		}
+				//float cloudTr = 1;
+				//float3 cloudInscattering = 0;
+				//RaymarchCloud(RayDir, WorldPos, cloudInscattering, cloudTr);
 
-		float RayPolarScale = Reach * sqrt(1.0 - saturate((sinH - GrSin) / (sinH + 1.0)));
+				//SkyRadiance = SkyRadiance * cloudTr + cloudInscattering;
 
-		// This gives us first surface pos in dir = RayDir
-		float2 UVOffset = Azimuth * RayPolarScale * AtlasUVPerWorldUnit;
-		float2 RaySampleUV = AtlasUV + UVOffset;
+				Radiance += SkyRadiance * SkyWeight;
+			}
 
-		/*
+			if (SkyWeight >= 1.0) {
+				ResultSH = SH::Add(ResultSH, SH::Scale(SH::Evaluate(RayDir), Radiance * SampleSolidAngle));
+				continue;
+			}
+
+			float RayPolarScale = Reach * sqrt(1.0 - saturate((sinH - GrSin) / (sinH + 1.0)));
+
+			// This gives us first surface pos in dir = RayDir
+			float2 UVOffset = Azimuth * RayPolarScale * AtlasUVPerWorldUnit;
+			float2 RaySampleUV = AtlasUV + UVOffset;
+
+			/*
 		float BounceHeight = HeightTex.SampleLevel(LinearSampler, RaySampleUV, 0).x;
 		float3 SampleWorldPos = float3(lerp(atlasMin, atlasMax, float2(RaySampleUV.x, 1 - RaySampleUV.y)), BounceHeight);
 
@@ -371,12 +385,13 @@ static const float2 ConeElevations[ELEVATIONS] = { ELEV_8(0) };
 		Radiance += (SkyBounce + SunBounce) * (1.0 - SkyWeight);
 		*/
 
-		Radiance += TerrainRelight.SampleLevel(LinearSampler, RaySampleUV, 0).xyz * (1.0 - SkyWeight);  //
+			Radiance += TerrainRelight.SampleLevel(LinearSampler, RaySampleUV, 0).xyz * (1.0 - SkyWeight);  //
 
-		ResultSH = SH::Add(ResultSH, SH::Scale(SH::Evaluate(RayDir), Radiance * SampleSolidAngle));
+			ResultSH = SH::Add(ResultSH, SH::Scale(SH::Evaluate(RayDir), Radiance * SampleSolidAngle));
 
-		// debug
-		//ProbeArray[int3((RaySampleUV)*settings.GridTexSize.xy, 0)] = float4(1.0.xxx, 1);
+			// debug
+			//ProbeArray[int3((RaySampleUV)*settings.GridTexSize.xy, 0)] = float4(1.0.xxx, 1);
+		}
 	}
 
 	//ProbeArray[uint3(ThreadID.xyz)] = SkyAperture.xxxx * 0.5;
