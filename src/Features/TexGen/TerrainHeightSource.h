@@ -26,6 +26,25 @@ namespace TexGenLand
 		bool hasLand = false;  // ...and it carries a LAND record
 	};
 
+	/// @brief One placed reference, after the load order has been merged.
+	struct CellReference
+	{
+		RE::FormID runtimeRefID = 0;   // the reference itself, mapped through the load order
+		RE::FormID runtimeBaseID = 0;  // what it places
+		RE::NiPoint3 position;
+		RE::NiPoint3 rotation;  // radians
+		float scale = 1.0f;
+		std::uint32_t recordFlags = 0;
+
+		/// @brief Whether the reference is deleted or starts disabled, and so is not really there.
+		/// Mods remove vanilla clutter by disabling a reference and dropping it far below the world
+		/// rather than by omitting it, so this has to be honoured or those objects come back.
+		bool IsHidden() const
+		{
+			return (recordFlags & (RE::TESObjectREFR::RecordFlags::kDeleted | RE::TESObjectREFR::RecordFlags::kInitiallyDisabled)) != 0;
+		}
+	};
+
 	/**
 	 * @brief Private view of a worldspace's source plugins for terrain reads.
 	 *
@@ -46,6 +65,21 @@ namespace TexGenLand
 		/// @return True when the cell yielded a LAND record; o_out still reports hasCell either way.
 		bool ReadCell(int a_cellX, int a_cellY, CellHeights& o_out);
 
+		/// @brief Collect a cell's references, merged across every plugin that touches the cell.
+		///
+		/// Unlike LAND, references cannot be taken from the winning plugin alone. An overriding CELL
+		/// carries only the references that plugin adds or edits, so the real set is the union over
+		/// the load order keyed by reference form ID, with later plugins replacing earlier ones.
+		/// Taking only the top plugin loses everything it does not mention and reinstates everything
+		/// it deliberately disabled.
+		///
+		/// Hidden references are kept rather than dropped, because a later plugin may re-enable one;
+		/// filter with CellReference::IsHidden once the merge is done.
+		///
+		/// @param a_log Report each plugin's contribution and the merged totals.
+		/// @return Number of references in o_out.
+		size_t ReadCellReferences(int a_cellX, int a_cellY, std::vector<CellReference>& o_out, bool a_log = false);
+
 		bool Valid() const { return worldSpace && !files.empty(); }
 
 	private:
@@ -60,27 +94,8 @@ namespace TexGenLand
 	/// and the cell map scan behind the last candidate is not free.
 	bool ResolveCellBounds(RE::TESWorldSpace* a_worldSpace, int2& o_minCell, int2& o_maxCell, const char*& o_source, bool a_log = false);
 
-	/// @brief One reference read out of a cell's children, before any filtering.
-	struct CellReference
-	{
-		RE::FormID rawBaseID = 0;      // as written in the plugin
-		RE::FormID runtimeBaseID = 0;  // mapped through the load order
-		RE::NiPoint3 position;
-		RE::NiPoint3 rotation;  // radians
-		float scale = 1.0f;
-		std::uint32_t recordFlags = 0;
-	};
-
-	/// @brief Walk a cell's child records and report what the walk actually finds.
-	///
-	/// Whether SeekNextForm stops at the end of a cell's children, or runs on into the next cell, is
-	/// not documented anywhere in the headers, and every later piece of the static layer depends on
-	/// the answer. So this logs the record sequence rather than assuming a bound: it stops at the
-	/// next CELL, and reports whether it got there or ran out of forms first.
-	///
-	/// @param a_maxForms Hard cap on records walked, so a wrong assumption cannot spin.
-	/// @return Number of references collected.
-	size_t SpikeDumpCellReferences(RE::TESWorldSpace* a_worldSpace, int a_cellX, int a_cellY, int a_maxForms = 4096);
+	/// @brief Log a cell's merged reference set, with the per-plugin contributions that produced it.
+	size_t SpikeDumpCellReferences(RE::TESWorldSpace* a_worldSpace, int a_cellX, int a_cellY);
 
 	/// @brief Touch every source plugin's cell offset table once from the calling thread.
 	/// SeekCell consults a per-file table on the worldspace; if the engine builds it lazily then

@@ -15,6 +15,9 @@ namespace
 
 	constexpr float kHeightScale = 8.0f;  // LAND deltas are stored in eighths of a game unit
 	constexpr int kMaxWorldspaceCells = 512;
+	// A cell's children are bounded by the next CELL record, which the walk stops at. This only
+	// guards against a malformed plugin leaving the walk unbounded.
+	constexpr int kMaxCellChildForms = 65536;
 
 	float ByteSwapIfNeeded(RE::TESFile* a_file, float a_value)
 	{
@@ -209,119 +212,140 @@ namespace TexGenLand
 		return false;
 	}
 
-	size_t SpikeDumpCellReferences(RE::TESWorldSpace* a_worldSpace, int a_cellX, int a_cellY, int a_maxForms)
+	size_t LandFileSet::ReadCellReferences(int a_cellX, int a_cellY, std::vector<CellReference>& o_out, bool a_log)
 	{
-		if (!a_worldSpace)
+		o_out.clear();
+		if (!Valid())
 			return 0;
-
-		auto* sourceFiles = a_worldSpace->sourceFiles.array;
-		if (!sourceFiles || sourceFiles->empty())
-			return 0;
-
-		// Signatures are stored as the four characters read back as a little endian word, so they
-		// print straight out of the record header.
-		auto signatureText = [](std::uint32_t a_signature) {
-			char text[5] = {};
-			std::memcpy(text, &a_signature, 4);
-			for (auto& c : text)
-				if (c != 0 && (c < 32 || c > 126))
-					c = '?';
-			return std::string(text);
-		};
 
 		const std::uint32_t cellSignature = Util::FCC("CELL");
 		const std::uint32_t refrSignature = Util::FCC("REFR");
 
-		// Highest priority plugin that defines the cell, same walk the height read uses.
-		RE::TESFile* file = nullptr;
-		for (int index = static_cast<int>(sourceFiles->size()) - 1; index >= 0; --index) {
-			auto* candidate = (*sourceFiles)[index] ? (*sourceFiles)[index]->Duplicate() : nullptr;
-			if (candidate && candidate->SeekCell(a_worldSpace, a_cellX, a_cellY)) {
-				file = candidate;
-				break;
+		// Keyed by the reference's own form ID so a later plugin's edit replaces the earlier
+		// placement rather than adding a second copy of the same object.
+		std::unordered_map<RE::FormID, CellReference> merged;
+
+		const auto x = static_cast<std::int32_t>(a_cellX);
+		const auto y = static_cast<std::int32_t>(a_cellY);
+
+		// Ascending load order: every plugin that defines the cell contributes, and the last one to
+		// touch a given reference wins.
+		for (size_t index = 0; index < files.size(); ++index) {
+			auto* file = files[index];
+			if (!file->SeekCell(worldSpace, x, y))
+				continue;
+
+			size_t added = 0;
+			size_t replaced = 0;
+			int formsWalked = 0;
+
+			while (formsWalked < kMaxCellChildForms && file->SeekNextForm(true)) {
+				++formsWalked;
+
+				const std::uint32_t signature = file->currentform.form;
+				if (signature == cellSignature)
+					break;  // the children of this cell have ended
+				if (signature != refrSignature)
+					continue;
+
+				CellReference reference;
+				reference.runtimeRefID = file->GetRuntimeFormID(file->currentform.formID);
+				reference.recordFlags = file->currentform.flags;
+
+				// Subrecord order is not fixed and any of these may be absent, so walk once and take
+				// whatever turns up rather than seeking each by type: a missing one would leave the
+				// cursor at the end of the record and put the rest out of reach.
+				RE::FormID rawBaseID = 0;
+				do {
+					const std::uint32_t subrecord = file->GetCurrentSubRecordType();
+					if (subrecord == Util::FCC("NAME")) {
+						file->ReadData(&rawBaseID, sizeof(rawBaseID));
+					} else if (subrecord == Util::FCC("XSCL")) {
+						file->ReadData(&reference.scale, sizeof(reference.scale));
+					} else if (subrecord == Util::FCC("DATA") && file->GetCurrentSubRecordSize() >= 24) {
+						float placement[6] = {};
+						file->ReadData(placement, sizeof(placement));
+						reference.position = RE::NiPoint3(placement[0], placement[1], placement[2]);
+						reference.rotation = RE::NiPoint3(placement[3], placement[4], placement[5]);
+					}
+				} while (file->SeekNextSubrecord());
+
+				reference.runtimeBaseID = file->GetRuntimeFormID(rawBaseID);
+
+				if (merged.insert_or_assign(reference.runtimeRefID, reference).second)
+					++added;
+				else
+					++replaced;
 			}
-			if (candidate)
-				candidate->CloseTES(true);
+
+			if (a_log && (added || replaced))
+				logger::info("[TexGen]   {}: +{} new, {} overridden ({} forms)", file->GetFilename(), added, replaced, formsWalked);
 		}
 
-		if (!file) {
-			logger::error("[TexGen] REFR spike: no plugin defines cell {}, {}", a_cellX, a_cellY);
+		o_out.reserve(merged.size());
+		size_t hidden = 0;
+		for (auto& [refID, reference] : merged) {
+			if (reference.IsHidden())
+				++hidden;
+			o_out.push_back(reference);
+		}
+
+		if (a_log)
+			logger::info("[TexGen]   merged {} references for cell {}, {} ({} disabled or deleted)", o_out.size(), a_cellX, a_cellY, hidden);
+
+		return o_out.size();
+	}
+
+	size_t SpikeDumpCellReferences(RE::TESWorldSpace* a_worldSpace, int a_cellX, int a_cellY)
+	{
+		if (!a_worldSpace)
+			return 0;
+
+		LandFileSet files(a_worldSpace);
+		if (!files.Valid()) {
+			logger::error("[TexGen] Reference dump: no source files for {}", a_worldSpace->GetFormEditorID());
 			return 0;
 		}
 
-		logger::info("[TexGen] REFR spike: cell {}, {} from {}", a_cellX, a_cellY, file->GetFilename());
-		logger::info("[TexGen]   landed on {} formID {:08X}", signatureText(file->currentform.form), file->currentform.formID);
+		logger::info("[TexGen] Reference dump for cell {}, {} in {}", a_cellX, a_cellY, a_worldSpace->GetFormEditorID());
 
 		std::vector<CellReference> references;
-		std::map<std::string, int> signatureCounts;
-		int formsWalked = 0;
-		bool stoppedAtNextCell = false;
+		files.ReadCellReferences(a_cellX, a_cellY, references, true);
 
-		while (formsWalked < a_maxForms && file->SeekNextForm(true)) {
-			++formsWalked;
-
-			const std::uint32_t signature = file->currentform.form;
-			signatureCounts[signatureText(signature)]++;
-
-			if (signature == cellSignature) {
-				stoppedAtNextCell = true;
-				logger::info("[TexGen]   stopped: reached the next CELL ({:08X}) after {} forms", file->currentform.formID, formsWalked);
-				break;
-			}
-
-			if (signature != refrSignature)
+		// What survives the merge, by base form type. Trees are called out separately because the
+		// raycast rejected the kTrees collision layer, so the static layer must skip them too or it
+		// would add canopies the old height map never had.
+		std::map<std::string, int> typeCounts;
+		size_t visible = 0;
+		for (const auto& reference : references) {
+			if (reference.IsHidden())
 				continue;
+			++visible;
 
-			CellReference reference;
-			reference.recordFlags = file->currentform.flags;
-
-			// Subrecord order is not fixed and any of these may be absent, so walk once and take
-			// whatever turns up rather than seeking each by type.
-			do {
-				const std::uint32_t subrecord = file->GetCurrentSubRecordType();
-				if (subrecord == Util::FCC("NAME")) {
-					file->ReadData(&reference.rawBaseID, sizeof(reference.rawBaseID));
-				} else if (subrecord == Util::FCC("XSCL")) {
-					file->ReadData(&reference.scale, sizeof(reference.scale));
-				} else if (subrecord == Util::FCC("DATA") && file->GetCurrentSubRecordSize() >= 24) {
-					float placement[6] = {};
-					file->ReadData(placement, sizeof(placement));
-					reference.position = RE::NiPoint3(placement[0], placement[1], placement[2]);
-					reference.rotation = RE::NiPoint3(placement[3], placement[4], placement[5]);
-				}
-			} while (file->SeekNextSubrecord());
-
-			reference.runtimeBaseID = file->GetRuntimeFormID(reference.rawBaseID);
-			references.push_back(reference);
+			auto* base = RE::TESForm::LookupByID(reference.runtimeBaseID);
+			typeCounts[base ? std::string(magic_enum::enum_name(base->GetFormType())) : std::string("<unresolved>")]++;
 		}
-
-		if (!stoppedAtNextCell)
-			logger::warn("[TexGen]   stopped: ran out of forms (or hit the {} form cap) after {} forms - the walk has no CELL bound here", a_maxForms, formsWalked);
-
-		logger::info("[TexGen]   {} forms walked, {} references collected", formsWalked, references.size());
 
 		std::string breakdown;
-		for (const auto& [signature, count] : signatureCounts)
-			breakdown += fmt::format("{}x{} ", signature, count);
-		logger::info("[TexGen]   record types: {}", breakdown);
+		for (const auto& [name, count] : typeCounts)
+			breakdown += fmt::format("{}x{} ", name, count);
+		logger::info("[TexGen]   {} visible references by base type: {}", visible, breakdown);
 
-		// A handful of resolved references, enough to eyeball against xEdit.
-		const size_t sampleCount = std::min<size_t>(references.size(), 8);
-		for (size_t i = 0; i < sampleCount; ++i) {
-			const auto& reference = references[i];
+		size_t shown = 0;
+		for (const auto& reference : references) {
+			if (reference.IsHidden() || shown >= 8)
+				continue;
+
 			auto* base = RE::TESForm::LookupByID(reference.runtimeBaseID);
-			const char* editorID = base ? base->GetFormEditorID() : nullptr;
-			logger::info("[TexGen]     [{}] base {:08X} -> {} {} at {:.0f},{:.0f},{:.0f} scale {:.2f} flags {:08X}",
-				i,
+			logger::info("[TexGen]     ref {:08X} base {:08X} {} at {:.0f},{:.0f},{:.0f} scale {:.2f}",
+				reference.runtimeRefID,
 				reference.runtimeBaseID,
 				base ? std::string(magic_enum::enum_name(base->GetFormType())) : std::string("<unresolved>"),
-				editorID && *editorID ? editorID : "",
 				reference.position.x, reference.position.y, reference.position.z,
-				reference.scale,
-				reference.recordFlags);
+				reference.scale);
+			++shown;
 		}
 
-		file->CloseTES(true);
 		return references.size();
 	}
 
