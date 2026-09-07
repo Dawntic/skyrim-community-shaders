@@ -86,6 +86,10 @@ namespace TexGenStatics
 		/// @brief Whether the run has asked BSModelDB for as many models as it is allowed to.
 		bool ReachedDemandLimit() const { return stats.demanded >= maximumDemandedModels; }
 
+		/// @brief Whether a path has already been resolved, successfully or not, without loading it.
+		/// Lets a caller find out what a tile still has to load before committing to loading it.
+		bool Contains(const char* a_modelPath) const;
+
 	private:
 		std::unordered_map<std::string, MeshGeometry> cache;
 		std::deque<std::string> insertionOrder;  // eviction order for Trim

@@ -219,6 +219,15 @@ public:
 	/// read walks every plugin that defines it.
 	void GatherTileReferences(const int2& a_tileOriginCell, int a_cellsPerTile, TexGenLand::LandFileSet& a_files, std::vector<TexGenLand::CellReference>& o_references);
 
+	/// @brief Load the meshes a tile needs, a few per frame, before the tile itself is built.
+	///
+	/// BSModelDB::Demand reads from disk and parses a NIF on the calling thread, so a tile that
+	/// introduces several hundred new models froze the game for seconds at a time. The work is the
+	/// same either way; doing it in slices keeps the frame moving and the progress honest.
+	///
+	/// @return True once the tile has everything it needs and can be built.
+	bool EnsureTileMeshesLoaded(const int2& a_tileOriginCell, int a_cellsPerTile, TexGenLand::LandFileSet& a_files);
+
 	/// @brief Compare a freshly read LAND tile against the tile already on disk, and log the spread.
 	/// Used against a raycast baked tile: the disagreement should be near zero over open terrain and
 	/// one sided wherever a static stands, so its shape says whether the LAND path is right.
@@ -341,6 +350,11 @@ private:
 	TexGenStatics::RasterStats lastRasterStats;
 	size_t landRunRaisedTexels = 0;
 	size_t landRunInstances = 0;
+
+	/// How many models a single frame may load. Small enough that the frame still lands, large
+	/// enough that a warm tile costs nothing extra.
+	static constexpr size_t meshLoadsPerFrame = 12;
+	size_t landRunPendingMeshes = 0;  // models the current tile is still waiting on
 
 	eastl::unique_ptr<Texture2D> heightPreviewTex = nullptr;
 	int2 heightPreviewOrigin = int2(0, 0);

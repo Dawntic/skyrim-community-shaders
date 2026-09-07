@@ -642,6 +642,43 @@ void TexGen::FillHeightTileFromLand(const int2& a_tileOriginCell, TexGenLand::La
 	staticMeshes.Trim(staticMeshBudgetBytes);
 }
 
+bool TexGen::EnsureTileMeshesLoaded(const int2& a_tileOriginCell, int a_cellsPerTile, TexGenLand::LandFileSet& a_files)
+{
+	std::vector<TexGenLand::CellReference> references;
+	GatherTileReferences(a_tileOriginCell, a_cellsPerTile, a_files, references);
+
+	size_t loadedThisFrame = 0;
+	size_t stillMissing = 0;
+
+	for (const auto& reference : references) {
+		if (reference.IsHidden())
+			continue;
+
+		auto* base = RE::TESForm::LookupByID(reference.runtimeBaseID);
+		if (!TexGenLand::IsHeightContributingBase(base))
+			continue;
+
+		if (TexGenLand::BaseBoundExtent(base) * reference.scale < TexGenLand::minimumReferenceExtent)
+			continue;
+
+		auto* model = skyrim_cast<const RE::TESModel*>(base);
+		const char* modelPath = model ? model->GetModel() : nullptr;
+		if (!modelPath || !*modelPath || staticMeshes.Contains(modelPath))
+			continue;
+
+		if (loadedThisFrame >= meshLoadsPerFrame) {
+			++stillMissing;
+			continue;
+		}
+
+		staticMeshes.Get(modelPath);  // resolves and caches, success or failure
+		++loadedThisFrame;
+	}
+
+	landRunPendingMeshes = stillMissing;
+	return stillMissing == 0;
+}
+
 void TexGen::GenerateHeightTiles()
 {
 	if (!landRunFiles || !landRunWorldspace) {
@@ -650,6 +687,11 @@ void TexGen::GenerateHeightTiles()
 	}
 
 	const int2 tileOriginCell = landRunCurrentTile * landRunCellsPerTile;
+
+	// Come back to the same tile until its meshes are in, rather than blocking the frame on all of
+	// them at once.
+	if (settings.includeStatics && !EnsureTileMeshesLoaded(tileOriginCell, landRunCellsPerTile, *landRunFiles))
+		return;
 
 	heightTileSize = landRunTileSize;
 	FillHeightTileFromLand(tileOriginCell, *landRunFiles, !heightGenSingleTile, heightTilePixels);
@@ -1947,6 +1989,8 @@ void TexGen::DrawSettings()
 			ImGui::BulletText("Mesh cache: %zu models, %.0f MB of %.0f MB budget",
 				staticMeshes.Size(), (double)staticMeshes.ApproximateBytes() / (1024.0 * 1024.0), (double)staticMeshBudgetBytes / (1024.0 * 1024.0));
 			ImGui::BulletText("Models demanded: %zu of %zu allowed", staticMeshes.Stats().demanded, TexGenStatics::maximumDemandedModels);
+			if (landRunPendingMeshes > 0)
+				ImGui::BulletText("Loading meshes for this tile: %zu still to read", landRunPendingMeshes);
 		}
 
 		ImGui::Checkbox("Skip Bent Normal Tiles", &settings.skipBentNormalTiles);

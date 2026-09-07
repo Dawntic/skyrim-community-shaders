@@ -459,6 +459,16 @@ namespace TexGenStatics
 		return compared;
 	}
 
+	bool MeshCache::Contains(const char* a_modelPath) const
+	{
+		if (!a_modelPath || !*a_modelPath)
+			return true;  // nothing to load
+
+		std::string key(a_modelPath);
+		std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+		return cache.contains(key);
+	}
+
 	void MeshCache::Clear()
 	{
 		cache.clear();
