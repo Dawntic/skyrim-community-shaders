@@ -13,6 +13,53 @@ namespace
 	// GetSize bills position as four floats. Without VF_FULLPREC it is three halves plus a half.
 	constexpr std::uint32_t kHalfPrecisionPositionSaving = 8;
 
+	// How many geometries still owe a layout dump. The vertex layout is guessed from a bitfield
+	// CommonLibSSE-NG does not fully expose, so when the decoded positions come out wrong the raw
+	// bytes are the only thing that settles what the stride and format actually are.
+	int g_vertexLayoutDumpsRemaining = 0;
+
+	std::string HexBytes(const std::uint8_t* a_data, size_t a_count)
+	{
+		std::string text;
+		for (size_t i = 0; i < a_count; ++i)
+			text += fmt::format("{:02X} ", a_data[i]);
+		return text;
+	}
+
+	void DumpVertexLayout(RE::BSGeometry* a_geometry, RE::BSGraphics::TriShape* a_renderer, std::uint32_t a_vertexCount, std::uint32_t a_stride)
+	{
+		auto& desc = a_geometry->GetGeometryRuntimeData().vertexDesc;
+
+		logger::info("[TexGen]   layout: flags {:04X} GetSize {} computedStride {} fullPrec {}",
+			(std::uint16_t)desc.GetFlags(), desc.GetSize(), a_stride, desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_FULLPREC));
+		logger::info("[TexGen]   offsets: POSITION {} TEXCOORD0 {} NORMAL {} COLOR {}",
+			desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION),
+			desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0),
+			desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL),
+			desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_COLOR));
+
+		const size_t bytes = std::min<size_t>((size_t)a_vertexCount * a_stride, 48);
+		logger::info("[TexGen]   first {} bytes: {}", bytes, HexBytes(a_renderer->rawVertexData, bytes));
+
+		// Decode the same leading bytes both ways. Whichever produces coordinates in the tens or
+		// hundreds, rather than tens of thousands, is the real format.
+		for (int i = 0; i < 3; ++i) {
+			const std::uint8_t* vertex = a_renderer->rawVertexData + (size_t)i * a_stride;
+
+			std::uint16_t asHalf[3];
+			std::memcpy(asHalf, vertex, sizeof(asHalf));
+			float asFloat[3];
+			std::memcpy(asFloat, vertex, sizeof(asFloat));
+
+			logger::info("[TexGen]     v{} half {:.1f},{:.1f},{:.1f} | float {:.1f},{:.1f},{:.1f}",
+				i,
+				DirectX::PackedVector::XMConvertHalfToFloat(asHalf[0]),
+				DirectX::PackedVector::XMConvertHalfToFloat(asHalf[1]),
+				DirectX::PackedVector::XMConvertHalfToFloat(asHalf[2]),
+				asFloat[0], asFloat[1], asFloat[2]);
+		}
+	}
+
 	void GrowBound(RE::NiPoint3& io_min, RE::NiPoint3& io_max, const RE::NiPoint3& a_point, bool a_first)
 	{
 		if (a_first) {
@@ -62,6 +109,11 @@ namespace
 		const std::uint32_t stride = TexGenStatics::GetVertexStride(runtime.vertexDesc);
 		if (stride == 0)
 			return false;
+
+		if (g_vertexLayoutDumpsRemaining > 0) {
+			--g_vertexLayoutDumpsRemaining;
+			DumpVertexLayout(a_geometry, renderer, vertexCount, stride);
+		}
 
 		const bool fullPrecision = runtime.vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_FULLPREC);
 		const auto baseVertex = static_cast<std::uint32_t>(o_out.vertices.size());
@@ -205,6 +257,7 @@ namespace TexGenStatics
 		logger::info("[TexGen] Mesh dump for cell {}, {} in {}", a_cellX, a_cellY, a_worldSpace->GetFormEditorID());
 
 		MeshCache cache;
+		g_vertexLayoutDumpsRemaining = 2;  // the first couple of geometries are enough to read the layout
 		size_t candidates = 0;
 		size_t placed = 0;
 		size_t shown = 0;
