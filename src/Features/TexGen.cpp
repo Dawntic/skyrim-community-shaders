@@ -2044,7 +2044,21 @@ void TexGen::DrawSettings()
 				TexGenStatics::SpikeDumpCellMeshes(worldspace, cellCoords[0], cellCoords[1]);
 			}
 		}
+		ImGui::SameLine();
+		if (ImGui::Button("Check Ref Transforms")) {
+			if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+				auto* worldspace = player->GetWorldspace();
+				while (worldspace && worldspace->parentWorld && worldspace->parentUseFlags.any(RE::TESWorldSpace::ParentUseFlag::kUseLandData))
+					worldspace = worldspace->parentWorld;
+				TexGenStatics::SpikeCheckReferenceTransforms(worldspace, cellCoords[0], cellCoords[1]);
+			}
+		}
 		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"Compares the placement parsed from the plugins against the transforms the game built\n"
+				"for the same references, and reports which Euler convention reproduces its matrices.\n"
+				"Needs the cell loaded, so stand in it.");
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text(
 				"Reads this tile from LAND records and compares it against the tile already written to\n"

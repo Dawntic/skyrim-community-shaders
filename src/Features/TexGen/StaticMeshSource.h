@@ -70,6 +70,25 @@ namespace TexGenStatics
 	/// Hidden subtrees are skipped, as the game would not draw them either.
 	bool ExtractGeometry(RE::NiAVObject* a_root, MeshGeometry& o_out, MeshLoadStats& io_stats);
 
+	/// @brief Which Euler convention turns a reference's DATA angles into its rotation matrix.
+	///
+	/// The record stores three angles and says nothing about the order they compose in, so the
+	/// convention is established by comparing against the matrix the game itself builds for a loaded
+	/// reference rather than assumed.
+	enum class RotationConvention
+	{
+		EulerXYZ,  // NiMatrix3::SetEulerAnglesXYZ
+		AxesZXY,   // NiMatrix3::EulerAnglesToAxesZXY
+	};
+
+	/// @brief Place a reference's mesh: rotation, uniform scale and world translation.
+	RE::NiTransform BuildReferenceTransform(const RE::NiPoint3& a_position, const RE::NiPoint3& a_rotation, float a_scale, RotationConvention a_convention);
+
+	/// @brief Check both rotation conventions against the matrices the game built for loaded
+	/// references in a cell, and report which one reproduces them.
+	/// @return Number of references it was able to compare.
+	size_t SpikeCheckReferenceTransforms(RE::TESWorldSpace* a_worldSpace, int a_cellX, int a_cellY);
+
 	/// @brief Load every mesh a cell's contributing references place, and report what came back.
 	///
 	/// The open question this answers is whether rawVertexData survives on a model loaded this way.

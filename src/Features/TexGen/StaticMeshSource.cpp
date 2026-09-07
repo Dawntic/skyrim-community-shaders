@@ -337,6 +337,105 @@ namespace TexGenStatics
 		return placed;
 	}
 
+	RE::NiTransform BuildReferenceTransform(const RE::NiPoint3& a_position, const RE::NiPoint3& a_rotation, float a_scale, RotationConvention a_convention)
+	{
+		RE::NiTransform transform;
+
+		if (a_convention == RotationConvention::AxesZXY)
+			transform.rotate.EulerAnglesToAxesZXY(a_rotation.x, a_rotation.y, a_rotation.z);
+		else
+			transform.rotate.SetEulerAnglesXYZ(a_rotation.x, a_rotation.y, a_rotation.z);
+
+		transform.translate = a_position;
+		transform.scale = a_scale > 0.0f ? a_scale : 1.0f;
+		return transform;
+	}
+
+	size_t SpikeCheckReferenceTransforms(RE::TESWorldSpace* a_worldSpace, int a_cellX, int a_cellY)
+	{
+		if (!a_worldSpace)
+			return 0;
+
+		TexGenLand::LandFileSet files(a_worldSpace);
+		if (!files.Valid()) {
+			logger::error("[TexGen] Transform check: no source files for {}", a_worldSpace->GetFormEditorID());
+			return 0;
+		}
+
+		std::vector<TexGenLand::CellReference> references;
+		files.ReadCellReferences(a_cellX, a_cellY, references);
+
+		logger::info("[TexGen] Transform check for cell {}, {} - the cell must be loaded to compare against", a_cellX, a_cellY);
+
+		auto matrixError = [](const RE::NiMatrix3& a_lhs, const RE::NiMatrix3& a_rhs) {
+			float worst = 0.0f;
+			for (int row = 0; row < 3; ++row)
+				for (int column = 0; column < 3; ++column)
+					worst = std::max(worst, std::abs(a_lhs.entry[row][column] - a_rhs.entry[row][column]));
+			return worst;
+		};
+
+		size_t compared = 0;
+		size_t positionMismatches = 0;
+		float worstXYZ = 0.0f;
+		float worstZXY = 0.0f;
+		float worstPosition = 0.0f;
+
+		for (const auto& reference : references) {
+			if (reference.IsHidden())
+				continue;
+
+			auto* live = RE::TESForm::LookupByID<RE::TESObjectREFR>(reference.runtimeRefID);
+			auto* node = live ? live->Get3D() : nullptr;
+			if (!live || !node)
+				continue;  // not loaded, nothing to compare against
+
+			// The parse itself: position and angles as the game holds them.
+			const auto livePosition = live->GetPosition();
+			const float positionError = std::max({ std::abs(livePosition.x - reference.position.x),
+				std::abs(livePosition.y - reference.position.y),
+				std::abs(livePosition.z - reference.position.z) });
+			worstPosition = std::max(worstPosition, positionError);
+			if (positionError > 0.1f)
+				++positionMismatches;
+
+			// The convention: score both against the matrix the game built.
+			const auto xyz = BuildReferenceTransform(reference.position, reference.rotation, reference.scale, RotationConvention::EulerXYZ);
+			const auto zxy = BuildReferenceTransform(reference.position, reference.rotation, reference.scale, RotationConvention::AxesZXY);
+
+			worstXYZ = std::max(worstXYZ, matrixError(xyz.rotate, node->local.rotate));
+			worstZXY = std::max(worstZXY, matrixError(zxy.rotate, node->local.rotate));
+
+			if (compared < 4) {
+				logger::info("[TexGen]     ref {:08X} parsed pos {:.1f},{:.1f},{:.1f} vs live {:.1f},{:.1f},{:.1f} | scale {:.2f} vs {:.2f}",
+					reference.runtimeRefID,
+					reference.position.x, reference.position.y, reference.position.z,
+					livePosition.x, livePosition.y, livePosition.z,
+					reference.scale, node->local.scale);
+			}
+
+			++compared;
+		}
+
+		if (compared == 0) {
+			logger::warn("[TexGen]   no loaded references to compare against - stand in the cell and try again");
+			return 0;
+		}
+
+		logger::info("[TexGen]   compared {} loaded references", compared);
+		logger::info("[TexGen]   position: worst error {:.3f} across {} mismatches", worstPosition, positionMismatches);
+		logger::info("[TexGen]   rotation: EulerXYZ worst {:.4f}, AxesZXY worst {:.4f}", worstXYZ, worstZXY);
+
+		if (worstXYZ < 0.001f)
+			logger::info("[TexGen]   rotation convention is EulerXYZ");
+		else if (worstZXY < 0.001f)
+			logger::info("[TexGen]   rotation convention is AxesZXY");
+		else
+			logger::error("[TexGen]   neither convention reproduces the game's matrix - the angles are composed some other way");
+
+		return compared;
+	}
+
 	void MeshCache::Clear()
 	{
 		cache.clear();
