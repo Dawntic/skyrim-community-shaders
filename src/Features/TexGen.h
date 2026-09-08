@@ -86,13 +86,6 @@ public:
 		/// Rasterise placed statics over the terrain. The raycast bake included them, so leaving
 		/// this off produces bare terrain and loses every building, rock and bridge.
 		bool includeStatics = true;
-
-		/// Trim the empty cells a tile aligned stitch leaves around the worldspace.
-		///
-		/// Bent normal generation needs the atlas to divide evenly into tiles, and a trimmed atlas
-		/// does not: Tamriel trims to 123 cells across, which no whole number of 8 cell tiles
-		/// covers. Turn this off and rebuild the atlas when bent normal tiles are wanted.
-		bool trimAtlasBorder = true;
 	} settings;
 
 	//////////////////////////////////////////////////////////////////////////////////
@@ -314,6 +307,13 @@ public:
 	ID3D11Buffer* UploadCacheGenBuffer(const CacheGenCBStruct& a_data);
 
 private:
+	/// @brief Set the trimmed range from the tile range and the cell bounds recorded in settings.
+	///
+	/// The atlas file name only carries the tile aligned extent, so reading it back gives the
+	/// untrimmed area. Where the data sits inside it was measured when the atlas was built and kept
+	/// in the settings, and this is what puts the two together.
+	void ApplyTrimmedAtlasRange();
+
 	/// @brief Refresh the worldspace the cache is generated for, keeping the last known one indoors.
 	void UpdateWorldspaceID();
 	/// @brief Ask the features that render with the cache to reload it from disk.

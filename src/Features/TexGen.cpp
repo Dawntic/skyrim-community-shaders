@@ -39,8 +39,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	smoothRolloff,
 	smoothIterations,
 	skipBentNormalTiles,
-	includeStatics,
-	trimAtlasBorder)
+	includeStatics)
 
 //////////////////////////////////////////////////////////////////////////////////
 //// Height cache tiles
@@ -909,15 +908,39 @@ float4 TexGen::GetAtlasWorldBound() const
 	return heightAtlasRange.WorldBounds();
 }
 
+void TexGen::ApplyTrimmedAtlasRange()
+{
+	heightAtlasRange = heightAtlasTileRange;
+
+	if (settings.cacheAtlasCellsX <= 0 || settings.cacheAtlasCellsY <= 0)
+		return;
+
+	const int2 minCell = int2(settings.cacheAtlasCellMinX, settings.cacheAtlasCellMinY);
+	const int2 maxCell = minCell + int2(settings.cacheAtlasCellsX - 1, settings.cacheAtlasCellsY - 1);
+
+	// Only when it names an area the atlas actually holds; stale settings must not describe cells
+	// that are not there.
+	if (minCell.x < heightAtlasTileRange.minCell.x || minCell.y < heightAtlasTileRange.minCell.y ||
+		maxCell.x > heightAtlasTileRange.maxCell.x || maxCell.y > heightAtlasTileRange.maxCell.y)
+		return;
+
+	heightAtlasRange.minCell = minCell;
+	heightAtlasRange.maxCell = maxCell;
+}
+
 bool TexGen::ResolveHeightAtlas(const std::string& a_worldspaceID, std::filesystem::path& o_path, bool a_forceRebuild)
 {
 	heightAtlasRange = {};
+	heightAtlasTileRange = {};
 	if (!EnsureHeightAtlas(a_worldspaceID, a_forceRebuild))
 		return false;
 
-	if (!FindAtlas(a_worldspaceID, "_H", o_path, heightAtlasRange))
+	// The name carries the tile aligned extent, so this reads back the atlas on disk rather than
+	// the smaller area the derived maps cover.
+	if (!FindAtlas(a_worldspaceID, "_H", o_path, heightAtlasTileRange))
 		return false;
 
+	ApplyTrimmedAtlasRange();
 	return true;
 }
 
@@ -1506,11 +1529,7 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 	if (!a_forceRebuild && FindAtlas(a_worldspaceID, "_H", existingPath, heightAtlasTileRange)) {
 		// The file name gives the tile aligned extent. Where the data sits inside it was recorded
 		// when the atlas was built, so it does not have to be found again here.
-		heightAtlasRange = heightAtlasTileRange;
-		if (settings.cacheAtlasCellsX > 0 && settings.cacheAtlasCellsY > 0) {
-			heightAtlasRange.minCell = int2(settings.cacheAtlasCellMinX, settings.cacheAtlasCellMinY);
-			heightAtlasRange.maxCell = heightAtlasRange.minCell + int2(settings.cacheAtlasCellsX - 1, settings.cacheAtlasCellsY - 1);
-		}
+		ApplyTrimmedAtlasRange();
 
 		if (UpdateAtlasLayout(a_worldspaceID, heightAtlasRange, settings))
 			globals::state->Save();
@@ -1547,7 +1566,7 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 	// without rescanning a sixteen thousand texel wide atlas every time they are built.
 	int2 minCell = tileMinCell;
 	int2 maxCell = tileMaxCell;
-	if (!settings.trimAtlasBorder || !FindFilledCellBounds(*atlasImage, tileMinCell, tileMaxCell, texelsPerCell, minCell, maxCell)) {
+	if (!FindFilledCellBounds(*atlasImage, tileMinCell, tileMaxCell, texelsPerCell, minCell, maxCell)) {
 		minCell = tileMinCell;
 		maxCell = tileMaxCell;
 	} else if (minCell.x != tileMinCell.x || minCell.y != tileMinCell.y || maxCell.x != tileMaxCell.x || maxCell.y != tileMaxCell.y) {
@@ -1785,7 +1804,6 @@ bool TexGen::StartBentNormalTiles()
 	if (cellsPerTile <= 0 || cellExtent.x % cellsPerTile != 0 || cellExtent.y % cellsPerTile != 0) {
 		logger::error("[TexGen] The height atlas covers {}x{} cells, which {} cell tiles do not divide evenly, so bent normal tiles cannot be laid out over it.",
 			cellExtent.x, cellExtent.y, cellsPerTile);
-		logger::error("[TexGen] This is the empty border trim: it fits the atlas to the cells that hold data, which does not land on a tile boundary. Turn off Trim Atlas Border, rebuild the height atlas, then generate bent normals.");
 		return false;
 	}
 
@@ -2076,14 +2094,6 @@ void TexGen::DrawSettings()
 		if (ImGui::Button("Generate Normal, AO and Bent Normal (Flattened)"))
 			BuildDerivedMaps(worldspaceID, true, true);
 		ImGui::EndDisabled();
-
-		ImGui::Checkbox("Trim Atlas Border", &settings.trimAtlasBorder);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text(
-				"Fit the atlas to the cells that hold data, dropping the empty margin a tile aligned\n"
-				"stitch leaves around the worldspace.\n\n"
-				"Bent normal tiles need the atlas to divide evenly into tiles and a trimmed one does\n"
-				"not, so turn this off and rebuild the atlas before generating them.");
 
 		ImGui::Checkbox("Include Statics", &settings.includeStatics);
 		if (auto _tt = Util::HoverTooltipWrapper())
