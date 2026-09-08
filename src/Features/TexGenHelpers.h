@@ -260,10 +260,14 @@ namespace TexGenHelpers
 		return removed;
 	}
 
-	// The atlas is trimmed to the cells that hold data, which does not land on a tile boundary, so
-	// the layout is recorded a cell at a time: one "tile" of one cell, as many as the atlas spans.
-	// AtlasTexelToCell reads texels per cell as tileSize / tileCells and the cell extent as
-	// tiles * tileCells, so both still come out right and the mapping needs no special case.
+	/// @brief Record both layouts an atlas needs: the tile grid it came from, and the area it covers.
+	///
+	/// These are not the same thing once the atlas is trimmed of empty cells, and conflating them
+	/// breaks tile matching: bent normal generation looks for height tiles whose size and cell count
+	/// match the recorded tile grid, and finds none if that grid has been overwritten with the
+	/// atlas' own dimensions.
+	///
+	/// @param range The area the atlas covers, which need not align to the tile grid.
 	inline bool UpdateAtlasLayout(const std::string& worldspaceID, const TexGen::AtlasCellRange& range, TexGen::Settings& settings)
 	{
 		auto tiles = LoadHeightTileManifest(worldspaceID);
@@ -277,24 +281,44 @@ namespace TexGenHelpers
 		if (cellsPerTile <= 0)
 			return false;
 
-		const int texelsPerCell = (int)tileSize / cellsPerTile;
+		// The tile grid comes from the tiles themselves rather than from the atlas range, which no
+		// longer describes it.
+		int2 minTileCell = tiles.front().originCell;
+		int2 maxTileCell = tiles.front().originCell;
+		for (const auto& tile : tiles) {
+			minTileCell = int2{ std::min(minTileCell.x, tile.originCell.x), std::min(minTileCell.y, tile.originCell.y) };
+			maxTileCell = int2{ std::max(maxTileCell.x, tile.originCell.x), std::max(maxTileCell.y, tile.originCell.y) };
+		}
+
+		const int tilesX = (maxTileCell.x - minTileCell.x) / cellsPerTile + 1;
+		const int tilesY = (maxTileCell.y - minTileCell.y) / cellsPerTile + 1;
+
 		const int2 cellExtent = range.maxCell - range.minCell + int2(1, 1);
 		if (cellExtent.x <= 0 || cellExtent.y <= 0)
 			return false;
 
-		const bool changed = settings.cacheAtlasMinCellX != range.minCell.x ||
-		                     settings.cacheAtlasMinCellY != range.minCell.y ||
-		                     settings.cacheAtlasTileSize != texelsPerCell ||
-		                     settings.cacheAtlasTileCells != 1 ||
-		                     settings.cacheAtlasTilesX != cellExtent.x ||
-		                     settings.cacheAtlasTilesY != cellExtent.y;
+		const bool changed = settings.cacheAtlasMinCellX != minTileCell.x ||
+		                     settings.cacheAtlasMinCellY != minTileCell.y ||
+		                     settings.cacheAtlasTileSize != (int)tileSize ||
+		                     settings.cacheAtlasTileCells != cellsPerTile ||
+		                     settings.cacheAtlasTilesX != tilesX ||
+		                     settings.cacheAtlasTilesY != tilesY ||
+		                     settings.cacheAtlasCellMinX != range.minCell.x ||
+		                     settings.cacheAtlasCellMinY != range.minCell.y ||
+		                     settings.cacheAtlasCellsX != cellExtent.x ||
+		                     settings.cacheAtlasCellsY != cellExtent.y;
 
-		settings.cacheAtlasMinCellX = range.minCell.x;
-		settings.cacheAtlasMinCellY = range.minCell.y;
-		settings.cacheAtlasTileSize = texelsPerCell;
-		settings.cacheAtlasTileCells = 1;
-		settings.cacheAtlasTilesX = cellExtent.x;
-		settings.cacheAtlasTilesY = cellExtent.y;
+		settings.cacheAtlasMinCellX = minTileCell.x;
+		settings.cacheAtlasMinCellY = minTileCell.y;
+		settings.cacheAtlasTileSize = (int)tileSize;
+		settings.cacheAtlasTileCells = cellsPerTile;
+		settings.cacheAtlasTilesX = tilesX;
+		settings.cacheAtlasTilesY = tilesY;
+
+		settings.cacheAtlasCellMinX = range.minCell.x;
+		settings.cacheAtlasCellMinY = range.minCell.y;
+		settings.cacheAtlasCellsX = cellExtent.x;
+		settings.cacheAtlasCellsY = cellExtent.y;
 		return changed;
 	}
 
@@ -417,15 +441,16 @@ namespace TexGenHelpers
 
 	inline bool AtlasTexelToCell(const int2& texel, const TexGen::Settings& settings, int2& o_cell)
 	{
-		if (settings.cacheAtlasTileSize <= 0 || settings.cacheAtlasTileCells <= 0 || settings.cacheAtlasTilesY <= 0)
+		if (settings.cacheAtlasTileSize <= 0 || settings.cacheAtlasTileCells <= 0 || settings.cacheAtlasCellsY <= 0)
 			return false;
 
 		const int texelsPerCell = settings.cacheAtlasTileSize / settings.cacheAtlasTileCells;
 		if (texelsPerCell <= 0)
 			return false;
 
-		const int maxCellY = settings.cacheAtlasMinCellY + settings.cacheAtlasTilesY * settings.cacheAtlasTileCells - 1;
-		o_cell = int2(settings.cacheAtlasMinCellX + FloorDiv(texel.x, texelsPerCell),
+		// Against the trimmed area the atlas covers, not the tile grid it was stitched from.
+		const int maxCellY = settings.cacheAtlasCellMinY + settings.cacheAtlasCellsY - 1;
+		o_cell = int2(settings.cacheAtlasCellMinX + FloorDiv(texel.x, texelsPerCell),
 			maxCellY - FloorDiv(texel.y, texelsPerCell));
 		return true;
 	}

@@ -29,13 +29,18 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	cacheAtlasTileCells,
 	cacheAtlasTilesX,
 	cacheAtlasTilesY,
+	cacheAtlasCellMinX,
+	cacheAtlasCellMinY,
+	cacheAtlasCellsX,
+	cacheAtlasCellsY,
 	dynDOLODPath,
 	smoothRadius,
 	smoothFlattenHeight,
 	smoothRolloff,
 	smoothIterations,
 	skipBentNormalTiles,
-	includeStatics)
+	includeStatics,
+	trimAtlasBorder)
 
 //////////////////////////////////////////////////////////////////////////////////
 //// Height cache tiles
@@ -1489,7 +1494,8 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 	int2 maxCell = tileMaxCell;
 	ScratchImage croppedImage;
 
-	if (FindFilledCellBounds(*atlasImage, tileMinCell, tileMaxCell, texelsPerCell, minCell, maxCell) &&
+	if (settings.trimAtlasBorder &&
+		FindFilledCellBounds(*atlasImage, tileMinCell, tileMaxCell, texelsPerCell, minCell, maxCell) &&
 		(minCell.x != tileMinCell.x || minCell.y != tileMinCell.y || maxCell.x != tileMaxCell.x || maxCell.y != tileMaxCell.y)) {
 		if (CropAtlasToCells(*atlasImage, tileMinCell, tileMaxCell, minCell, maxCell, texelsPerCell, croppedImage)) {
 			logger::info("[TexGen] Trimmed empty cells from the atlas: {},{} to {},{} becomes {},{} to {},{}",
@@ -1726,7 +1732,9 @@ bool TexGen::StartBentNormalTiles()
 	const int cellsPerTile = settings.cacheAtlasTileCells;
 	const int2 cellExtent = heightAtlasRange.maxCell - heightAtlasRange.minCell + int2(1, 1);
 	if (cellsPerTile <= 0 || cellExtent.x % cellsPerTile != 0 || cellExtent.y % cellsPerTile != 0) {
-		logger::error("[TexGen] Invalid height atlas tile layout");
+		logger::error("[TexGen] The height atlas covers {}x{} cells, which {} cell tiles do not divide evenly, so bent normal tiles cannot be laid out over it.",
+			cellExtent.x, cellExtent.y, cellsPerTile);
+		logger::error("[TexGen] This is the empty border trim: it fits the atlas to the cells that hold data, which does not land on a tile boundary. Turn off Trim Atlas Border, rebuild the height atlas, then generate bent normals.");
 		return false;
 	}
 
@@ -2017,6 +2025,14 @@ void TexGen::DrawSettings()
 		if (ImGui::Button("Generate Normal, AO and Bent Normal (Flattened)"))
 			BuildDerivedMaps(worldspaceID, true, true);
 		ImGui::EndDisabled();
+
+		ImGui::Checkbox("Trim Atlas Border", &settings.trimAtlasBorder);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text(
+				"Fit the atlas to the cells that hold data, dropping the empty margin a tile aligned\n"
+				"stitch leaves around the worldspace.\n\n"
+				"Bent normal tiles need the atlas to divide evenly into tiles and a trimmed one does\n"
+				"not, so turn this off and rebuild the atlas before generating them.");
 
 		ImGui::Checkbox("Include Statics", &settings.includeStatics);
 		if (auto _tt = Util::HoverTooltipWrapper())

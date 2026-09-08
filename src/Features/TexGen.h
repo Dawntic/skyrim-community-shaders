@@ -57,13 +57,22 @@ public:
 		int cacheTileCells = 8;    // worldspace cells per height tile edge (4 or 8)
 		int cacheTileSize = 1024;  // texels per height tile edge (512 or 1024)
 
-		// Layout of the last built atlas, so texel coordinates can be mapped back to cells.
-		int cacheAtlasMinCellX = 0;  // origin cell of the atlas' lower left tile
+		// The tile grid the atlas was stitched from. These describe the tiles on disk, and are what
+		// tiles are matched against, so they must keep meaning tiles even though the atlas itself is
+		// trimmed to a smaller, non tile aligned area.
+		int cacheAtlasMinCellX = 0;  // origin cell of the tile grid's lower left tile
 		int cacheAtlasMinCellY = 0;
 		int cacheAtlasTileSize = 0;   // texels per tile edge, 0 if no atlas has been built
 		int cacheAtlasTileCells = 0;  // cells per tile edge
 		int cacheAtlasTilesX = 0;     // tile columns
-		int cacheAtlasTilesY = 0;     // tile rows, needed to flip texel Y into cell space
+		int cacheAtlasTilesY = 0;     // tile rows
+
+		// The area the atlas actually covers, after empty cells are trimmed off the tile grid. This
+		// is what maps texels to cells; it does not line up with the tile grid above.
+		int cacheAtlasCellMinX = 0;
+		int cacheAtlasCellMinY = 0;
+		int cacheAtlasCellsX = 0;  // cell columns, 0 if no atlas has been built
+		int cacheAtlasCellsY = 0;  // cell rows, needed to flip texel Y into cell space
 
 		std::string dynDOLODPath;
 
@@ -77,6 +86,13 @@ public:
 		/// Rasterise placed statics over the terrain. The raycast bake included them, so leaving
 		/// this off produces bare terrain and loses every building, rock and bridge.
 		bool includeStatics = true;
+
+		/// Trim the empty cells a tile aligned stitch leaves around the worldspace.
+		///
+		/// Bent normal generation needs the atlas to divide evenly into tiles, and a trimmed atlas
+		/// does not: Tamriel trims to 123 cells across, which no whole number of 8 cell tiles
+		/// covers. Turn this off and rebuild the atlas when bent normal tiles are wanted.
+		bool trimAtlasBorder = true;
 	} settings;
 
 	//////////////////////////////////////////////////////////////////////////////////
