@@ -889,6 +889,21 @@ void TexGen::NotifyCacheMapsChanged()
 //// Cache layout helpers
 //////////////////////////////////////////////////////////////////////////////////
 
+int2 TexGen::GetDerivedMapSize() const
+{
+	if (!heightAtlasRange.valid || settings.cacheAtlasTileCells <= 0)
+		return int2(0, 0);
+
+	const int texelsPerCell = settings.cacheAtlasTileSize / settings.cacheAtlasTileCells;
+	if (texelsPerCell <= 0)
+		return int2(0, 0);
+
+	const int2 cells = heightAtlasRange.maxCell - heightAtlasRange.minCell + int2(1, 1);
+	return int2(
+		std::max(1, (int)std::lround((double)(cells.x * texelsPerCell) * derivedHeightScale)),
+		std::max(1, (int)std::lround((double)(cells.y * texelsPerCell) * derivedHeightScale)));
+}
+
 float4 TexGen::GetAtlasWorldBound() const
 {
 	return heightAtlasRange.WorldBounds();
@@ -931,8 +946,16 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 
 	DirectX::TexMetadata heightMetadata;
 	DX::ThrowIfFailed(DirectX::GetMetadataFromDDSFile(heightAtlasPath.c_str(), DirectX::DDS_FLAGS_NONE, heightMetadata));
-	const uint width = std::max(1u, (uint)std::lround((double)heightMetadata.width * derivedHeightScale));
-	const uint height = std::max(1u, (uint)std::lround((double)heightMetadata.height * derivedHeightScale));
+
+	// Sized from the trimmed area rather than the whole atlas, so the empty margin the tile grid
+	// leaves around the worldspace costs nothing here.
+	const int2 derivedCells = heightAtlasRange.maxCell - heightAtlasRange.minCell + int2(1, 1);
+	const int atlasTexelsPerCell = settings.cacheAtlasTileCells > 0 ? settings.cacheAtlasTileSize / settings.cacheAtlasTileCells : 0;
+	const uint sourceWidth = atlasTexelsPerCell > 0 ? (uint)(derivedCells.x * atlasTexelsPerCell) : (uint)heightMetadata.width;
+	const uint sourceHeight = atlasTexelsPerCell > 0 ? (uint)(derivedCells.y * atlasTexelsPerCell) : (uint)heightMetadata.height;
+
+	const uint width = std::max(1u, (uint)std::lround((double)sourceWidth * derivedHeightScale));
+	const uint height = std::max(1u, (uint)std::lround((double)sourceHeight * derivedHeightScale));
 
 	auto hasExpectedDimensions = [&](const std::filesystem::path& a_path) {
 		DirectX::TexMetadata metadata;
@@ -961,6 +984,17 @@ bool TexGen::BuildDerivedMaps(const std::string& a_worldspaceID, bool a_forceReb
 		DX::ThrowIfFailed(LoadFromDDSFile(heightAtlasPath.c_str(), DDS_FLAGS_NONE, nullptr, sourceImage));
 
 		const Image* source = sourceImage.GetImages();
+
+		// Drop the atlas' empty margin before anything is derived from it. The atlas keeps that
+		// margin because bent normal tiles divide it into whole tiles; nothing downstream needs it.
+		ScratchImage trimmedImage;
+		if (atlasTexelsPerCell > 0 && (source->width != sourceWidth || source->height != sourceHeight)) {
+			if (CropAtlasToCells(*source, heightAtlasTileRange.minCell, heightAtlasTileRange.maxCell,
+					heightAtlasRange.minCell, heightAtlasRange.maxCell, atlasTexelsPerCell, trimmedImage))
+				source = trimmedImage.GetImages();
+			else
+				logger::warn("[TexGen] Could not trim the height atlas for the derived maps; deriving from the full extent");
+		}
 
 		ScratchImage downscaledImage;
 		DX::ThrowIfFailed(Resize(*source, width, height, TEX_FILTER_DEFAULT, downscaledImage));
@@ -1209,10 +1243,13 @@ bool TexGen::BuildLODAtlas(const std::string& a_worldspaceID)
 
 	const auto outputPath = MakeAtlasPath(cachePath, worldspaceID, "_A", heightAtlasRange.minCell, heightAtlasRange.maxCell);
 
-	TexMetadata heightMetadata;
-	DX::ThrowIfFailed(GetMetadataFromDDSFile(heightAtlasPath.c_str(), DDS_FLAGS_NONE, heightMetadata));
-	const size_t outputWidth = std::max<size_t>(1, std::lround((double)heightMetadata.width * derivedHeightScale));
-	const size_t outputHeight = std::max<size_t>(1, std::lround((double)heightMetadata.height * derivedHeightScale));
+	const int2 derivedSize = GetDerivedMapSize();
+	if (derivedSize.x <= 0 || derivedSize.y <= 0) {
+		logger::error("[TexGen] No atlas layout known, cannot build {}", outputPath.filename().string());
+		return false;
+	}
+	const size_t outputWidth = (size_t)derivedSize.x;
+	const size_t outputHeight = (size_t)derivedSize.y;
 
 	static constexpr int lodCellsPerTile = 32;
 	const int2 atlasMinCell = heightAtlasRange.minCell;
@@ -1466,7 +1503,15 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 		return false;
 
 	std::filesystem::path existingPath;
-	if (!a_forceRebuild && FindAtlas(a_worldspaceID, "_H", existingPath, heightAtlasRange)) {
+	if (!a_forceRebuild && FindAtlas(a_worldspaceID, "_H", existingPath, heightAtlasTileRange)) {
+		// The file name gives the tile aligned extent. Where the data sits inside it was recorded
+		// when the atlas was built, so it does not have to be found again here.
+		heightAtlasRange = heightAtlasTileRange;
+		if (settings.cacheAtlasCellsX > 0 && settings.cacheAtlasCellsY > 0) {
+			heightAtlasRange.minCell = int2(settings.cacheAtlasCellMinX, settings.cacheAtlasCellMinY);
+			heightAtlasRange.maxCell = heightAtlasRange.minCell + int2(settings.cacheAtlasCellsX - 1, settings.cacheAtlasCellsY - 1);
+		}
+
 		if (UpdateAtlasLayout(a_worldspaceID, heightAtlasRange, settings))
 			globals::state->Save();
 		return true;
@@ -1485,43 +1530,38 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 	const int texelsPerCell = cellsPerTile > 0 ? (int)tileSize / cellsPerTile : 0;
 
 	// The stitch covers whole tiles, which always reach past the worldspace: Tamriel ends at cell
-	// -57 but its tiles start at -64. Trim to the cells that actually hold something, so the atlas
-	// has no empty margin and its texels are spent on terrain rather than on nothing.
+	// -57 but its tiles start at -64. The atlas keeps that margin. Nothing outside TexGen reads it,
+	// and bent normal tiles are laid out by dividing it into whole tiles, which it has to stay
+	// divisible for. The empty margin is dropped later, from the derived maps everything else uses.
 	const int2 tileMinCell = minOrigin;
 	const int2 tileMaxCell = maxOrigin + int2(cellsPerTile - 1, cellsPerTile - 1);
 
+	AtlasCellRange tileRange;
+	tileRange.minCell = tileMinCell;
+	tileRange.maxCell = tileMaxCell;
+	tileRange.valid = true;
+
+	heightAtlasTileRange = tileRange;
+
+	// Where the data actually sits, found once here so the derived maps can be trimmed to it
+	// without rescanning a sixteen thousand texel wide atlas every time they are built.
 	int2 minCell = tileMinCell;
 	int2 maxCell = tileMaxCell;
-	ScratchImage croppedImage;
-
-	if (settings.trimAtlasBorder &&
-		FindFilledCellBounds(*atlasImage, tileMinCell, tileMaxCell, texelsPerCell, minCell, maxCell) &&
-		(minCell.x != tileMinCell.x || minCell.y != tileMinCell.y || maxCell.x != tileMaxCell.x || maxCell.y != tileMaxCell.y)) {
-		if (CropAtlasToCells(*atlasImage, tileMinCell, tileMaxCell, minCell, maxCell, texelsPerCell, croppedImage)) {
-			logger::info("[TexGen] Trimmed empty cells from the atlas: {},{} to {},{} becomes {},{} to {},{}",
-				tileMinCell.x, tileMinCell.y, tileMaxCell.x, tileMaxCell.y, minCell.x, minCell.y, maxCell.x, maxCell.y);
-			atlasImage = croppedImage.GetImages();
-		} else {
-			minCell = tileMinCell;
-			maxCell = tileMaxCell;
-			logger::warn("[TexGen] Could not trim the atlas; keeping the full tile extent");
-		}
+	if (!settings.trimAtlasBorder || !FindFilledCellBounds(*atlasImage, tileMinCell, tileMaxCell, texelsPerCell, minCell, maxCell)) {
+		minCell = tileMinCell;
+		maxCell = tileMaxCell;
+	} else if (minCell.x != tileMinCell.x || minCell.y != tileMinCell.y || maxCell.x != tileMaxCell.x || maxCell.y != tileMaxCell.y) {
+		logger::info("[TexGen] Derived maps will cover cells {},{} to {},{}, trimmed from the atlas' {},{} to {},{}",
+			minCell.x, minCell.y, maxCell.x, maxCell.y, tileMinCell.x, tileMinCell.y, tileMaxCell.x, tileMaxCell.y);
 	}
-
-	// The name carries the inclusive cell range the atlas covers, so its extent is always readable
-	// from the file itself rather than from whatever the settings happen to hold.
-	auto atlasPath = MakeAtlasPath(cachePath, a_worldspaceID, "_H", minCell, maxCell);
 
 	heightAtlasRange.minCell = minCell;
 	heightAtlasRange.maxCell = maxCell;
 	heightAtlasRange.valid = true;
 
-	// The tiles on disk still cover the untrimmed extent, and the manifest describes them rather
-	// than the atlas, so it is built from the tile range.
-	AtlasCellRange tileRange;
-	tileRange.minCell = tileMinCell;
-	tileRange.maxCell = tileMaxCell;
-	tileRange.valid = true;
+	// The name carries the inclusive cell range the atlas covers, so its extent is always readable
+	// from the file itself rather than from whatever the settings happen to hold.
+	auto atlasPath = MakeAtlasPath(cachePath, a_worldspaceID, "_H", tileMinCell, tileMaxCell);
 	// Loading a legacy tile-only cache follows the same finalization path as a newly completed bake.
 	// Preserve the names before removing the tile DDS files because bent-normal generation only
 	// needs their layout after this point.
@@ -1540,7 +1580,7 @@ bool TexGen::EnsureHeightAtlas(const std::string& a_worldspaceID, bool a_forceRe
 
 	logger::info("[TexGen] Built height atlas {}: {}x{}, cells {},{} to {},{}",
 		atlasPath.string(), atlasImage->width, atlasImage->height,
-		minCell.x, minCell.y, maxCell.x, maxCell.y);
+		tileMinCell.x, tileMinCell.y, tileMaxCell.x, tileMaxCell.y);
 
 	return true;
 }
@@ -1553,17 +1593,16 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 		return false;
 
 	std::filesystem::path heightPath;
-	heightAtlasRange = {};
-	if (!FindAtlas(a_worldspaceID, "_H", heightPath, heightAtlasRange))
+	// Resolves both the tile aligned extent of the atlas on disk and the trimmed area the derived
+	// maps cover; this atlas is laid out on the first and sized to the second.
+	if (!ResolveHeightAtlas(a_worldspaceID, heightPath))
 		return false;
 
-	TexMetadata heightMetadata;
-	DX::ThrowIfFailed(GetMetadataFromDDSFile(heightPath.c_str(), DDS_FLAGS_NONE, heightMetadata));
-	const size_t outputWidth = std::max<size_t>(1, std::lround((double)heightMetadata.width * derivedHeightScale));
-	const size_t outputHeight = std::max<size_t>(1, std::lround((double)heightMetadata.height * derivedHeightScale));
-
-	if (UpdateAtlasLayout(a_worldspaceID, heightAtlasRange, settings))
-		globals::state->Save();
+	const int2 derivedSize = GetDerivedMapSize();
+	if (derivedSize.x <= 0 || derivedSize.y <= 0)
+		return false;
+	const size_t outputWidth = (size_t)derivedSize.x;
+	const size_t outputHeight = (size_t)derivedSize.y;
 
 	auto atlasPath = MakeAtlasPath(cachePath, a_worldspaceID, "_BN", heightAtlasRange.minCell, heightAtlasRange.maxCell);
 	if (!a_forceRebuild && std::filesystem::exists(atlasPath)) {
@@ -1575,7 +1614,7 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 
 	// Gaps read as an unoccluded surface: normal straight up, encoded, and full visibility.
 	TileAtlasResult result;
-	if (!StitchTileAtlas(a_worldspaceID, "_BN", float4(0.5f, 0.5f, 1.0f, 1.0f), result, &heightAtlasRange))
+	if (!StitchTileAtlas(a_worldspaceID, "_BN", float4(0.5f, 0.5f, 1.0f, 1.0f), result, &heightAtlasTileRange))
 		return false;
 
 	const Image* atlasImage = result.image.GetImages();
@@ -1587,8 +1626,9 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 	const int2 tileMaxCell = result.maxOriginCell + int2(result.cellsPerTile - 1, result.cellsPerTile - 1);
 	const int texelsPerCell = result.cellsPerTile > 0 ? (int)result.tileSize / result.cellsPerTile : 0;
 
-	if (tileMinCell.x != heightAtlasRange.minCell.x || tileMinCell.y != heightAtlasRange.minCell.y ||
-		tileMaxCell.x != heightAtlasRange.maxCell.x || tileMaxCell.y != heightAtlasRange.maxCell.y) {
+	if (texelsPerCell > 0 &&
+		(tileMinCell.x != heightAtlasRange.minCell.x || tileMinCell.y != heightAtlasRange.minCell.y ||
+			tileMaxCell.x != heightAtlasRange.maxCell.x || tileMaxCell.y != heightAtlasRange.maxCell.y)) {
 		if (!CropAtlasToCells(*atlasImage, tileMinCell, tileMaxCell, heightAtlasRange.minCell, heightAtlasRange.maxCell, texelsPerCell, croppedAtlas)) {
 			logger::error("[TexGen] Could not trim the bent normal atlas to the height atlas' cells");
 			return false;
@@ -1596,9 +1636,18 @@ bool TexGen::EnsureBentNormalAtlas(const std::string& a_worldspaceID, bool a_for
 		atlasImage = croppedAtlas.GetImages();
 	}
 
-	if (atlasImage->width != heightMetadata.width || atlasImage->height != heightMetadata.height) {
-		logger::error("[TexGen] Bent normal atlas dimensions {}x{} do not match height atlas {}x{}",
-			atlasImage->width, atlasImage->height, heightMetadata.width, heightMetadata.height);
+	// Against the trimmed extent, which is what the derived maps and this atlas both cover.
+	const int2 derivedCells = heightAtlasRange.maxCell - heightAtlasRange.minCell + int2(1, 1);
+	if (texelsPerCell <= 0) {
+		logger::error("[TexGen] No tile layout known, cannot size the bent normal atlas");
+		return false;
+	}
+	const size_t expectedWidth = (size_t)derivedCells.x * texelsPerCell;
+	const size_t expectedHeight = (size_t)derivedCells.y * texelsPerCell;
+
+	if (atlasImage->width != expectedWidth || atlasImage->height != expectedHeight) {
+		logger::error("[TexGen] Bent normal atlas dimensions {}x{} do not match the {}x{} the derived maps cover",
+			atlasImage->width, atlasImage->height, expectedWidth, expectedHeight);
 		return false;
 	}
 
@@ -1730,7 +1779,9 @@ bool TexGen::StartBentNormalTiles()
 	DX::ThrowIfFailed(DirectX::GetMetadataFromDDSFile(atlasPath.c_str(), DirectX::DDS_FLAGS_NONE, metadata));
 
 	const int cellsPerTile = settings.cacheAtlasTileCells;
-	const int2 cellExtent = heightAtlasRange.maxCell - heightAtlasRange.minCell + int2(1, 1);
+	// Against the atlas on disk, which is tile aligned, rather than the trimmed area the derived
+	// maps cover, which is not and could not be divided into tiles.
+	const int2 cellExtent = heightAtlasTileRange.maxCell - heightAtlasTileRange.minCell + int2(1, 1);
 	if (cellsPerTile <= 0 || cellExtent.x % cellsPerTile != 0 || cellExtent.y % cellsPerTile != 0) {
 		logger::error("[TexGen] The height atlas covers {}x{} cells, which {} cell tiles do not divide evenly, so bent normal tiles cannot be laid out over it.",
 			cellExtent.x, cellExtent.y, cellsPerTile);
@@ -1754,13 +1805,13 @@ bool TexGen::StartBentNormalTiles()
 
 	const int tileSize = tileSizeX;
 	const bool layoutChanged =
-		settings.cacheAtlasMinCellX != heightAtlasRange.minCell.x ||
-		settings.cacheAtlasMinCellY != heightAtlasRange.minCell.y ||
+		settings.cacheAtlasMinCellX != heightAtlasTileRange.minCell.x ||
+		settings.cacheAtlasMinCellY != heightAtlasTileRange.minCell.y ||
 		settings.cacheAtlasTileSize != tileSize ||
 		settings.cacheAtlasTilesX != tilesX ||
 		settings.cacheAtlasTilesY != tilesY;
-	settings.cacheAtlasMinCellX = heightAtlasRange.minCell.x;
-	settings.cacheAtlasMinCellY = heightAtlasRange.minCell.y;
+	settings.cacheAtlasMinCellX = heightAtlasTileRange.minCell.x;
+	settings.cacheAtlasMinCellY = heightAtlasTileRange.minCell.y;
 	settings.cacheAtlasTileSize = tileSize;
 	settings.cacheAtlasTilesX = tilesX;
 	settings.cacheAtlasTilesY = tilesY;

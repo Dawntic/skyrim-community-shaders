@@ -128,10 +128,22 @@ public:
 	/// @brief Worldspace cells per tile edge of the last stitched atlas, 0 if none has been built.
 	int GetAtlasTileCells() const { return settings.cacheAtlasTileCells; }
 
+	/// @brief The area the derived maps cover: the height atlas trimmed of its empty cells.
+	/// Everything outside TexGen reads this, because everything outside TexGen reads the derived
+	/// maps rather than the height atlas itself.
 	const AtlasCellRange& GetHeightAtlasRange() const { return heightAtlasRange; }
+
+	/// @brief The tile aligned area the height atlas on disk covers, before trimming.
+	/// The height atlas is kept untrimmed because only TexGen reads it, and because bent normal
+	/// tiles are laid out by dividing it into whole tiles, which a trimmed atlas cannot be.
+	const AtlasCellRange& GetHeightAtlasTileRange() const { return heightAtlasTileRange; }
 
 	/// @brief World bounds (minX, minY, maxX, maxY) of the cells the height atlas covers.
 	float4 GetAtlasWorldBound() const;
+
+	/// @brief Dimensions every derived map shares: the trimmed cell area at the derived scale.
+	/// Taken from the trimmed extent rather than the atlas on disk, which keeps an empty margin.
+	int2 GetDerivedMapSize() const;
 
 	//////////////////////////////////////////////////////////////////////////////////
 	//// Consumer entry points
@@ -320,7 +332,8 @@ private:
 
 	ID3D11ShaderResourceView* heightMapSRV = nullptr;  // non-owning, set by the consumer that loaded it
 
-	AtlasCellRange heightAtlasRange;
+	AtlasCellRange heightAtlasRange;      // trimmed; what the derived maps cover
+	AtlasCellRange heightAtlasTileRange;  // tile aligned; what the height atlas on disk covers
 
 	ConstantBuffer* cacheGenBuffer = nullptr;
 
